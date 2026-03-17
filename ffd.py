@@ -1,3 +1,4 @@
+import os
 import json
 
 def generate_dictionary_files(valueset_bundles):
@@ -54,13 +55,13 @@ def generate_dictionary_files(valueset_bundles):
         raw_str = code_map[idx][0]
         cpp += f"        \"{raw_str}\",\n"
     cpp += "    };\n"
-    cpp += f"    if (code >= {current_index}) return \"\"; // Bounds check\n"
+    cpp += f"    if (code >= {current_index}) return \"\";\n"
     cpp += "    return DICT[code];\n}\n\n"
     
     # Reverse Lookup Hash Map
     cpp += "uint32_t FF_GetDictionaryCode(const std::string& str) {\n"
     cpp += "    static const std::unordered_map<std::string, uint32_t> REVERSE_DICT = {\n"
-    for idx in range(1, current_index): # Skip NULL
+    for idx in range(1, current_index):
         raw_str = code_map[idx][0]
         enum_name = code_map[idx][1]
         cpp += f"        {{\"{raw_str}\", {enum_name}}},\n"
