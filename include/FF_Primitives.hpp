@@ -54,11 +54,12 @@ enum RECOVERY : uint16_t {
     RECOVER_FF_FILE_HEADER              = 0x0001,
     RECOVER_FF_STRING                   = 0x0002,
     RECOVER_FF_ARRAY                    = 0x0003,
+    RECOVER_FF_RESOURCE                 = 0x0004,
 
     // Data Types (0x0100 range)
     RECOVER_FF_CODING                   = 0x0100,
     RECOVER_FF_CODEABLECONCEPT          = 0x0101,
-    RECOVER_FF_QUANTITY                  = 0x0102,
+    RECOVER_FF_QUANTITY                 = 0x0102,
     RECOVER_FF_IDENTIFIER               = 0x0103,
     RECOVER_FF_RANGE                    = 0x0104,
     RECOVER_FF_PERIOD                   = 0x0105,
@@ -244,6 +245,45 @@ struct FF_EXPORT FF_STRING : DATA_BLOCK {
     FF_Result   validate_full(const BYTE* const __base) const noexcept;
     std::string read         (const BYTE* const __base) const;
 };
+
+// =====================================================================
+// GENERIC RESOURCE WRAPPER (contained resources as raw JSON)
+// =====================================================================
+struct ResourceData {
+    uint16_t payloadRecovery = RECOVER_FF_STRING;
+    std::string resourceType;
+    std::string json;
+};
+
+struct FF_EXPORT FF_RESOURCE : DATA_BLOCK {
+    static constexpr char type [] = "FF_RESOURCE";
+    static constexpr enum RECOVERY recovery = RECOVER_FF_RESOURCE;
+    enum vtable_sizes {
+        VALIDATION_S      = TYPE_SIZE_UINT64,
+        RECOVERY_S        = TYPE_SIZE_UINT16,
+        PAYLOAD_RECOVERY_S= TYPE_SIZE_UINT16,
+        PAYLOAD_OFFSET_S  = TYPE_SIZE_UINT64,
+    };
+    enum vtable_offsets {
+        VALIDATION        = 0,
+        RECOVERY          = VALIDATION + VALIDATION_S,
+        PAYLOAD_RECOVERY  = RECOVERY + RECOVERY_S,
+        PAYLOAD_OFFSET    = PAYLOAD_RECOVERY + PAYLOAD_RECOVERY_S,
+        HEADER_SIZE       = PAYLOAD_OFFSET + PAYLOAD_OFFSET_S,
+    };
+
+    explicit FF_RESOURCE(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
+
+    FF_Result    validate_full(const BYTE* const __base) const noexcept;
+    ResourceData read         (const BYTE* const __base) const;
+};
+
+void STORE_FF_RESOURCE(BYTE* const __base, Offset entry_off, Offset& write_head, const ResourceData& data);
+inline void STORE_FF_RESOURCE(BYTE* const __base, Offset& write_head, const ResourceData& data) {
+    Offset hdr = write_head;
+    write_head += FF_RESOURCE::HEADER_SIZE;
+    STORE_FF_RESOURCE(__base, hdr, write_head, data);
+}
 
 // Emitter Signatures
 Offset   STORE_FF_STRING (BYTE* const __base, Offset& write_head, const std::string& str);

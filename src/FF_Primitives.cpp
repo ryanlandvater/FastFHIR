@@ -142,6 +142,62 @@ std::string FF_STRING::read(const BYTE* const __base) const {
 }
 
 // =====================================================================
+// GENERIC RESOURCE WRAPPER
+// =====================================================================
+FF_Result FF_RESOURCE::validate_full(const BYTE* const __base) const noexcept {
+    auto result = validate_offset(__base, type, recovery);
+    if (result != FF_SUCCESS) return result;
+
+    uint16_t child_recovery = LOAD_U16(__base + __offset + FF_RESOURCE::PAYLOAD_RECOVERY);
+    Offset child_off = LOAD_U64(__base + __offset + FF_RESOURCE::PAYLOAD_OFFSET);
+
+    if (child_off == FF_NULL_OFFSET || child_off >= __size) {
+        return {FF_VALIDATION_FAILURE, "FF_RESOURCE payload offset is invalid."};
+    }
+
+    if (child_recovery == RECOVER_FF_STRING) {
+        FF_STRING s(child_off, __size, __version);
+        return s.validate_full(__base);
+    }
+
+    return {FF_WARNING, "FF_RESOURCE payload recovery is not yet supported for typed dispatch."};
+}
+
+ResourceData FF_RESOURCE::read(const BYTE* const __base) const {
+    ResourceData data;
+    data.resourceType = "Resource";
+    data.payloadRecovery = LOAD_U16(__base + __offset + FF_RESOURCE::PAYLOAD_RECOVERY);
+    Offset child_off = LOAD_U64(__base + __offset + FF_RESOURCE::PAYLOAD_OFFSET);
+
+    if (data.payloadRecovery == RECOVER_FF_STRING && child_off != FF_NULL_OFFSET) {
+        FF_STRING s(child_off, __size, __version);
+        data.json = s.read(__base);
+    }
+
+    return data;
+}
+
+void STORE_FF_RESOURCE(BYTE* const __base, Offset entry_off, Offset& write_head, const ResourceData& data) {
+    auto __ptr = __base + entry_off;
+    STORE_U64(__ptr + DATA_BLOCK::VALIDATION, entry_off);
+    STORE_U16(__ptr + DATA_BLOCK::RECOVERY, RECOVER_FF_RESOURCE);
+
+    uint16_t child_recovery = data.payloadRecovery;
+    if (child_recovery == RECOVER_FF_STRING) {
+        Offset payload_off = write_head;
+        STORE_U16(__ptr + FF_RESOURCE::PAYLOAD_RECOVERY, RECOVER_FF_STRING);
+        STORE_U64(__ptr + FF_RESOURCE::PAYLOAD_OFFSET, payload_off);
+        STORE_FF_STRING(__base, write_head, data.json);
+        return;
+    }
+
+    // Fallback for unsupported typed payloads until concrete dispatch is added.
+    STORE_U16(__ptr + FF_RESOURCE::PAYLOAD_RECOVERY, RECOVER_FF_STRING);
+    STORE_U64(__ptr + FF_RESOURCE::PAYLOAD_OFFSET, write_head);
+    STORE_FF_STRING(__base, write_head, data.json);
+}
+
+// =====================================================================
 // STRING & MSB DICTIONARY EMITTERS
 // =====================================================================
 Offset STORE_FF_STRING(BYTE* const __base, Offset& write_head, const std::string& str) {

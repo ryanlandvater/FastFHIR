@@ -2,6 +2,14 @@ import os
 import json
 import re
 
+def _version_sort_key(label):
+    m = re.match(r'^R(\d+)([A-Za-z]*)$', label)
+    if not m:
+        return (10**9, label)
+    major = int(m.group(1))
+    minor = m.group(2).upper()
+    return (major, minor)
+
 def _sanitize_identifier(raw, prefix=""):
     token = re.sub(r'[^A-Za-z0-9_]', '_', raw.upper())
     token = re.sub(r'_+', '_', token).strip('_')
@@ -56,6 +64,9 @@ def generate_fastfhir_dictionary(v_name, input_dir="fhir_specs", output_dir="gen
         "// ============================================================\n"
     )
 
+    # Stabilize output regardless of source bundle entry order.
+    mappings = sorted(mappings, key=lambda x: x[0])
+
     # Content generation logic
     hpp = f"{auto_header}// Generated from {v_name} ValueSets\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n\nenum FF_{v_name}_Code : uint32_t {{\n    FF_{v_name}_NULL = 0,\n"
     for i, (raw, enum) in enumerate(mappings, 1): hpp += f"    {enum:<40} = {i},\n"
@@ -93,6 +104,7 @@ def _normalize_version_configs(versions, default_input_dir):
 def generate_master_dictionary(versions, input_dir="fhir_specs", output_dir="generated_src"):
     os.makedirs(output_dir, exist_ok=True)
     normalized_versions = _normalize_version_configs(versions, input_dir)
+    normalized_versions = sorted(normalized_versions, key=lambda x: _version_sort_key(x[0]))
 
     active_versions = []
     for v_name, version_dir in normalized_versions:
