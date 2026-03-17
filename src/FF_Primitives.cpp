@@ -1,3 +1,19 @@
+/**
+ * @file FF_Primitives.cpp
+ * @author Ryan Landvater (RyanLandvater@gmail.com)
+ * @copyright (c) 2026 Ryan Landvater. All rights reserved.
+ * @brief Implementation of FastFHIR Core Primitives and Data Structures
+ * 
+ * This source file provides the implementation for the core data structures defined in FF_Primitives.hpp, including:
+ * - FF_FILE_HEADER: The main file header containing metadata and root resource information.
+ * - FF_ARRAY: A zero-copy array block for efficient storage of homogeneous entries.
+ * - FF_STRING: A zero-copy string block for efficient storage of string data.
+ * Each structure includes validation methods to ensure data integrity and recovery tags for error handling.
+ * The primitives are designed for high performance and low overhead, enabling zero-copy parsing
+ * 
+ */
+
+
 // MARK: - FastFHIR Core Primitives Implementation
 #include "../include/FF_Utilities.hpp"
 #include "../include/FF_Primitives.hpp"

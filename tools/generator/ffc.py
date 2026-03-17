@@ -436,7 +436,7 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     with open(os.path.join(output_dir, "FF_AllTypes.hpp"), "w") as f: f.write(all_types_hpp)
 
 if __name__ == "__main__":
-    from ffcs import generate_code_systems
+    from generator.ffcs import generate_code_systems
     resources = ["Observation", "Patient", "Encounter", "DiagnosticReport"]
     versions = ["R4", "R5"]
     enum_map = generate_code_systems(TARGET_TYPES, resources, versions)

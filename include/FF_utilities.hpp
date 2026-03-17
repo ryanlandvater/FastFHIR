@@ -1,3 +1,20 @@
+/**
+ * @file FF_utilities.hpp
+ * @author Ryan Landvater (RyanLandvater@gmail.com)
+ * @copyright (c) 2026 Ryan Landvater. All rights reserved.
+ * @brief FastFHIR / IFE Core Utilities
+ * 
+ * This header provides essential utilities for FastFHIR and IFE, including:
+ * - Endian-aware unaligned memory accessors (LOAD_U16, STORE_U32, etc.)
+ * - Architecture detection for endianess and floating-point support
+ * - Standardized structure layouts and validation helpers for FastFHIR blocks
+ * - Choice type resolution utilities
+ * 
+ * These utilities are designed for high performance and low overhead, enabling zero-copy 
+ * parsing and efficient serialization of FHIR resources in the FastFHIR format.
+ * 
+ */
+
 // MARK: - FastFHIR / IFE Core Utilities
 #pragma once
 

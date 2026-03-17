@@ -1,3 +1,21 @@
+/**
+ * @file FF_Primitives.hpp
+ * @author Ryan Landvater (RyanLandvater@gmail.com)
+ * @copyright (c) 2026 Ryan Landvater. All rights reserved.
+ * @brief FastFHIR Core Primitives and Data Structures
+ * 
+ * This header defines the core data structures and primitives for the FastFHIR format, including:
+ * - FF_FILE_HEADER: The main file header containing metadata and root resource information.
+ * - FF_ARRAY: A zero-copy array block for efficient storage of homogeneous entries.
+ * - FF_STRING: A zero-copy string block for efficient storage of string data.
+ * - FF_RESOURCE: A generic wrapper for FHIR resources, allowing for flexible payload storage.
+ * 
+ * Each structure includes validation methods to ensure data integrity and recovery tags for error handling.
+ * The primitives are designed for high performance and low overhead, enabling zero-copy parsing 
+ * and efficient serialization of FHIR resources in the FastFHIR format.
+ * 
+ */
+
 // MARK: - FastFHIR Core Primitives
 #pragma once
 
@@ -248,7 +266,7 @@ struct FF_EXPORT FF_STRING : DATA_BLOCK {
     std::string_view read_view(const BYTE* const __base) const;
     
     // Fallback std::string allocation for dictionary parsers
-    std::string read (const BYTE* const __base) const ;
+    std::string read (const BYTE* const __base) const;
 };
 
 // =====================================================================
