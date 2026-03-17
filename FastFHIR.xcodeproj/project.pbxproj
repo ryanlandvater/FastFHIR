@@ -148,7 +148,6 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 35122B472F69A14900F4377B /* Build configuration list for PBXNativeTarget "FastFHIR" */;
 			buildPhases = (
-				35122B672F69AF1500F4377B /* ShellScript */,
 				35122B382F69A14900F4377B /* Headers */,
 				35122B392F69A14900F4377B /* Sources */,
 				35122B3A2F69A14900F4377B /* Frameworks */,
@@ -196,26 +195,6 @@
 			);
 		};
 /* End PBXProject section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		35122B672F69AF1500F4377B /* ShellScript */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "# Ensure we are in the project root\ncd \"${PROJECT_DIR}\"\n\n# Path to the generated source directory\nGENERATED_DIR=\"./generated_src\"\n\n# Check if the directory is missing\nif [ ! -d \"$GENERATED_DIR\" ]; then\n    # Run the orchestrator\n    python3 make_lib.py\n    \n    if [ $? -ne 0 ]; then\n        echo \"error: FastFHIR generation failed. Check ffc.py and ffd.py logic.\"\n        exit 1\n    fi\n    \n    echo \"FastFHIR generation complete.\"\nelse\n    echo \"FastFHIR generated_src already exists. Skipping generation.\"\nfi\n";
-		};
-/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		35122B392F69A14900F4377B /* Sources */ = {

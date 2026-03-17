@@ -3,12 +3,12 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <cstring>
 #include <stdexcept>
 #include <limits>
 
-// Ensure FF_EXPORT is defined (adjust to your actual export macro)
 #ifndef FF_EXPORT
 #define FF_EXPORT
 #endif
@@ -191,7 +191,7 @@ void FF_EXPORT STORE_FF_FILE_HEADER(BYTE* const __base, uint32_t version,
                                      Size payload_size);
 
 // =====================================================================
-// ARRAY BLOCK
+// ZERO-COPY ARRAY BLOCK
 // =====================================================================
 struct FF_EXPORT FF_ARRAY : DATA_BLOCK {
     static constexpr char type [] = "FF_ARRAY";
@@ -222,7 +222,7 @@ void FF_EXPORT STORE_FF_ARRAY_HEADER(BYTE* const __base, Offset& write_head,
                                       uint16_t entry_step, uint32_t entry_count);
 
 // =====================================================================
-// STRING HANDLING
+// ZERO-COPY STRING BLOCK
 // =====================================================================
 struct FF_EXPORT FF_STRING : DATA_BLOCK {
     static constexpr char type [] = "FF_STRING";
@@ -242,12 +242,17 @@ struct FF_EXPORT FF_STRING : DATA_BLOCK {
 
     explicit FF_STRING(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
     
-    FF_Result   validate_full(const BYTE* const __base) const noexcept;
-    std::string read         (const BYTE* const __base) const;
+    FF_Result validate_full(const BYTE* const __base) const noexcept;
+    
+    // Zero-Copy Mapped View
+    std::string_view read_view(const BYTE* const __base) const;
+    
+    // Fallback std::string allocation for dictionary parsers
+    std::string read (const BYTE* const __base) const ;
 };
 
 // =====================================================================
-// GENERIC RESOURCE WRAPPER (contained resources as raw JSON)
+// GENERIC RESOURCE WRAPPER
 // =====================================================================
 struct ResourceData {
     uint16_t payloadRecovery = RECOVER_FF_STRING;
@@ -279,13 +284,10 @@ struct FF_EXPORT FF_RESOURCE : DATA_BLOCK {
 };
 
 void STORE_FF_RESOURCE(BYTE* const __base, Offset entry_off, Offset& write_head, const ResourceData& data);
-inline void STORE_FF_RESOURCE(BYTE* const __base, Offset& write_head, const ResourceData& data) {
-    Offset hdr = write_head;
-    write_head += FF_RESOURCE::HEADER_SIZE;
-    STORE_FF_RESOURCE(__base, hdr, write_head, data);
-}
 
-// Emitter Signatures
-Offset   STORE_FF_STRING (BYTE* const __base, Offset& write_head, const std::string& str);
-uint32_t ENCODE_FF_CODE  (BYTE* const __base, Offset block_offset, Offset& write_head,
-                           const std::string& code_str, uint32_t version = FHIR_VERSION_R5);
+// =====================================================================
+// LOCK-FREE EMITTER SIGNATURES
+// =====================================================================
+Size     SIZE_FF_CODE    (std::string_view code_str);
+Size     STORE_FF_STRING (BYTE* const __base, Offset start_offset, std::string_view str);
+uint32_t ENCODE_FF_CODE  (BYTE* const __base, Offset block_offset, Offset& child_off, const std::string& code_str, uint32_t version = FHIR_VERSION_R5);
