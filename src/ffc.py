@@ -5,13 +5,13 @@ import json
 # 1. FASTFHIR TYPE MAPPING & NORMALIZATION
 # =====================================================================
 TYPE_MAP = {
-    'boolean':      {'cpp': 'uint8_t',  'data_type': 'bool',        'size': 1, 'macro': 'LOAD_U8'},
-    'integer':      {'cpp': 'uint32_t', 'data_type': 'uint32_t',    'size': 4, 'macro': 'LOAD_U32'},
-    'unsignedInt':  {'cpp': 'uint32_t', 'data_type': 'uint32_t',    'size': 4, 'macro': 'LOAD_U32'},
-    'positiveInt':  {'cpp': 'uint32_t', 'data_type': 'uint32_t',    'size': 4, 'macro': 'LOAD_U32'},
-    'decimal':      {'cpp': 'double',   'data_type': 'double',      'size': 8, 'macro': 'LOAD_F64'},
-    'code':         {'cpp': 'uint32_t', 'data_type': 'std::string', 'size': 4, 'macro': 'LOAD_U32'}, 
-    'DEFAULT':      {'cpp': 'Offset',   'data_type': 'Offset',      'size': 8, 'macro': 'LOAD_U64'}  
+    'boolean':      {'cpp': 'uint8_t',  'data_type': 'bool',        'size': 1, 'size_const': 'TYPE_SIZE_UINT8',   'macro': 'LOAD_U8'},
+    'integer':      {'cpp': 'uint32_t', 'data_type': 'uint32_t',    'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'},
+    'unsignedInt':  {'cpp': 'uint32_t', 'data_type': 'uint32_t',    'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'},
+    'positiveInt':  {'cpp': 'uint32_t', 'data_type': 'uint32_t',    'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'},
+    'decimal':      {'cpp': 'double',   'data_type': 'double',      'size': 8, 'size_const': 'TYPE_SIZE_FLOAT64', 'macro': 'LOAD_F64'},
+    'code':         {'cpp': 'uint32_t', 'data_type': 'std::string', 'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'}, 
+    'DEFAULT':      {'cpp': 'Offset',   'data_type': 'Offset',      'size': 8, 'size_const': 'TYPE_SIZE_OFFSET',  'macro': 'LOAD_U64'}  
 }
 
 # All FHIR primitives that should serialize as a standard FF_STRING
@@ -46,6 +46,14 @@ def extract_structure_definition(bundle_json, resource_name):
 # =====================================================================
 # 3. C++ GENERATION HELPERS
 # =====================================================================
+def _resolve_ff_struct_name(fhir_type, field_name, block_struct_name):
+    """Resolve the FF_ struct name for read/store dispatch."""
+    if fhir_type == 'string':
+        return 'FF_STRING'
+    if fhir_type == 'BackboneElement':
+        return f"{block_struct_name}_{field_name}"
+    return f"FF_{fhir_type.upper()}"
+
 def generate_read_fields(layout, block_struct_name):
     cpp = ""
     for f in layout:
@@ -57,21 +65,31 @@ def generate_read_fields(layout, block_struct_name):
         if f['is_array']:
             cpp += f"{indent}Offset {f['cpp_name']}_off = LOAD_U64(__base + __offset + {block_struct_name}::{f['name']});\n"
             cpp += f"{indent}if ({f['cpp_name']}_off != FF_NULL_OFFSET) {{\n"
-            cpp += f"{indent}    auto __arr_ptr = __base + {f['cpp_name']}_off;\n"
-            cpp += f"{indent}    auto STEP = LOAD_U16(__arr_ptr + 10);\n"
-            cpp += f"{indent}    auto ENTRIES = LOAD_U32(__arr_ptr + 12);\n"
-            cpp += f"{indent}    auto __item_ptr = __arr_ptr + 16;\n"
+            cpp += f"{indent}    FF_ARRAY __arr({f['cpp_name']}_off, __size, __version);\n"
+            cpp += f"{indent}    auto STEP = __arr.entry_step(__base);\n"
+            cpp += f"{indent}    auto ENTRIES = __arr.entry_count(__base);\n"
+            cpp += f"{indent}    auto __item_ptr = __arr.entries(__base);\n"
             cpp += f"{indent}    for (uint32_t i = 0; i < ENTRIES; ++i, __item_ptr += STEP) {{\n"
-            type_call = "FF_STRING" if f['fhir_type'] == 'string' else f"FF_{f['fhir_type'].upper()}"
-            cpp += f"{indent}        auto _blk = {type_call}(static_cast<Offset>(__item_ptr - __base), __size, __version);\n"
-            cpp += f"{indent}        data.{f['cpp_name']}.push_back(_blk.read(__base));\n"
+            if f['fhir_type'] == 'string':
+                # String arrays: entries are 8-byte offsets to FF_STRING blocks
+                cpp += f"{indent}        Offset __str_off = LOAD_U64(__item_ptr);\n"
+                cpp += f"{indent}        if (__str_off != FF_NULL_OFFSET) {{\n"
+                cpp += f"{indent}            FF_STRING _blk(__str_off, __size, __version);\n"
+                cpp += f"{indent}            data.{f['cpp_name']}.push_back(_blk.read(__base));\n"
+                cpp += f"{indent}        }}\n"
+            else:
+                # Complex type arrays: entries are inline DATA_BLOCK headers (Iris pattern)
+                type_call = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name)
+                cpp += f"{indent}        {type_call} _blk(static_cast<Offset>(__item_ptr - __base), __size, __version);\n"
+                cpp += f"{indent}        data.{f['cpp_name']}.push_back(_blk.read(__base));\n"
             cpp += f"{indent}    }}\n{indent}}}\n"
         elif f['fhir_type'] == 'string':
             cpp += f"{indent}Offset {f['cpp_name']}_off = LOAD_U64(__base + __offset + {block_struct_name}::{f['name']});\n"
             cpp += f"{indent}if ({f['cpp_name']}_off != FF_NULL_OFFSET) {{ FF_STRING _blk({f['cpp_name']}_off, __size, __version); data.{f['cpp_name']} = _blk.read(__base); }}\n"
         elif f['cpp_type'] == 'Offset':
+            type_call = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name)
             cpp += f"{indent}Offset {f['cpp_name']}_off = LOAD_U64(__base + __offset + {block_struct_name}::{f['name']});\n"
-            cpp += f"{indent}if ({f['cpp_name']}_off != FF_NULL_OFFSET) {{ FF_{f['fhir_type'].upper()} _blk({f['cpp_name']}_off, __size, __version); data.{f['cpp_name']} = _blk.read(__base); }}\n"
+            cpp += f"{indent}if ({f['cpp_name']}_off != FF_NULL_OFFSET) {{ {type_call} _blk({f['cpp_name']}_off, __size, __version); data.{f['cpp_name']} = _blk.read(__base); }}\n"
         elif f['fhir_type'] == 'code':
             cpp += f"{indent}data.{f['cpp_name']} = FF_ResolveCode(LOAD_U32(__base + __offset + {block_struct_name}::{f['name']}), __version);\n"
         else:
@@ -84,19 +102,43 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
     for f in layout:
         cpp += f"    // --- Store: {f['name']} ---\n"
         if f['is_array']:
-            cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
-            cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, write_head);\n"
-            cpp += f"        STORE_{block_struct_name}_{f['name']}_ARRAY(__base, write_head, {data_name}.{f['cpp_name']});\n"
-            cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
+            if f['fhir_type'] == 'string':
+                # String arrays: offset table pointing to FF_STRING blocks
+                cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
+                cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
+                cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, write_head);\n"
+                cpp += f"        STORE_FF_ARRAY_HEADER(__base, write_head, TYPE_SIZE_OFFSET, __n);\n"
+                cpp += f"        Offset __off_tbl = write_head;\n"
+                cpp += f"        write_head += static_cast<Offset>(__n) * TYPE_SIZE_OFFSET;\n"
+                cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
+                cpp += f"            STORE_U64(__base + __off_tbl + __i * TYPE_SIZE_OFFSET, write_head);\n"
+                cpp += f"            STORE_FF_STRING(__base, write_head, {data_name}.{f['cpp_name']}[__i]);\n"
+                cpp += f"        }}\n"
+                cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
+            else:
+                # Complex type arrays: Iris-style inline DATA_BLOCK headers
+                child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name)
+                store_fn = child_struct.replace('FF_', 'STORE_FF_', 1)
+                cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
+                cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
+                cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, write_head);\n"
+                cpp += f"        STORE_FF_ARRAY_HEADER(__base, write_head, {child_struct}::HEADER_SIZE, __n);\n"
+                cpp += f"        Offset __entries = write_head;\n"
+                cpp += f"        write_head += static_cast<Offset>(__n) * {child_struct}::HEADER_SIZE;\n"
+                cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
+                cpp += f"            {store_fn}(__base, __entries + __i * {child_struct}::HEADER_SIZE, write_head, {data_name}.{f['cpp_name']}[__i]);\n"
+                cpp += f"        }}\n"
+                cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
         elif f['fhir_type'] == 'string':
             cpp += f"    if ({data_name}.{f['cpp_name']}.has_value()) {{\n"
             cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, write_head);\n"
             cpp += f"        STORE_FF_STRING(__base, write_head, {data_name}.{f['cpp_name']}.value());\n"
             cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
         elif f['cpp_type'] == 'Offset':
+            store_fn = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name).replace('FF_', 'STORE_FF_', 1)
             cpp += f"    if ({data_name}.{f['cpp_name']}.has_value()) {{\n"
             cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, write_head);\n"
-            cpp += f"        STORE_FF_{f['fhir_type'].upper()}(__base, write_head, {data_name}.{f['cpp_name']}.value());\n"
+            cpp += f"        {store_fn}(__base, write_head, {data_name}.{f['cpp_name']}.value());\n"
             cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
         elif f['fhir_type'] == 'code':
             cpp += f"    STORE_U32({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_CODE(__base, static_cast<Offset>({ptr_name} - __base), write_head, {data_name}.{f['cpp_name']}));\n"
@@ -122,10 +164,35 @@ def merge_fhir_versions(schemas_by_version, root_resource):
             mapping = TYPE_MAP['DEFAULT'] if (is_array or f_type not in TYPE_MAP) else TYPE_MAP[f_type]
             if field_name not in blk['seen']:
                 off = align_up(16 if not blk['layout'] else blk['layout'][-1]['offset'] + blk['layout'][-1]['size'], min(mapping['size'], 8))
-                blk['layout'].append({'name': field_name.upper(), 'cpp_name': field_name.lower(), 'is_array': is_array, 'fhir_type': f_type, 'size': mapping['size'], 'cpp_type': mapping['cpp'], 'data_type': mapping['data_type'], 'macro': mapping['macro'], 'first_version_name': v_name, 'first_version_idx': v_idx, 'offset': off})
+                blk['layout'].append({
+                    'name': field_name.upper(),
+                    'cpp_name': field_name.lower(),
+                    'orig_name': field_name,
+                    'is_array': is_array,
+                    'fhir_type': f_type,
+                    'size': mapping['size'],
+                    'size_const': mapping['size_const'],
+                    'cpp_type': mapping['cpp'],
+                    'data_type': mapping['data_type'],
+                    'macro': mapping['macro'],
+                    'first_version_name': v_name,
+                    'first_version_idx': v_idx,
+                    'offset': off
+                })
                 blk['seen'].add(field_name)
             blk['sizes'][v_name] = align_up(blk['layout'][-1]['offset'] + blk['layout'][-1]['size'], 8)
     return master_blocks
+
+def _resolve_data_type_name(fhir_type, field_orig_name, parent_path):
+    """Resolve the C++ Data struct name for a FHIR type.
+    For BackboneElement, derive from the parent+field path to match d_name."""
+    if fhir_type == 'BackboneElement':
+        # Must match: d_name = path.replace('.', '') + "Data"
+        # where path = parent_path + '.' + orig_field_name
+        return parent_path.replace('.', '') + field_orig_name + 'Data'
+    if fhir_type == 'Resource':
+        return 'ResourceData'
+    return fhir_type + 'Data'
 
 def generate_cxx_for_blocks(master_blocks, versions):
     hpp, cpp = "", ""
@@ -135,22 +202,77 @@ def generate_cxx_for_blocks(master_blocks, versions):
         # POD Struct
         hpp += f"struct {d_name} {{\n"
         for f in layout:
-            if f['is_array']: hpp += f"    std::vector<{'std::string' if f['fhir_type'] == 'string' else f[f'fhir_type'] + 'Data'}> {f['cpp_name']};\n"
+            if f['is_array']:
+                if f['fhir_type'] == 'string':
+                    item_type = 'std::string'
+                elif f['fhir_type'] in ('BackboneElement', 'Resource'):
+                    item_type = _resolve_data_type_name(f['fhir_type'], f['orig_name'], path)
+                else:
+                    item_type = f['fhir_type'] + 'Data'
+                hpp += f"    std::vector<{item_type}> {f['cpp_name']};\n"
             elif f['fhir_type'] == 'string': hpp += f"    std::optional<std::string> {f['cpp_name']};\n"
             elif f['cpp_type'] == 'Offset': hpp += f"    std::optional<{f['fhir_type']}Data> {f['cpp_name']};\n"
             else: hpp += f"    {f['data_type']} {f['cpp_name']};\n"
         hpp += f"}};\n\n"
-        # Data Block
-        hpp += f"struct FF_EXPORT {s_name} : DATA_BLOCK {{\n    static constexpr char type [] = \"{s_name}\";\n    static constexpr enum RECOVERY recovery = RECOVER_{s_name};\n    enum vtable_offsets {{\n        VALIDATION = 0, RECOVERY = 8, PADDING = 10,\n"
-        for f in layout: hpp += f"        {f['name']} = {f['offset']},\n"
-        for v, sz in sizes.items(): hpp += f"        HEADER_{v}_SIZE = {sz},\n"
-        hpp += f"        HEADER_SIZE = HEADER_{versions[-1]}_SIZE\n    }};\n    inline Size get_header_size() const {{\n"
+
+        # Data Block with additive vtable offsets
+        hpp += f"struct FF_EXPORT {s_name} : DATA_BLOCK {{\n"
+        hpp += f"    static constexpr char type [] = \"{s_name}\";\n"
+        hpp += f"    static constexpr enum RECOVERY recovery = RECOVER_{s_name};\n"
+
+        # vtable_sizes enum
+        hpp += f"    enum vtable_sizes {{\n"
+        hpp += f"        VALIDATION_S    = TYPE_SIZE_UINT64,\n"
+        hpp += f"        RECOVERY_S      = TYPE_SIZE_UINT16,\n"
+        hpp += f"        PADDING_S       = 6,  // align to 16\n"
+        for f in layout:
+            hpp += f"        {f['name']}_S      = {f['size_const']},\n"
+        hpp += f"    }};\n"
+
+        # vtable_offsets enum (Iris-style additive)
+        hpp += f"    enum vtable_offsets {{\n"
+        hpp += f"        VALIDATION      = 0,\n"
+        hpp += f"        RECOVERY        = VALIDATION + VALIDATION_S,\n"
+        hpp += f"        PADDING         = RECOVERY + RECOVERY_S,\n"
+
+        prev_name = "PADDING"
+        prev_size = "PADDING_S"
+        for f in layout:
+            hpp += f"        {f['name']:<20}= {prev_name} + {prev_size},\n"
+            prev_name = f['name']
+            prev_size = f"{f['name']}_S"
+
+        for v, sz in sizes.items():
+            hpp += f"        HEADER_{v}_SIZE  = {sz},\n"
+        hpp += f"        HEADER_SIZE     = HEADER_{versions[-1]}_SIZE\n"
+        hpp += f"    }};\n"
+
+        # get_header_size
+        hpp += f"    inline Size get_header_size() const {{\n"
         for v in versions: hpp += f"        if (__version <= FHIR_VERSION_{v}) return HEADER_{v}_SIZE;\n"
-        hpp += f"        return HEADER_SIZE;\n    }}\n    FF_Result validate_full(const BYTE* const __base) const noexcept;\n    {d_name} read(const BYTE* const __base) const;\n}};\nvoid STORE_{s_name}(BYTE* const __base, Offset& write_head, const {d_name}& data);\n\n"
+        hpp += f"        return HEADER_SIZE;\n    }}\n"
+
+        hpp += f"    FF_Result validate_full(const BYTE* const __base) const noexcept;\n"
+        hpp += f"    {d_name} read(const BYTE* const __base) const;\n"
+        hpp += f"}};\n"
+        # Two STORE overloads: 3-arg (array context) + 2-arg (standalone convenience)
+        hpp += f"void STORE_{s_name}(BYTE* const __base, Offset entry_off, Offset& write_head, const {d_name}& data);\n"
+        hpp += f"inline void STORE_{s_name}(BYTE* const __base, Offset& write_head, const {d_name}& data) {{\n"
+        hpp += f"    Offset hdr = write_head; write_head += {s_name}::HEADER_SIZE;\n"
+        hpp += f"    STORE_{s_name}(__base, hdr, write_head, data);\n"
+        hpp += f"}}\n\n"
+
         # Methods
         cpp += f"FF_Result {s_name}::validate_full(const BYTE *const __base) const noexcept {{ return validate_offset(__base, type, recovery); }}\n"
-        cpp += f"{d_name} {s_name}::read(const BYTE *const __base) const {{\n#ifdef __EMSCRIPTEN__\n    const_cast<{s_name}&>(*this).check_and_fetch_remote(__base);\n#endif\n    {d_name} data;\n{generate_read_fields(layout, s_name)}    return data;\n}}\n"
-        cpp += f"void STORE_{s_name}(BYTE* const __base, Offset& write_head, const {d_name}& data) {{\n    Offset my_off = write_head; auto __ptr = __base + my_off; write_head += {s_name}::HEADER_SIZE; STORE_U64(__ptr + {s_name}::VALIDATION, my_off); STORE_U16(__ptr + {s_name}::RECOVERY, {s_name}::recovery);\n{generate_store_fields(layout, s_name, '__ptr', 'data')}}}\n\n"
+        cpp += f"{d_name} {s_name}::read(const BYTE *const __base) const {{\n"
+        cpp += f"#ifdef __EMSCRIPTEN__\n    const_cast<{s_name}&>(*this).check_and_fetch_remote(__base);\n#endif\n"
+        cpp += f"    {d_name} data;\n{generate_read_fields(layout, s_name)}    return data;\n}}\n"
+        # 3-arg STORE: header at entry_off, overflow at write_head
+        cpp += f"void STORE_{s_name}(BYTE* const __base, Offset entry_off, Offset& write_head, const {d_name}& data) {{\n"
+        cpp += f"    auto __ptr = __base + entry_off;\n"
+        cpp += f"    STORE_U64(__ptr + {s_name}::VALIDATION, entry_off);\n"
+        cpp += f"    STORE_U16(__ptr + {s_name}::RECOVERY, {s_name}::recovery);\n"
+        cpp += f"{generate_store_fields(layout, s_name, '__ptr', 'data')}}}\n\n"
     return hpp, cpp
 
 # =====================================================================
@@ -167,9 +289,37 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
         if os.path.exists(p): 
             with open(p, 'r') as f: type_bundles.append((v, json.load(f)))
     
-    target_types = ["Coding", "CodeableConcept", "Quantity", "Identifier", "Range", "Period"]
-    hpp_head = f"// MARK: - Universal Data Types\n#pragma once\n#include \"FF_Primitives.hpp\"\n#include <vector>\n#include <string>\n#include <optional>\n\n"
-    cpp_head = f"#include \"FF_DataTypes.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n"
+    target_types = [
+        "Extension",       # Must be first — referenced by all other types
+        "Coding", "CodeableConcept", "Quantity", "Identifier",
+        "Range", "Period", "Reference", "Meta", "Narrative",
+        "Annotation", "HumanName", "Address", "ContactPoint",
+        "Attachment", "Ratio", "SampledData", "Duration",
+        "Timing", "Dosage",
+    ]
+
+    # Collect all forward-declared data struct names for circular references
+    fwd_decls = set()
+    for t in target_types:
+        fwd_decls.add(t + "Data")
+
+    auto_header = (
+        "// ============================================================\n"
+        "// This file is autogenerated by FastFHIR. DO NOT EDIT.\n"
+        "// Copyright (c) Ryan Landvater. All rights reserved.\n"
+        "// ============================================================\n"
+    )
+
+    hpp_head = f"{auto_header}// MARK: - Universal Data Types\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n#include \"../include/FF_utilities.hpp\"\n#include <vector>\n#include <string>\n#include <optional>\n\n"
+
+    # Forward declarations (needed for self-referential types like Extension.extension)
+    for decl in sorted(fwd_decls):
+        hpp_head += f"struct {decl};\n"
+    # Stub for Resource (contained resources) - full definition elsewhere
+    hpp_head += "struct ResourceData { std::string resourceType; std::string json; };\n"
+    hpp_head += "\n"
+
+    cpp_head = f"{auto_header}#include \"FF_DataTypes.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n"
     
     for t in target_types:
         sch = []
@@ -197,9 +347,9 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
         if sch:
             hpp, cpp = generate_cxx_for_blocks(merge_fhir_versions(sch, res), versions)
             with open(os.path.join(output_dir, f"FF_{res}.hpp"), "w") as f: 
-                f.write(f"#pragma once\n#include \"FF_DataTypes.hpp\"\n\n{hpp}")
+                f.write(f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n\n{hpp}")
             with open(os.path.join(output_dir, f"FF_{res}.cpp"), "w") as f: 
-                f.write(f"#include \"FF_{res}.hpp\"\n\n{cpp}")
+                f.write(f"{auto_header}#include \"FF_{res}.hpp\"\n\n{cpp}")
 
 if __name__ == "__main__":
     compile_fhir_library(["Observation", "Patient", "Encounter", "DiagnosticReport"], ["R4", "R5"])

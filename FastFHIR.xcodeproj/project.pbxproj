@@ -7,13 +7,32 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		35122B4B2F69A19E00F4377B /* FF_Primatives.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35122B4A2F69A19E00F4377B /* FF_Primatives.cpp */; };
+		35122B662F69AED900F4377B /* FF_Primitives.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35122B622F69AED900F4377B /* FF_Primitives.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		35122B3C2F69A14900F4377B /* libFastFHIR.dylib */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.dylib"; includeInIndex = 0; path = libFastFHIR.dylib; sourceTree = BUILT_PRODUCTS_DIR; };
-		35122B4A2F69A19E00F4377B /* FF_Primatives.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = src/FF_Primatives.cpp; sourceTree = "<group>"; };
-		35122B4C2F69A25F00F4377B /* FF_Primatives.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = include/FF_Primatives.hpp; sourceTree = "<group>"; };
+		35122B4D2F69AEBE00F4377B /* FF_DataTypes.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_DataTypes.hpp; sourceTree = "<group>"; };
+		35122B4E2F69AEBE00F4377B /* FF_DataTypes.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_DataTypes.cpp; sourceTree = "<group>"; };
+		35122B4F2F69AEBE00F4377B /* FF_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Dictionary.hpp; sourceTree = "<group>"; };
+		35122B502F69AEBE00F4377B /* FF_Observation.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Observation.hpp; sourceTree = "<group>"; };
+		35122B512F69AEBE00F4377B /* FF_Observation.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Observation.cpp; sourceTree = "<group>"; };
+		35122B522F69AEBE00F4377B /* FF_Patient.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Patient.hpp; sourceTree = "<group>"; };
+		35122B532F69AEBE00F4377B /* FF_Patient.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Patient.cpp; sourceTree = "<group>"; };
+		35122B542F69AEBE00F4377B /* FF_R4_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_R4_Dictionary.hpp; sourceTree = "<group>"; };
+		35122B552F69AEBE00F4377B /* FF_R4_Dictionary.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_R4_Dictionary.cpp; sourceTree = "<group>"; };
+		35122B562F69AEBE00F4377B /* FF_R5_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_R5_Dictionary.hpp; sourceTree = "<group>"; };
+		35122B572F69AEBE00F4377B /* FF_R5_Dictionary.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_R5_Dictionary.cpp; sourceTree = "<group>"; };
+		35122B592F69AEC700F4377B /* FF_Primitives.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Primitives.hpp; sourceTree = "<group>"; };
+		35122B5B2F69AED900F4377B /* __init__.cpython-311.pyc */ = {isa = PBXFileReference; lastKnownFileType = file; path = "__init__.cpython-311.pyc"; sourceTree = "<group>"; };
+		35122B5C2F69AED900F4377B /* fetch_specs.cpython-311.pyc */ = {isa = PBXFileReference; lastKnownFileType = file; path = "fetch_specs.cpython-311.pyc"; sourceTree = "<group>"; };
+		35122B5D2F69AED900F4377B /* ffc.cpython-311.pyc */ = {isa = PBXFileReference; lastKnownFileType = file; path = "ffc.cpython-311.pyc"; sourceTree = "<group>"; };
+		35122B5E2F69AED900F4377B /* ffd.cpython-311.pyc */ = {isa = PBXFileReference; lastKnownFileType = file; path = "ffd.cpython-311.pyc"; sourceTree = "<group>"; };
+		35122B602F69AED900F4377B /* __init__.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = __init__.py; sourceTree = "<group>"; };
+		35122B612F69AED900F4377B /* fetch_specs.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = fetch_specs.py; sourceTree = "<group>"; };
+		35122B622F69AED900F4377B /* FF_Primitives.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Primitives.cpp; sourceTree = "<group>"; };
+		35122B632F69AED900F4377B /* ffc.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = ffc.py; sourceTree = "<group>"; };
+		35122B642F69AED900F4377B /* ffd.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = ffd.py; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -30,8 +49,9 @@
 		35122B332F69A14900F4377B = {
 			isa = PBXGroup;
 			children = (
-				35122B4C2F69A25F00F4377B /* FF_Primatives.hpp */,
-				35122B4A2F69A19E00F4377B /* FF_Primatives.cpp */,
+				35122B5A2F69AEC700F4377B /* include */,
+				35122B652F69AED900F4377B /* src */,
+				35122B582F69AEBE00F4377B /* generated_src */,
 				35122B3D2F69A14900F4377B /* Products */,
 			);
 			sourceTree = "<group>";
@@ -42,6 +62,56 @@
 				35122B3C2F69A14900F4377B /* libFastFHIR.dylib */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		35122B582F69AEBE00F4377B /* generated_src */ = {
+			isa = PBXGroup;
+			children = (
+				35122B4D2F69AEBE00F4377B /* FF_DataTypes.hpp */,
+				35122B4E2F69AEBE00F4377B /* FF_DataTypes.cpp */,
+				35122B4F2F69AEBE00F4377B /* FF_Dictionary.hpp */,
+				35122B502F69AEBE00F4377B /* FF_Observation.hpp */,
+				35122B512F69AEBE00F4377B /* FF_Observation.cpp */,
+				35122B522F69AEBE00F4377B /* FF_Patient.hpp */,
+				35122B532F69AEBE00F4377B /* FF_Patient.cpp */,
+				35122B542F69AEBE00F4377B /* FF_R4_Dictionary.hpp */,
+				35122B552F69AEBE00F4377B /* FF_R4_Dictionary.cpp */,
+				35122B562F69AEBE00F4377B /* FF_R5_Dictionary.hpp */,
+				35122B572F69AEBE00F4377B /* FF_R5_Dictionary.cpp */,
+			);
+			path = generated_src;
+			sourceTree = "<group>";
+		};
+		35122B5A2F69AEC700F4377B /* include */ = {
+			isa = PBXGroup;
+			children = (
+				35122B592F69AEC700F4377B /* FF_Primitives.hpp */,
+			);
+			path = include;
+			sourceTree = "<group>";
+		};
+		35122B5F2F69AED900F4377B /* __pycache__ */ = {
+			isa = PBXGroup;
+			children = (
+				35122B5B2F69AED900F4377B /* __init__.cpython-311.pyc */,
+				35122B5C2F69AED900F4377B /* fetch_specs.cpython-311.pyc */,
+				35122B5D2F69AED900F4377B /* ffc.cpython-311.pyc */,
+				35122B5E2F69AED900F4377B /* ffd.cpython-311.pyc */,
+			);
+			path = __pycache__;
+			sourceTree = "<group>";
+		};
+		35122B652F69AED900F4377B /* src */ = {
+			isa = PBXGroup;
+			children = (
+				35122B5F2F69AED900F4377B /* __pycache__ */,
+				35122B602F69AED900F4377B /* __init__.py */,
+				35122B612F69AED900F4377B /* fetch_specs.py */,
+				35122B622F69AED900F4377B /* FF_Primitives.cpp */,
+				35122B632F69AED900F4377B /* ffc.py */,
+				35122B642F69AED900F4377B /* ffd.py */,
+			);
+			path = src;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -61,6 +131,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 35122B472F69A14900F4377B /* Build configuration list for PBXNativeTarget "FastFHIR" */;
 			buildPhases = (
+				35122B672F69AF1500F4377B /* ShellScript */,
 				35122B382F69A14900F4377B /* Headers */,
 				35122B392F69A14900F4377B /* Sources */,
 				35122B3A2F69A14900F4377B /* Frameworks */,
@@ -109,12 +180,32 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		35122B672F69AF1500F4377B /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Ensure we are in the project root\ncd \"${PROJECT_DIR}\"\n\n# Path to the generated source directory\nGENERATED_DIR=\"./generated_src\"\n\n# Check if the directory is missing\nif [ ! -d \"$GENERATED_DIR\" ]; then\n    # Run the orchestrator\n    python3 make_lib.py\n    \n    if [ $? -ne 0 ]; then\n        echo \"error: FastFHIR generation failed. Check ffc.py and ffd.py logic.\"\n        exit 1\n    fi\n    \n    echo \"FastFHIR generation complete.\"\nelse\n    echo \"FastFHIR generated_src already exists. Skipping generation.\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		35122B392F69A14900F4377B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				35122B4B2F69A19E00F4377B /* FF_Primatives.cpp in Sources */,
+				35122B662F69AED900F4377B /* FF_Primitives.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -253,6 +344,7 @@
 				HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)",
 					"$(PROJECT_DIR)/include",
+					"$(PROJECT_DIR)/generated_src",
 				);
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -274,6 +366,7 @@
 				HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)",
 					"$(PROJECT_DIR)/include",
+					"$(PROJECT_DIR)/generated_src",
 				);
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;

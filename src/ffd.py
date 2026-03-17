@@ -37,7 +37,7 @@ def generate_fastfhir_dictionary(v_name, input_dir="fhir_specs", output_dir="gen
                     seen_enums.add(enum_name)
 
     # Content generation logic
-    hpp = f"// Generated from {v_name} ValueSets\n#pragma once\n#include \"FF_Primitives.hpp\"\n\nenum FF_{v_name}_Code : uint32_t {{\n    FF_{v_name}_NULL = 0,\n"
+    hpp = f"// Generated from {v_name} ValueSets\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n\nenum FF_{v_name}_Code : uint32_t {{\n    FF_{v_name}_NULL = 0,\n"
     for i, (raw, enum) in enumerate(mappings, 1): hpp += f"    {enum:<40} = {i},\n"
     hpp += f"}};\n\nFF_EXPORT const char* FF_{v_name}_Resolve(uint32_t code);\nFF_EXPORT uint32_t FF_{v_name}_GetCode(const std::string& str);\n"
 
@@ -82,7 +82,7 @@ def generate_master_dictionary(versions, input_dir="fhir_specs", output_dir="gen
             active_versions.append(v_name)
 
     # Master Header logic
-    hpp = "#pragma once\n#include \"FF_Primitives.hpp\"\n"
+    hpp = "#pragma once\n#include \"../include/FF_Primitives.hpp\"\n"
     for v in active_versions: hpp += f"#include \"FF_{v}_Dictionary.hpp\"\n"
     
     hpp += "\ninline const char* FF_ResolveCode(uint32_t code, uint32_t version) {\n    if (code & FF_CUSTOM_STRING_FLAG) return nullptr;\n"
