@@ -1,4 +1,5 @@
 // MARK: - FastFHIR Core Primitives Implementation
+#include "../include/FF_Utilities.hpp"
 #include "../include/FF_Primitives.hpp"
 #include "../generated_src/FF_Dictionary.hpp"
 

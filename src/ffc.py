@@ -17,7 +17,7 @@ TYPE_MAP = {
 # All FHIR primitives that should serialize as a standard FF_STRING
 STRING_TYPES = {
     'string', 'id', 'oid', 'uuid', 'uri', 'url', 'canonical', 
-    'markdown', 'date', 'datetime', 'instant', 'time', 'base64binary'
+    'markdown', 'date', 'datetime', 'instant', 'time', 'base64binary', 'xhtml'
 }
 
 def sanitize_fhir_type(raw_type):
@@ -50,9 +50,26 @@ def _resolve_ff_struct_name(fhir_type, field_name, block_struct_name):
     """Resolve the FF_ struct name for read/store dispatch."""
     if fhir_type == 'string':
         return 'FF_STRING'
-    if fhir_type == 'BackboneElement':
+    if fhir_type in ('BackboneElement', 'Element'):
         return f"{block_struct_name}_{field_name}"
     return f"FF_{fhir_type.upper()}"
+
+def _resolve_data_type_name(fhir_type, field_orig_name, parent_path):
+    """Resolve the C++ Data struct name for a FHIR type."""
+    fhir_type_l = fhir_type.lower()
+    if fhir_type_l == 'string':
+        return 'std::string'
+    if fhir_type_l == 'code':
+        return 'std::string'
+    if fhir_type in ('BackboneElement', 'Element'):
+        # Must match: d_name = path.replace('.', '') + "Data"
+        # where path = parent_path + '.' + orig_field_name
+        return parent_path.replace('.', '') + field_orig_name + 'Data'
+    if fhir_type == 'Resource':
+        return 'ResourceData'
+    if fhir_type in TYPE_MAP and fhir_type != 'DEFAULT':
+        return TYPE_MAP[fhir_type]['data_type']
+    return fhir_type + 'Data'
 
 def generate_read_fields(layout, block_struct_name):
     cpp = ""
@@ -70,7 +87,7 @@ def generate_read_fields(layout, block_struct_name):
             cpp += f"{indent}    auto ENTRIES = __arr.entry_count(__base);\n"
             cpp += f"{indent}    auto __item_ptr = __arr.entries(__base);\n"
             cpp += f"{indent}    for (uint32_t i = 0; i < ENTRIES; ++i, __item_ptr += STEP) {{\n"
-            if f['fhir_type'] == 'string':
+            if f['fhir_type'] in ('string', 'code'):
                 # String arrays: entries are 8-byte offsets to FF_STRING blocks
                 cpp += f"{indent}        Offset __str_off = LOAD_U64(__item_ptr);\n"
                 cpp += f"{indent}        if (__str_off != FF_NULL_OFFSET) {{\n"
@@ -91,7 +108,10 @@ def generate_read_fields(layout, block_struct_name):
             cpp += f"{indent}Offset {f['cpp_name']}_off = LOAD_U64(__base + __offset + {block_struct_name}::{f['name']});\n"
             cpp += f"{indent}if ({f['cpp_name']}_off != FF_NULL_OFFSET) {{ {type_call} _blk({f['cpp_name']}_off, __size, __version); data.{f['cpp_name']} = _blk.read(__base); }}\n"
         elif f['fhir_type'] == 'code':
-            cpp += f"{indent}data.{f['cpp_name']} = FF_ResolveCode(LOAD_U32(__base + __offset + {block_struct_name}::{f['name']}), __version);\n"
+            if block_struct_name == 'FF_NARRATIVE' and f['name'] == 'STATUS':
+                cpp += f"{indent}data.{f['cpp_name']} = FF_ParseNarrativeStatus(FF_ResolveCode(LOAD_U32(__base + __offset + {block_struct_name}::{f['name']}), __version));\n"
+            else:
+                cpp += f"{indent}data.{f['cpp_name']} = FF_ResolveCode(LOAD_U32(__base + __offset + {block_struct_name}::{f['name']}), __version);\n"
         else:
             cpp += f"{indent}data.{f['cpp_name']} = {f['macro']}(__base + __offset + {block_struct_name}::{f['name']});\n"
         if f['first_version_idx'] > 0: cpp += f"    }}\n"
@@ -102,7 +122,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
     for f in layout:
         cpp += f"    // --- Store: {f['name']} ---\n"
         if f['is_array']:
-            if f['fhir_type'] == 'string':
+            if f['fhir_type'] in ('string', 'code'):
                 # String arrays: offset table pointing to FF_STRING blocks
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
@@ -141,7 +161,10 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             cpp += f"        {store_fn}(__base, write_head, {data_name}.{f['cpp_name']}.value());\n"
             cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
         elif f['fhir_type'] == 'code':
-            cpp += f"    STORE_U32({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_CODE(__base, static_cast<Offset>({ptr_name} - __base), write_head, {data_name}.{f['cpp_name']}));\n"
+            if block_struct_name == 'FF_NARRATIVE' and f['name'] == 'STATUS':
+                cpp += f"    STORE_U32({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_CODE(__base, static_cast<Offset>({ptr_name} - __base), write_head, std::string(FF_NarrativeStatusToString({data_name}.{f['cpp_name']}))));\n"
+            else:
+                cpp += f"    STORE_U32({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_CODE(__base, static_cast<Offset>({ptr_name} - __base), write_head, {data_name}.{f['cpp_name']}));\n"
         else:
             cpp += f"    {get_store_macro(f['macro'])}({ptr_name} + {block_struct_name}::{f['name']}, {data_name}.{f['cpp_name']});\n"
     return cpp
@@ -183,17 +206,6 @@ def merge_fhir_versions(schemas_by_version, root_resource):
             blk['sizes'][v_name] = align_up(blk['layout'][-1]['offset'] + blk['layout'][-1]['size'], 8)
     return master_blocks
 
-def _resolve_data_type_name(fhir_type, field_orig_name, parent_path):
-    """Resolve the C++ Data struct name for a FHIR type.
-    For BackboneElement, derive from the parent+field path to match d_name."""
-    if fhir_type == 'BackboneElement':
-        # Must match: d_name = path.replace('.', '') + "Data"
-        # where path = parent_path + '.' + orig_field_name
-        return parent_path.replace('.', '') + field_orig_name + 'Data'
-    if fhir_type == 'Resource':
-        return 'ResourceData'
-    return fhir_type + 'Data'
-
 def generate_cxx_for_blocks(master_blocks, versions):
     hpp, cpp = "", ""
     for path, blk in master_blocks.items():
@@ -203,15 +215,11 @@ def generate_cxx_for_blocks(master_blocks, versions):
         hpp += f"struct {d_name} {{\n"
         for f in layout:
             if f['is_array']:
-                if f['fhir_type'] == 'string':
-                    item_type = 'std::string'
-                elif f['fhir_type'] in ('BackboneElement', 'Resource'):
-                    item_type = _resolve_data_type_name(f['fhir_type'], f['orig_name'], path)
-                else:
-                    item_type = f['fhir_type'] + 'Data'
+                item_type = _resolve_data_type_name(f['fhir_type'], f['orig_name'], path)
                 hpp += f"    std::vector<{item_type}> {f['cpp_name']};\n"
             elif f['fhir_type'] == 'string': hpp += f"    std::optional<std::string> {f['cpp_name']};\n"
-            elif f['cpp_type'] == 'Offset': hpp += f"    std::optional<{f['fhir_type']}Data> {f['cpp_name']};\n"
+            elif path == 'Narrative' and f['fhir_type'] == 'code' and f['name'] == 'STATUS': hpp += f"    NarrativeStatus {f['cpp_name']};\n"
+            elif f['cpp_type'] == 'Offset': hpp += f"    std::optional<{_resolve_data_type_name(f['fhir_type'], f['orig_name'], path)}> {f['cpp_name']};\n"
             else: hpp += f"    {f['data_type']} {f['cpp_name']};\n"
         hpp += f"}};\n\n"
 
@@ -226,7 +234,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
         hpp += f"        RECOVERY_S      = TYPE_SIZE_UINT16,\n"
         hpp += f"        PADDING_S       = 6,  // align to 16\n"
         for f in layout:
-            hpp += f"        {f['name']}_S      = {f['size_const']},\n"
+            hpp += f"        {f['name']}_S      = {f['size_const']},  // since {f['first_version_name']}\n"
         hpp += f"    }};\n"
 
         # vtable_offsets enum (Iris-style additive)
@@ -238,7 +246,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
         prev_name = "PADDING"
         prev_size = "PADDING_S"
         for f in layout:
-            hpp += f"        {f['name']:<20}= {prev_name} + {prev_size},\n"
+            hpp += f"        {f['name']:<20}= {prev_name} + {prev_size},  // since {f['first_version_name']}\n"
             prev_name = f['name']
             prev_size = f"{f['name']}_S"
 
@@ -310,7 +318,24 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
         "// ============================================================\n"
     )
 
-    hpp_head = f"{auto_header}// MARK: - Universal Data Types\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n#include \"../include/FF_utilities.hpp\"\n#include <vector>\n#include <string>\n#include <optional>\n\n"
+    hpp_head = f"{auto_header}// MARK: - Universal Data Types\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n#include <vector>\n#include <string>\n#include <optional>\n\n"
+    hpp_head += "enum class NarrativeStatus : uint8_t { Generated, Extensions, Additional, Empty, Unknown };\n"
+    hpp_head += "inline NarrativeStatus FF_ParseNarrativeStatus(const std::string& s) {\n"
+    hpp_head += "    if (s == \"generated\") return NarrativeStatus::Generated;\n"
+    hpp_head += "    if (s == \"extensions\") return NarrativeStatus::Extensions;\n"
+    hpp_head += "    if (s == \"additional\") return NarrativeStatus::Additional;\n"
+    hpp_head += "    if (s == \"empty\") return NarrativeStatus::Empty;\n"
+    hpp_head += "    return NarrativeStatus::Unknown;\n"
+    hpp_head += "}\n"
+    hpp_head += "inline const char* FF_NarrativeStatusToString(NarrativeStatus s) {\n"
+    hpp_head += "    switch (s) {\n"
+    hpp_head += "        case NarrativeStatus::Generated: return \"generated\";\n"
+    hpp_head += "        case NarrativeStatus::Extensions: return \"extensions\";\n"
+    hpp_head += "        case NarrativeStatus::Additional: return \"additional\";\n"
+    hpp_head += "        case NarrativeStatus::Empty: return \"empty\";\n"
+    hpp_head += "        default: return \"\";\n"
+    hpp_head += "    }\n"
+    hpp_head += "}\n\n"
 
     # Forward declarations (needed for self-referential types like Extension.extension)
     for decl in sorted(fwd_decls):
@@ -319,7 +344,7 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     hpp_head += "struct ResourceData { std::string resourceType; std::string json; };\n"
     hpp_head += "\n"
 
-    cpp_head = f"{auto_header}#include \"FF_DataTypes.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n"
+    cpp_head = f"{auto_header}\n#include \"../include/FF_utilities.hpp\"\n#include \"FF_DataTypes.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n"
     
     for t in target_types:
         sch = []
@@ -349,7 +374,7 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
             with open(os.path.join(output_dir, f"FF_{res}.hpp"), "w") as f: 
                 f.write(f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n\n{hpp}")
             with open(os.path.join(output_dir, f"FF_{res}.cpp"), "w") as f: 
-                f.write(f"{auto_header}#include \"FF_{res}.hpp\"\n\n{cpp}")
+                f.write(f"{auto_header}\n#include \"../include/FF_utilities.hpp\"\n#include \"FF_{res}.hpp\"\n\n{cpp}")
 
 if __name__ == "__main__":
     compile_fhir_library(["Observation", "Patient", "Encounter", "DiagnosticReport"], ["R4", "R5"])

@@ -1,7 +1,7 @@
 // MARK: - FastFHIR / IFE Core Utilities
 #pragma once
 
-#include <bit>
+#include "FF_Primitives.hpp"
 #include <limits>
 #include <cstdint>
 #include <cstring>
@@ -16,12 +16,15 @@
 constexpr bool little_endian = std::endian::native == std::endian::little;
 constexpr bool is_ieee754    = std::numeric_limits<float>::is_iec559;
 
-// FastFHIR specific constants
-constexpr uint64_t FF_NULL_OFFSET = 0xFFFFFFFFFFFFFFFF;
-constexpr uint32_t FF_CUSTOM_STRING_FLAG = 0x80000000;
-
 // Standard 8-byte alignment for IFE/FastFHIR blocks
 inline uint64_t ff_align(uint64_t off) { return (off + 7) & ~7; }
+
+// =====================================================================
+// MEMORY ALIGNMENT & UNALIGNED ACCESS
+// =====================================================================
+inline Offset align_up(Offset offset, uint32_t alignment) {
+    return (offset + (alignment - 1)) & ~(alignment - 1);
+}
 
 // =====================================================================
 // SAFE UNALIGNED MEMORY ACCESS

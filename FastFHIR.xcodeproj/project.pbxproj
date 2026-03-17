@@ -8,21 +8,21 @@
 
 /* Begin PBXBuildFile section */
 		35122B662F69AED900F4377B /* FF_Primitives.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35122B622F69AED900F4377B /* FF_Primitives.cpp */; };
+		35F7FD232F69BB6E004AE978 /* FF_DataTypes.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD172F69BB6D004AE978 /* FF_DataTypes.hpp */; };
+		35F7FD242F69BB6E004AE978 /* FF_Dictionary.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD192F69BB6D004AE978 /* FF_Dictionary.hpp */; };
+		35F7FD252F69BB6E004AE978 /* FF_Observation.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD1A2F69BB6D004AE978 /* FF_Observation.hpp */; };
+		35F7FD262F69BB6E004AE978 /* FF_R4_Dictionary.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD1E2F69BB6D004AE978 /* FF_R4_Dictionary.hpp */; };
+		35F7FD272F69BB6E004AE978 /* FF_R5_Dictionary.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD202F69BB6D004AE978 /* FF_R5_Dictionary.hpp */; };
+		35F7FD282F69BB6E004AE978 /* FF_Patient.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD1C2F69BB6D004AE978 /* FF_Patient.hpp */; };
+		35F7FD292F69BB6E004AE978 /* FF_Observation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35F7FD1B2F69BB6D004AE978 /* FF_Observation.cpp */; };
+		35F7FD2A2F69BB6E004AE978 /* FF_DataTypes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35F7FD182F69BB6D004AE978 /* FF_DataTypes.cpp */; };
+		35F7FD2B2F69BB6E004AE978 /* FF_R4_Dictionary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35F7FD1F2F69BB6D004AE978 /* FF_R4_Dictionary.cpp */; };
+		35F7FD2C2F69BB6E004AE978 /* FF_Patient.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35F7FD1D2F69BB6D004AE978 /* FF_Patient.cpp */; };
+		35F7FD2D2F69BB6E004AE978 /* FF_R5_Dictionary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35F7FD212F69BB6D004AE978 /* FF_R5_Dictionary.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		35122B3C2F69A14900F4377B /* libFastFHIR.dylib */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.dylib"; includeInIndex = 0; path = libFastFHIR.dylib; sourceTree = BUILT_PRODUCTS_DIR; };
-		35122B4D2F69AEBE00F4377B /* FF_DataTypes.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_DataTypes.hpp; sourceTree = "<group>"; };
-		35122B4E2F69AEBE00F4377B /* FF_DataTypes.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_DataTypes.cpp; sourceTree = "<group>"; };
-		35122B4F2F69AEBE00F4377B /* FF_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Dictionary.hpp; sourceTree = "<group>"; };
-		35122B502F69AEBE00F4377B /* FF_Observation.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Observation.hpp; sourceTree = "<group>"; };
-		35122B512F69AEBE00F4377B /* FF_Observation.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Observation.cpp; sourceTree = "<group>"; };
-		35122B522F69AEBE00F4377B /* FF_Patient.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Patient.hpp; sourceTree = "<group>"; };
-		35122B532F69AEBE00F4377B /* FF_Patient.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Patient.cpp; sourceTree = "<group>"; };
-		35122B542F69AEBE00F4377B /* FF_R4_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_R4_Dictionary.hpp; sourceTree = "<group>"; };
-		35122B552F69AEBE00F4377B /* FF_R4_Dictionary.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_R4_Dictionary.cpp; sourceTree = "<group>"; };
-		35122B562F69AEBE00F4377B /* FF_R5_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_R5_Dictionary.hpp; sourceTree = "<group>"; };
-		35122B572F69AEBE00F4377B /* FF_R5_Dictionary.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_R5_Dictionary.cpp; sourceTree = "<group>"; };
 		35122B592F69AEC700F4377B /* FF_Primitives.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Primitives.hpp; sourceTree = "<group>"; };
 		35122B5B2F69AED900F4377B /* __init__.cpython-311.pyc */ = {isa = PBXFileReference; lastKnownFileType = file; path = "__init__.cpython-311.pyc"; sourceTree = "<group>"; };
 		35122B5C2F69AED900F4377B /* fetch_specs.cpython-311.pyc */ = {isa = PBXFileReference; lastKnownFileType = file; path = "fetch_specs.cpython-311.pyc"; sourceTree = "<group>"; };
@@ -33,6 +33,17 @@
 		35122B622F69AED900F4377B /* FF_Primitives.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Primitives.cpp; sourceTree = "<group>"; };
 		35122B632F69AED900F4377B /* ffc.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = ffc.py; sourceTree = "<group>"; };
 		35122B642F69AED900F4377B /* ffd.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = ffd.py; sourceTree = "<group>"; };
+		35F7FD172F69BB6D004AE978 /* FF_DataTypes.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_DataTypes.hpp; sourceTree = "<group>"; };
+		35F7FD182F69BB6D004AE978 /* FF_DataTypes.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_DataTypes.cpp; sourceTree = "<group>"; };
+		35F7FD192F69BB6D004AE978 /* FF_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Dictionary.hpp; sourceTree = "<group>"; };
+		35F7FD1A2F69BB6D004AE978 /* FF_Observation.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Observation.hpp; sourceTree = "<group>"; };
+		35F7FD1B2F69BB6D004AE978 /* FF_Observation.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Observation.cpp; sourceTree = "<group>"; };
+		35F7FD1C2F69BB6D004AE978 /* FF_Patient.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Patient.hpp; sourceTree = "<group>"; };
+		35F7FD1D2F69BB6D004AE978 /* FF_Patient.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Patient.cpp; sourceTree = "<group>"; };
+		35F7FD1E2F69BB6D004AE978 /* FF_R4_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_R4_Dictionary.hpp; sourceTree = "<group>"; };
+		35F7FD1F2F69BB6D004AE978 /* FF_R4_Dictionary.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_R4_Dictionary.cpp; sourceTree = "<group>"; };
+		35F7FD202F69BB6D004AE978 /* FF_R5_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_R5_Dictionary.hpp; sourceTree = "<group>"; };
+		35F7FD212F69BB6D004AE978 /* FF_R5_Dictionary.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_R5_Dictionary.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -49,9 +60,9 @@
 		35122B332F69A14900F4377B = {
 			isa = PBXGroup;
 			children = (
+				35F7FD222F69BB6D004AE978 /* generated_src */,
 				35122B5A2F69AEC700F4377B /* include */,
 				35122B652F69AED900F4377B /* src */,
-				35122B582F69AEBE00F4377B /* generated_src */,
 				35122B3D2F69A14900F4377B /* Products */,
 			);
 			sourceTree = "<group>";
@@ -62,24 +73,6 @@
 				35122B3C2F69A14900F4377B /* libFastFHIR.dylib */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		35122B582F69AEBE00F4377B /* generated_src */ = {
-			isa = PBXGroup;
-			children = (
-				35122B4D2F69AEBE00F4377B /* FF_DataTypes.hpp */,
-				35122B4E2F69AEBE00F4377B /* FF_DataTypes.cpp */,
-				35122B4F2F69AEBE00F4377B /* FF_Dictionary.hpp */,
-				35122B502F69AEBE00F4377B /* FF_Observation.hpp */,
-				35122B512F69AEBE00F4377B /* FF_Observation.cpp */,
-				35122B522F69AEBE00F4377B /* FF_Patient.hpp */,
-				35122B532F69AEBE00F4377B /* FF_Patient.cpp */,
-				35122B542F69AEBE00F4377B /* FF_R4_Dictionary.hpp */,
-				35122B552F69AEBE00F4377B /* FF_R4_Dictionary.cpp */,
-				35122B562F69AEBE00F4377B /* FF_R5_Dictionary.hpp */,
-				35122B572F69AEBE00F4377B /* FF_R5_Dictionary.cpp */,
-			);
-			path = generated_src;
 			sourceTree = "<group>";
 		};
 		35122B5A2F69AEC700F4377B /* include */ = {
@@ -114,6 +107,24 @@
 			path = src;
 			sourceTree = "<group>";
 		};
+		35F7FD222F69BB6D004AE978 /* generated_src */ = {
+			isa = PBXGroup;
+			children = (
+				35F7FD172F69BB6D004AE978 /* FF_DataTypes.hpp */,
+				35F7FD182F69BB6D004AE978 /* FF_DataTypes.cpp */,
+				35F7FD192F69BB6D004AE978 /* FF_Dictionary.hpp */,
+				35F7FD1A2F69BB6D004AE978 /* FF_Observation.hpp */,
+				35F7FD1B2F69BB6D004AE978 /* FF_Observation.cpp */,
+				35F7FD1C2F69BB6D004AE978 /* FF_Patient.hpp */,
+				35F7FD1D2F69BB6D004AE978 /* FF_Patient.cpp */,
+				35F7FD1E2F69BB6D004AE978 /* FF_R4_Dictionary.hpp */,
+				35F7FD1F2F69BB6D004AE978 /* FF_R4_Dictionary.cpp */,
+				35F7FD202F69BB6D004AE978 /* FF_R5_Dictionary.hpp */,
+				35F7FD212F69BB6D004AE978 /* FF_R5_Dictionary.cpp */,
+			);
+			path = generated_src;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXHeadersBuildPhase section */
@@ -121,6 +132,12 @@
 			isa = PBXHeadersBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				35F7FD232F69BB6E004AE978 /* FF_DataTypes.hpp in Headers */,
+				35F7FD242F69BB6E004AE978 /* FF_Dictionary.hpp in Headers */,
+				35F7FD252F69BB6E004AE978 /* FF_Observation.hpp in Headers */,
+				35F7FD262F69BB6E004AE978 /* FF_R4_Dictionary.hpp in Headers */,
+				35F7FD272F69BB6E004AE978 /* FF_R5_Dictionary.hpp in Headers */,
+				35F7FD282F69BB6E004AE978 /* FF_Patient.hpp in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -206,6 +223,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				35122B662F69AED900F4377B /* FF_Primitives.cpp in Sources */,
+				35F7FD292F69BB6E004AE978 /* FF_Observation.cpp in Sources */,
+				35F7FD2A2F69BB6E004AE978 /* FF_DataTypes.cpp in Sources */,
+				35F7FD2B2F69BB6E004AE978 /* FF_R4_Dictionary.cpp in Sources */,
+				35F7FD2C2F69BB6E004AE978 /* FF_Patient.cpp in Sources */,
+				35F7FD2D2F69BB6E004AE978 /* FF_R5_Dictionary.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

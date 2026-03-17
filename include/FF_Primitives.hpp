@@ -95,6 +95,8 @@ enum RECOVERY : uint16_t {
     RECOVER_FF_PATIENT_CONTACT              = 0x0303,
     RECOVER_FF_PATIENT_COMMUNICATION        = 0x0304,
     RECOVER_FF_PATIENT_LINK                 = 0x0305,
+    RECOVER_FF_TIMING_REPEAT                = 0x0306,
+    RECOVER_FF_DOSAGE_DOSEANDRATE           = 0x0307,
 };
 
 // =====================================================================
@@ -111,85 +113,6 @@ enum TYPE_SIZE : uint8_t {
     TYPE_SIZE_FLOAT64   = 8,
     TYPE_SIZE_OFFSET    = 8,
 };
-
-// =====================================================================
-// MEMORY ALIGNMENT & UNALIGNED ACCESS
-// =====================================================================
-inline Offset align_up(Offset offset, uint32_t alignment) {
-    return (offset + (alignment - 1)) & ~(alignment - 1);
-}
-
-// Safe unaligned memory access (compiles to efficient instructions on x86, prevents traps on ARM/Wasm)
-template<typename T>
-inline T load_unaligned(const void* ptr) {
-    static_assert(std::is_trivially_copyable_v<T>, "load_unaligned requires trivially copyable type");
-    T val; std::memcpy(&val, ptr, sizeof(T)); return val;
-}
-template<typename T>
-inline void store_unaligned(void* const ptr, T val) {
-    static_assert(std::is_trivially_copyable_v<T>, "store_unaligned requires trivially copyable type");
-    std::memcpy(ptr, &val, sizeof(T));
-}
-
-// =====================================================================
-// ENDIANNESS DISPATCH (Iris-pattern)
-// =====================================================================
-// Wire format is little-endian. On BE systems, byte-swap on load/store.
-constexpr bool ff_little_endian = std::endian::native == std::endian::little;
-constexpr bool ff_is_ieee754    = std::numeric_limits<float>::is_iec559;
-
-// --- Little-endian load/store (native on LE systems) ---
-inline uint8_t  __FF_LE_LOAD_U8 (const void* p) { return *static_cast<const uint8_t*>(p); }
-inline uint16_t __FF_LE_LOAD_U16(const void* p) { return load_unaligned<uint16_t>(p); }
-inline uint32_t __FF_LE_LOAD_U32(const void* p) { return load_unaligned<uint32_t>(p); }
-inline uint64_t __FF_LE_LOAD_U64(const void* p) { return load_unaligned<uint64_t>(p); }
-inline float    __FF_LE_LOAD_F32(const void* p) { return std::bit_cast<float>(__FF_LE_LOAD_U32(p)); }
-inline double   __FF_LE_LOAD_F64(const void* p) { return std::bit_cast<double>(__FF_LE_LOAD_U64(p)); }
-
-inline void __FF_LE_STORE_U8 (void* p, uint8_t  v) { *static_cast<uint8_t*>(p) = v; }
-inline void __FF_LE_STORE_U16(void* p, uint16_t v) { store_unaligned<uint16_t>(p, v); }
-inline void __FF_LE_STORE_U32(void* p, uint32_t v) { store_unaligned<uint32_t>(p, v); }
-inline void __FF_LE_STORE_U64(void* p, uint64_t v) { store_unaligned<uint64_t>(p, v); }
-inline void __FF_LE_STORE_F32(void* p, float    v) { __FF_LE_STORE_U32(p, std::bit_cast<uint32_t>(v)); }
-inline void __FF_LE_STORE_F64(void* p, double   v) { __FF_LE_STORE_U64(p, std::bit_cast<uint64_t>(v)); }
-
-// --- Big-endian byte-swap wrappers ---
-#ifdef _MSC_VER
-#define __FF_BSWAP16(X) _byteswap_ushort(X)
-#define __FF_BSWAP32(X) _byteswap_ulong(X)
-#define __FF_BSWAP64(X) _byteswap_uint64(X)
-#else
-#define __FF_BSWAP16(X) __builtin_bswap16(X)
-#define __FF_BSWAP32(X) __builtin_bswap32(X)
-#define __FF_BSWAP64(X) __builtin_bswap64(X)
-#endif
-
-inline uint16_t __FF_BE_LOAD_U16(const void* p) { return __FF_BSWAP16(load_unaligned<uint16_t>(p)); }
-inline uint32_t __FF_BE_LOAD_U32(const void* p) { return __FF_BSWAP32(load_unaligned<uint32_t>(p)); }
-inline uint64_t __FF_BE_LOAD_U64(const void* p) { return __FF_BSWAP64(load_unaligned<uint64_t>(p)); }
-inline float    __FF_BE_LOAD_F32(const void* p) { return std::bit_cast<float>(__FF_BE_LOAD_U32(p)); }
-inline double   __FF_BE_LOAD_F64(const void* p) { return std::bit_cast<double>(__FF_BE_LOAD_U64(p)); }
-
-inline void __FF_BE_STORE_U16(void* p, uint16_t v) { store_unaligned<uint16_t>(p, __FF_BSWAP16(v)); }
-inline void __FF_BE_STORE_U32(void* p, uint32_t v) { store_unaligned<uint32_t>(p, __FF_BSWAP32(v)); }
-inline void __FF_BE_STORE_U64(void* p, uint64_t v) { store_unaligned<uint64_t>(p, __FF_BSWAP64(v)); }
-inline void __FF_BE_STORE_F32(void* p, float    v) { __FF_BE_STORE_U32(p, std::bit_cast<uint32_t>(v)); }
-inline void __FF_BE_STORE_F64(void* p, double   v) { __FF_BE_STORE_U64(p, std::bit_cast<uint64_t>(v)); }
-
-// --- Dispatch: compile-time selected inline functions ---
-inline uint8_t  LOAD_U8 (const void* p) { return __FF_LE_LOAD_U8(p); }
-inline uint16_t LOAD_U16(const void* p) { return ff_little_endian ? __FF_LE_LOAD_U16(p) : __FF_BE_LOAD_U16(p); }
-inline uint32_t LOAD_U32(const void* p) { return ff_little_endian ? __FF_LE_LOAD_U32(p) : __FF_BE_LOAD_U32(p); }
-inline uint64_t LOAD_U64(const void* p) { return ff_little_endian ? __FF_LE_LOAD_U64(p) : __FF_BE_LOAD_U64(p); }
-inline float    LOAD_F32(const void* p) { return ff_little_endian ? __FF_LE_LOAD_F32(p) : __FF_BE_LOAD_F32(p); }
-inline double   LOAD_F64(const void* p) { return ff_little_endian ? __FF_LE_LOAD_F64(p) : __FF_BE_LOAD_F64(p); }
-
-inline void STORE_U8 (void* p, uint8_t  v) { __FF_LE_STORE_U8(p, v); }
-inline void STORE_U16(void* p, uint16_t v) { ff_little_endian ? __FF_LE_STORE_U16(p, v) : __FF_BE_STORE_U16(p, v); }
-inline void STORE_U32(void* p, uint32_t v) { ff_little_endian ? __FF_LE_STORE_U32(p, v) : __FF_BE_STORE_U32(p, v); }
-inline void STORE_U64(void* p, uint64_t v) { ff_little_endian ? __FF_LE_STORE_U64(p, v) : __FF_BE_STORE_U64(p, v); }
-inline void STORE_F32(void* p, float    v) { ff_little_endian ? __FF_LE_STORE_F32(p, v) : __FF_BE_STORE_F32(p, v); }
-inline void STORE_F64(void* p, double   v) { ff_little_endian ? __FF_LE_STORE_F64(p, v) : __FF_BE_STORE_F64(p, v); }
 
 // =====================================================================
 // BASE DATA BLOCK
