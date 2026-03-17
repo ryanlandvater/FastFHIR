@@ -1,0 +1,99 @@
+import os
+import json
+
+def generate_fastfhir_dictionary(v_name, input_dir="fhir_specs", output_dir="generated_src"):
+    bundle_path = os.path.join(input_dir, v_name, "valuesets.json")
+    if not os.path.exists(bundle_path):
+        print(f"[Warning] Missing: {bundle_path}")
+        return False
+
+    with open(bundle_path, 'r', encoding='utf-8') as f:
+        bundle = json.load(f)
+
+    seen_enums = set()
+    mappings = [] 
+    entries = bundle.get('entry', [])
+    for entry in entries:
+        vs = entry.get('resource', {})
+        if vs.get('resourceType') != 'ValueSet': continue
+        
+        includes = vs.get('compose', {}).get('include', [])
+        for inc in includes:
+            system = inc.get('system', '')
+            if system and system not in seen_enums:
+                clean_sys = system.split('/')[-1].upper().replace('.','_').replace('-','_')
+                enum_name = f"FF_{v_name}_URI_{clean_sys}"
+                mappings.append((system, enum_name))
+                seen_enums.add(system)
+
+            for concept in inc.get('concept', []):
+                code = concept.get('code', '')
+                if code and code not in seen_enums:
+                    clean_code = ''.join(e for e in code if e.isalnum()).upper()
+                    if clean_code and clean_code[0].isdigit(): clean_code = "N_" + clean_code
+                    enum_name = f"FF_{v_name}_CODE_{clean_code}"
+                    if enum_name in seen_enums: enum_name += f"_{len(seen_enums)}"
+                    mappings.append((code, enum_name))
+                    seen_enums.add(enum_name)
+
+    # Content generation logic
+    hpp = f"// Generated from {v_name} ValueSets\n#pragma once\n#include \"FF_Primitives.hpp\"\n\nenum FF_{v_name}_Code : uint32_t {{\n    FF_{v_name}_NULL = 0,\n"
+    for i, (raw, enum) in enumerate(mappings, 1): hpp += f"    {enum:<40} = {i},\n"
+    hpp += f"}};\n\nFF_EXPORT const char* FF_{v_name}_Resolve(uint32_t code);\nFF_EXPORT uint32_t FF_{v_name}_GetCode(const std::string& str);\n"
+
+    cpp = f"#include \"FF_{v_name}_Dictionary.hpp\"\n#include <unordered_map>\n\nconst char* FF_{v_name}_Resolve(uint32_t code) {{\n"
+    cpp += f"    static constexpr const char* DICT[] = {{\"\",\n"
+    for raw, enum in mappings: cpp += f"        \"{raw}\",\n"
+    cpp += f"    }};\n    if (code >= {len(mappings)+1}) return \"\";\n    return DICT[code];\n}}\n\n"
+    cpp += f"uint32_t FF_{v_name}_GetCode(const std::string& str) {{\n    static const std::unordered_map<std::string, uint32_t> MAP = {{\n"
+    for i, (raw, enum) in enumerate(mappings, 1): cpp += f"        {{\"{raw}\", {i}}},\n"
+    cpp += f"    }}; auto it = MAP.find(str); return it != MAP.end() ? it->second : 0;\n}}\n"
+
+    # Write to generated_src/
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, f"FF_{v_name}_Dictionary.hpp"), "w") as f: f.write(hpp)
+    with open(os.path.join(output_dir, f"FF_{v_name}_Dictionary.cpp"), "w") as f: f.write(cpp)
+    return True
+
+def _normalize_version_configs(versions, default_input_dir):
+    normalized = []
+    for item in versions:
+        if isinstance(item, str):
+            normalized.append((item, os.path.join(default_input_dir, item)))
+        elif isinstance(item, (tuple, list)) and len(item) == 2:
+            v_name, version_dir = item
+            if isinstance(v_name, str) and isinstance(version_dir, str):
+                normalized.append((v_name, version_dir))
+            else:
+                print(f"[Warning] Skipping invalid version config: {item}")
+        else:
+            print(f"[Warning] Skipping invalid version config: {item}")
+    return normalized
+
+def generate_master_dictionary(versions, input_dir="fhir_specs", output_dir="generated_src"):
+    os.makedirs(output_dir, exist_ok=True)
+    normalized_versions = _normalize_version_configs(versions, input_dir)
+
+    active_versions = []
+    for v_name, version_dir in normalized_versions:
+        version_parent = os.path.dirname(version_dir) if os.path.dirname(version_dir) else "."
+        version_leaf = os.path.basename(version_dir)
+        if generate_fastfhir_dictionary(version_leaf, version_parent, output_dir):
+            active_versions.append(v_name)
+
+    # Master Header logic
+    hpp = "#pragma once\n#include \"FF_Primitives.hpp\"\n"
+    for v in active_versions: hpp += f"#include \"FF_{v}_Dictionary.hpp\"\n"
+    
+    hpp += "\ninline const char* FF_ResolveCode(uint32_t code, uint32_t version) {\n    if (code & FF_CUSTOM_STRING_FLAG) return nullptr;\n"
+    for i, v in enumerate(reversed(active_versions)):
+        prefix = "if" if i == 0 else "else if"
+        hpp += f"    {prefix} (version >= FHIR_VERSION_{v}) return FF_{v}_Resolve(code);\n"
+    hpp += "    return \"\";\n}\n\ninline uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t version) {\n"
+    for i, v in enumerate(reversed(active_versions)):
+        prefix = "if" if i == 0 else "else if"
+        hpp += f"    {prefix} (version >= FHIR_VERSION_{v}) return FF_{v}_GetCode(str);\n"
+    hpp += "    return 0;\n}\n"
+
+    with open(os.path.join(output_dir, "FF_Dictionary.hpp"), "w") as f: f.write(hpp)
+    print(f"[Success] Master Dictionary written to {output_dir}/FF_Dictionary.hpp")

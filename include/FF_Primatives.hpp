@@ -19,20 +19,23 @@ typedef uint8_t  BYTE;
 typedef uint64_t Offset;
 typedef uint64_t Size;
 
-constexpr Offset NULL_OFFSET = 0xFFFFFFFFFFFFFFFF;
+constexpr Offset FF_NULL_OFFSET = 0xFFFFFFFFFFFFFFFF;
 constexpr uint32_t FF_CUSTOM_STRING_FLAG = 0x80000000;
 
+#define FHIR_VERSION_R4 0x0400
+#define FHIR_VERSION_R5 0x0500
+
 enum FF_Result_Code {
-    IRIS_SUCCESS = 0,
-    IRIS_FAILURE = 1,
-    IRIS_VALIDATION_FAILURE = 2,
-    IRIS_WARNING = 4
+    FF_SUCCESS = 0,
+    FF_FAILURE = 1,
+    FF_VALIDATION_FAILURE = 2,
+    FF_WARNING = 4
 };
 
 struct Result {
     uint32_t code;
     std::string message;
-    inline operator bool() const { return code == IRIS_SUCCESS; }
+    inline operator bool() const { return code == FF_SUCCESS; }
     inline bool operator&(uint32_t flag) const { return (code & flag) != 0; }
     inline bool operator!=(uint32_t flag) const { return code != flag; }
 };

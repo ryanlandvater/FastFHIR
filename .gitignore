@@ -1,3 +1,5 @@
 *__pycache__
 .venv
 .conda
+fhir_specs/
+generated_src/

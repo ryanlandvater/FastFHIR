@@ -1,5 +1,5 @@
 // MARK: - FastFHIR Core Primitives Implementation
-#include "FF_Primitives.hpp"
+#include "FF_Primatives.hpp"
 #include "FF_Dictionary.hpp" // Needs FF_GetDictionaryCode
 
 // =====================================================================
@@ -7,24 +7,24 @@
 // =====================================================================
 Result DATA_BLOCK::validate_offset(const BYTE *const __base, const char* type_name, uint16_t recovery_tag) const noexcept {
     if (!*this) {
-        return {IRIS_VALIDATION_FAILURE, std::string("Invalid ") + type_name + ". Offset is NULL."};
+        return {FF_VALIDATION_FAILURE, std::string("Invalid ") + type_name + ". Offset is NULL."};
     }
 
 #ifndef __EMSCRIPTEN__
     if (LOAD_U64(__base + __offset + VALIDATION) != __offset) {
-        return {IRIS_VALIDATION_FAILURE, std::string(type_name) + " failed absolute offset validation."};
+        return {FF_VALIDATION_FAILURE, std::string(type_name) + " failed absolute offset validation."};
     }
 #else
     if (LOAD_U64(__base + __offset + VALIDATION) != __remote) {
-        return {IRIS_VALIDATION_FAILURE, std::string(type_name) + " failed remote offset validation."};
+        return {FF_VALIDATION_FAILURE, std::string(type_name) + " failed remote offset validation."};
     }
 #endif
 
     if (LOAD_U16(__base + __offset + RECOVERY) != recovery_tag) {
-        return {IRIS_VALIDATION_FAILURE, std::string(type_name) + " failed recovery tag validation."};
+        return {FF_VALIDATION_FAILURE, std::string(type_name) + " failed recovery tag validation."};
     }
 
-    return {IRIS_SUCCESS, ""};
+    return {FF_SUCCESS, ""};
 }
 
 #ifdef __EMSCRIPTEN__
@@ -42,18 +42,18 @@ Result FF_STRING::validate_full(const BYTE* const __base) const noexcept {
     const_cast<FF_STRING&>(*this).check_and_fetch_remote(__base);
 #endif
     auto result = validate_offset(__base, type, recovery);
-    if (result != IRIS_SUCCESS) return result;
+    if (result != FF_SUCCESS) return result;
 
     uint32_t len = LOAD_U32(__base + __offset + LENGTH);
     if (__offset + HEADER_SIZE + len > __size) {
-        return {IRIS_VALIDATION_FAILURE, "FF_STRING length exceeds file boundaries."};
+        return {FF_VALIDATION_FAILURE, "FF_STRING length exceeds file boundaries."};
     }
-    return {IRIS_SUCCESS, ""};
+    return {FF_SUCCESS, ""};
 }
 
 std::string FF_STRING::read(const BYTE* const __base) const {
     Result res = validate_full(__base);
-    if (res != IRIS_SUCCESS) throw std::runtime_error(res.message);
+    if (res != FF_SUCCESS) throw std::runtime_error(res.message);
 
     uint32_t len = LOAD_U32(__base + __offset + LENGTH);
     const char* str_start = reinterpret_cast<const char*>(__base + __offset + STRING_DATA);
