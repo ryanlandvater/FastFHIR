@@ -77,6 +77,48 @@ def _resolve_data_type_name(fhir_type, field_orig_name, parent_path, resolved_pa
     if fhir_type in TYPE_MAP and fhir_type != 'DEFAULT': return TYPE_MAP[fhir_type]['data_type']
     return fhir_type + 'Data'
 
+def _needs_getter(f):
+    """Returns True if a field requires a parent-created getter method."""
+    return f['is_array'] or f['fhir_type'] == 'string' or f['cpp_type'] == 'Offset'
+
+def _getter_return_type(f, block_struct_name):
+    """Returns the C++ return type for a field's getter method."""
+    if f['is_array']:
+        return 'FF_ARRAY'
+    elif f['fhir_type'] == 'string':
+        return 'FF_STRING'
+    else:
+        return _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
+
+def generate_getter_declarations(layout, block_struct_name):
+    """Generate getter method declarations for child data blocks (Iris pattern)."""
+    hpp = ""
+    for f in layout:
+        if not _needs_getter(f):
+            continue
+        ret_type = _getter_return_type(f, block_struct_name)
+        hpp += f"    {ret_type} get_{f['cpp_name']}(const BYTE* const __base) const;\n"
+    return hpp
+
+def generate_getter_implementations(layout, block_struct_name):
+    """Generate getter method implementations following the Iris pattern."""
+    cpp = ""
+    for f in layout:
+        if not _needs_getter(f):
+            continue
+        ret_type = _getter_return_type(f, block_struct_name)
+        cpp += f"{ret_type} {block_struct_name}::get_{f['cpp_name']}(const BYTE* const __base) const {{\n"
+        cpp += f"#ifdef __EMSCRIPTEN__\n    const_cast<{block_struct_name}&>(*this).check_and_fetch_remote(__base);\n#endif\n"
+        if f['first_version_idx'] > 0:
+            cpp += f"    if (__version < FHIR_VERSION_{f['first_version_name']}) return {ret_type}(FF_NULL_OFFSET, __size, __version);\n"
+        cpp += f"    auto child = {ret_type}(LOAD_U64(__base + __offset + {block_struct_name}::{f['name']}), __size, __version);\n"
+        cpp += f"    if (!child) return child;\n"
+        cpp += f"    auto result = child.validate_full(__base);\n"
+        cpp += f"    if (result != FF_SUCCESS) throw std::runtime_error(\"Failed to retrieve {f['cpp_name']}: \" + result.message);\n"
+        cpp += f"    return child;\n"
+        cpp += f"}}\n"
+    return cpp
+
 # =====================================================================
 # 3. ZERO-COPY C++ GENERATION HELPERS
 # =====================================================================
@@ -89,12 +131,11 @@ def generate_read_fields(layout, block_struct_name):
             indent = "        "
         cpp += f"{indent}// --- Read: {f['name']} ---\n"
         if f['is_array']:
-            cpp += f"{indent}Offset {f['cpp_name']}_off = LOAD_U64(__base + __offset + {block_struct_name}::{f['name']});\n"
-            cpp += f"{indent}if ({f['cpp_name']}_off != FF_NULL_OFFSET) {{\n"
-            cpp += f"{indent}    FF_ARRAY __arr({f['cpp_name']}_off, __size, __version);\n"
-            cpp += f"{indent}    auto STEP = __arr.entry_step(__base);\n"
-            cpp += f"{indent}    auto ENTRIES = __arr.entry_count(__base);\n"
-            cpp += f"{indent}    auto __item_ptr = __arr.entries(__base);\n"
+            cpp += f"{indent}auto __{f['cpp_name']}_arr = get_{f['cpp_name']}(__base);\n"
+            cpp += f"{indent}if (__{f['cpp_name']}_arr) {{\n"
+            cpp += f"{indent}    auto STEP = __{f['cpp_name']}_arr.entry_step(__base);\n"
+            cpp += f"{indent}    auto ENTRIES = __{f['cpp_name']}_arr.entry_count(__base);\n"
+            cpp += f"{indent}    auto __item_ptr = __{f['cpp_name']}_arr.entries(__base);\n"
             cpp += f"{indent}    for (uint32_t i = 0; i < ENTRIES; ++i, __item_ptr += STEP) {{\n"
             if f['fhir_type'] in ('string', 'code'):
                 code_enum = f.get('code_enum')
@@ -112,12 +153,11 @@ def generate_read_fields(layout, block_struct_name):
                 cpp += f"{indent}        data.{f['cpp_name']}.push_back(_blk.read(__base));\n"
             cpp += f"{indent}    }}\n{indent}}}\n"
         elif f['fhir_type'] == 'string':
-            cpp += f"{indent}Offset {f['cpp_name']}_off = LOAD_U64(__base + __offset + {block_struct_name}::{f['name']});\n"
-            cpp += f"{indent}if ({f['cpp_name']}_off != FF_NULL_OFFSET) {{ FF_STRING _blk({f['cpp_name']}_off, __size, __version); data.{f['cpp_name']} = _blk.read_view(__base); }}\n"
+            cpp += f"{indent}auto __{f['cpp_name']} = get_{f['cpp_name']}(__base);\n"
+            cpp += f"{indent}if (__{f['cpp_name']}) data.{f['cpp_name']} = __{f['cpp_name']}.read_view(__base);\n"
         elif f['cpp_type'] == 'Offset':
-            type_call = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
-            cpp += f"{indent}Offset {f['cpp_name']}_off = LOAD_U64(__base + __offset + {block_struct_name}::{f['name']});\n"
-            cpp += f"{indent}if ({f['cpp_name']}_off != FF_NULL_OFFSET) {{ {type_call} _blk({f['cpp_name']}_off, __size, __version); data.{f['cpp_name']} = new auto(_blk.read(__base)); }}\n"
+            cpp += f"{indent}auto __{f['cpp_name']} = get_{f['cpp_name']}(__base);\n"
+            cpp += f"{indent}if (__{f['cpp_name']}) data.{f['cpp_name']} = new auto(__{f['cpp_name']}.read(__base));\n"
         elif f['fhir_type'] == 'code':
             code_enum = f.get('code_enum')
             if code_enum:
@@ -276,8 +316,10 @@ def merge_fhir_versions(schemas_by_version, root_resource):
 def generate_cxx_for_blocks(master_blocks, versions):
     hpp, cpp = "", ""
     block_data_names = sorted({path.replace('.', '') + "Data" for path in master_blocks})
+    block_struct_names = sorted({"FF_" + path.replace('.', '_').upper() for path in master_blocks})
     for d_name in block_data_names: hpp += f"struct {d_name};\n"
-    if block_data_names: hpp += "\n"
+    for s_name in block_struct_names: hpp += f"struct {s_name};\n"
+    if block_data_names or block_struct_names: hpp += "\n"
 
     def get_deps(layout):
         deps = set()
@@ -338,7 +380,9 @@ def generate_cxx_for_blocks(master_blocks, versions):
 
         hpp += f"    explicit {s_name}(Offset off, Size total_size, uint32_t ver) : DATA_BLOCK(off, total_size, ver) {{}}\n"
         hpp += f"    FF_Result validate_full(const BYTE* const __base) const noexcept;\n"
-        hpp += f"    {d_name} read(const BYTE* const __base) const;\n}};\n\n"
+        hpp += f"    {d_name} read(const BYTE* const __base) const;\n\n"
+        hpp += generate_getter_declarations(layout, s_name)
+        hpp += f"}};\n\n"
         
         # Lock-Free Store Signatures
         hpp += f"Size SIZE_{s_name}(const {d_name}& data);\n"
@@ -360,6 +404,8 @@ def generate_cxx_for_blocks(master_blocks, versions):
         cpp += f"    STORE_U16(__ptr + {s_name}::RECOVERY, {s_name}::recovery);\n"
         cpp += f"{generate_store_fields(layout, s_name, '__ptr', 'data')}\n"
         cpp += f"    return child_off;\n}}\n\n"
+        cpp += generate_getter_implementations(layout, s_name)
+        cpp += "\n"
     return hpp, cpp
 
 # =====================================================================
