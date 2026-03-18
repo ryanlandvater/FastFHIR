@@ -1,6 +1,6 @@
 /**
  * @file FF_Primitives.hpp
- * @author Ryan Landvater (RyanLandvater@gmail.com)
+ * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
  * @copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @version 0.1
  * @brief FastFHIR Core Primitives and Data Structures
@@ -68,58 +68,9 @@ struct FF_Result {
 };
 
 // =====================================================================
-// RECOVERY TAG REGISTRY
+// RECOVERY TAG REGISTRY (auto-generated from FHIR StructureDefinitions)
 // =====================================================================
-enum RECOVERY : uint16_t {
-    RECOVER_FF_HEADER                   = 0x0001,
-    RECOVER_FF_STRING                   = 0x0002,
-    RECOVER_FF_ARRAY                    = 0x0003,
-    RECOVER_FF_RESOURCE                 = 0x0004,
-    RECOVER_FF_CHECKSUM                 = 0x0005,
-
-    // Data Types (0x0100 range)
-    RECOVER_FF_CODING                   = 0x0100,
-    RECOVER_FF_CODEABLECONCEPT          = 0x0101,
-    RECOVER_FF_QUANTITY                 = 0x0102,
-    RECOVER_FF_IDENTIFIER               = 0x0103,
-    RECOVER_FF_RANGE                    = 0x0104,
-    RECOVER_FF_PERIOD                   = 0x0105,
-    RECOVER_FF_EXTENSION                = 0x0106,
-    RECOVER_FF_REFERENCE                = 0x0107,
-    RECOVER_FF_META                     = 0x0108,
-    RECOVER_FF_NARRATIVE                = 0x0109,
-    RECOVER_FF_ANNOTATION               = 0x010A,
-    RECOVER_FF_HUMANNAME                = 0x010B,
-    RECOVER_FF_ADDRESS                  = 0x010C,
-    RECOVER_FF_CONTACTPOINT             = 0x010D,
-    RECOVER_FF_ATTACHMENT               = 0x010E,
-    RECOVER_FF_RATIO                    = 0x010F,
-    RECOVER_FF_SAMPLEDDATA              = 0x0110,
-    RECOVER_FF_DURATION                 = 0x0111,
-    RECOVER_FF_TIMING                   = 0x0112,
-    RECOVER_FF_DOSAGE                   = 0x0113,
-
-    // Resources (0x0200 range)
-    RECOVER_FF_OBSERVATION              = 0x0200,
-    RECOVER_FF_PATIENT                  = 0x0201,
-    RECOVER_FF_ENCOUNTER                = 0x0202,
-    RECOVER_FF_DIAGNOSTICREPORT         = 0x0203,
-    RECOVER_FF_CONDITION                = 0x0204,
-    RECOVER_FF_PROCEDURE                = 0x0205,
-    RECOVER_FF_MEDICATIONREQUEST        = 0x0206,
-    RECOVER_FF_IMMUNIZATION             = 0x0207,
-    RECOVER_FF_ALLERGYINTOLERANCE       = 0x0208,
-
-    // Sub-elements / BackboneElements (0x0300 range)
-    RECOVER_FF_OBSERVATION_REFERENCERANGE   = 0x0300,
-    RECOVER_FF_OBSERVATION_COMPONENT        = 0x0301,
-    RECOVER_FF_OBSERVATION_TRIGGEREDBY      = 0x0302,
-    RECOVER_FF_PATIENT_CONTACT              = 0x0303,
-    RECOVER_FF_PATIENT_COMMUNICATION        = 0x0304,
-    RECOVER_FF_PATIENT_LINK                 = 0x0305,
-    RECOVER_FF_TIMING_REPEAT                = 0x0306,
-    RECOVER_FF_DOSAGE_DOSEANDRATE           = 0x0307,
-};
+#include "../generated_src/FF_Recovery.hpp"
 
 // =====================================================================
 // TYPE SIZE CONSTANTS

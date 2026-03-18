@@ -1,6 +1,7 @@
 *__pycache__
 .venv
 .conda
+.vscode/
 build/
 fhir_specs/
 generated_src/
