@@ -5,7 +5,7 @@
  * @brief Implementation of FastFHIR Core Primitives and Data Structures
  * 
  * This source file provides the implementation for the core data structures defined in FF_Primitives.hpp, including:
- * - FF_FILE_HEADER: The main file header containing metadata and root resource information.
+ * - FF_HEADER: The main file header containing metadata, checksum, and root resource information.
  * - FF_ARRAY: A zero-copy array block for efficient storage of homogeneous entries.
  * - FF_STRING: A zero-copy string block for efficient storage of string data.
  * Each structure includes validation methods to ensure data integrity and recovery tags for error handling.
@@ -51,34 +51,101 @@ void DATA_BLOCK::check_and_fetch_remote(const BYTE *const &base) {
 #endif
 
 // =====================================================================
-// FILE HEADER IMPLEMENTATION
+// HEADER IMPLEMENTATION
 // =====================================================================
-FF_Result FF_FILE_HEADER::validate_full(const BYTE* const __base) const noexcept {
-    auto result = validate_offset(__base, type, recovery);
-    if (result != FF_SUCCESS) return result;
-
+FF_HEADER::FF_HEADER(Size file_size) noexcept :
+DATA_BLOCK (0, file_size, UINT32_MAX) {
+    
+}
+FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
     if (LOAD_U32(__base + MAGIC) != FF_MAGIC_BYTES) {
-        return {FF_VALIDATION_FAILURE, "FF_FILE_HEADER magic bytes mismatch."};
+        return {FF_VALIDATION_FAILURE, "FF_HEADER magic bytes mismatch."};
     }
     uint32_t ver = LOAD_U32(__base + VERSION);
     if (ver < FHIR_VERSION_R4) {
-        return {FF_VALIDATION_FAILURE, "FF_FILE_HEADER unsupported FHIR version."};
+        return {FF_VALIDATION_FAILURE, "FF_HEADER unsupported FHIR version."};
+    }
+
+    Offset checksum_off = LOAD_U64(__base + CHECKSUM_OFFSET);
+    if (checksum_off != FF_NULL_OFFSET) {
+        FF_CHECKSUM checksum(checksum_off, __size, ver);
+        auto checksum_result = checksum.validate_full(__base);
+        if (checksum_result != FF_SUCCESS) return checksum_result;
     }
     return {FF_SUCCESS, ""};
 }
 
-uint32_t FF_FILE_HEADER::get_version(const BYTE* const __base) const { return LOAD_U32(__base + VERSION); }
-Offset FF_FILE_HEADER::get_root(const BYTE* const __base) const { return LOAD_U64(__base + ROOT_OFFSET); }
-uint16_t FF_FILE_HEADER::get_root_type(const BYTE* const __base) const { return LOAD_U16(__base + ROOT_RECOVERY); }
+uint32_t FF_HEADER::get_version(const BYTE* const __base) const { return LOAD_U32(__base + VERSION); }
+FF_CHECKSUM FF_HEADER::get_checksum(const BYTE* const __base) const {
+    auto checksum = FF_CHECKSUM(LOAD_U64(__base + CHECKSUM_OFFSET), __size, get_version(__base));
+    if (!checksum) return checksum;
+    auto result = checksum.validate_full(__base);
+    if (result != FF_SUCCESS) throw std::runtime_error("Failed to retrieve checksum: " + result.message);
+    return checksum;
+}
+Offset FF_HEADER::get_root(const BYTE* const __base) const { return LOAD_U64(__base + ROOT_OFFSET); }
+uint16_t FF_HEADER::get_root_type(const BYTE* const __base) const { return LOAD_U16(__base + ROOT_RECOVERY); }
 
-void STORE_FF_FILE_HEADER(BYTE* const __base, uint32_t version, Offset root_offset, uint16_t root_recovery, Size payload_size) {
-    STORE_U64(__base + FF_FILE_HEADER::VALIDATION, 0);
-    STORE_U16(__base + FF_FILE_HEADER::RECOVERY,   RECOVER_FF_FILE_HEADER);
-    STORE_U32(__base + FF_FILE_HEADER::MAGIC,      FF_MAGIC_BYTES);
-    STORE_U32(__base + FF_FILE_HEADER::VERSION,    version);
-    STORE_U64(__base + FF_FILE_HEADER::ROOT_OFFSET, root_offset);
-    STORE_U16(__base + FF_FILE_HEADER::ROOT_RECOVERY, root_recovery);
-    STORE_U64(__base + FF_FILE_HEADER::PAYLOAD_SIZE, payload_size);
+void STORE_FF_HEADER(BYTE* const __base, uint32_t version, Offset checksum_offset, Offset root_offset, uint16_t root_recovery, Size payload_size) {
+    STORE_U32(__base + FF_HEADER::MAGIC, FF_MAGIC_BYTES);
+    STORE_U16(__base + FF_HEADER::RECOVERY, RECOVER_FF_HEADER);
+    STORE_U32(__base + FF_HEADER::VERSION, version);
+    STORE_U64(__base + FF_HEADER::CHECKSUM_OFFSET, checksum_offset);
+    STORE_U64(__base + FF_HEADER::ROOT_OFFSET, root_offset);
+    STORE_U16(__base + FF_HEADER::ROOT_RECOVERY, root_recovery);
+    STORE_U64(__base + FF_HEADER::PAYLOAD_SIZE, payload_size);
+}
+
+// =====================================================================
+// FIXED-SIZE CHECKSUM IMPLEMENTATION
+// =====================================================================
+FF_Result FF_CHECKSUM::validate_full(const BYTE* const __base) const noexcept {
+    auto result = validate_offset(__base, type, recovery);
+    if (!result) return result;
+    
+    // Since it's a fixed-size block, we just ensure it doesn't overflow the file buffer
+    if (__offset + HEADER_SIZE > __size) {
+        return {FF_VALIDATION_FAILURE, "FF_CHECKSUM block truncated."};
+    }
+    return {FF_SUCCESS, ""};
+}
+
+FF_Checksum_Algorithm FF_CHECKSUM::get_algorithm(const BYTE* const __base) const {
+    return static_cast<FF_Checksum_Algorithm>(LOAD_U16(__base + __offset + ALGORITHM));
+}
+
+std::string_view FF_CHECKSUM::get_hash_view(const BYTE* const __base) const {
+    FF_Checksum_Algorithm algo = get_algorithm(__base);
+    size_t len = 0;
+    
+    // Determine exact slice size based on the algorithm
+    switch(algo) {
+        case FF_CHECKSUM_CRC32:  len = 4;  break;
+        case FF_CHECKSUM_MD5:    len = 16; break;
+        case FF_CHECKSUM_SHA256: len = 32; break;
+        default: len = 0; break;
+    }
+    
+    const char* hash_ptr = reinterpret_cast<const char*>(__base + __offset + HASH_DATA);
+    return std::string_view(hash_ptr, len);
+}
+
+BYTE* STORE_FF_CHECKSUM_METADATA(BYTE* const __base, Offset start_offset, FF_Checksum_Algorithm algo) {
+    auto __ptr = __base + start_offset;
+    
+    // Write metadata
+    STORE_U64(__ptr + DATA_BLOCK::VALIDATION, start_offset);
+    STORE_U16(__ptr + DATA_BLOCK::RECOVERY,   RECOVER_FF_CHECKSUM);
+    STORE_U16(__ptr + FF_CHECKSUM::ALGORITHM, algo);
+    STORE_U32(__ptr + FF_CHECKSUM::PADDING,   0); // Zero out alignment padding
+    
+    // Identify the payload pointer
+    BYTE* hash_buffer = __ptr + FF_CHECKSUM::HASH_DATA;
+    
+    // Zero out the entire 256-bit buffer first
+    std::memset(hash_buffer, 0, FF_MAX_HASH_BYTES);
+    
+    return hash_buffer;
 }
 
 // =====================================================================

@@ -41,11 +41,6 @@ This command:
 4. Generates data types and resources under `generated_src/`
 5. Cleans temporary `fhir_specs/`
 
-Direct generator entrypoint (equivalent):
-
-```bash
-python3 tools/generator/make_lib.py
-```
 
 ## Build with CMake
 
@@ -107,6 +102,7 @@ Root `make_lib.py` is a compatibility launcher so existing workflows continue to
 - Resource and datatype structs are generated from official StructureDefinitions
 - Version-specific fields are guarded by generated version checks
 - Binary layout uses explicit offsets and recovery tags
+- The top-level file container is `FF_HEADER`, which stores file magic, version, checksum offset, root offset, and payload size
 - String/code handling supports lock-free style emitter flow in primitives
 
 ## Common Workflow
@@ -122,3 +118,28 @@ cmake --build build -j
 ## License
 
 See repository license and file headers for usage and copyright details.
+
+## Checksum Support
+
+FastFHIR now includes an optional checksum block for top-level file integrity.
+
+The top-level `FF_HEADER` can point to an `FF_CHECKSUM` block through `CHECKSUM_OFFSET`.
+
+Supported algorithms:
+
+- `FF_CHECKSUM_NONE`
+- `FF_CHECKSUM_CRC32`
+- `FF_CHECKSUM_MD5`
+- `FF_CHECKSUM_SHA256`
+- `FF_CHECKSUM_SHA512`
+
+Implementation notes:
+
+1. `FF_HEADER` stores the checksum block offset, or `FF_NULL_OFFSET` when no checksum is present.
+2. `FF_CHECKSUM` stores the selected algorithm and an offset to the raw hash bytes.
+3. Hash bytes are stored as an `FF_STRING` payload and can be accessed as a zero-copy `std::string_view`.
+4. Header validation now checks the checksum block if one is present.
+
+Compatibility note:
+
+`FF_FILE_HEADER` is retained as an alias to `FF_HEADER` for compatibility with older code.

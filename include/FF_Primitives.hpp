@@ -5,7 +5,7 @@
  * @brief FastFHIR Core Primitives and Data Structures
  * 
  * This header defines the core data structures and primitives for the FastFHIR format, including:
- * - FF_FILE_HEADER: The main file header containing metadata and root resource information.
+ * - FF_HEADER: The main file header containing metadata, checksum, and root resource information.
  * - FF_ARRAY: A zero-copy array block for efficient storage of homogeneous entries.
  * - FF_STRING: A zero-copy string block for efficient storage of string data.
  * - FF_RESOURCE: A generic wrapper for FHIR resources, allowing for flexible payload storage.
@@ -69,10 +69,11 @@ struct FF_Result {
 // RECOVERY TAG REGISTRY
 // =====================================================================
 enum RECOVERY : uint16_t {
-    RECOVER_FF_FILE_HEADER              = 0x0001,
+    RECOVER_FF_HEADER                   = 0x0001,
     RECOVER_FF_STRING                   = 0x0002,
     RECOVER_FF_ARRAY                    = 0x0003,
     RECOVER_FF_RESOURCE                 = 0x0004,
+    RECOVER_FF_CHECKSUM                 = 0x0005,
 
     // Data Types (0x0100 range)
     RECOVER_FF_CODING                   = 0x0100,
@@ -119,7 +120,7 @@ enum RECOVERY : uint16_t {
 };
 
 // =====================================================================
-// TYPE SIZE CONSTANTS (Iris-style)
+// TYPE SIZE CONSTANTS
 // =====================================================================
 enum TYPE_SIZE : uint8_t {
     TYPE_SIZE_UINT8     = 1,
@@ -132,6 +133,29 @@ enum TYPE_SIZE : uint8_t {
     TYPE_SIZE_FLOAT64   = 8,
     TYPE_SIZE_OFFSET    = 8,
 };
+
+// =====================================================================
+// SUPPORTED CHECKSUM ALGORITHMS
+// =====================================================================
+enum FF_Checksum_Algorithm : uint16_t {
+    FF_CHECKSUM_NONE   = 0,
+    FF_CHECKSUM_CRC32  = 1, // 4 bytes  (32 bits)
+    FF_CHECKSUM_MD5    = 2, // 16 bytes (128 bits)
+    FF_CHECKSUM_SHA256 = 3, // 32 bytes (256 bits)
+};
+
+// Define the maximum inline hash size (256 bits = 32 bytes)
+constexpr uint32_t FF_MAX_HASH_BYTES = 32;
+
+// =====================================================================
+// FORWARD DECLARATIONS FOR DATA TYPES
+// =====================================================================
+struct DATA_BLOCK;  // Base structure for all data blocks
+struct FF_HEADER;   // Stream header block
+struct FF_CHECKSUM; // Checksum block
+struct FF_ARRAY;    // Array template block
+struct FF_STRING;   // String block
+struct FF_RESOURCE; // Resource template block
 
 // =====================================================================
 // BASE DATA BLOCK
@@ -170,43 +194,86 @@ struct FF_EXPORT DATA_BLOCK {
 };
 
 // =====================================================================
-// FILE HEADER
+// HEADER
 // =====================================================================
-struct FF_EXPORT FF_FILE_HEADER : DATA_BLOCK {
-    static constexpr char type [] = "FF_FILE_HEADER";
-    static constexpr enum RECOVERY recovery = RECOVER_FF_FILE_HEADER;
+struct FF_EXPORT FF_HEADER : DATA_BLOCK {
+    static constexpr char type [] = "FF_HEADER";
+    static constexpr enum RECOVERY recovery = RECOVER_FF_HEADER;
     enum vtable_sizes {
-        VALIDATION_S    = TYPE_SIZE_UINT64,
-        RECOVERY_S      = TYPE_SIZE_UINT16,
-        MAGIC_S         = TYPE_SIZE_UINT32,
-        VERSION_S       = TYPE_SIZE_UINT32,
-        ROOT_OFFSET_S   = TYPE_SIZE_UINT64,
-        ROOT_RECOVERY_S = TYPE_SIZE_UINT16,
-        PAYLOAD_SIZE_S  = TYPE_SIZE_UINT64,
+        MAGIC_S             = TYPE_SIZE_UINT32,
+        RECOVERY_S          = TYPE_SIZE_UINT16,
+        VERSION_S           = TYPE_SIZE_UINT32,
+        CHECKSUM_OFFSET_S   = TYPE_SIZE_UINT64,
+        ROOT_OFFSET_S       = TYPE_SIZE_UINT64,
+        ROOT_RECOVERY_S     = TYPE_SIZE_UINT16,
+        PAYLOAD_SIZE_S      = TYPE_SIZE_UINT64,
     };
     enum vtable_offsets {
-        VALIDATION      = 0,
-        RECOVERY        = VALIDATION   + VALIDATION_S,
-        MAGIC           = RECOVERY     + RECOVERY_S,
-        VERSION         = MAGIC        + MAGIC_S,
-        ROOT_OFFSET     = VERSION      + VERSION_S,
-        ROOT_RECOVERY   = ROOT_OFFSET  + ROOT_OFFSET_S,
+        MAGIC           = 0,
+        RECOVERY        = MAGIC         + MAGIC_S,
+        VERSION         = RECOVERY      + RECOVERY_S,
+        CHECKSUM_OFFSET = VERSION       + VERSION_S,
+        ROOT_OFFSET     = CHECKSUM_OFFSET + CHECKSUM_OFFSET_S,
+        ROOT_RECOVERY   = ROOT_OFFSET   + ROOT_OFFSET_S,
         PAYLOAD_SIZE    = ROOT_RECOVERY + ROOT_RECOVERY_S,
         HEADER_SIZE     = PAYLOAD_SIZE + PAYLOAD_SIZE_S,
     };
 
-    explicit FF_FILE_HEADER(Size file_size) noexcept
-        : DATA_BLOCK(0, file_size, UINT32_MAX) {}
+    explicit FF_HEADER(Size file_size) noexcept;
 
-    FF_Result validate_full(const BYTE* const __base) const noexcept;
-    uint32_t  get_version  (const BYTE* const __base) const;
-    Offset    get_root     (const BYTE* const __base) const;
-    uint16_t  get_root_type(const BYTE* const __base) const;
+    FF_Result   validate_full(const BYTE* const __base) const noexcept;
+    uint32_t    get_version  (const BYTE* const __base) const;
+    FF_CHECKSUM get_checksum (const BYTE* const __base) const;
+    Offset      get_root     (const BYTE* const __base) const;
+    uint16_t    get_root_type(const BYTE* const __base) const;
 };
 
-void FF_EXPORT STORE_FF_FILE_HEADER(BYTE* const __base, uint32_t version,
-                                     Offset root_offset, uint16_t root_recovery,
-                                     Size payload_size);
+using FF_FILE_HEADER = FF_HEADER;
+
+void FF_EXPORT STORE_FF_HEADER(BYTE* const __base, uint32_t version,
+                               Offset checksum_offset, Offset root_offset,
+                               uint16_t root_recovery, Size payload_size);
+
+inline void STORE_FF_FILE_HEADER(BYTE* const __base, uint32_t version,
+                                 Offset root_offset, uint16_t root_recovery,
+                                 Size payload_size) {
+    STORE_FF_HEADER(__base, version, FF_NULL_OFFSET, root_offset, root_recovery, payload_size);
+}
+
+// =====================================================================
+// FIXED-SIZE CHECKSUM FOOTER
+// =====================================================================
+struct FF_EXPORT FF_CHECKSUM : DATA_BLOCK {
+    static constexpr char type [] = "FF_CHECKSUM";
+    static constexpr enum RECOVERY recovery = RECOVER_FF_CHECKSUM;
+    
+    enum vtable_sizes {
+        VALIDATION_S    = TYPE_SIZE_UINT64,
+        RECOVERY_S      = TYPE_SIZE_UINT16,
+        ALGORITHM_S     = TYPE_SIZE_UINT16,
+        PADDING_S       = 4,
+        HASH_DATA_S     = FF_MAX_HASH_BYTES, // 256 bits
+    };
+    enum vtable_offsets {
+        VALIDATION      = 0,
+        RECOVERY        = VALIDATION + VALIDATION_S,
+        ALGORITHM       = RECOVERY   + RECOVERY_S,
+        PADDING         = ALGORITHM  + ALGORITHM_S,
+        HASH_DATA       = PADDING    + PADDING_S,
+        
+        // Exact predictable size: 48 bytes
+        HEADER_SIZE     = HASH_DATA  + HASH_DATA_S,
+    };
+
+    explicit FF_CHECKSUM(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
+    
+    FF_Result validate_full(const BYTE* const __base) const noexcept;
+    FF_Checksum_Algorithm get_algorithm(const BYTE* const __base) const;
+    std::string_view get_hash_view(const BYTE* const __base) const;
+};
+
+// Allocates the block, writes the metadata, and returns a pointer to the 32-byte hash buffer
+BYTE* FF_EXPORT STORE_FF_CHECKSUM_METADATA(BYTE* const __base, Offset start_offset, FF_Checksum_Algorithm algo);
 
 // =====================================================================
 // ZERO-COPY ARRAY BLOCK

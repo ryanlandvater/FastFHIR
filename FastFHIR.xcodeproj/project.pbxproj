@@ -24,15 +24,7 @@
 /* Begin PBXFileReference section */
 		35122B3C2F69A14900F4377B /* libFastFHIR.dylib */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.dylib"; includeInIndex = 0; path = libFastFHIR.dylib; sourceTree = BUILT_PRODUCTS_DIR; };
 		35122B592F69AEC700F4377B /* FF_Primitives.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Primitives.hpp; sourceTree = "<group>"; };
-		35122B5B2F69AED900F4377B /* __init__.cpython-311.pyc */ = {isa = PBXFileReference; lastKnownFileType = file; path = "__init__.cpython-311.pyc"; sourceTree = "<group>"; };
-		35122B5C2F69AED900F4377B /* fetch_specs.cpython-311.pyc */ = {isa = PBXFileReference; lastKnownFileType = file; path = "fetch_specs.cpython-311.pyc"; sourceTree = "<group>"; };
-		35122B5D2F69AED900F4377B /* ffc.cpython-311.pyc */ = {isa = PBXFileReference; lastKnownFileType = file; path = "ffc.cpython-311.pyc"; sourceTree = "<group>"; };
-		35122B5E2F69AED900F4377B /* ffd.cpython-311.pyc */ = {isa = PBXFileReference; lastKnownFileType = file; path = "ffd.cpython-311.pyc"; sourceTree = "<group>"; };
-		35122B602F69AED900F4377B /* __init__.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = __init__.py; sourceTree = "<group>"; };
-		35122B612F69AED900F4377B /* fetch_specs.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = fetch_specs.py; sourceTree = "<group>"; };
 		35122B622F69AED900F4377B /* FF_Primitives.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Primitives.cpp; sourceTree = "<group>"; };
-		35122B632F69AED900F4377B /* ffc.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = ffc.py; sourceTree = "<group>"; };
-		35122B642F69AED900F4377B /* ffd.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = ffd.py; sourceTree = "<group>"; };
 		35F7FD172F69BB6D004AE978 /* FF_DataTypes.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_DataTypes.hpp; sourceTree = "<group>"; };
 		35F7FD182F69BB6D004AE978 /* FF_DataTypes.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_DataTypes.cpp; sourceTree = "<group>"; };
 		35F7FD192F69BB6D004AE978 /* FF_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Dictionary.hpp; sourceTree = "<group>"; };
@@ -83,26 +75,10 @@
 			path = include;
 			sourceTree = "<group>";
 		};
-		35122B5F2F69AED900F4377B /* __pycache__ */ = {
-			isa = PBXGroup;
-			children = (
-				35122B5B2F69AED900F4377B /* __init__.cpython-311.pyc */,
-				35122B5C2F69AED900F4377B /* fetch_specs.cpython-311.pyc */,
-				35122B5D2F69AED900F4377B /* ffc.cpython-311.pyc */,
-				35122B5E2F69AED900F4377B /* ffd.cpython-311.pyc */,
-			);
-			path = __pycache__;
-			sourceTree = "<group>";
-		};
 		35122B652F69AED900F4377B /* src */ = {
 			isa = PBXGroup;
 			children = (
-				35122B5F2F69AED900F4377B /* __pycache__ */,
-				35122B602F69AED900F4377B /* __init__.py */,
-				35122B612F69AED900F4377B /* fetch_specs.py */,
 				35122B622F69AED900F4377B /* FF_Primitives.cpp */,
-				35122B632F69AED900F4377B /* ffc.py */,
-				35122B642F69AED900F4377B /* ffd.py */,
 			);
 			path = src;
 			sourceTree = "<group>";
