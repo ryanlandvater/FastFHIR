@@ -570,6 +570,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
         # Type Traits Specialization
         hpp += f"namespace FastFHIR {{\n"
         hpp += f"template<> struct TypeTraits<{d_name}> {{\n"
+        hpp += f"    static constexpr uint16_t recovery = {s_name}::recovery;\n"
         hpp += f"    static Size size(const {d_name}& d) {{ return SIZE_{s_name}(d); }}\n"
         hpp += f"    static void store(BYTE* const base, Offset off, const {d_name}& d) {{ STORE_{s_name}(base, off, d); }}\n"
         hpp += f"}};\n"

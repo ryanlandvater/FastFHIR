@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <thread>
 #include <string>
+#include <iostream>
 
 // OS-Specific Virtual Memory Headers
 #ifdef _WIN32
@@ -166,7 +167,7 @@ PointerPatchProxy ObjectHandle::operator[](std::string_view key_name) const {
 // Finalization & Checksums
 // =====================================================================
 
-void Builder::set_root(Offset offset, uint16_t recovery_tag) {
+void Builder::set_root(const ObjectHandle& handle) {
     if (!try_begin_mutation()) {
         throw std::runtime_error("FastFHIR: Builder is finalizing; set_root is no longer allowed.");
     }
@@ -176,11 +177,11 @@ void Builder::set_root(Offset offset, uint16_t recovery_tag) {
         ~MutationGuard() { self->end_mutation(); }
     } guard{this};
 
-    m_root_offset = offset;
-    m_root_recovery = recovery_tag;
+    m_root_offset = handle.offset();
+    m_root_recovery = handle.recovery();
 }
 
-std::string_view Builder::finalize(FF_Checksum_Algorithm algo) {
+std::string_view Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback& hasher) {
     bool expected = false;
     if (!m_finalizing.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
         throw std::runtime_error("FastFHIR: finalize() has already started or completed.");
@@ -188,28 +189,45 @@ std::string_view Builder::finalize(FF_Checksum_Algorithm algo) {
 
     // Wait for in-flight append/amend/set_root calls to finish.
     while (m_active_mutators.load(std::memory_order_acquire) != 0) {
-        std::this_thread::yield();
+        std::this_thread::yield(); 
     }
 
     if (m_root_offset == FF_NULL_OFFSET) {
         throw std::runtime_error("FastFHIR: Cannot finalize without a root resource.");
     }
 
-    // 1. Claim the final 48 bytes for the checksum footer
-    // We use std::memory_order_relaxed here safely because all mutators have drained.
+    // 1. Claim the final bytes for the checksum footer
     Offset checksum_start = m_stream_head.fetch_add(FF_CHECKSUM::HEADER_SIZE, std::memory_order_relaxed);
-    Size payload_size = checksum_start - FF_FILE_HEADER::HEADER_SIZE;
+    
+    // 2. The payload is the exact size of the stream up to the checksum block
+    Size payload_size = checksum_start; 
 
-    // 2. Bake the main file header (with known checksum offset)
+    // 3. Bake the main file header
+    // Ensure metadata consistency if no hasher provided
+    if (hasher == nullptr || algo == FF_CHECKSUM_NONE) {
+        // Emit a warning if no hash is provided
+        std::cerr << "[FastFHIR] Warning: No hash function provided;"
+                  << "file will be emitted with zeroed checksum (FF_CHECKSUM_NONE).\n";
+        algo = FF_CHECKSUM_NONE;
+    }
     STORE_FF_FILE_HEADER(m_base, m_version, m_root_offset, m_root_recovery, payload_size);
 
-    // 3. Write checksum metadata (returns a pointer to the 32-byte hash block)
+    // 4. Write checksum metadata and get the destination pointer
     BYTE* hash_dst = STORE_FF_CHECKSUM_METADATA(m_base, checksum_start, algo);
-    (void)hash_dst;
+    std::vector<BYTE> hash_value (FF_MAX_HASH_BYTES, 0); // Default to 32 zero bytes
 
-    // Return a view from byte 0 to the start of the checksum block.
-    // The calling application hashes this view, and writes the result into m_base + checksum_start + 16.
-    return std::string_view(reinterpret_cast<const char*>(m_base), checksum_start);
+    // 5. Create the payload view and trigger the caller's crypto function
+    // Note: If the caller provided a hasher, we execute it; otherwise, 
+    // we leave the hash bytes as zeros (indicating no checksum).
+    if (hasher != nullptr && algo != FF_CHECKSUM_NONE)
+        hash_value = hasher(m_base, payload_size);
+
+    // 6. Write the returned hash directly into the stream
+    // We cap the copy at 32 bytes to prevent overflow if the user returns a massive vector
+    size_t copy_len = std::min(hash_value.size(), static_cast<size_t>(32));
+    std::memcpy(hash_dst, hash_value.data(), copy_len);
+    
+    // 7. Return the ENTIRE sealed file (Payload + Checksum Footer)
+    return std::string_view(reinterpret_cast<const char*>(m_base), checksum_start + FF_CHECKSUM::HEADER_SIZE);
 }
-
 } // namespace FastFHIR

@@ -1,21 +1,112 @@
 # FastFHIR
 
-FastFHIR is a binary serializer and code generation pipeline for HL7 FHIR resources.
+FastFHIR is a wildly fast, lock-free binary serializer and C++20 code generation pipeline for HL7 FHIR resources (R4 and R5). 
 
-It generates strongly-typed C++ structs and serialization code from official FHIR spec bundles
-(currently R4 and R5), with an emphasis on:
+Designed for high-performance healthcare applications and heavy data ingestion, FastFHIR completely bypasses traditional JSON bottlenecks. It generates strongly-typed C++ structs and serialization code directly from official HL7 FHIR StructureDefinitions, offering:
 
-- High performance
-- Deterministic generation
-- Zero-copy friendly primitives where possible
-- Simple, explicit binary layout
+* **Seriously High Performance**
+    * **Zero-Copy Parsing:** Read massive FHIR payloads instantly using a pure offset-based binary layout.
+    * **Lock-Free Concurrent Generation:** Serialize thousands of resources simultaneously across a thread pool using a Virtual Memory Arena without a single mutex, zero heap allocations, and zero pointer invalidation.
+* **Deterministic Memory Footprint**
 
-## What This Repo Contains
+    FastFHIR’s binary architecture provides a level of speed and safety that legacy text-based standards cannot achieve:
 
-- `include/`: Core C++ primitive headers (`FF_Primitives.hpp`, utilities)
-- `src/`: Core C++ primitive implementations
-- `tools/generator/`: Python code generation pipeline
-- `generated_src/`: Generated C++ output (data types/resources/dictionary/code systems)
+    * **FastFHIR vs. HL7 V2:** While V2 relies on brittle, sequential pipe-delimiters that require O(N) linear parsing, FastFHIR allows O(1) random access to any deeply nested field.
+
+    * **FastFHIR vs. HL7 V3 (CDA):** By replacing verbose XML DOM trees with explicit binary offsets, FastFHIR reduces memory overhead by orders of magnitude and eliminates the risk of XML injection or buffer overflows inherent in complex V3 parsers.
+
+    * **FastFHIR vs. Standard FHIR (JSON):** Standard JSON parsing is allocation-heavy and requires massive CPU cycles to transform text into objects. FastFHIR uses Zero-Copy Primitives, allowing your application to read clinical data the microsecond it hits RAM.
+
+    * **Absolute Integrity:** Built-in cryptographic checksum sealing (SHA-256) guarantees that the record is immutable, providing a hardware-verified security layer that legacy plaintext standards lack.
+
+    * **Hardware-Level Safety:** Utilizing Virtual Memory Arenas (via mmap or VirtualAlloc) ensures that pointers remain stable and memory access is protected by the OS kernel. This prevents the data corruption and "pointer chasing" common in the dynamic heap-allocated buffers used by traditional FHIR libraries.
+
+* **Developer Ergonomics**
+
+    * **JSON-Style Dynamic Navigation:** Traverse complex nested FHIR trees seamlessly using native C++ [] operators (e.g., root["subject"]["reference"]).
+
+    * **IDE-Friendly Static Keys:** Utilize zero-overhead compiled field keys (e.g., FastFHIR::FieldKeys::Observation::status) to completely bypass runtime string hashing.
+
+    * **Thread-Safe Object Assignment:**  Build complex relationships concurrently with parent["child"] = child_data syntax that automatically and safely patches V-Table pointers under the hood.
+
+* **Platform & Pipeline Ready**
+
+    * **Cross-Platform Virtual Arenas:** Native, zero-disk memory mapping via POSIX mmap (Linux/macOS) and Win32 VirtualAlloc (Windows).
+
+    * **WASM / Emscripten Ready:** Built-in hooks for remote byte fetching (check_and_fetch_remote), allowing massive, gigabyte-scale pathology datasets to be queried directly in a web viewer without downloading the entire file.
+
+## API Usage Examples
+
+FastFHIR provides a seamless, high-level API over its bare-metal memory architecture.
+
+### 1. Zero-Copy Parsing & Navigation
+
+Read complex FHIR data instantly without parsing strings or allocating memory. FastFHIR supports both JSON-style dynamic string keys and lightning-fast, IDE-friendly compiled Field Keys.
+```cpp
+#include <FastFHIR.hpp>
+
+// 1. Instant zero-copy initialization (O(1) time complexity)
+auto parser = FastFHIR::Parser::create(payload.data(), payload.size());
+
+// 2. Access the root resource
+FastFHIR::Node root = parser.root();
+
+// Method A: IDE-Friendly Typed Field Keys (Fastest - avoids runtime string scanning)
+using FF_FK = FastFHIR::FieldKeys;
+auto status = root[FF_FK::Observation::STATUS].value().as_string();
+
+// Method B: JSON-Style dynamic navigation
+auto nested_system = root["code"]["coding"][0]["system"].value().as_string();
+```
+
+### 2. Lock-Free Concurrent Generation
+FastFHIR's `Builder` uses OS-level memory mapping (Virtual Arena) and atomic offsets to allow massive thread pools to write to a single, contiguous binary stream simultaneously without locking.
+
+```cpp
+#include <FastFHIR.hpp>
+#include <thread>
+#include <vector>
+
+// Initialize a Virtual Arena (Reserves address space, consumes no physical RAM until written)
+FastFHIR::Builder builder (/*Optional stream limits*/); 
+std::vector<std::thread> pool;
+
+// 32 threads simultaneously serializing clinical data from multiple sources into the same contiguous stream
+for (int i = 0; i < 32; ++i) {
+    pool.emplace_back([&builder, i]() {
+        // 1. Thread-local work (e.g., AI inference, data fetching)
+        ObservationData local_obs;
+        local_obs.status = "preliminary";
+        
+        // 2. Lock-free, 1-clock-cycle atomic claim and concurrent write
+        // No mutexes. No heap allocations. No pointer invalidation.
+        auto handle = builder.append_obj(local_obs);
+        
+        // 3. (Optional) push handle.offset() to a lock-free queue to link to a Bundle later
+    });
+}
+
+for (auto& thread : pool) thread.join();
+```
+### 2. Sealing and Cryptographic Checksums
+Once all worker threads have drained, the main thread can seal the file and append a cryptographic hash directly into the binary footer using a clean callback.
+```cpp
+#include <FastFHIR.hpp>
+#include <openssl/sha.h>
+
+// Link the primary resource to the file header
+builder.set_root(root_handle); 
+
+// Seal the file and generate a SHA-256 hash
+auto payload = builder.finalize(FF_CHECKSUM_SHA256, [](const void* byte_start, size_t bytes_to_hash) {
+    std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
+    SHA256(static_cast<const unsigned char*>(byte_start), bytes_to_hash, hash.data());
+    return hash; // The Builder automatically writes this into the stream footer
+});
+
+// `payload` is now a std::string_view of the complete, network-ready binary stream and can be ingested as shown above
+auto parser = FastFHIR::Parser::create(payload.data(), payload.size());
+```
 
 ## Prerequisites
 
@@ -26,24 +117,7 @@ It generates strongly-typed C++ structs and serialization code from official FHI
 
 ## Quick Start
 
-Generate all artifacts:
-
-```bash
-python3 tools/generator/make_lib.py
-```
-
-This command:
-
-1. Downloads and extracts FHIR specs (R4/R5)
-2. Builds master dictionary (`generated_src/FF_Dictionary.hpp`)
-3. Builds code system enums (`generated_src/FF_CodeSystems.hpp`)
-4. Generates data types and resources under `generated_src/`
-5. Cleans temporary `fhir_specs/`
-
-
-## Build with CMake
-
-FastFHIR now includes a root `CMakeLists.txt`.
+FastFHIR includes a root `CMakeLists.txt`.
 
 Configure and build:
 
@@ -51,6 +125,15 @@ Configure and build:
 cmake -S . -B build
 cmake --build build -j
 ```
+
+What this does:
+
+1. Downloads and extracts FHIR specs (R4/R5)
+2. Builds master dictionary (`generated_src/FF_Dictionary.hpp`)
+3. Builds code system enums (`generated_src/FF_CodeSystems.hpp`)
+4. Generates data types and resources under `generated_src/`
+5. Cleans temporary `fhir_specs/`
+6. 
 
 Notes:
 
@@ -68,6 +151,7 @@ cmake --build build -j
 
 macOS users can use the included Xcode project instead of CMake:
 
+1. run python3 generator/make_lib.py
 1. Open `FastFHIR.xcodeproj` in Xcode.
 2. Select your target/scheme.
 3. Build with Product > Build.
@@ -101,16 +185,6 @@ The generator lives in `tools/generator/` and is split by responsibility:
 - Binary layout uses explicit offsets and recovery tags
 - The top-level file container is `FF_HEADER`, which stores file magic, version, checksum offset, root offset, and payload size
 - String/code handling supports lock-free style emitter flow in primitives
-
-## Common Workflow
-
-After changing generator logic:
-
-```bash
-python3 tools/generator/make_lib.py
-cmake -S . -B build
-cmake --build build -j
-```
 
 ## Parser Access Patterns
 
@@ -182,7 +256,3 @@ Implementation notes:
 2. `FF_CHECKSUM` stores the selected algorithm and an offset to the raw hash bytes.
 3. Hash bytes are stored as an `FF_STRING` payload and can be accessed as a zero-copy `std::string_view`.
 4. Header validation now checks the checksum block if one is present.
-
-Compatibility note:
-
-`FF_FILE_HEADER` is retained as an alias to `FF_HEADER` for compatibility with older code.

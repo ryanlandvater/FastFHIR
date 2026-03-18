@@ -1,6 +1,6 @@
 /**
  * @file FF_utilities.hpp
- * @author Ryan Landvater (RyanLandvater@gmail.com)
+ * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
  * @copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @brief FastFHIR / IFE Core Utilities
  * 

@@ -143,8 +143,8 @@ public:
      * @brief Appends data to the stream and returns a thread-safe handle for [] assignments.
      */
     template<typename T_Data>
-    ObjectHandle append_obj(const T_Data& data, uint16_t recovery = 0) {
-        return ObjectHandle(this, append(data), recovery);
+    ObjectHandle append_obj(const T_Data& data) {
+        return ObjectHandle(this, append(data), TypeTraits<T_Data>::recovery);
     }
 
     /**
@@ -159,8 +159,21 @@ public:
 
     // --- Finalization & Checksums ---
 
-    void set_root(Offset offset, uint16_t recovery_tag);
-    std::string_view finalize(FF_Checksum_Algorithm algo);
+    /** 
+     * @brief Sets the root resource pointer and recovery tag in the header. 
+     * [NOTE] This function must be called before finalize().
+     */
+    void set_root(const ObjectHandle& handle);
+    
+    
+    using HashCallback = std::function<std::vector<BYTE>(const unsigned char* byte_start, Size bytes_to_hash)>;
+    /**
+     * @brief Bakes the File Header, and executes the provided hashing callback to seal the file.
+     * @param algo The cryptographic algorithm tag to write into the metadata.
+     * @param hasher A callback that takes the payload and returns the raw hash bytes.
+     * @return A view of the complete, sealed file (including the checksum footer) ready for network transmission.
+     */
+    std::string_view finalize(FF_Checksum_Algorithm algo = FF_CHECKSUM_NONE, const HashCallback& hasher = nullptr);
 };
 
 // =====================================================================
