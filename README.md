@@ -16,7 +16,6 @@ It generates strongly-typed C++ structs and serialization code from official FHI
 - `src/`: Core C++ primitive implementations
 - `tools/generator/`: Python code generation pipeline
 - `generated_src/`: Generated C++ output (data types/resources/dictionary/code systems)
-- `make_lib.py`: Root compatibility launcher for generation
 
 ## Prerequisites
 
@@ -30,7 +29,7 @@ It generates strongly-typed C++ structs and serialization code from official FHI
 Generate all artifacts:
 
 ```bash
-python3 make_lib.py
+python3 tools/generator/make_lib.py
 ```
 
 This command:
@@ -95,8 +94,6 @@ The generator lives in `tools/generator/` and is split by responsibility:
 - `ffc.py`: Emits C++ data/resource structs and read/write logic
 - `make_lib.py`: Orchestrates full generation pipeline
 
-Root `make_lib.py` is a compatibility launcher so existing workflows continue to work.
-
 ## Design Notes
 
 - Resource and datatype structs are generated from official StructureDefinitions
@@ -110,7 +107,7 @@ Root `make_lib.py` is a compatibility launcher so existing workflows continue to
 After changing generator logic:
 
 ```bash
-python3 make_lib.py
+python3 tools/generator/make_lib.py
 cmake -S . -B build
 cmake --build build -j
 ```

@@ -14,7 +14,7 @@ project(FastFHIR
 )
 
 # Toggle for running Python code generation from CMake.
-# ON means CMake will invoke make_lib.py during configure and again via a build target.
+# ON means CMake will invoke tools/generator/make_lib.py during configure and again via a build target.
 option(FASTFHIR_RUN_GENERATOR "Run python code generation before building" ON)
 
 # Build shared library by default; set OFF to build a static library.
@@ -38,7 +38,7 @@ if(FASTFHIR_RUN_GENERATOR)
 
     # Run generation during configure so generated .cpp files exist before globbing source list.
     execute_process(
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/make_lib.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generator/make_lib.py
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         RESULT_VARIABLE FASTFHIR_GENERATE_RESULT
     )
@@ -50,7 +50,7 @@ if(FASTFHIR_RUN_GENERATOR)
 
     # Create a build target so generation can also be run as part of normal build dependency graph.
     add_custom_target(fastfhir_generate
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/make_lib.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generator/make_lib.py
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Generating FastFHIR C++ sources"
         VERBATIM
@@ -65,7 +65,7 @@ file(GLOB FASTFHIR_GENERATED_SOURCES CONFIGURE_DEPENDS
 
 # Guardrail: stop immediately if generation produced no C++ files.
 if(NOT FASTFHIR_GENERATED_SOURCES)
-    message(FATAL_ERROR "No generated .cpp files found in ${FASTFHIR_GENERATED_DIR}. Run make_lib.py first or enable FASTFHIR_RUN_GENERATOR.")
+    message(FATAL_ERROR "No generated .cpp files found in ${FASTFHIR_GENERATED_DIR}. Run tools/generator/make_lib.py first or enable FASTFHIR_RUN_GENERATOR.")
 endif()
 
 # Select library type based on build option.
