@@ -13,6 +13,11 @@ project(FastFHIR
     LANGUAGES CXX
 )
 
+# Make the language mode explicit for build tools and editor integrations.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 # Toggle for running Python code generation from CMake.
 # ON means CMake will invoke tools/generator/make_lib.py during configure and again via a build target.
 option(FASTFHIR_RUN_GENERATOR "Run python code generation before building" ON)
@@ -95,6 +100,8 @@ target_include_directories(fastfhir
     PUBLIC
         $<BUILD_INTERFACE:${FASTFHIR_INCLUDE_DIR}>
         $<BUILD_INTERFACE:${FASTFHIR_GENERATED_DIR}>
+    $<INSTALL_INTERFACE:include>
+    $<INSTALL_INTERFACE:generated_src>
 )
 
 # Require C++20 features for this target and downstream users.
@@ -103,4 +110,35 @@ target_compile_features(fastfhir PUBLIC cxx_std_20)
 # Enable strict warnings for Clang/GCC while keeping compiler-specific behavior scoped.
 target_compile_options(fastfhir PRIVATE
     $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic>
+)
+
+# ---------------------------------------------------------------------
+# Install / export
+# ---------------------------------------------------------------------
+install(TARGETS fastfhir
+    EXPORT FastFHIRTargets
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin
+    INCLUDES DESTINATION include
+)
+
+# Install only the minimal hand-written public headers.
+install(FILES
+    ${FASTFHIR_INCLUDE_DIR}/FastFHIR.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Parser.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
+    DESTINATION include
+)
+
+# Install only generated headers required by the public API.
+install(FILES
+    ${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.hpp
+    DESTINATION include
+)
+
+install(EXPORT FastFHIRTargets
+    FILE FastFHIRTargets.cmake
+    NAMESPACE FastFHIR::
+    DESTINATION lib/cmake/FastFHIR
 )

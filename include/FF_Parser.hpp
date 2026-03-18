@@ -4,64 +4,46 @@
  * @copyright Copyright (c) 2026
  * @version 0.1
  * 
- * @brief FastFHIR File Parser Declarations
+ * @brief FastFHIR File Parser — Internal Declarations
  * 
+ * Prefer including FastFHIR.hpp instead of this header directly.
  * 
+ * Parser and Node are lightweight, shared handles (internally reference-counted).
+ * Copying is cheap: all copies share the same underlying state. Child nodes are
+ * cached on first lookup to avoid redundant validation.
  * 
  */
 
  #pragma once
 
 #include "FF_Primitives.hpp"
-#include "../generated_src/FF_AllTypes.hpp"
-#include <stdexcept>
 #include <memory>
 
 namespace FastFHIR {
 
 class Node {
-    const BYTE* m_base = nullptr;
-    Size m_size = 0;
-    uint32_t m_version = 0;
-    Offset m_offset = FF_NULL_OFFSET;
-    Offset m_scalar_offset = FF_NULL_OFFSET;
-    uint16_t m_recovery = 0;
-    uint16_t m_child_recovery = 0;
-    FF_FieldKind m_kind = FF_FIELD_UNKNOWN;
-    bool m_array_entries_are_offsets = false;
+    struct Data;
+    std::shared_ptr<Data> m_data;
+
+    explicit Node(std::shared_ptr<Data> data);
 
 public:
     Node() = default;
-    Node(const BYTE* base, Size size, uint32_t version, Offset offset, uint16_t recovery, FF_FieldKind kind,
-         uint16_t child_recovery = 0, bool array_entries_are_offsets = false)
-        : m_base(base),
-          m_size(size),
-          m_version(version),
-          m_offset(offset),
-          m_scalar_offset(FF_NULL_OFFSET),
-          m_recovery(recovery),
-          m_child_recovery(child_recovery),
-          m_kind(kind),
-          m_array_entries_are_offsets(array_entries_are_offsets) {}
+    Node(const BYTE* base, Size size, uint32_t version, Offset offset,
+         uint16_t recovery, FF_FieldKind kind,
+         uint16_t child_recovery = 0, bool array_entries_are_offsets = false);
 
-    static Node scalar(const BYTE* base, Size size, uint32_t version, Offset scalar_offset, FF_FieldKind kind) {
-        Node node;
-        node.m_base = base;
-        node.m_size = size;
-        node.m_version = version;
-        node.m_scalar_offset = scalar_offset;
-        node.m_kind = kind;
-        return node;
-    }
+    static Node scalar(const BYTE* base, Size size, uint32_t version,
+                       Offset scalar_offset, FF_FieldKind kind);
 
-    explicit operator bool() const { return m_base != nullptr && (m_offset != FF_NULL_OFFSET || m_scalar_offset != FF_NULL_OFFSET); }
-    bool is_array() const { return m_kind == FF_FIELD_ARRAY; }
-    bool is_object() const { return m_kind == FF_FIELD_BLOCK; }
-    bool is_string() const { return m_kind == FF_FIELD_STRING; }
-    bool is_scalar() const { return m_scalar_offset != FF_NULL_OFFSET; }
+    explicit operator bool() const;
+    bool is_array() const;
+    bool is_object() const;
+    bool is_string() const;
+    bool is_scalar() const;
 
-    FF_FieldKind kind() const { return m_kind; }
-    uint16_t recovery() const { return m_recovery; }
+    FF_FieldKind kind() const;
+    uint16_t recovery() const;
 
     std::vector<FF_FieldInfo> fields() const;
     std::vector<std::string_view> keys() const;
@@ -79,81 +61,59 @@ public:
 };
 
 class Parser {
-    const BYTE* m_base;
-    Size        m_size;
-    uint32_t    m_version;
-    Offset      m_root_offset;
-    uint16_t    m_root_recovery;
+    struct Data;
+    std::shared_ptr<Data> m_data;
+
+    explicit Parser(std::shared_ptr<Data> data);
 
 public:
     /**
-     * @brief Maps a raw byte buffer to the FastFHIR architecture.
+     * @brief Creates a Parser from a raw byte buffer.
      * Throws a std::runtime_error if the header is corrupt or truncated.
      */
-    Parser(const void* buffer, size_t size);
+    static Parser create(const void* buffer, size_t size);
 
-    // --- Stream Metadata ---
-    uint32_t version() const { return m_version; }
-    uint16_t root_type() const { return m_root_recovery; }
+    explicit operator bool() const;
+    uint32_t version() const;
+    uint16_t root_type() const;
+
+    /**
+     * @brief Returns the root node of the parsed FHIR stream.
+     * 
+     * @return Node 
+     */
     Node root() const;
 
-    // --- Validation ---
     /**
-     * @brief Extracts the expected 32-byte hash from the footer.
-     * The application should compute its own hash from byte 0 to (size - 48)
-     * and memcmp() it against this view to guarantee data integrity.
+     * @brief Represents the context for checksum validation.
+     * 
+     * Provides the necessary information to perform checksum validation, including:
+     * - A pointer to the first byte of the payload to be checksummed.
+     * - The total number of bytes to include in the checksum calculation.
+     * - The checksum algorithm used (e.g., CRC32, MD5, SHA256).
+     * - The expected checksum value as stored in the file's footer.
+     * 
+     * Checksum validation is performed outside of the parser to allow for flexibility
+     *  in how and when it is executed, and to avoid coupling the parser to specific 
+     *  checksum implementations.
      */
-    std::string_view expected_checksum() const;
-
-    // --- Zero-Copy Navigation ---
-    /**
-     * @brief Returns a lightweight, zero-copy handle to the root resource.
-     * Performs simple offset/recovery validation only.
-     * Example: auto handle = parser.view_root<FF_OBSERVATION>();
-     */
-    template<typename T_Block>
-    T_Block view_root() const {
-        if (T_Block::recovery != m_root_recovery) {
-            throw std::runtime_error("FastFHIR: Root type mismatch requested.");
-        }
-        T_Block root(m_root_offset, m_size, m_version);
-        auto res = root.validate_offset(m_base, T_Block::type, T_Block::recovery);
-        if (!res) throw std::runtime_error("FastFHIR Root Validation: " + res.message);
-
-        return root;
-    }
+    struct ChecksumValidation {
+        const void*           first_byte;
+        size_t                total_bytes;
+        FF_Checksum_Algorithm algorithm;
+        std::string_view      expected_checksum;
+        explicit operator bool() const { return !expected_checksum.empty(); }
+    };
 
     /**
-     * @brief Returns the root resource after performing full recursive validation.
-     * Example: auto handle = parser.view_root_full<FF_OBSERVATION>();
+     * @brief Returns the checksum validation context.
+     * 
+     * If the file contains a checksum block, this method will return a ChecksumValidation struct
+     * populated with the relevant information for performing checksum validation. If no checksum
+     * block is present, it will return an empty ChecksumValidation 
+     * including nullptr for first_byte and 0 total_bytes, and with expected_checksum empty.
      */
-    template<typename T_Block>
-    T_Block view_root_full() const {
-        T_Block root = view_root<T_Block>();
-        auto res = root.validate_full(m_base);
-        if (!res) throw std::runtime_error("FastFHIR Root Full Validation: " + res.message);
-
-        return root;
-    }
-
-    // --- Full Deserialization ---
-    /**
-     * @brief Allocates and reads the entire resource tree into memory.
-     * Example: ObservationData data = parser.read_root<FF_OBSERVATION>();
-     */
-    template<typename T_Block>
-    auto read_root() const {
-        return view_root<T_Block>().read(m_base);
-    }
-
-    /**
-     * @brief Fully validates the root resource, then reads the entire resource tree into memory.
-     * Example: ObservationData data = parser.read_root_full<FF_OBSERVATION>();
-     */
-    template<typename T_Block>
-    auto read_root_full() const {
-        return view_root_full<T_Block>().read(m_base);
-    }
+    ChecksumValidation checksum() const;
 };
 
 } // namespace FastFHIR

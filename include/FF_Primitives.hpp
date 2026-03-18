@@ -172,34 +172,77 @@ struct FF_FieldInfo {
 };
 
 struct FF_FieldKey {
-        uint16_t owner_recovery = 0;
-        FF_FieldKind kind = FF_FIELD_UNKNOWN;
-        uint16_t field_offset = 0;
-        uint16_t child_recovery = 0;
-        uint8_t array_entries_are_offsets = 0;
-        std::string_view name{};
+    uint16_t owner_recovery = 0;
+    FF_FieldKind kind = FF_FIELD_UNKNOWN;
+    uint16_t field_offset = 0;
+    uint16_t child_recovery = 0;
+    uint8_t array_entries_are_offsets = 0;
+    const char* name = nullptr;
+    std::size_t name_len = 0;
 
     constexpr FF_FieldKey() = default;
 
     template <std::size_t N>
-        constexpr FF_FieldKey(const char (&literal)[N]) noexcept : name(literal, N - 1) {}
+    constexpr FF_FieldKey(const char (&literal)[N]) noexcept : name(literal), name_len(N - 1) {}
 
+    template <std::size_t N>
         constexpr FF_FieldKey(uint16_t owner,
                                                     FF_FieldKind field_kind,
                                                     uint16_t offset,
-                                                    uint16_t child = 0,
-                                                    uint8_t array_offsets = 0,
-                                                    std::string_view field_name = {}) noexcept
+                                                    uint16_t child,
+                                                    uint8_t array_offsets,
+                                                    const char (&field_name)[N]) noexcept
                 : owner_recovery(owner),
                     kind(field_kind),
                     field_offset(offset),
                     child_recovery(child),
                     array_entries_are_offsets(array_offsets),
-                    name(field_name) {}
+                    name(field_name),
+                    name_len(N - 1) {}
 
-    constexpr FF_FieldKey(std::string_view key_name) noexcept : name(key_name) {}
+    constexpr FF_FieldKey(uint16_t owner,
+                                                    FF_FieldKind field_kind,
+                                                    uint16_t offset,
+                                                    uint16_t child,
+                                                    uint8_t array_offsets,
+                                                    const char* field_name,
+                                                    std::size_t field_name_len) noexcept
+                : owner_recovery(owner),
+                    kind(field_kind),
+                    field_offset(offset),
+                    child_recovery(child),
+                    array_entries_are_offsets(array_offsets),
+                    name(field_name),
+                    name_len(field_name_len) {}
+
+    constexpr FF_FieldKey(const char* key_name, std::size_t key_name_len) noexcept
+        : name(key_name),
+            name_len(key_name_len) {}
+
+    static FF_FieldKey from_cstr(const char* key_name) noexcept {
+        return FF_FieldKey(key_name, key_name ? std::char_traits<char>::length(key_name) : 0);
+    }
+
+    static FF_FieldKey from_cstr(uint16_t owner,
+                                                            FF_FieldKind field_kind,
+                                                            uint16_t offset,
+                                                            uint16_t child,
+                                                            uint8_t array_offsets,
+                                                            const char* field_name) noexcept {
+        return FF_FieldKey(owner,
+                                             field_kind,
+                                             offset,
+                                             child,
+                                             array_offsets,
+                                             field_name,
+                                             field_name ? std::char_traits<char>::length(field_name) : 0);
+    }
+
+    constexpr std::string_view view() const noexcept {
+        return (name && name_len > 0) ? std::string_view{name, name_len} : std::string_view{};
+    }
     
-    constexpr operator std::string_view() const noexcept { return name; }
+    constexpr operator std::string_view() const noexcept { return view(); }
 };
 
 struct DATA_BLOCK;  // Base structure for all data blocks

@@ -9,17 +9,22 @@
 /* Begin PBXBuildFile section */
 		35122B662F69AED900F4377B /* FF_Primitives.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35122B622F69AED900F4377B /* FF_Primitives.cpp */; };
 		35CB68442F6ADAA30000FA32 /* FF_Parser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35CB68432F6ADAA30000FA32 /* FF_Parser.cpp */; };
-		35F7FD232F69BB6E004AE978 /* FF_DataTypes.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD172F69BB6D004AE978 /* FF_DataTypes.hpp */; };
-		35F7FD242F69BB6E004AE978 /* FF_Dictionary.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD192F69BB6D004AE978 /* FF_Dictionary.hpp */; };
-		35F7FD252F69BB6E004AE978 /* FF_Observation.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD1A2F69BB6D004AE978 /* FF_Observation.hpp */; };
-		35F7FD262F69BB6E004AE978 /* FF_R4_Dictionary.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD1E2F69BB6D004AE978 /* FF_R4_Dictionary.hpp */; };
-		35F7FD272F69BB6E004AE978 /* FF_R5_Dictionary.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD202F69BB6D004AE978 /* FF_R5_Dictionary.hpp */; };
-		35F7FD282F69BB6E004AE978 /* FF_Patient.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD1C2F69BB6D004AE978 /* FF_Patient.hpp */; };
-		35F7FD292F69BB6E004AE978 /* FF_Observation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35F7FD1B2F69BB6D004AE978 /* FF_Observation.cpp */; };
-		35F7FD2A2F69BB6E004AE978 /* FF_DataTypes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35F7FD182F69BB6D004AE978 /* FF_DataTypes.cpp */; };
-		35F7FD2B2F69BB6E004AE978 /* FF_R4_Dictionary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35F7FD1F2F69BB6D004AE978 /* FF_R4_Dictionary.cpp */; };
-		35F7FD2C2F69BB6E004AE978 /* FF_Patient.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35F7FD1D2F69BB6D004AE978 /* FF_Patient.cpp */; };
-		35F7FD2D2F69BB6E004AE978 /* FF_R5_Dictionary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35F7FD212F69BB6D004AE978 /* FF_R5_Dictionary.cpp */; };
+		35CB68792F6AE9D30000FA32 /* FF_R4_Dictionary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35CB68732F6AE9D30000FA32 /* FF_R4_Dictionary.cpp */; };
+		35CB687A2F6AE9D30000FA32 /* FF_DataTypes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35CB686B2F6AE9D30000FA32 /* FF_DataTypes.cpp */; };
+		35CB687B2F6AE9D30000FA32 /* FF_Observation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35CB686F2F6AE9D30000FA32 /* FF_Observation.cpp */; };
+		35CB687C2F6AE9D30000FA32 /* FF_R5_Dictionary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35CB68752F6AE9D30000FA32 /* FF_R5_Dictionary.cpp */; };
+		35CB687D2F6AE9D30000FA32 /* FF_Patient.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35CB68712F6AE9D30000FA32 /* FF_Patient.cpp */; };
+		35CB687E2F6AE9D30000FA32 /* FF_Reflection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35CB68772F6AE9D30000FA32 /* FF_Reflection.cpp */; };
+		35CB687F2F6AE9D30000FA32 /* FF_DataTypes.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35CB686A2F6AE9D30000FA32 /* FF_DataTypes.hpp */; };
+		35CB68802F6AE9D30000FA32 /* FF_Reflection.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35CB68762F6AE9D30000FA32 /* FF_Reflection.hpp */; };
+		35CB68812F6AE9D30000FA32 /* FF_Dictionary.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35CB686C2F6AE9D30000FA32 /* FF_Dictionary.hpp */; };
+		35CB68822F6AE9D30000FA32 /* FF_CodeSystems.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35CB68692F6AE9D30000FA32 /* FF_CodeSystems.hpp */; };
+		35CB68832F6AE9D30000FA32 /* FF_AllTypes.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35CB68682F6AE9D30000FA32 /* FF_AllTypes.hpp */; };
+		35CB68842F6AE9D30000FA32 /* FF_R4_Dictionary.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35CB68722F6AE9D30000FA32 /* FF_R4_Dictionary.hpp */; };
+		35CB68852F6AE9D30000FA32 /* FF_R5_Dictionary.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35CB68742F6AE9D30000FA32 /* FF_R5_Dictionary.hpp */; };
+		35CB68862F6AE9D30000FA32 /* FF_FieldKeys.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35CB686D2F6AE9D30000FA32 /* FF_FieldKeys.hpp */; };
+		35CB68872F6AE9D30000FA32 /* FF_Patient.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35CB68702F6AE9D30000FA32 /* FF_Patient.hpp */; };
+		35CB68882F6AE9D30000FA32 /* FF_Observation.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35CB686E2F6AE9D30000FA32 /* FF_Observation.hpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,17 +32,24 @@
 		35122B592F69AEC700F4377B /* FF_Primitives.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Primitives.hpp; sourceTree = "<group>"; };
 		35122B622F69AED900F4377B /* FF_Primitives.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Primitives.cpp; sourceTree = "<group>"; };
 		35CB68432F6ADAA30000FA32 /* FF_Parser.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = FF_Parser.cpp; path = src/FF_Parser.cpp; sourceTree = SOURCE_ROOT; };
-		35F7FD172F69BB6D004AE978 /* FF_DataTypes.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_DataTypes.hpp; sourceTree = "<group>"; };
-		35F7FD182F69BB6D004AE978 /* FF_DataTypes.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_DataTypes.cpp; sourceTree = "<group>"; };
-		35F7FD192F69BB6D004AE978 /* FF_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Dictionary.hpp; sourceTree = "<group>"; };
-		35F7FD1A2F69BB6D004AE978 /* FF_Observation.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Observation.hpp; sourceTree = "<group>"; };
-		35F7FD1B2F69BB6D004AE978 /* FF_Observation.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Observation.cpp; sourceTree = "<group>"; };
-		35F7FD1C2F69BB6D004AE978 /* FF_Patient.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Patient.hpp; sourceTree = "<group>"; };
-		35F7FD1D2F69BB6D004AE978 /* FF_Patient.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Patient.cpp; sourceTree = "<group>"; };
-		35F7FD1E2F69BB6D004AE978 /* FF_R4_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_R4_Dictionary.hpp; sourceTree = "<group>"; };
-		35F7FD1F2F69BB6D004AE978 /* FF_R4_Dictionary.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_R4_Dictionary.cpp; sourceTree = "<group>"; };
-		35F7FD202F69BB6D004AE978 /* FF_R5_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_R5_Dictionary.hpp; sourceTree = "<group>"; };
-		35F7FD212F69BB6D004AE978 /* FF_R5_Dictionary.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_R5_Dictionary.cpp; sourceTree = "<group>"; };
+		35CB68452F6AE9A70000FA32 /* FF_Parser.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Parser.hpp; sourceTree = "<group>"; };
+		35CB68462F6AE9A70000FA32 /* FF_Utilities.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Utilities.hpp; sourceTree = "<group>"; };
+		35CB68682F6AE9D30000FA32 /* FF_AllTypes.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_AllTypes.hpp; sourceTree = "<group>"; };
+		35CB68692F6AE9D30000FA32 /* FF_CodeSystems.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_CodeSystems.hpp; sourceTree = "<group>"; };
+		35CB686A2F6AE9D30000FA32 /* FF_DataTypes.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_DataTypes.hpp; sourceTree = "<group>"; };
+		35CB686B2F6AE9D30000FA32 /* FF_DataTypes.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_DataTypes.cpp; sourceTree = "<group>"; };
+		35CB686C2F6AE9D30000FA32 /* FF_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Dictionary.hpp; sourceTree = "<group>"; };
+		35CB686D2F6AE9D30000FA32 /* FF_FieldKeys.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_FieldKeys.hpp; sourceTree = "<group>"; };
+		35CB686E2F6AE9D30000FA32 /* FF_Observation.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Observation.hpp; sourceTree = "<group>"; };
+		35CB686F2F6AE9D30000FA32 /* FF_Observation.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Observation.cpp; sourceTree = "<group>"; };
+		35CB68702F6AE9D30000FA32 /* FF_Patient.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Patient.hpp; sourceTree = "<group>"; };
+		35CB68712F6AE9D30000FA32 /* FF_Patient.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Patient.cpp; sourceTree = "<group>"; };
+		35CB68722F6AE9D30000FA32 /* FF_R4_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_R4_Dictionary.hpp; sourceTree = "<group>"; };
+		35CB68732F6AE9D30000FA32 /* FF_R4_Dictionary.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_R4_Dictionary.cpp; sourceTree = "<group>"; };
+		35CB68742F6AE9D30000FA32 /* FF_R5_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_R5_Dictionary.hpp; sourceTree = "<group>"; };
+		35CB68752F6AE9D30000FA32 /* FF_R5_Dictionary.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_R5_Dictionary.cpp; sourceTree = "<group>"; };
+		35CB68762F6AE9D30000FA32 /* FF_Reflection.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Reflection.hpp; sourceTree = "<group>"; };
+		35CB68772F6AE9D30000FA32 /* FF_Reflection.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Reflection.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -54,7 +66,7 @@
 		35122B332F69A14900F4377B = {
 			isa = PBXGroup;
 			children = (
-				35F7FD222F69BB6D004AE978 /* generated_src */,
+				35CB68782F6AE9D30000FA32 /* generated_src */,
 				35122B5A2F69AEC700F4377B /* include */,
 				35122B652F69AED900F4377B /* src */,
 				35122B3D2F69A14900F4377B /* Products */,
@@ -72,6 +84,8 @@
 		35122B5A2F69AEC700F4377B /* include */ = {
 			isa = PBXGroup;
 			children = (
+				35CB68452F6AE9A70000FA32 /* FF_Parser.hpp */,
+				35CB68462F6AE9A70000FA32 /* FF_Utilities.hpp */,
 				35122B592F69AEC700F4377B /* FF_Primitives.hpp */,
 			);
 			path = include;
@@ -86,20 +100,25 @@
 			path = src;
 			sourceTree = "<group>";
 		};
-		35F7FD222F69BB6D004AE978 /* generated_src */ = {
+		35CB68782F6AE9D30000FA32 /* generated_src */ = {
 			isa = PBXGroup;
 			children = (
-				35F7FD172F69BB6D004AE978 /* FF_DataTypes.hpp */,
-				35F7FD182F69BB6D004AE978 /* FF_DataTypes.cpp */,
-				35F7FD192F69BB6D004AE978 /* FF_Dictionary.hpp */,
-				35F7FD1A2F69BB6D004AE978 /* FF_Observation.hpp */,
-				35F7FD1B2F69BB6D004AE978 /* FF_Observation.cpp */,
-				35F7FD1C2F69BB6D004AE978 /* FF_Patient.hpp */,
-				35F7FD1D2F69BB6D004AE978 /* FF_Patient.cpp */,
-				35F7FD1E2F69BB6D004AE978 /* FF_R4_Dictionary.hpp */,
-				35F7FD1F2F69BB6D004AE978 /* FF_R4_Dictionary.cpp */,
-				35F7FD202F69BB6D004AE978 /* FF_R5_Dictionary.hpp */,
-				35F7FD212F69BB6D004AE978 /* FF_R5_Dictionary.cpp */,
+				35CB68682F6AE9D30000FA32 /* FF_AllTypes.hpp */,
+				35CB68692F6AE9D30000FA32 /* FF_CodeSystems.hpp */,
+				35CB686A2F6AE9D30000FA32 /* FF_DataTypes.hpp */,
+				35CB686B2F6AE9D30000FA32 /* FF_DataTypes.cpp */,
+				35CB686C2F6AE9D30000FA32 /* FF_Dictionary.hpp */,
+				35CB686D2F6AE9D30000FA32 /* FF_FieldKeys.hpp */,
+				35CB686E2F6AE9D30000FA32 /* FF_Observation.hpp */,
+				35CB686F2F6AE9D30000FA32 /* FF_Observation.cpp */,
+				35CB68702F6AE9D30000FA32 /* FF_Patient.hpp */,
+				35CB68712F6AE9D30000FA32 /* FF_Patient.cpp */,
+				35CB68722F6AE9D30000FA32 /* FF_R4_Dictionary.hpp */,
+				35CB68732F6AE9D30000FA32 /* FF_R4_Dictionary.cpp */,
+				35CB68742F6AE9D30000FA32 /* FF_R5_Dictionary.hpp */,
+				35CB68752F6AE9D30000FA32 /* FF_R5_Dictionary.cpp */,
+				35CB68762F6AE9D30000FA32 /* FF_Reflection.hpp */,
+				35CB68772F6AE9D30000FA32 /* FF_Reflection.cpp */,
 			);
 			path = generated_src;
 			sourceTree = "<group>";
@@ -111,12 +130,16 @@
 			isa = PBXHeadersBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				35F7FD232F69BB6E004AE978 /* FF_DataTypes.hpp in Headers */,
-				35F7FD242F69BB6E004AE978 /* FF_Dictionary.hpp in Headers */,
-				35F7FD252F69BB6E004AE978 /* FF_Observation.hpp in Headers */,
-				35F7FD262F69BB6E004AE978 /* FF_R4_Dictionary.hpp in Headers */,
-				35F7FD272F69BB6E004AE978 /* FF_R5_Dictionary.hpp in Headers */,
-				35F7FD282F69BB6E004AE978 /* FF_Patient.hpp in Headers */,
+				35CB687F2F6AE9D30000FA32 /* FF_DataTypes.hpp in Headers */,
+				35CB68802F6AE9D30000FA32 /* FF_Reflection.hpp in Headers */,
+				35CB68812F6AE9D30000FA32 /* FF_Dictionary.hpp in Headers */,
+				35CB68822F6AE9D30000FA32 /* FF_CodeSystems.hpp in Headers */,
+				35CB68832F6AE9D30000FA32 /* FF_AllTypes.hpp in Headers */,
+				35CB68842F6AE9D30000FA32 /* FF_R4_Dictionary.hpp in Headers */,
+				35CB68852F6AE9D30000FA32 /* FF_R5_Dictionary.hpp in Headers */,
+				35CB68862F6AE9D30000FA32 /* FF_FieldKeys.hpp in Headers */,
+				35CB68872F6AE9D30000FA32 /* FF_Patient.hpp in Headers */,
+				35CB68882F6AE9D30000FA32 /* FF_Observation.hpp in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -181,11 +204,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				35122B662F69AED900F4377B /* FF_Primitives.cpp in Sources */,
-				35F7FD292F69BB6E004AE978 /* FF_Observation.cpp in Sources */,
-				35F7FD2A2F69BB6E004AE978 /* FF_DataTypes.cpp in Sources */,
-				35F7FD2B2F69BB6E004AE978 /* FF_R4_Dictionary.cpp in Sources */,
-				35F7FD2C2F69BB6E004AE978 /* FF_Patient.cpp in Sources */,
-				35F7FD2D2F69BB6E004AE978 /* FF_R5_Dictionary.cpp in Sources */,
+				35CB68792F6AE9D30000FA32 /* FF_R4_Dictionary.cpp in Sources */,
+				35CB687A2F6AE9D30000FA32 /* FF_DataTypes.cpp in Sources */,
+				35CB687B2F6AE9D30000FA32 /* FF_Observation.cpp in Sources */,
+				35CB687C2F6AE9D30000FA32 /* FF_R5_Dictionary.cpp in Sources */,
+				35CB687D2F6AE9D30000FA32 /* FF_Patient.cpp in Sources */,
+				35CB687E2F6AE9D30000FA32 /* FF_Reflection.cpp in Sources */,
 				35CB68442F6ADAA30000FA32 /* FF_Parser.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
