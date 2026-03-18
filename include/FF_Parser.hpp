@@ -1,91 +1,74 @@
 /**
  * @file FF_Parser.hpp
- * @author Ryan Landvater (ryan.landvater@example.com)
- * @copyright Copyright (c) 2026
+ * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
+ * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @version 0.1
  * 
  * @brief FastFHIR File Parser — Internal Declarations
  * 
  * Prefer including FastFHIR.hpp instead of this header directly.
  * 
- * Parser and Node are lightweight, shared handles (internally reference-counted).
- * Copying is cheap: all copies share the same underlying state. Child nodes are
- * cached on first lookup to avoid redundant validation.
+ * Parser and Node are lightweight value types with no shared ownership overhead.
  * 
  */
 
  #pragma once
 
 #include "FF_Primitives.hpp"
-#include <memory>
 
 namespace FastFHIR {
-
-class Node {
-    struct Data;
-    std::shared_ptr<Data> m_data;
-
-    explicit Node(std::shared_ptr<Data> data);
-
-public:
-    Node() = default;
-    Node(const BYTE* base, Size size, uint32_t version, Offset offset,
-         uint16_t recovery, FF_FieldKind kind,
-         uint16_t child_recovery = 0, bool array_entries_are_offsets = false);
-
-    static Node scalar(const BYTE* base, Size size, uint32_t version,
-                       Offset scalar_offset, FF_FieldKind kind);
-
-    explicit operator bool() const;
-    bool is_array() const;
-    bool is_object() const;
-    bool is_string() const;
-    bool is_scalar() const;
-
-    FF_FieldKind kind() const;
-    uint16_t recovery() const;
-
-    std::vector<FF_FieldInfo> fields() const;
-    std::vector<std::string_view> keys() const;
-    size_t size() const;
-    std::vector<Node> entries() const;
-
-    Node operator[](std::string_view key) const;
-    Node operator[](FF_FieldKey key) const;
-    Node operator[](size_t index) const;
-
-    std::string_view as_string() const;
-    bool as_bool() const;
-    uint32_t as_uint32() const;
-    double as_float64() const;
-};
-
+class Node;
+/**
+ * @class Parser
+ * @brief Entry point for reading a FastFHIR byte stream.
+ *
+ * `Parser` validates file structure at creation time and exposes read-only
+ * accessors for header metadata, checksum metadata, and the root node.
+ */
 class Parser {
-    struct Data;
-    std::shared_ptr<Data> m_data;
-
-    explicit Parser(std::shared_ptr<Data> data);
+    const BYTE* m_base = nullptr;
+    Size        m_size = 0;
+    uint32_t    m_version = 0;
+    Offset      m_root_offset = FF_NULL_OFFSET;
+    uint16_t    m_root_recovery = 0;
 
 public:
     /**
-     * @brief Creates a Parser from a raw byte buffer.
-     * Throws a std::runtime_error if the header is corrupt or truncated.
+    * @brief Create a parser from a raw in-memory byte buffer.
+    * @param buffer Pointer to the beginning of a FastFHIR file in memory.
+    * @param size Total number of bytes available at @p buffer.
+    * @return A valid parser bound to the supplied buffer.
+    * @throws std::runtime_error If the header is truncated or fails validation.
      */
     static Parser create(const void* buffer, size_t size);
 
-    explicit operator bool() const;
+    /** 
+    * @brief Check whether this parser instance references a parsed buffer.
+    * @return `true` when the parser holds a valid underlying buffer; otherwise `false`.
+     */
+    explicit operator bool() const { return m_base != nullptr; }
+
+    /**
+    * @brief Get the encoded FastFHIR/FHIR version from the file header.
+    * @return Version value stored in the header.
+     */
     uint32_t version() const;
+    
+    /** 
+    * @brief Get the root resource recovery/type tag from the header.
+    * @return Recovery/type tag for the root resource.
+     */
     uint16_t root_type() const;
 
     /**
-     * @brief Returns the root node of the parsed FHIR stream.
-     * 
-     * @return Node 
+    * @brief Get the root resource node.
+    * @return Root node of the parsed FastFHIR stream.
      */
     Node root() const;
 
     /**
-     * @brief Represents the context for checksum validation.
+    * @struct ChecksumValidation
+    * @brief Checksum metadata extracted from the file.
      * 
      * Provides the necessary information to perform checksum validation, including:
      * - A pointer to the first byte of the payload to be checksummed.
@@ -98,22 +81,190 @@ public:
      *  checksum implementations.
      */
     struct ChecksumValidation {
+        /// Pointer to first byte included in the checksum span.
         const void*           first_byte;
+        /// Number of bytes to include starting at @ref first_byte.
         size_t                total_bytes;
+        /// Hash/checksum algorithm declared by the file.
         FF_Checksum_Algorithm algorithm;
+        /// Expected digest/hash value stored in the file footer.
         std::string_view      expected_checksum;
+        /// Convenience validity check; true when an expected checksum is present.
         explicit operator bool() const { return !expected_checksum.empty(); }
     };
 
     /**
-     * @brief Returns the checksum validation context.
-     * 
-     * If the file contains a checksum block, this method will return a ChecksumValidation struct
-     * populated with the relevant information for performing checksum validation. If no checksum
-     * block is present, it will return an empty ChecksumValidation 
-     * including nullptr for first_byte and 0 total_bytes, and with expected_checksum empty.
+     * @brief Get checksum metadata for external checksum verification.
+     * @return A populated @ref ChecksumValidation when present, otherwise an empty one
+     *         (`first_byte == nullptr`, `total_bytes == 0`, and empty checksum text).
      */
     ChecksumValidation checksum() const;
 };
+
+/**
+ * @class Node
+ * @brief Lightweight view over a FastFHIR value.
+ * 
+ * The Node class represents a node in the parsed FastFHIR data structure. It can represent
+ * various types of data, including objects (blocks), arrays, strings, and scalar values.
+ * 
+ * Nodes are lightweight, non-owning value objects. The class provides methods for
+ * accessing child nodes by key or index,
+ * as well as methods for retrieving the node's value in the appropriate type (e.g., string, bool, uint32_t, double).
+ * 
+ */
+class Node {
+    const BYTE*   m_base = nullptr;
+    Size          m_size = 0;
+    uint32_t      m_version = 0;
+    Offset        m_offset = FF_NULL_OFFSET;
+    Offset        m_scalar_offset = FF_NULL_OFFSET;
+    uint16_t      m_recovery = 0;
+    uint16_t      m_child_recovery = 0;
+    FF_FieldKind  m_kind = FF_FIELD_UNKNOWN;
+    bool          m_array_entries_are_offsets = false;
+
+public:
+    /**
+     * @struct Value
+     * @brief Tagged decoded value payload for a node.
+     *
+     * This is a lightweight tagged-union style result for single-call value reads.
+     * The active field is identified by @ref kind.
+     */
+    struct Value {
+        /**
+         * @union Payload
+         * @brief Union storage for decoded scalar/text values.
+         */
+        union Payload {
+            /** @brief Decoded string/code text. */
+            std::string_view string_value;
+            /** @brief Decoded boolean value. */
+            bool bool_value;
+            /** @brief Decoded uint32 value. */
+            uint32_t uint32_value;
+            /** @brief Decoded float64 value. */
+            double float64_value;
+
+            /** @brief Initialize the union to a stable default state. */
+            constexpr Payload() : uint32_value(0) {}
+        } payload;
+
+        /** @brief Field kind associated with this decoded value. */
+        FF_FieldKind kind = FF_FIELD_UNKNOWN;
+        
+        /** @brief Whether the requested scalar/string payload was present and decoded. */
+        bool has_value = false;
+
+        /** @brief Convenience check for payload presence. */
+        explicit operator bool() const { return has_value; }
+        
+        /** @brief Get the value as a string. Returns an empty string if the value is not present or not a string. */
+        std::string_view as_string() const { return has_value && kind == FF_FIELD_STRING ? payload.string_value : std::string_view{}; }
+        
+        /** @brief Get the value as a boolean. Returns false if the value is not present or not a boolean. */
+        bool as_bool() const { return has_value && kind == FF_FIELD_BOOL ? payload.bool_value : false; }
+        
+        /** @brief Get the value as a uint32. Returns 0 if the value is not present or not a uint32. */
+        uint32_t as_uint32() const { return has_value && kind == FF_FIELD_UINT32 ? payload.uint32_value : 0; }
+        
+        /** @brief Get the value as a float64. Returns 0.0 if the value is not present or not a float64. */
+        double as_float64() const { return has_value && kind == FF_FIELD_FLOAT64 ? payload.float64_value : 0.0; }
+    };
+
+    /** @brief Construct an empty/invalid node handle. */
+    Node() = default;
+    /**
+    * @brief Construct a node backed by a structured (offset-based) value.
+    */
+    Node(const BYTE* base, Size size, uint32_t version, Offset offset,
+         uint16_t recovery, FF_FieldKind kind,
+         uint16_t child_recovery = 0, bool array_entries_are_offsets = false);
+
+    /**
+    * @brief Construct a node backed by an inline scalar value.
+    */
+    static Node scalar(const BYTE* base, Size size, uint32_t version,
+                       Offset scalar_offset, FF_FieldKind kind);
+
+    /**
+     * @brief Check whether this node references a valid underlying value.
+     * @return `true` if this node is bound to valid data; otherwise `false`.
+     */
+    explicit operator bool() const;
+
+    /** @brief Check whether this node is an array value. */
+    bool is_array() const;
+    /** @brief Check whether this node is an object/block value. */
+    bool is_object() const;
+    /** @brief Check whether this node is a string value. */
+    bool is_string() const;
+    /** @brief Check whether this node is an inline scalar value. */
+    bool is_scalar() const;
+
+    /**
+     * @brief Get the node field kind.
+     * @return Encoded FastFHIR field kind for this node.
+     */
+    FF_FieldKind kind() const;
+
+    /**
+     * @brief Get the node recovery/type tag.
+     * @return Recovery/type tag associated with this node.
+     */
+    uint16_t recovery() const;
+
+    /**
+     * @brief Enumerate reflected field metadata for object nodes.
+     * @return Field metadata list for object nodes; empty for non-object nodes.
+     */
+    std::vector<FF_FieldInfo> fields() const;
+
+    /**
+     * @brief Enumerate reflected key names for object nodes.
+     * @return Key list for object nodes; empty for non-object nodes.
+     */
+    std::vector<std::string_view> keys() const;
+
+    /**
+     * @brief Get the number of direct children.
+     * @return Entry count for arrays, key count for objects, otherwise `0`.
+     */
+    size_t size() const;
+
+    /**
+     * @brief Materialize all direct array entries.
+     * @return Child nodes for arrays; empty for non-array nodes.
+     */
+    std::vector<Node> entries() const;
+
+    /**
+     * @brief Lookup an object child by key text.
+     * @param key Field name to resolve.
+     * @return Matching child node, or an empty node if not found or not an object.
+     */
+    Node operator[](std::string_view key) const;
+
+    /**
+     * @brief Lookup an object child by precomputed field key descriptor.
+     * @param key Field key descriptor produced from generated field metadata.
+     * @return Matching child node, or an empty node if incompatible/not found.
+     */
+    Node operator[](FF_FieldKey key) const;
+
+    /**
+     * @brief Lookup an array child by index.
+     * @param index Zero-based entry index.
+     * @return Matching child node, or an empty node if out of bounds/not an array.
+     */
+    Node operator[](size_t index) const;
+    /**
+     * @brief Decode this node in one call to a tagged payload.
+     * @return A @ref Value containing `kind` plus decoded payload fields.
+     */
+    Value value() const;
+};
+
 
 } // namespace FastFHIR

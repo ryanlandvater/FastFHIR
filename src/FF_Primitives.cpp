@@ -1,6 +1,6 @@
 /**
  * @file FF_Primitives.cpp
- * @author Ryan Landvater (RyanLandvater@gmail.com)
+ * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
  * @copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @brief Implementation of FastFHIR Core Primitives and Data Structures
  * 
@@ -12,7 +12,6 @@
  * The primitives are designed for high performance and low overhead, enabling zero-copy parsing
  * 
  */
-
 
 // MARK: - FastFHIR Core Primitives Implementation
 #include "../include/FF_Utilities.hpp"

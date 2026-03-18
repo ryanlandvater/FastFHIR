@@ -1,7 +1,7 @@
 /**
  * @file FastFHIR.hpp
- * @author Ryan Landvater (ryanlandvater@gmail.com)
- * @copyright Copyright (c) 2026
+ * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
+ * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @version 0.1
  *
  * @brief FastFHIR — Public API
