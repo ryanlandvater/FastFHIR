@@ -79,7 +79,7 @@ uint32_t FF_HEADER::get_version(const BYTE* const __base) const { return LOAD_U3
 FF_CHECKSUM FF_HEADER::get_checksum(const BYTE* const __base) const {
     auto checksum = FF_CHECKSUM(LOAD_U64(__base + CHECKSUM_OFFSET), __size, get_version(__base));
     if (!checksum) return checksum;
-    auto result = checksum.validate_full(__base);
+    auto result = checksum.validate_offset(__base, FF_CHECKSUM::type, FF_CHECKSUM::recovery);
     if (result != FF_SUCCESS) throw std::runtime_error("Failed to retrieve checksum: " + result.message);
     return checksum;
 }

@@ -112,6 +112,52 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
+## Parser Access Patterns
+
+FastFHIR supports two complementary read styles:
+
+1. Strongly typed generated blocks (`FF_OBSERVATION`, `FF_PATIENT`, etc.)
+2. JSON-like dynamic navigation through `FastFHIR::Node`
+
+### JSON-Style Navigation
+
+Use `Parser::root()` to get a lightweight `Node`, then navigate object fields and arrays with `[]`.
+
+```cpp
+FastFHIR::Parser parser(buffer, size);
+auto root = parser.root();
+
+auto status = root["status"].as_string();
+auto firstCoding = root["code"]["coding"][0];
+auto system = firstCoding["system"].as_string();
+```
+
+`Node` helpers include:
+
+- `keys()` / `fields()` for object introspection
+- `entries()` / `size()` for array traversal
+- scalar reads: `as_string()`, `as_bool()`, `as_uint32()`, `as_float64()`
+
+### IDE-Friendly Typed Field Keys (Fast Path)
+
+Generated constants in `generated_src/FF_FieldKeys.hpp` provide compile-time, block-scoped keys:
+
+```cpp
+using namespace FastFHIR;
+
+auto root = parser.root();
+auto code = root[Fields::OBSERVATION::CODE];
+auto coding0 = code[Fields::CODEABLECONCEPT::CODING][0];
+auto system = coding0[Fields::CODING::SYSTEM].as_string();
+```
+
+This path avoids runtime string scanning by using precomputed field metadata (owner recovery, field kind, header offset, child recovery).
+
+### Validation Model
+
+- `Parser::root()` and Node traversal use simple offset/recovery checks.
+- Full recursive checks are explicit via typed APIs like `view_root_full<T_Block>()` and `read_root_full<T_Block>()`.
+
 ## License
 
 See repository license and file headers for usage and copyright details.

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		35122B662F69AED900F4377B /* FF_Primitives.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35122B622F69AED900F4377B /* FF_Primitives.cpp */; };
+		35CB68442F6ADAA30000FA32 /* FF_Parser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 35CB68432F6ADAA30000FA32 /* FF_Parser.cpp */; };
 		35F7FD232F69BB6E004AE978 /* FF_DataTypes.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD172F69BB6D004AE978 /* FF_DataTypes.hpp */; };
 		35F7FD242F69BB6E004AE978 /* FF_Dictionary.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD192F69BB6D004AE978 /* FF_Dictionary.hpp */; };
 		35F7FD252F69BB6E004AE978 /* FF_Observation.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 35F7FD1A2F69BB6D004AE978 /* FF_Observation.hpp */; };
@@ -25,6 +26,7 @@
 		35122B3C2F69A14900F4377B /* libFastFHIR.dylib */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.dylib"; includeInIndex = 0; path = libFastFHIR.dylib; sourceTree = BUILT_PRODUCTS_DIR; };
 		35122B592F69AEC700F4377B /* FF_Primitives.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Primitives.hpp; sourceTree = "<group>"; };
 		35122B622F69AED900F4377B /* FF_Primitives.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_Primitives.cpp; sourceTree = "<group>"; };
+		35CB68432F6ADAA30000FA32 /* FF_Parser.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = FF_Parser.cpp; path = src/FF_Parser.cpp; sourceTree = SOURCE_ROOT; };
 		35F7FD172F69BB6D004AE978 /* FF_DataTypes.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_DataTypes.hpp; sourceTree = "<group>"; };
 		35F7FD182F69BB6D004AE978 /* FF_DataTypes.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FF_DataTypes.cpp; sourceTree = "<group>"; };
 		35F7FD192F69BB6D004AE978 /* FF_Dictionary.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FF_Dictionary.hpp; sourceTree = "<group>"; };
@@ -78,6 +80,7 @@
 		35122B652F69AED900F4377B /* src */ = {
 			isa = PBXGroup;
 			children = (
+				35CB68432F6ADAA30000FA32 /* FF_Parser.cpp */,
 				35122B622F69AED900F4377B /* FF_Primitives.cpp */,
 			);
 			path = src;
@@ -183,6 +186,7 @@
 				35F7FD2B2F69BB6E004AE978 /* FF_R4_Dictionary.cpp in Sources */,
 				35F7FD2C2F69BB6E004AE978 /* FF_Patient.cpp in Sources */,
 				35F7FD2D2F69BB6E004AE978 /* FF_R5_Dictionary.cpp in Sources */,
+				35CB68442F6ADAA30000FA32 /* FF_Parser.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -1,5 +1,6 @@
 import os
 import json
+import re
 
 # =====================================================================
 # 1. FASTFHIR TYPE MAPPING & NORMALIZATION
@@ -77,6 +78,33 @@ def _resolve_data_type_name(fhir_type, field_orig_name, parent_path, resolved_pa
     if fhir_type in TYPE_MAP and fhir_type != 'DEFAULT': return TYPE_MAP[fhir_type]['data_type']
     return fhir_type + 'Data'
 
+def _field_key_constant_name(raw_name):
+    snake = re.sub(r'(?<!^)(?=[A-Z])', '_', raw_name).upper()
+    snake = re.sub(r'[^A-Z0-9]+', '_', snake)
+    snake = re.sub(r'_+', '_', snake).strip('_')
+    return f"FF_{snake}"
+
+def _field_key_short_name(raw_name):
+    snake = re.sub(r'(?<!^)(?=[A-Z])', '_', raw_name).upper()
+    snake = re.sub(r'[^A-Z0-9]+', '_', snake)
+    return re.sub(r'_+', '_', snake).strip('_')
+
+def _block_key_namespace(path):
+    return re.sub(r'[^A-Z0-9_]', '_', path.replace('.', '_').upper())
+
+def _child_recovery_key_expr(f, block_struct_name):
+    if f['is_array']:
+        if f['fhir_type'] in ('string', 'code'):
+            return 'RECOVER_FF_STRING'
+        child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
+        return f'RECOVER_{child_struct}'
+    if f['fhir_type'] == 'string':
+        return 'RECOVER_FF_STRING'
+    if f['cpp_type'] == 'Offset':
+        child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
+        return f'RECOVER_{child_struct}'
+    return '0'
+
 def _needs_getter(f):
     """Returns True if a field requires a parent-created getter method."""
     return f['is_array'] or f['fhir_type'] == 'string' or f['cpp_type'] == 'Offset'
@@ -89,6 +117,41 @@ def _getter_return_type(f, block_struct_name):
         return 'FF_STRING'
     else:
         return _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
+
+def _field_kind_expr(f):
+    if f['is_array']:
+        return 'FF_FIELD_ARRAY'
+    if f['fhir_type'] == 'string':
+        return 'FF_FIELD_STRING'
+    if f['cpp_type'] == 'Offset':
+        return 'FF_FIELD_BLOCK'
+    if f['fhir_type'] == 'code':
+        return 'FF_FIELD_CODE'
+    if f['data_type'] == 'bool':
+        return 'FF_FIELD_BOOL'
+    if f['data_type'] == 'double':
+        return 'FF_FIELD_FLOAT64'
+    if f['data_type'] == 'uint32_t':
+        return 'FF_FIELD_UINT32'
+    return 'FF_FIELD_UNKNOWN'
+
+def _child_recovery_expr(f, block_struct_name):
+    if f['is_array']:
+        if f['fhir_type'] in ('string', 'code'):
+            return 'FF_STRING::recovery'
+        child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
+        return f'{child_struct}::recovery'
+    if f['fhir_type'] == 'string':
+        return 'FF_STRING::recovery'
+    if f['cpp_type'] == 'Offset':
+        child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
+        return f'{child_struct}::recovery'
+    return '0'
+
+def _array_entries_are_offsets_expr(f):
+    if not f['is_array']:
+        return '0'
+    return '1' if f['fhir_type'] in ('string', 'code') else '0'
 
 def generate_getter_declarations(layout, block_struct_name):
     """Generate getter method declarations for child data blocks (Iris pattern)."""
@@ -113,11 +176,122 @@ def generate_getter_implementations(layout, block_struct_name):
             cpp += f"    if (__version < FHIR_VERSION_{f['first_version_name']}) return {ret_type}(FF_NULL_OFFSET, __size, __version);\n"
         cpp += f"    auto child = {ret_type}(LOAD_U64(__base + __offset + {block_struct_name}::{f['name']}), __size, __version);\n"
         cpp += f"    if (!child) return child;\n"
-        cpp += f"    auto result = child.validate_full(__base);\n"
+        cpp += f"    auto result = child.validate_offset(__base, {ret_type}::type, {ret_type}::recovery);\n"
         cpp += f"    if (result != FF_SUCCESS) throw std::runtime_error(\"Failed to retrieve {f['cpp_name']}: \" + result.message);\n"
         cpp += f"    return child;\n"
         cpp += f"}}\n"
     return cpp
+
+def generate_field_info_implementation(layout, block_struct_name):
+    cpp = f'const FF_FieldInfo {block_struct_name}::FIELDS[{block_struct_name}::FIELD_COUNT] = {{\n'
+    for f in layout:
+        cpp += (
+            f'    {{"{f["cpp_name"]}", {_field_kind_expr(f)}, {block_struct_name}::{f["name"]}, '
+            f'{_child_recovery_expr(f, block_struct_name)}, {_array_entries_are_offsets_expr(f)}}},\n'
+        )
+    cpp += '};\n'
+    cpp += f'const FF_FieldInfo* {block_struct_name}::find_field(std::string_view name) const {{\n'
+    cpp += f'    for (size_t i = 0; i < FIELD_COUNT; ++i) {{\n'
+    cpp += f'        if (name == FIELDS[i].name) return &FIELDS[i];\n'
+    cpp += f'    }}\n'
+    cpp += f'    return nullptr;\n'
+    cpp += f'}}\n'
+    return cpp
+
+def generate_reflection_dispatch(block_struct_names):
+    hpp = (
+        "// ============================================================\n"
+        "// This file is autogenerated by FastFHIR. DO NOT EDIT.\n"
+        "// Copyright (c) Ryan Landvater. All rights reserved.\n"
+        "// ============================================================\n"
+        "#pragma once\n"
+        "#include \"../include/FF_Primitives.hpp\"\n"
+        "#include <string_view>\n"
+        "#include <vector>\n\n"
+        "namespace FastFHIR {\n"
+        "class Node;\n"
+        "std::vector<FF_FieldInfo> reflected_fields(uint16_t recovery);\n"
+        "std::vector<std::string_view> reflected_keys(uint16_t recovery);\n"
+        "Node reflected_child_node(const BYTE* base, Size size, uint32_t version, Offset offset, uint16_t recovery, std::string_view key);\n"
+        "} // namespace FastFHIR\n"
+    )
+
+    cpp = (
+        "// ============================================================\n"
+        "// This file is autogenerated by FastFHIR. DO NOT EDIT.\n"
+        "// Copyright (c) Ryan Landvater. All rights reserved.\n"
+        "// ============================================================\n\n"
+        "#include \"../include/FF_Utilities.hpp\"\n"
+        "#include \"../include/FF_Parser.hpp\"\n"
+        "#include \"FF_AllTypes.hpp\"\n"
+        "#include \"FF_Reflection.hpp\"\n\n"
+        "namespace FastFHIR {\n\n"
+        "template <typename T_Block>\n"
+        "std::vector<FF_FieldInfo> fields_for_block() {\n"
+        "    return std::vector<FF_FieldInfo>(T_Block::FIELDS, T_Block::FIELDS + T_Block::FIELD_COUNT);\n"
+        "}\n\n"
+        "template <typename T_Block>\n"
+        "Node object_field_node(const T_Block& block, const BYTE* base, std::string_view key) {\n"
+        "    const FF_FieldInfo* field = block.find_field(key);\n"
+        "    if (!field) return {};\n\n"
+        "    const Offset value_offset = block.__offset + field->field_offset;\n"
+        "    if (field->kind == FF_FIELD_STRING) {\n"
+        "        const Offset child_offset = LOAD_U64(base + value_offset);\n"
+        "        if (child_offset == FF_NULL_OFFSET) return {};\n"
+        "        return Node(base, block.__size, block.__version, child_offset, FF_STRING::recovery, FF_FIELD_STRING);\n"
+        "    }\n"
+        "    if (field->kind == FF_FIELD_ARRAY) {\n"
+        "        const Offset child_offset = LOAD_U64(base + value_offset);\n"
+        "        if (child_offset == FF_NULL_OFFSET) return {};\n"
+        "        return Node(base, block.__size, block.__version, child_offset, FF_ARRAY::recovery, FF_FIELD_ARRAY,\n"
+        "                    field->child_recovery, field->array_entries_are_offsets != 0);\n"
+        "    }\n"
+        "    if (field->kind == FF_FIELD_BLOCK) {\n"
+        "        const Offset child_offset = LOAD_U64(base + value_offset);\n"
+        "        if (child_offset == FF_NULL_OFFSET) return {};\n"
+        "        return Node(base, block.__size, block.__version, child_offset, field->child_recovery, FF_FIELD_BLOCK);\n"
+        "    }\n"
+        "    return Node::scalar(base, block.__size, block.__version, value_offset, field->kind);\n"
+        "}\n\n"
+        "template <typename T_Block>\n"
+        "std::vector<std::string_view> keys_for_block() {\n"
+        "    std::vector<std::string_view> keys;\n"
+        "    keys.reserve(T_Block::FIELD_COUNT);\n"
+        "    for (size_t i = 0; i < T_Block::FIELD_COUNT; ++i) {\n"
+        "        keys.emplace_back(T_Block::FIELDS[i].name);\n"
+        "    }\n"
+        "    return keys;\n"
+        "}\n\n"
+        "std::vector<FF_FieldInfo> reflected_fields(uint16_t recovery) {\n"
+        "    switch (recovery) {\n"
+    )
+    for s_name in block_struct_names:
+        cpp += f"        case {s_name}::recovery: return fields_for_block<{s_name}>();\n"
+    cpp += (
+        "        default: return {};\n"
+        "    }\n"
+        "}\n\n"
+        "std::vector<std::string_view> reflected_keys(uint16_t recovery) {\n"
+        "    switch (recovery) {\n"
+    )
+    for s_name in block_struct_names:
+        cpp += f"        case {s_name}::recovery: return keys_for_block<{s_name}>();\n"
+    cpp += (
+        "        default: return {};\n"
+        "    }\n"
+        "}\n\n"
+        "Node reflected_child_node(const BYTE* base, Size size, uint32_t version, Offset offset, uint16_t recovery, std::string_view key) {\n"
+        "    switch (recovery) {\n"
+    )
+    for s_name in block_struct_names:
+        cpp += f"        case {s_name}::recovery: return object_field_node({s_name}(offset, size, version), base, key);\n"
+    cpp += (
+        "        default: return {};\n"
+        "    }\n"
+        "}\n\n"
+        "} // namespace FastFHIR\n"
+    )
+    return hpp, cpp
 
 # =====================================================================
 # 3. ZERO-COPY C++ GENERATION HELPERS
@@ -379,8 +553,11 @@ def generate_cxx_for_blocks(master_blocks, versions):
         hpp += f"        return HEADER_SIZE;\n    }}\n"
 
         hpp += f"    explicit {s_name}(Offset off, Size total_size, uint32_t ver) : DATA_BLOCK(off, total_size, ver) {{}}\n"
+        hpp += f"    static constexpr size_t FIELD_COUNT = {len(layout)};\n"
+        hpp += f"    static const FF_FieldInfo FIELDS[FIELD_COUNT];\n"
         hpp += f"    FF_Result validate_full(const BYTE* const __base) const noexcept;\n"
         hpp += f"    {d_name} read(const BYTE* const __base) const;\n\n"
+        hpp += f"    const FF_FieldInfo* find_field(std::string_view name) const;\n"
         hpp += generate_getter_declarations(layout, s_name)
         hpp += f"}};\n\n"
         
@@ -392,6 +569,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
 
         # CPP Implementations
         cpp += f"FF_Result {s_name}::validate_full(const BYTE *const __base) const noexcept {{ return validate_offset(__base, type, recovery); }}\n"
+        cpp += generate_field_info_implementation(layout, s_name)
         cpp += f"{d_name} {s_name}::read(const BYTE *const __base) const {{\n"
         cpp += f"#ifdef __EMSCRIPTEN__\n    const_cast<{s_name}&>(*this).check_and_fetch_remote(__base);\n#endif\n"
         cpp += f"    {d_name} data;\n{generate_read_fields(layout, s_name)}    return data;\n}}\n"
@@ -414,6 +592,9 @@ def generate_cxx_for_blocks(master_blocks, versions):
 def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir="generated_src", code_enum_map=None):
     code_enums = code_enum_map or {}
     os.makedirs(output_dir, exist_ok=True)
+    all_field_names = set()
+    reflected_block_names = set()
+    block_key_defs = []
     
     print("Generating FF_DataTypes...")
     type_bundles = []
@@ -446,6 +627,12 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
             blocks = merge_fhir_versions(sch, t)
             _annotate_code_enums(blocks, code_enums)
             all_blocks.update(blocks)
+            reflected_block_names.update({"FF_" + path.replace('.', '_').upper() for path in blocks})
+            for path, blk in blocks.items():
+                block_key_defs.append((path, blk['layout']))
+            for blk in blocks.values():
+                for field in blk['layout']:
+                    all_field_names.add(field['orig_name'])
     
     if all_blocks:
         h, c = generate_cxx_for_blocks(all_blocks, versions)
@@ -469,13 +656,57 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
             generated_resources.append(res)
             blocks = merge_fhir_versions(sch, res)
             _annotate_code_enums(blocks, code_enums)
+            reflected_block_names.update({"FF_" + path.replace('.', '_').upper() for path in blocks})
+            for path, blk in blocks.items():
+                block_key_defs.append((path, blk['layout']))
+            for blk in blocks.values():
+                for field in blk['layout']:
+                    all_field_names.add(field['orig_name'])
             hpp, cpp = generate_cxx_for_blocks(blocks, versions)
             with open(os.path.join(output_dir, f"FF_{res}.hpp"), "w") as f: 
                 f.write(f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n\n{hpp}")
             with open(os.path.join(output_dir, f"FF_{res}.cpp"), "w") as f: 
                 f.write(f"{auto_header}\n#include \"../include/FF_Utilities.hpp\"\n#include \"FF_Dictionary.hpp\"\n#include \"FF_AllTypes.hpp\"\n\n{cpp}")
+
+    field_keys_hpp = (
+        f"{auto_header}#pragma once\n"
+        "#include \"../include/FF_Primitives.hpp\"\n\n"
+        "namespace FastFHIR::FieldKeys {\n\n"
+    )
+    for field_name in sorted(all_field_names):
+        field_keys_hpp += f"inline constexpr FF_FieldKey {_field_key_constant_name(field_name)}{{\"{field_name.lower()}\"}};\n"
+    field_keys_hpp += "\n} // namespace FastFHIR::FieldKeys\n"
+
+    field_keys_hpp += "\nnamespace FastFHIR::Fields {\n\n"
+    seen_blocks = set()
+    for path, layout in sorted(block_key_defs, key=lambda item: item[0]):
+        if path in seen_blocks:
+            continue
+        seen_blocks.add(path)
+        block_struct_name = "FF_" + path.replace('.', '_').upper()
+        owner_recovery = f"RECOVER_{block_struct_name}"
+        ns_name = _block_key_namespace(path)
+        field_keys_hpp += f"namespace {ns_name} {{\n"
+        for f in layout:
+            field_keys_hpp += (
+                f"inline constexpr FF_FieldKey {_field_key_short_name(f['orig_name'])}"
+                f"{{{owner_recovery}, {_field_kind_expr(f)}, {f['offset']}, "
+                f"{_child_recovery_key_expr(f, block_struct_name)}, {_array_entries_are_offsets_expr(f)}, "
+                f"\"{f['cpp_name']}\"}};\n"
+            )
+        field_keys_hpp += f"}} // namespace {ns_name}\n\n"
+    field_keys_hpp += "} // namespace FastFHIR::Fields\n"
+
+    with open(os.path.join(output_dir, "FF_FieldKeys.hpp"), "w") as f:
+        f.write(field_keys_hpp)
+
+    reflection_hpp, reflection_cpp = generate_reflection_dispatch(sorted(reflected_block_names))
+    with open(os.path.join(output_dir, "FF_Reflection.hpp"), "w") as f:
+        f.write(reflection_hpp)
+    with open(os.path.join(output_dir, "FF_Reflection.cpp"), "w") as f:
+        f.write(reflection_cpp)
     
-    all_types_hpp = f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n"
+    all_types_hpp = f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n#include \"FF_FieldKeys.hpp\"\n#include \"FF_Reflection.hpp\"\n"
     for res in generated_resources:
         all_types_hpp += f"#include \"FF_{res}.hpp\"\n"
     all_types_hpp += "\n"

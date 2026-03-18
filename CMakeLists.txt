@@ -29,6 +29,7 @@ set(FASTFHIR_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated_src")
 # Hand-written C++ source files that are always part of the library.
 set(FASTFHIR_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FF_Primitives.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/FF_Parser.cpp
 )
 
 # Optionally run generator logic when configuring the project.

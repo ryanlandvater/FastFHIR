@@ -2,6 +2,7 @@
  * @file FF_Primitives.hpp
  * @author Ryan Landvater (RyanLandvater@gmail.com)
  * @copyright (c) 2026 Ryan Landvater. All rights reserved.
+ * @version 0.1
  * @brief FastFHIR Core Primitives and Data Structures
  * 
  * This header defines the core data structures and primitives for the FastFHIR format, including:
@@ -23,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <cstddef>
 #include <cstring>
 #include <stdexcept>
 #include <limits>
@@ -150,6 +152,56 @@ constexpr uint32_t FF_MAX_HASH_BYTES = 32;
 // =====================================================================
 // FORWARD DECLARATIONS FOR DATA TYPES
 // =====================================================================
+enum FF_FieldKind : uint16_t {
+    FF_FIELD_UNKNOWN = 0,
+    FF_FIELD_STRING = 1,
+    FF_FIELD_ARRAY = 2,
+    FF_FIELD_BLOCK = 3,
+    FF_FIELD_CODE = 4,
+    FF_FIELD_BOOL = 5,
+    FF_FIELD_UINT32 = 6,
+    FF_FIELD_FLOAT64 = 7,
+};
+
+struct FF_FieldInfo {
+    const char* name = nullptr;
+    FF_FieldKind kind = FF_FIELD_UNKNOWN;
+    uint16_t field_offset = 0;
+    uint16_t child_recovery = 0;
+    uint8_t array_entries_are_offsets = 0;
+};
+
+struct FF_FieldKey {
+        uint16_t owner_recovery = 0;
+        FF_FieldKind kind = FF_FIELD_UNKNOWN;
+        uint16_t field_offset = 0;
+        uint16_t child_recovery = 0;
+        uint8_t array_entries_are_offsets = 0;
+        std::string_view name{};
+
+    constexpr FF_FieldKey() = default;
+
+    template <std::size_t N>
+        constexpr FF_FieldKey(const char (&literal)[N]) noexcept : name(literal, N - 1) {}
+
+        constexpr FF_FieldKey(uint16_t owner,
+                                                    FF_FieldKind field_kind,
+                                                    uint16_t offset,
+                                                    uint16_t child = 0,
+                                                    uint8_t array_offsets = 0,
+                                                    std::string_view field_name = {}) noexcept
+                : owner_recovery(owner),
+                    kind(field_kind),
+                    field_offset(offset),
+                    child_recovery(child),
+                    array_entries_are_offsets(array_offsets),
+                    name(field_name) {}
+
+    constexpr FF_FieldKey(std::string_view key_name) noexcept : name(key_name) {}
+    
+    constexpr operator std::string_view() const noexcept { return name; }
+};
+
 struct DATA_BLOCK;  // Base structure for all data blocks
 struct FF_HEADER;   // Stream header block
 struct FF_CHECKSUM; // Checksum block
