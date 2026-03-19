@@ -4,6 +4,7 @@
  * @copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @version 0.1
  * @brief FastFHIR Core Primitives and Data Structures
+    * @license FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
  * 
  * This header defines the core data structures and primitives for the FastFHIR format, including:
  * - FF_HEADER: The main file header containing metadata, checksum, and root resource information.
@@ -126,7 +127,7 @@ struct FF_FieldKey {
     uint16_t owner_recovery = 0;
     FF_FieldKind kind = FF_FIELD_UNKNOWN;
     uint16_t field_offset = 0;
-    uint16_t child_recovery = 0;
+    RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED;
     uint8_t array_entries_are_offsets = 0;
     const char* name = nullptr;
     std::size_t name_len = 0;
@@ -140,7 +141,7 @@ struct FF_FieldKey {
         constexpr FF_FieldKey(uint16_t owner,
                                                     FF_FieldKind field_kind,
                                                     uint16_t offset,
-                                                    uint16_t child,
+                                                    RECOVERY_TAG child,
                                                     uint8_t array_offsets,
                                                     const char (&field_name)[N]) noexcept
                 : owner_recovery(owner),
@@ -154,7 +155,7 @@ struct FF_FieldKey {
     constexpr FF_FieldKey(uint16_t owner,
                                                     FF_FieldKind field_kind,
                                                     uint16_t offset,
-                                                    uint16_t child,
+                                                    RECOVERY_TAG child,
                                                     uint8_t array_offsets,
                                                     const char* field_name,
                                                     std::size_t field_name_len) noexcept
@@ -177,7 +178,7 @@ struct FF_FieldKey {
     static FF_FieldKey from_cstr(uint16_t owner,
                                                             FF_FieldKind field_kind,
                                                             uint16_t offset,
-                                                            uint16_t child,
+                                                            RECOVERY_TAG child,
                                                             uint8_t array_offsets,
                                                             const char* field_name) noexcept {
         return FF_FieldKey(owner,
@@ -244,7 +245,7 @@ struct FF_EXPORT DATA_BLOCK {
 // =====================================================================
 struct FF_EXPORT FF_HEADER : DATA_BLOCK {
     static constexpr char type [] = "FF_HEADER";
-    static constexpr enum RECOVERY recovery = RECOVER_FF_HEADER;
+    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_HEADER;
     enum vtable_sizes {
         MAGIC_S             = TYPE_SIZE_UINT32,
         RECOVERY_S          = TYPE_SIZE_UINT16,
@@ -274,24 +275,18 @@ struct FF_EXPORT FF_HEADER : DATA_BLOCK {
     uint16_t    get_root_type(const BYTE* const __base) const;
 };
 
-using FF_FILE_HEADER = FF_HEADER;
-
 void FF_EXPORT STORE_FF_HEADER(BYTE* const __base, uint32_t version,
                                Offset checksum_offset, Offset root_offset,
                                uint16_t root_recovery, Size payload_size);
 
-inline void STORE_FF_FILE_HEADER(BYTE* const __base, uint32_t version,
-                                 Offset root_offset, uint16_t root_recovery,
-                                 Size payload_size) {
-    STORE_FF_HEADER(__base, version, FF_NULL_OFFSET, root_offset, root_recovery, payload_size);
-}
+
 
 // =====================================================================
 // FIXED-SIZE CHECKSUM FOOTER
 // =====================================================================
 struct FF_EXPORT FF_CHECKSUM : DATA_BLOCK {
     static constexpr char type [] = "FF_CHECKSUM";
-    static constexpr enum RECOVERY recovery = RECOVER_FF_CHECKSUM;
+    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_CHECKSUM;
     
     enum vtable_sizes {
         VALIDATION_S    = TYPE_SIZE_UINT64,
@@ -326,7 +321,7 @@ BYTE* FF_EXPORT STORE_FF_CHECKSUM_METADATA(BYTE* const __base, Offset start_offs
 // =====================================================================
 struct FF_EXPORT FF_ARRAY : DATA_BLOCK {
     static constexpr char type [] = "FF_ARRAY";
-    static constexpr enum RECOVERY recovery = RECOVER_FF_ARRAY;
+    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_ARRAY;
     enum vtable_sizes {
         VALIDATION_S    = TYPE_SIZE_UINT64,
         RECOVERY_S      = TYPE_SIZE_UINT16,
@@ -357,7 +352,7 @@ void FF_EXPORT STORE_FF_ARRAY_HEADER(BYTE* const __base, Offset& write_head,
 // =====================================================================
 struct FF_EXPORT FF_STRING : DATA_BLOCK {
     static constexpr char type [] = "FF_STRING";
-    static constexpr enum RECOVERY recovery = RECOVER_FF_STRING;
+    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_STRING;
     enum vtable_sizes {
         VALIDATION_S    = TYPE_SIZE_UINT64,
         RECOVERY_S      = TYPE_SIZE_UINT16,
@@ -393,7 +388,7 @@ struct ResourceData {
 
 struct FF_EXPORT FF_RESOURCE : DATA_BLOCK {
     static constexpr char type [] = "FF_RESOURCE";
-    static constexpr enum RECOVERY recovery = RECOVER_FF_RESOURCE;
+    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_RESOURCE;
     enum vtable_sizes {
         VALIDATION_S      = TYPE_SIZE_UINT64,
         RECOVERY_S        = TYPE_SIZE_UINT16,

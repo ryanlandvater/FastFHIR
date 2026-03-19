@@ -2,6 +2,7 @@
  * @file FastFHIR.hpp
  * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
  * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
+ * @remark FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
  * @version 0.1
  *
  * @brief FastFHIR — Public API

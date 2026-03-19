@@ -1,7 +1,3 @@
-import os
-import json
-import re
-
 # =====================================================================
 # FastFHIR Code Systems Generator (ffcs.py)
 # 
@@ -9,9 +5,15 @@ import re
 # bindings, cross-references ValueSet bundles to extract allowed values,
 # and generates FF_CodeSystems.hpp with enum classes + parse/serialize
 # helpers for each bounded code system.
-# =====================================================================
+#
+# Author: Ryan Landvater (ryanlandvater[at]gmail[dot]com)
+# Copyright (c) 2025 Ryan Landvater. All rights reserved.
+# License: FastFHIR Shared Source License (FF-SSL)
+# =============================================================
 
-# ValueSet URLs whose code sets are unbounded / externally maintained
+import os
+import json
+import re
 
 EXCLUDED_VALUESET_FRAGMENTS = {
     'all-languages', 'mimetypes', 'ucum-units', 'bcp:47', 'languages',

@@ -1,3 +1,17 @@
+# =============================================================
+# FastFHIR FlatBuffer Code Generator
+#
+# This script processes FHIR StructureDefinition bundles to generate
+# C++ header and source files that define zero-copy data structures
+# and accessors for FHIR resources. It extracts ValueSet information
+# to create enums for code fields, and generates efficient getters
+# and size calculation methods for each resource type.
+#
+# Author: Ryan Landvater (ryanlandvater[at]gmail[dot]com)
+# Copyright (c) 2025 Ryan Landvater. All rights reserved.
+# License: FastFHIR Shared Source License (FF-SSL)
+# =============================================================
+
 import os
 import json
 import re
@@ -103,7 +117,7 @@ def _child_recovery_key_expr(f, block_struct_name):
     if f['cpp_type'] == 'Offset':
         child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
         return f'RECOVER_{child_struct}'
-    return '0'
+    return 'FF_RECOVER_UNDEFINED'
 
 def _needs_getter(f):
     """Returns True if a field requires a parent-created getter method."""
@@ -146,7 +160,7 @@ def _child_recovery_expr(f, block_struct_name):
     if f['cpp_type'] == 'Offset':
         child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
         return f'{child_struct}::recovery'
-    return '0'
+    return 'FF_RECOVER_UNDEFINED'
 
 def _array_entries_are_offsets_expr(f):
     if not f['is_array']:
@@ -365,6 +379,9 @@ def generate_size_fields(layout, block_struct_name, data_name):
                 else:
                     cpp += f"            __total += SIZE_{child_struct}(__item);\n"
                 cpp += f"        }}\n    }}\n"
+                cpp += f"    else if (!{data_name}.{f['cpp_name']}_handles.empty()) {{\n"
+                cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}_handles.size() * TYPE_SIZE_OFFSET);\n"
+                cpp += f"    }}\n"
         elif f['fhir_type'] == 'string':
             cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
             cpp += f"        __total += ff_align(FF_STRING::HEADER_SIZE + {data_name}.{f['cpp_name']}.size());\n    }}\n"
@@ -415,6 +432,16 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                     cpp += f"            {store_fn}(__base, __entries_start + __i * {child_struct}::HEADER_SIZE, child_off, {data_name}.{f['cpp_name']}[__i]);\n"
                 else:
                     cpp += f"            child_off = {store_fn}(__base, __entries_start + __i * {child_struct}::HEADER_SIZE, child_off, {data_name}.{f['cpp_name']}[__i]);\n"
+                cpp += f"        }}\n"
+                cpp += f"    }} "
+                cpp += f"    else if (!{data_name}.{f['cpp_name']}_handles.empty()) {{\n"
+                cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
+                cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}_handles.size());\n"
+                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_{block_struct_name}, TYPE_SIZE_OFFSET, __n);\n"
+                cpp += f"        Offset __entries_start = child_off;\n"
+                cpp += f"        child_off += static_cast<Offset>(__n) * TYPE_SIZE_OFFSET;\n"
+                cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
+                cpp += f"            STORE_U64(__base + __entries_start + __i * TYPE_SIZE_OFFSET, {data_name}.{f['cpp_name']}_handles[__i].offset());\n"
                 cpp += f"        }}\n"
                 cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
         elif f['fhir_type'] == 'string':
@@ -524,6 +551,8 @@ def generate_cxx_for_blocks(master_blocks, versions):
             if f['is_array']:
                 item_type = code_enum['enum'] if code_enum else _resolve_data_type_name(f['fhir_type'], f['orig_name'], path, f.get('resolved_path'))
                 hpp += f"    std::vector<{item_type}> {f['cpp_name']};\n"
+                if f['fhir_type'] not in ('string', 'code'):
+                    hpp += f"    std::vector<FastFHIR::ObjectHandle> {f['cpp_name']}_handles;\n"
             elif f['fhir_type'] == 'string': hpp += f"    std::string_view {f['cpp_name']};\n"
             elif code_enum: hpp += f"    {code_enum['enum']} {f['cpp_name']} = {code_enum['enum']}::Unknown;\n"
             elif f['cpp_type'] == 'Offset': hpp += f"    {_resolve_data_type_name(f['fhir_type'], f['orig_name'], path, f.get('resolved_path'))}* {f['cpp_name']} = nullptr;\n"
@@ -534,7 +563,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
         # Data Block
         hpp += f"struct FF_EXPORT {s_name} : DATA_BLOCK {{\n"
         hpp += f"    static constexpr char type [] = \"{s_name}\";\n"
-        hpp += f"    static constexpr enum RECOVERY recovery = RECOVER_{s_name};\n"
+        hpp += f"    static constexpr enum RECOVERY_TAG recovery = RECOVER_{s_name};\n"
         hpp += f"    enum vtable_sizes {{\n        VALIDATION_S = TYPE_SIZE_UINT64,\n        RECOVERY_S = TYPE_SIZE_UINT16,\n        PADDING_S = 6,\n"
         for f in layout: hpp += f"        {f['name']}_S = {f['size_const']},\n"
         hpp += f"    }};\n    enum vtable_offsets {{\n        VALIDATION = 0,\n        RECOVERY = VALIDATION + VALIDATION_S,\n        PADDING = RECOVERY + RECOVERY_S,\n"
@@ -570,7 +599,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
         # Type Traits Specialization
         hpp += f"namespace FastFHIR {{\n"
         hpp += f"template<> struct TypeTraits<{d_name}> {{\n"
-        hpp += f"    static constexpr uint16_t recovery = {s_name}::recovery;\n"
+        hpp += f"    static constexpr auto recovery = {s_name}::recovery;\n"
         hpp += f"    static Size size(const {d_name}& d) {{ return SIZE_{s_name}(d); }}\n"
         hpp += f"    static void store(BYTE* const base, Offset off, const {d_name}& d) {{ STORE_{s_name}(base, off, d); }}\n"
         hpp += f"}};\n"
@@ -640,7 +669,7 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
     lines.append("// =====================================================================")
     lines.append("// RECOVERY TAG REGISTRY (auto-generated from FHIR StructureDefinitions)")
     lines.append("// =====================================================================")
-    lines.append("enum RECOVERY : uint16_t {")
+    lines.append("enum RECOVERY_TAG : uint16_t {")
     lines.append("    // Undefined / Sentinel")
     lines.append("    FF_RECOVER_UNDEFINED                  = 0x0000,")
     lines.append("")
@@ -681,6 +710,173 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
     print(f"Generated {out_path}")
 
 # =====================================================================
+# 6. INGESTOR MAPPINGS GENERATOR (simdjson bridge)
+# =====================================================================
+def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src"):
+    """
+    Generates the standalone FF_IngestMappings.hpp and .cpp files bridging
+    simdjson text to FastFHIR POD structs, complete with location-aware error logging.
+    """
+    auto_header = (
+        "// ============================================================\n"
+        "// This file is autogenerated by FastFHIR. DO NOT EDIT.\n"
+        "// Copyright (c) Ryan Landvater. All rights reserved.\n"
+        "// ============================================================\n"
+    )
+
+    hpp = f"{auto_header}#pragma once\n#include \"FF_AllTypes.hpp\"\n"
+    hpp += "#include \"FF_Logger.hpp\"\n"
+    hpp += "#include <simdjson.h>\n\nnamespace FastFHIR::Ingest {\n\n"
+
+    cpp = f"{auto_header}#include \"FF_IngestMappings.hpp\"\n\n"
+    cpp += "namespace FastFHIR::Ingest {\n\n"
+
+    for path, blk in master_blocks.items():
+        data_type = path.replace('.', '') + 'Data'
+        fn_name = path.replace('.', '_') + "_from_json"
+        
+        # Declaration
+        hpp += f"{data_type} {fn_name}(simdjson::ondemand::object obj, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+
+        # Implementation
+        cpp += f"{data_type} {fn_name}(simdjson::ondemand::object obj, FastFHIR::ConcurrentLogger* logger) {{\n"
+        cpp += f"    {data_type} data;\n"
+        cpp += f"    for (auto field : obj) {{\n"
+        cpp += f"        std::string_view key = field.unescaped_key().value_unsafe();\n"
+
+        is_first = True
+        for f in blk['layout']:
+            json_key = f['orig_name']
+            cpp_name = f['cpp_name']
+            fhir_location = f"{path}.{json_key}"
+            
+            err_log = f'if (logger) logger->log("[Warning] FastFHIR Ingestion: Malformed data at {fhir_location}");'
+
+            if is_first:
+                cpp += f'        if (key == "{json_key}") {{\n'
+                is_first = False
+            else:
+                cpp += f'        else if (key == "{json_key}") {{\n'
+
+            # --- Array Logic ---
+            if f['is_array']:
+                cpp += f'            simdjson::ondemand::array arr;\n'
+                cpp += f'            if (field.value().get_array().get(arr) == simdjson::SUCCESS) {{\n'
+                cpp += f'                for (auto item : arr) {{\n'
+                if f['fhir_type'] in ('string', 'code'):
+                    code_enum = f.get('code_enum')
+                    cpp += f'                    std::string_view val;\n'
+                    cpp += f'                    if (item.get_string().get(val) == simdjson::SUCCESS) {{\n'
+                    if code_enum:
+                        cpp += f'                        data.{cpp_name}.push_back({code_enum["parse"]}(std::string(val)));\n'
+                    else:
+                        cpp += f'                        data.{cpp_name}.push_back(val);\n'
+                    cpp += f'                    }} else {{ {err_log} }}\n'
+                elif f['fhir_type'] == 'Resource':
+                    cpp += f'                    // [Polymorphic Resource array {cpp_name} skipped]\n'
+                else:
+                    if f['fhir_type'] in ('BackboneElement', 'Element'):
+                        child_fn = f.get('resolved_path', f"{path}.{json_key}").replace('.', '_') + "_from_json"
+                    else:
+                        child_fn = f"{f['fhir_type']}_from_json"
+
+                    cpp += f'                    simdjson::ondemand::object obj_val;\n'
+                    cpp += f'                    if (item.get_object().get(obj_val) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                        data.{cpp_name}.push_back({child_fn}(obj_val, logger));\n'
+                    cpp += f'                    }} else {{ {err_log} }}\n'
+                cpp += f'                }}\n'
+                cpp += f'            }} else {{ {err_log} }}\n'
+                cpp += f'        }}\n'
+                continue
+
+            # --- String Logic ---
+            if f['fhir_type'] == 'string':
+                cpp += f'            std::string_view val;\n'
+                cpp += f'            if (field.value().get_string().get(val) == simdjson::SUCCESS) {{\n'
+                cpp += f'                data.{cpp_name} = val;\n'
+                cpp += f'            }} else {{ {err_log} }}\n'
+            
+            # --- Nested Object Logic ---
+            elif f['cpp_type'] == 'Offset':
+                if f['fhir_type'] == 'Resource':
+                    cpp += f'            // [Polymorphic Resource \'{cpp_name}\' skipped. Handled via ObjectHandle bypass]\n'
+                else:
+                    child_data_type = _resolve_data_type_name(f['fhir_type'], f['orig_name'], path, f.get('resolved_path'))
+                    if f['fhir_type'] in ('BackboneElement', 'Element'):
+                        child_fn = f.get('resolved_path', f"{path}.{json_key}").replace('.', '_') + "_from_json"
+                    else:
+                        child_fn = f"{f['fhir_type']}_from_json"
+                    
+                    cpp += f'            simdjson::ondemand::object obj_val;\n'
+                    cpp += f'            if (field.value().get_object().get(obj_val) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                data.{cpp_name} = new {child_data_type}({child_fn}(obj_val, logger));\n'
+                    cpp += f'            }} else {{ {err_log} }}\n'
+            
+            # --- Enum / Code Logic ---
+            elif f['fhir_type'] == 'code':
+                code_enum = f.get('code_enum')
+                cpp += f'            std::string_view val;\n'
+                cpp += f'            if (field.value().get_string().get(val) == simdjson::SUCCESS) {{\n'
+                if code_enum:
+                    cpp += f'                data.{cpp_name} = {code_enum["parse"]}(std::string(val));\n'
+                else:
+                    cpp += f'                data.{cpp_name} = val;\n'
+                cpp += f'            }} else {{ {err_log} }}\n'
+            
+            # --- Primitives ---
+            elif f['data_type'] == 'bool':
+                cpp += f'            bool val;\n'
+                cpp += f'            if (field.value().get_bool().get(val) == simdjson::SUCCESS) {{\n'
+                cpp += f'                data.{cpp_name} = val;\n'
+                cpp += f'            }} else {{ {err_log} }}\n'
+            elif f['data_type'] == 'double':
+                cpp += f'            double val;\n'
+                cpp += f'            if (field.value().get_double().get(val) == simdjson::SUCCESS) {{\n'
+                cpp += f'                data.{cpp_name} = val;\n'
+                cpp += f'            }} else {{ {err_log} }}\n'
+            else: # uint32_t / integers
+                cpp += f'            uint64_t val;\n'
+                cpp += f'            if (field.value().get_uint64().get(val) == simdjson::SUCCESS) {{\n'
+                cpp += f'                data.{cpp_name} = static_cast<{f["cpp_type"]}>(val);\n'
+                cpp += f'            }} else {{ {err_log} }}\n'
+
+            cpp += f'        }}\n'
+            
+        cpp += f"    }}\n    return data;\n}}\n\n"
+
+    hpp += "\n} // namespace FastFHIR::Ingest\n"
+    cpp += "} // namespace FastFHIR::Ingest\n"
+
+    # ==========================================
+    # Auto-Generated Master Dispatcher
+    # ==========================================
+
+    hpp += "\n    // Auto-generated $O(N) routing for dynamic JSON payloads\n"
+    hpp += "    FastFHIR::ObjectHandle dispatch_resource(std::string_view resource_type, simdjson::ondemand::object obj, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+
+    cpp += "\nFastFHIR::ObjectHandle dispatch_resource(std::string_view resource_type, simdjson::ondemand::object obj, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {\n"
+    
+    is_first_dispatch = True
+    for res in resources:
+        if is_first_dispatch:
+            cpp += f'    if (resource_type == "{res}") {{\n'
+            is_first_dispatch = False
+        else:
+            cpp += f'    else if (resource_type == "{res}") {{\n'
+        cpp += f'        return builder.append_obj({res}_from_json(obj, logger));\n    }}\n'
+
+    cpp += '    if (logger) logger->log("[Warning] FastFHIR Ingestion: Unknown root resource type encountered.");\n'
+    cpp += '    return FastFHIR::ObjectHandle(&builder, FF_NULL_OFFSET);\n'
+    cpp += f'}}\n\n'
+
+    out_hpp = os.path.join(output_dir, "FF_IngestMappings.hpp")
+    out_cpp = os.path.join(output_dir, "FF_IngestMappings.cpp")
+    
+    with open(out_hpp, "w") as f: f.write(hpp)
+    with open(out_cpp, "w") as f: f.write(cpp)
+    print(f"Generated {out_hpp} and {out_cpp}")
+
+# =====================================================================
 # 6. MASTER BUILD ORCHESTRATOR
 # =====================================================================
 def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir="generated_src", code_enum_map=None):
@@ -706,7 +902,7 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
         "// ============================================================\n"
     )
 
-    hpp_head = f"{auto_header}// MARK: - Universal Data Types\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n#include \"FF_CodeSystems.hpp\"\n#include <vector>\n#include <string_view>\n\n"
+    hpp_head = f"{auto_header}// MARK: - Universal Data Types\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n#include \"../include/FF_Builder.hpp\"\n#include \"FF_CodeSystems.hpp\"\n#include <vector>\n#include <string_view>\n\n"
     hpp_head += "namespace FastFHIR { template<typename T> struct TypeTraits; }\n\n"
     for decl in sorted(fwd_decls): hpp_head += f"struct {decl};\n"
     hpp_head += "\n"
@@ -764,7 +960,7 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
             with open(os.path.join(output_dir, f"FF_{res}.hpp"), "w") as f: 
                 f.write(f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n\n{hpp}")
             with open(os.path.join(output_dir, f"FF_{res}.cpp"), "w") as f: 
-                f.write(f"{auto_header}\n#include \"../include/FF_Utilities.hpp\"\n#include \"FF_Dictionary.hpp\"\n#include \"FF_AllTypes.hpp\"\n\n{cpp}")
+                f.write(f"{auto_header}\n#include \"FF_{res}.hpp\"\n#include \"../include/FF_Utilities.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n{cpp}")
 
     field_keys_hpp = (
         f"{auto_header}#pragma once\n"
@@ -813,9 +1009,12 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     # Generate the RECOVERY enum from all discovered block paths
     generate_recovery_header(TARGET_TYPES, resources, all_block_paths, output_dir)
 
+    # Generate the simdjson ingestion mappings for all discovered blocks
+    generate_ingest_mappings(all_blocks, resources, output_dir)
+
 if __name__ == "__main__":
     from generator.ffcs import generate_code_systems
-    resources = ["Observation", "Patient", "Encounter", "DiagnosticReport"]
+    resources = ["Observation", "Patient", "Encounter", "DiagnosticReport", "Bundle"]
     versions = ["R4", "R5"]
     enum_map = generate_code_systems(TARGET_TYPES, resources, versions)
     compile_fhir_library(resources, versions, code_enum_map=enum_map)

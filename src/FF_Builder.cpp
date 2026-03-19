@@ -4,7 +4,8 @@
  * @brief Concurrent lock-free FastFHIR stream builder — implementation.
  * @version 0.1
  * @date 2026-03-18
- * * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
+ * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
+ * @remark FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
  */
 
 #include "FF_Builder.hpp"
@@ -33,6 +34,7 @@ Builder::Builder(size_t virtual_capacity, uint32_t version)
     : m_base(nullptr),
       m_capacity(virtual_capacity),
       m_stream_head(0),
+      m_checksum_offset(FF_NULL_OFFSET),
       m_root_offset(FF_NULL_OFFSET),
       m_root_recovery(FF_RECOVER_UNDEFINED),
       m_version(version),
@@ -62,8 +64,8 @@ Builder::Builder(size_t virtual_capacity, uint32_t version)
     }
 #endif
 
-    // Reserve space for the mandatory file header
-    m_stream_head.store(FF_FILE_HEADER::HEADER_SIZE, std::memory_order_relaxed);
+    // Reserve space for the mandatory stream header
+    m_stream_head.store(FF_HEADER::HEADER_SIZE, std::memory_order_relaxed);
 }
 
 Builder::~Builder() {
@@ -107,12 +109,15 @@ void Builder::end_mutation() {
 // =====================================================================
 
 Node Builder::view_node(Offset offset, uint16_t recovery, FF_FieldKind kind) const {
-    if (offset == FF_NULL_OFFSET || offset >= total_written()) {
-        return Node(); // Returns an empty/invalid node handle
+    // 1. Snapshot the atomic boundary once
+    Size current_total = total_written(); 
+
+    if (offset == FF_NULL_OFFSET || offset >= current_total) {
+        return Node(); 
     }
 
-    // Directly constructs the non-owning value object using the stable m_base pointer
-    return Node(m_base, total_written(), m_version, offset, recovery, kind);
+    // 2. Use the exact same boundary for the Node's validation
+    return Node(m_base, current_total, m_version, offset, recovery, kind);
 }
 
 void Builder::amend_pointer(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset) {
@@ -133,7 +138,18 @@ void Builder::amend_pointer(Offset object_offset, size_t field_vtable_offset, Of
     // Atomic store makes concurrent amendments to the same slot data-race free.
     Offset* ptr_location = reinterpret_cast<Offset*>(m_base + object_offset + field_vtable_offset);
     std::atomic_ref<Offset> ptr_atomic(*ptr_location);
-    ptr_atomic.store(new_target_offset, std::memory_order_release);
+    Offset expected = FF_NULL_OFFSET;
+    if(!ptr_atomic.compare_exchange_strong(expected, new_target_offset, 
+        std::memory_order_release, std::memory_order_relaxed)) {
+        std::string msg = "FastFHIR: Pointer amendment failed — attempted to insert offset "
+            + std::to_string(new_target_offset)
+            + " into object at offset " + std::to_string(object_offset)
+            + ", field vtable offset " + std::to_string(field_vtable_offset)
+            + ". This field was already assigned. Attempting to patch an already-assigned pointer risks orphaning elements of the stream. "
+            + "If you are inserting a new object, ensure you are not overwriting an existing reference. "
+            + "(Concurrent modification detected.)";
+        throw std::runtime_error(msg);
+    }
 }
 
 // =====================================================================
@@ -197,10 +213,10 @@ std::string_view Builder::finalize(FF_Checksum_Algorithm algo, const HashCallbac
     }
 
     // 1. Claim the final bytes for the checksum footer
-    Offset checksum_start = m_stream_head.fetch_add(FF_CHECKSUM::HEADER_SIZE, std::memory_order_relaxed);
+    m_checksum_offset = m_stream_head.fetch_add(FF_CHECKSUM::HEADER_SIZE, std::memory_order_relaxed);
     
-    // 2. The payload is the exact size of the stream up to the checksum block
-    Size payload_size = checksum_start; 
+    // 2. The payload is the exact size of the stream up to the checksum value
+    Size payload_size = m_stream_head.load(std::memory_order_relaxed); 
 
     // 3. Bake the main file header
     // Ensure metadata consistency if no hasher provided
@@ -210,10 +226,10 @@ std::string_view Builder::finalize(FF_Checksum_Algorithm algo, const HashCallbac
                   << "file will be emitted with zeroed checksum (FF_CHECKSUM_NONE).\n";
         algo = FF_CHECKSUM_NONE;
     }
-    STORE_FF_FILE_HEADER(m_base, m_version, m_root_offset, m_root_recovery, payload_size);
+    STORE_FF_HEADER(m_base, m_version, m_checksum_offset, m_root_offset, m_root_recovery, payload_size);
 
     // 4. Write checksum metadata and get the destination pointer
-    BYTE* hash_dst = STORE_FF_CHECKSUM_METADATA(m_base, checksum_start, algo);
+    BYTE* hash_dst = STORE_FF_CHECKSUM_METADATA(m_base, m_checksum_offset, algo);
     std::vector<BYTE> hash_value (FF_MAX_HASH_BYTES, 0); // Default to 32 zero bytes
 
     // 5. Create the payload view and trigger the caller's crypto function
@@ -228,6 +244,6 @@ std::string_view Builder::finalize(FF_Checksum_Algorithm algo, const HashCallbac
     std::memcpy(hash_dst, hash_value.data(), copy_len);
     
     // 7. Return the ENTIRE sealed file (Payload + Checksum Footer)
-    return std::string_view(reinterpret_cast<const char*>(m_base), checksum_start + FF_CHECKSUM::HEADER_SIZE);
+    return std::string_view(reinterpret_cast<const char*>(m_base), payload_size + FF_MAX_HASH_BYTES);
 }
 } // namespace FastFHIR

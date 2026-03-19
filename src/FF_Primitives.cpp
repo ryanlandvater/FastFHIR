@@ -3,6 +3,7 @@
  * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
  * @copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @brief Implementation of FastFHIR Core Primitives and Data Structures
+    * @license FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
  * 
  * This source file provides the implementation for the core data structures defined in FF_Primitives.hpp, including:
  * - FF_HEADER: The main file header containing metadata, checksum, and root resource information.

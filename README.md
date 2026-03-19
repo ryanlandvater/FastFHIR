@@ -33,7 +33,7 @@ Designed for high-performance healthcare applications and heavy data ingestion, 
 
     * **Cross-Platform Virtual Arenas:** Native, zero-disk memory mapping via POSIX mmap (Linux/macOS) and Win32 VirtualAlloc (Windows).
 
-    * **WASM / Emscripten Ready:** Built-in hooks for remote byte fetching (check_and_fetch_remote), allowing massive, gigabyte-scale pathology datasets to be queried directly in a web viewer without downloading the entire file.
+    * **WASM / Emscripten Ready:** Built-in hooks for remote byte fetching (check_and_fetch_remote), allowing massive, gigabyte-scale pathology and/or radiology datasets to be queried directly in a web viewer without downloading the entire file.
 
 ## API Usage Examples
 
@@ -234,7 +234,14 @@ This path avoids runtime string scanning by using precomputed field metadata (ow
 
 ## License
 
-See repository license and file headers for usage and copyright details.
+This project is licensed under the FastFHIR Shared Source License (FF-SSL) v1.2, which is based on the Apache License 2.0 with additional restrictions:
+
+- You may not modify or redistribute altered versions of the core implementation (see LICENSE for details).
+- Strict attribution to Dr. Ryan Erik Landvater and the FastFHIR project is required in all products, services, or derivative works.
+- You may not re-brand, rename, or claim authorship of the core implementation.
+- The "right to repair" clause allows minimal patching only if the author fails to address critical bugs or vulnerabilities within 30 business days of notification.
+
+See the LICENSE file for the full legal text and compliance requirements.
 
 ## Checksum Support
 

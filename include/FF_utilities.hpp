@@ -3,6 +3,7 @@
  * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
  * @copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @brief FastFHIR / IFE Core Utilities
+    * @license FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
  * 
  * This header provides essential utilities for FastFHIR and IFE, including:
  * - Endian-aware unaligned memory accessors (LOAD_U16, STORE_U32, etc.)

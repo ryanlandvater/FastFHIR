@@ -1,3 +1,14 @@
+# =====================================================================
+# FastFHIR FHIR Specifications Fetcher (fetch_specs.py)
+# 
+# Downloads and extracts FHIR R4 and R5 specifications.
+# Ensures 'fhir_specs/' is populated without polluting the repo root.
+#
+# Author: Ryan Landvater (ryanlandvater[at]gmail[dot]com)
+# Copyright (c) 2025 Ryan Landvater. All rights reserved.
+# License: FastFHIR Shared Source License (FF-SSL)
+# =============================================================
+
 import os
 import zipfile
 import urllib.request

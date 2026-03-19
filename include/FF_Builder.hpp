@@ -4,14 +4,16 @@
  * @brief Concurrent lock-free FastFHIR stream builder.
  * @version 0.1
  * @date 2026-03-18
- * * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
- * */
+ * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
+ * @license FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
+ */
 #pragma once
 
 #include "FF_Primitives.hpp"
 #include <atomic>
 #include <stdexcept>
 #include <string_view>
+#include <functional>
 
 namespace FastFHIR {
 
@@ -60,15 +62,15 @@ public:
  */
 class ObjectHandle {
     Builder* m_builder;
-    Offset   m_offset;
-    uint16_t m_recovery;
+    Offset          m_offset;
+    RECOVERY_TAG    m_recovery;
 
 public:
-    ObjectHandle(Builder* builder, Offset offset, uint16_t recovery = 0) 
+    ObjectHandle(Builder* builder, Offset offset, RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED) 
         : m_builder(builder), m_offset(offset), m_recovery(recovery) {}
 
     Offset offset() const { return m_offset; }
-    uint16_t recovery() const { return m_recovery; }
+    RECOVERY_TAG recovery() const { return m_recovery; } //
 
     PointerPatchProxy operator[](FF_FieldKey key) const;
     PointerPatchProxy operator[](std::string_view key_name) const;
@@ -83,6 +85,7 @@ class Builder {
     BYTE* m_base;
     size_t              m_capacity;
     std::atomic<Offset> m_stream_head;
+    Offset              m_checksum_offset;
     Offset              m_root_offset;
     uint16_t            m_root_recovery;
     uint32_t            m_version;

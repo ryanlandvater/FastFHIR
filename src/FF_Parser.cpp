@@ -6,6 +6,7 @@
  * @date 2026-03-18
  * 
  * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
+ * @remark FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
  * 
  */
 
@@ -227,10 +228,10 @@ uint16_t Parser::root_type() const { return m_root_recovery; }
 Parser Parser::create(const void* buffer, size_t size) {
     auto base = static_cast<const BYTE*>(buffer);
 
-    if (size < FF_FILE_HEADER::HEADER_SIZE)
+    if (size < FF_HEADER::HEADER_SIZE)
         throw std::runtime_error("FastFHIR: Buffer too small to contain file header.");
 
-    FF_FILE_HEADER header(size);
+    FF_HEADER header(size);
     auto res = header.validate_full(base);
     if (!res)
         throw std::runtime_error("FastFHIR Header Validation: " + res.message);
@@ -245,7 +246,7 @@ Parser Parser::create(const void* buffer, size_t size) {
 }
 
 Parser::ChecksumValidation Parser::checksum() const {
-    FF_FILE_HEADER header(m_size);
+    FF_HEADER header(m_size);
     FF_CHECKSUM cs = header.get_checksum(m_base);
 
     if (!cs || cs.__offset + FF_CHECKSUM::HEADER_SIZE > m_size)

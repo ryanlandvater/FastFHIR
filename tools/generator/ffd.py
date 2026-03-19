@@ -1,3 +1,16 @@
+# =====================================================================
+# FastFHIR Dictionary Generator (ffd.py)
+# 
+# Scans FHIR ValueSet bundles to extract allowed values,
+# and generates FF_{version}_Dictionary.hpp with enum classes + parse/serialize
+# helpers for each bounded code system.
+#
+# Author: Ryan Landvater (ryanlandvater[at]gmail[dot]com)
+# Copyright (c) 2025 Ryan Landvater. All rights reserved.
+# License: FastFHIR Shared Source License (FF-SSL)
+# =============================================================
+
+
 import os
 import json
 import re

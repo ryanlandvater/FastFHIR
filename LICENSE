@@ -1,0 +1,24 @@
+FastFHIR Shared Source License (FF-SSL)
+
+Version 1.0
+
+This is a Source-Available License. It is NOT an "Open Source" license as defined by the OSI to protect FastFHIR's role as a standardized binary specification.
+
+1. THE APACHE 2.0 FOUNDATION
+This library is licensed under the terms of the Apache License, Version 2.0 (the "Base License"), which is incorporated here by reference. You may obtain a copy of the Base License at http://www.apache.org/licenses/LICENSE-2.0.
+
+2. OVERRIDING RESTRICTIONS (The "FastFHIR Addendum") Notwithstanding any permissions in the Base License, the following restrictions take precedence and are a condition of your license:
+
+    A. CORE PROTECTION: The "Core Implementation" (all files in 'src/' or 'include/', and the compilation / generation scripts ffc/ffcs/ffd.py) is provided for use, not for modification. You may not distribute modified versions of the Core Implementation. Pull Requests to improve the Core Implementation are encoraged.
+
+    B. EXTENSION PERMISSION: You are expressly permitted to develop and distribute "Extension Works" (e.g., custom FHIR profiles or EHR-specific bindings) provided they are maintained in clearly labeled separate directories and made available upon request.
+
+    C. ATTRIBUTION: Any product utilizing this library must provide prominent attribution to Dr. Ryan Erik Landvater and the FastFHIR project.
+
+    D. ANTI-CLONING & AI: You are prohibited from using the Core Implementation as a reference or training set for LLMs or AI systems to create a "Materially Similar Work" or "Competing Implementation" if such development is based on, derived from, or conducted with access to the Core Implementation source code.
+
+3. RIGHT TO REPAIR
+The restriction on distributing Core modifications (section 2.A) is suspended only if a critical bug is identified and the Author fails to provide a fix/timeline within thirty (30) business days. Any resulting patch must be submitted as a Pull Request to the Author.
+
+4. CONFLICTS
+In any conflict between the Apache License 2.0 and this FF-SSL Addendum, the terms of this FF-SSL Addendum shall control.
