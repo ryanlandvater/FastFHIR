@@ -121,13 +121,13 @@ def generate_code_systems(target_types, resources, versions,
         rp = os.path.join(input_dir, v, "profiles-resources.json")
         vp = os.path.join(input_dir, v, "valuesets.json")
         if os.path.exists(tp):
-            with open(tp) as f:
+            with open(tp, encoding="utf-8") as f:
                 type_bundles[v] = json.load(f)
         if os.path.exists(rp):
-            with open(rp) as f:
+            with open(rp, encoding="utf-8") as f:
                 resource_bundles[v] = json.load(f)
         if os.path.exists(vp):
-            with open(vp) as f:
+            with open(vp, encoding="utf-8") as f:
                 vs_indices[v] = _build_bundle_index(json.load(f))
 
     # ------------------------------------------------------------------

@@ -348,7 +348,8 @@ def generate_read_fields(layout, block_struct_name):
             cpp += f"{indent}if (__{f['cpp_name']}) data.{f['cpp_name']} = __{f['cpp_name']}.read_view(__base);\n"
         elif f['cpp_type'] == 'Offset':
             cpp += f"{indent}auto __{f['cpp_name']} = get_{f['cpp_name']}(__base);\n"
-            cpp += f"{indent}if (__{f['cpp_name']}) data.{f['cpp_name']} = new auto(__{f['cpp_name']}.read(__base));\n"
+            data_type = _resolve_data_type_name(f['fhir_type'], f['orig_name'], block_struct_name, f.get('resolved_path'))
+            cpp += f"{indent}if (__{f['cpp_name']}) data.{f['cpp_name']} = std::make_unique<{data_type}>(__{f['cpp_name']}.read(__base));\n"
         elif f['fhir_type'] == 'code':
             code_enum = f.get('code_enum')
             if code_enum:
@@ -562,7 +563,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
                     hpp += f"    std::vector<FastFHIR::ObjectHandle> {f['cpp_name']}_handles;\n"
             elif f['fhir_type'] == 'string': hpp += f"    std::string_view {f['cpp_name']};\n"
             elif code_enum: hpp += f"    {code_enum['enum']} {f['cpp_name']} = {code_enum['enum']}::Unknown;\n"
-            elif f['cpp_type'] == 'Offset': hpp += f"    {_resolve_data_type_name(f['fhir_type'], f['orig_name'], path, f.get('resolved_path'))}* {f['cpp_name']} = nullptr;\n"
+            elif f['cpp_type'] == 'Offset': hpp += f"    std::unique_ptr<{_resolve_data_type_name(f['fhir_type'], f['orig_name'], path, f.get('resolved_path'))}> {f['cpp_name']};\n"
             elif f['data_type'] == 'bool': hpp += f"    bool {f['cpp_name']} = false;\n"
             else: hpp += f"    {f['data_type']} {f['cpp_name']} = 0;\n"
         hpp += f"}};\n\n"
@@ -816,10 +817,11 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         child_fn = f.get('resolved_path', f"{path}.{json_key}").replace('.', '_') + "_from_json"
                     else:
                         child_fn = f"{f['fhir_type']}_from_json"
-                    
+
+                    # Generate nested object parsing logic with unique_ptr assignment
                     cpp += f'            simdjson::ondemand::object obj_val;\n'
                     cpp += f'            if (field.value().get_object().get(obj_val) == simdjson::SUCCESS) {{\n'
-                    cpp += f'                data.{cpp_name} = new {child_data_type}({child_fn}(obj_val, logger));\n'
+                    cpp += f'                data.{cpp_name} = std::make_unique<{child_data_type}>({child_fn}(obj_val, logger));\n'
                     cpp += f'            }} else {{ {err_log} }}\n'
             
             # --- Enum / Code Logic ---
@@ -902,7 +904,7 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     for v in versions:
         p = os.path.join(input_dir, v, "profiles-types.json")
         if os.path.exists(p): 
-            with open(p, 'r') as f: type_bundles.append((v, json.load(f)))
+            with open(p, 'r', encoding='utf-8') as f: type_bundles.append((v, json.load(f)))
     
     fwd_decls = set([t + "Data" for t in TARGET_TYPES])
     auto_header = (
@@ -912,7 +914,7 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
         "// ============================================================\n"
     )
 
-    hpp_head = f"{auto_header}// MARK: - Universal Data Types\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n#include \"../include/FF_Builder.hpp\"\n#include \"FF_CodeSystems.hpp\"\n#include <vector>\n#include <string_view>\n\n"
+    hpp_head = f"{auto_header}// MARK: - Universal Data Types\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n#include \"../include/FF_Builder.hpp\"\n#include \"FF_CodeSystems.hpp\"\n#include <vector>\n#include <string_view>\n#include <memory>\n\n"
     hpp_head += "namespace FastFHIR { template<typename T> struct TypeTraits; }\n\n"
     for decl in sorted(fwd_decls): hpp_head += f"struct {decl};\n"
     hpp_head += "\n"

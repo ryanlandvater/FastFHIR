@@ -1,4 +1,8 @@
 // ============================================================
+// Public ingest dispatcher
+// ============================================================
+
+// ============================================================
 // FF_Ingestor.cpp
 // Main Thread Ingestion Routing & Bundle Parsing
 // ============================================================
@@ -12,23 +16,41 @@
 
 namespace FastFHIR::Ingest {
 
+FF_Result Ingestor::ingest(const IngestRequest& request, ObjectHandle& out_root, size_t& out_parsed_count) {
+    switch (request.source_type) {
+        case SourceType::FHIR_JSON:
+            return ingest_fhir_json(request, out_root, out_parsed_count);
+        case SourceType::HL7_V2:
+            return FF_Result{FF_FAILURE, "HL7 v2 ingestion not implemented."};
+        case SourceType::HL7_V3:
+            return FF_Result{FF_FAILURE, "HL7 v3 ingestion not implemented."};
+        default:
+            return FF_Result{FF_FAILURE, "Unknown source type."};
+    }
+}
+
 FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle& out_root, size_t& out_parsed_count) {
-    if (is_faulted()) return FF_Result{FF_FAILURE, "Engine is faulted. Cannot ingest."};
+    if (is_faulted()) return FF_Result{FF_FAILURE, "Engine is faulted. Reset() before ingesting new data."};
 
     try {
         auto& m_builder = request.builder;
         m_logger.log("[Info] FastFHIR: Allocating simdjson tape...");
         
+        // Create a local parser instance for the main thread to handle the initial routing and metadata extraction
         auto& parser = m_parser_pool[0];
-        simdjson::padded_string json_data = simdjson::padded_string::load(request.payload);
-        simdjson::ondemand::document doc = parser.iterate(json_data);
-        simdjson::ondemand::object root_obj = doc.get_object();
 
+        // Parse the root JSON object to determine if it's a Bundle or a single resource
+         // No more .load() or file-system checks here! 
+        simdjson::ondemand::document doc = parser.iterate(
+            request.json_string.data(), 
+            request.json_string.size(), 
+            request.json_string.size() + simdjson::SIMDJSON_PADDING
+        );
+        simdjson::ondemand::object root_obj = doc.get_object();
         std::string_view root_type;
         if (root_obj["resourceType"].get_string().get(root_type) != simdjson::SUCCESS) {
             return FF_Result{FF_FAILURE, "Invalid FHIR JSON: Missing resourceType at root."};
         }
-
         // =====================================================================
         // FAST PATH: SINGLE RESOURCE (Non-Bundle)
         // =====================================================================

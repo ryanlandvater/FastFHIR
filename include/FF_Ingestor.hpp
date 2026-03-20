@@ -23,9 +23,9 @@ enum class SourceType {
 };
 
 struct IngestRequest {
-    Builder& builder;               
-    SourceType source_type;         
-    std::string_view payload;       
+    FastFHIR::Builder& builder;
+    SourceType source_type;
+    std::string_view json_string;
 };
 
 class Ingestor {
@@ -41,8 +41,8 @@ public:
      * @param log_capacity Maximum bytes for the lock-free warning buffer.
      * @param concurrency Number of worker threads. Defaults to hardware concurrency.
      */
-    explicit Ingestor(size_t log_capacity = 64 * 1024 * 1024, unsigned int concurrency = 0) 
-        : m_logger(log_capacity) 
+    explicit Ingestor(size_t logger_byte_capacity = 64 * 1024 * 1024, unsigned int concurrency = 0) 
+        : m_logger(logger_byte_capacity) 
     {
         m_num_threads = concurrency > 0 ? concurrency : std::thread::hardware_concurrency();
         if (m_num_threads == 0) m_num_threads = 4; // Absolute fallback
@@ -50,6 +50,11 @@ public:
         m_parser_pool.resize(m_num_threads);
     }
 
+    /**
+     * @brief Main entry point for ingesting clinical data into a FastFHIR stream.
+     * @param request Ingestion parameters including source type and payload.
+     * @return Result code and message indicating success or failure details.
+     */
     FF_Result ingest(const IngestRequest& request, ObjectHandle& out_root, size_t& out_parsed_count);
 
     /**

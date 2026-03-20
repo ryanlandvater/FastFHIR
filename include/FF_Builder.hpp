@@ -104,7 +104,7 @@ public:
     /**
      * @brief Reserves a massive Virtual Address Space without consuming physical RAM.
      */
-    Builder(size_t virtual_capacity = 2ULL * 1024 * 1024 * 1024, uint32_t version = FHIR_VERSION_R5);
+    Builder(size_t size_hint = 0, size_t virtual_capacity = 2ULL * 1024 * 1024 * 1024, uint32_t version = FHIR_VERSION_R5);
     ~Builder();
 
     // --- Core Stream Access ---

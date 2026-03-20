@@ -28,6 +28,22 @@
 #include <type_traits>
 #include <string>
 
+
+#ifdef _MSC_VER
+#include <stdlib.h>
+static_assert(sizeof(short)     == 2, "short must be 2 bytes");
+static_assert(sizeof(long)      == 4, "long must be 4 bytes");
+static_assert(sizeof(long long) == 8, "long long must be 8 bytes");
+#define bswap16(X)    _byteswap_ushort(X)
+#define bswap32(X)    _byteswap_ulong(X)
+#define bswap64(X)    _byteswap_uint64(X)
+#else
+#include <cstdint>
+#define bswap16(X)    __builtin_bswap16(X)
+#define bswap32(X)    __builtin_bswap32(X)
+#define bswap64(X)    __builtin_bswap64(X)
+#endif
+
 // =====================================================================
 // ARCHITECTURE & COMPILER FLAGS
 // =====================================================================
