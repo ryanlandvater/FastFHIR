@@ -81,9 +81,10 @@ endif()
 # ---------------------------------------------------------------------
 # Intermediate Object Library (fastfhir_obj)
 # ---------------------------------------------------------------------
-add_library(fastfhir_obj OBJECT
-    ${FASTFHIR_CORE_SOURCES}
-    ${FASTFHIR_GENERATED_SOURCES}
+add_library(fastfhir_obj 
+    OBJECT
+        ${FASTFHIR_CORE_SOURCES}
+        ${FASTFHIR_GENERATED_SOURCES}
 )
 
 target_include_directories(fastfhir_obj 
@@ -103,6 +104,11 @@ target_precompile_headers(fastfhir_obj
         <memory>
         ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
 )
+
+# Ensure the generator runs before compiling the object library if enabled.
+if(FASTFHIR_RUN_GENERATOR)
+    add_dependencies(fastfhir_obj fastfhir_generate)
+endif()
 
 # ---------------------------------------------------------------------
 # Core Library (fastfhir)
@@ -162,6 +168,10 @@ if(FASTFHIR_BUILD_INGESTOR)
     )
 
     target_link_libraries(fastfhir_ingest_obj PRIVATE fastfhir_obj simdjson::simdjson)
+
+    if(FASTFHIR_RUN_GENERATOR)
+        add_dependencies(fastfhir_ingest_obj fastfhir_generate)
+    endif()
 
     # Ingestor Library Target
     add_library(fastfhir_ingestor 

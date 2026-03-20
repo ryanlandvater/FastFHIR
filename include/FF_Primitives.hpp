@@ -121,12 +121,12 @@ struct FF_FieldInfo {
     const char* name = nullptr;
     FF_FieldKind kind = FF_FIELD_UNKNOWN;
     uint16_t field_offset = 0;
-    uint16_t child_recovery = 0;
+    RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED;
     uint8_t array_entries_are_offsets = 0;
 };
 
 struct FF_FieldKey {
-    uint16_t owner_recovery = 0;
+    RECOVERY_TAG owner_recovery = FF_RECOVER_UNDEFINED;
     FF_FieldKind kind = FF_FIELD_UNKNOWN;
     uint16_t field_offset = 0;
     RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED;
@@ -140,7 +140,7 @@ struct FF_FieldKey {
     constexpr FF_FieldKey(const char (&literal)[N]) noexcept : name(literal), name_len(N - 1) {}
     
     template <std::size_t N>
-    constexpr FF_FieldKey(uint16_t owner,
+    constexpr FF_FieldKey(RECOVERY_TAG owner,
                           FF_FieldKind field_kind,
                           uint16_t offset,
                           RECOVERY_TAG child,
@@ -154,7 +154,7 @@ struct FF_FieldKey {
     name(field_name),
     name_len(N - 1) {}
     
-    constexpr FF_FieldKey(uint16_t owner,
+    constexpr FF_FieldKey(RECOVERY_TAG owner,
                           FF_FieldKind field_kind,
                           uint16_t offset,
                           RECOVERY_TAG child,
@@ -177,7 +177,7 @@ struct FF_FieldKey {
         return FF_FieldKey(key_name, key_name ? std::char_traits<char>::length(key_name) : 0);
     }
     
-    static FF_FieldKey from_cstr(uint16_t owner,
+    static FF_FieldKey from_cstr(RECOVERY_TAG owner,
                                  FF_FieldKind field_kind,
                                  uint16_t offset,
                                  RECOVERY_TAG child,
@@ -270,16 +270,16 @@ struct FF_EXPORT FF_HEADER : DATA_BLOCK {
 
     explicit FF_HEADER(Size file_size) noexcept;
 
-    FF_Result   validate_full(const BYTE* const __base) const noexcept;
-    uint32_t    get_version  (const BYTE* const __base) const;
-    FF_CHECKSUM get_checksum (const BYTE* const __base) const;
-    Offset      get_root     (const BYTE* const __base) const;
-    uint16_t    get_root_type(const BYTE* const __base) const;
+    FF_Result       validate_full(const BYTE* const __base) const noexcept;
+    uint32_t        get_version  (const BYTE* const __base) const;
+    FF_CHECKSUM     get_checksum (const BYTE* const __base) const;
+    Offset          get_root     (const BYTE* const __base) const;
+    RECOVERY_TAG    get_root_type(const BYTE* const __base) const;
 };
 
 void FF_EXPORT STORE_FF_HEADER(BYTE* const __base, uint32_t version,
                                Offset checksum_offset, Offset root_offset,
-                               uint16_t root_recovery, Size payload_size);
+                               RECOVERY_TAG root_recovery, Size payload_size);
 
 
 

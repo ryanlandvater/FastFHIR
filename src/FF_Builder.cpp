@@ -121,7 +121,7 @@ namespace FastFHIR
     // View Node & Amend Pointer
     // =====================================================================
 
-    Node Builder::view_node(Offset offset, uint16_t recovery, FF_FieldKind kind) const
+    Node Builder::view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind) const
     {
         // 1. Snapshot the atomic boundary once
         Size current_total = total_written();

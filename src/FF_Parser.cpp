@@ -21,8 +21,8 @@ namespace FastFHIR {
 // Node constructors
 // =====================================================================
 Node::Node(const BYTE* base, Size size, uint32_t version, Offset offset,
-           uint16_t recovery, FF_FieldKind kind,
-           uint16_t child_recovery, bool array_entries_are_offsets)
+           RECOVERY_TAG recovery, FF_FieldKind kind,
+           RECOVERY_TAG child_recovery, bool array_entries_are_offsets)
     : m_base(base),
       m_size(size),
       m_version(version),
@@ -57,7 +57,7 @@ bool Node::is_string() const { return m_kind == FF_FIELD_STRING; }
 bool Node::is_scalar() const { return m_scalar_offset != FF_NULL_OFFSET; }
 
 FF_FieldKind Node::kind()     const { return m_kind; }
-uint16_t     Node::recovery() const { return m_recovery; }
+RECOVERY_TAG Node::recovery() const { return m_recovery; }
 
 // =====================================================================
 // Node reflection helpers

@@ -87,7 +87,7 @@ class Builder {
     std::atomic<Offset> m_stream_head;
     Offset              m_checksum_offset;
     Offset              m_root_offset;
-    uint16_t            m_root_recovery;
+    RECOVERY_TAG        m_root_recovery;
     uint32_t            m_version;
     std::atomic<bool>   m_finalizing;
     std::atomic<uint64_t> m_active_mutators;
@@ -153,7 +153,7 @@ public:
     /**
      * @brief Instantiates a read-only Node directly from a known offset mid-stream.
      */
-    Node view_node(Offset offset, uint16_t recovery, FF_FieldKind kind = FF_FIELD_BLOCK) const;
+    Node view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind = FF_FIELD_BLOCK) const;
 
     /**
      * @brief Low-level mutable access to a V-Table pointer for amending data.

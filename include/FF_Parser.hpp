@@ -27,11 +27,11 @@ class Node;
  * accessors for header metadata, checksum metadata, and the root node.
  */
 class Parser {
-    const BYTE* m_base = nullptr;
-    Size        m_size = 0;
-    uint32_t    m_version = 0;
-    Offset      m_root_offset = FF_NULL_OFFSET;
-    uint16_t    m_root_recovery = 0;
+    const BYTE*     m_base = nullptr;
+    Size            m_size = 0;
+    uint32_t        m_version = 0;
+    Offset          m_root_offset = FF_NULL_OFFSET;
+    RECOVERY_TAG    m_root_recovery = FF_RECOVER_UNDEFINED;
 
 public:
     /**
@@ -120,8 +120,8 @@ class Node {
     uint32_t      m_version = 0;
     Offset        m_offset = FF_NULL_OFFSET;
     Offset        m_scalar_offset = FF_NULL_OFFSET;
-    uint16_t      m_recovery = 0;
-    uint16_t      m_child_recovery = 0;
+    RECOVERY_TAG  m_recovery = FF_RECOVER_UNDEFINED;
+    RECOVERY_TAG  m_child_recovery = FF_RECOVER_UNDEFINED;
     FF_FieldKind  m_kind = FF_FIELD_UNKNOWN;
     bool          m_array_entries_are_offsets = false;
 
@@ -180,8 +180,8 @@ public:
     * @brief Construct a node backed by a structured (offset-based) value.
     */
     Node(const BYTE* base, Size size, uint32_t version, Offset offset,
-         uint16_t recovery, FF_FieldKind kind,
-         uint16_t child_recovery = 0, bool array_entries_are_offsets = false);
+         RECOVERY_TAG recovery, FF_FieldKind kind,
+         RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED, bool array_entries_are_offsets = false);
 
     /**
     * @brief Construct a node backed by an inline scalar value.
@@ -214,7 +214,7 @@ public:
      * @brief Get the node recovery/type tag.
      * @return Recovery/type tag associated with this node.
      */
-    uint16_t recovery() const;
+    RECOVERY_TAG recovery() const;
 
     /**
      * @brief Enumerate reflected field metadata for object nodes.

@@ -84,9 +84,9 @@ FF_CHECKSUM FF_HEADER::get_checksum(const BYTE* const __base) const {
     return checksum;
 }
 Offset FF_HEADER::get_root(const BYTE* const __base) const { return LOAD_U64(__base + ROOT_OFFSET); }
-uint16_t FF_HEADER::get_root_type(const BYTE* const __base) const { return LOAD_U16(__base + ROOT_RECOVERY); }
+RECOVERY_TAG FF_HEADER::get_root_type(const BYTE* const __base) const { return static_cast<RECOVERY_TAG>(LOAD_U16(__base + ROOT_RECOVERY)); }
 
-void STORE_FF_HEADER(BYTE* const __base, uint32_t version, Offset checksum_offset, Offset root_offset, uint16_t root_recovery, Size payload_size) {
+void STORE_FF_HEADER(BYTE* const __base, uint32_t version, Offset checksum_offset, Offset root_offset, RECOVERY_TAG root_recovery, Size payload_size) {
     STORE_U32(__base + FF_HEADER::MAGIC, FF_MAGIC_BYTES);
     STORE_U16(__base + FF_HEADER::RECOVERY, RECOVER_FF_HEADER);
     STORE_U32(__base + FF_HEADER::VERSION, version);
