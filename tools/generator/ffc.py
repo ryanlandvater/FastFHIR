@@ -321,35 +321,41 @@ def generate_read_fields(layout, block_struct_name):
             cpp += f"    if (__version >= FHIR_VERSION_{f['first_version_name']}) {{\n"
             indent = "        "
         cpp += f"{indent}// --- Read: {f['name']} ---\n"
+        
         if f['is_array']:
-            cpp += f"{indent}auto __{f['cpp_name']}_arr = get_{f['cpp_name']}(__base);\n"
-            cpp += f"{indent}if (__{f['cpp_name']}_arr) {{\n"
-            cpp += f"{indent}    auto STEP = __{f['cpp_name']}_arr.entry_step(__base);\n"
-            cpp += f"{indent}    auto ENTRIES = __{f['cpp_name']}_arr.entry_count(__base);\n"
-            cpp += f"{indent}    auto __item_ptr = __{f['cpp_name']}_arr.entries(__base);\n"
-            cpp += f"{indent}    for (uint32_t i = 0; i < ENTRIES; ++i, __item_ptr += STEP) {{\n"
+            # Use blk_ for the array view
+            cpp += f"{indent}auto blk_{f['cpp_name']}_arr = get_{f['cpp_name']}(__base);\n"
+            cpp += f"{indent}if (blk_{f['cpp_name']}_arr) {{\n"
+            cpp += f"{indent}    auto STEP = blk_{f['cpp_name']}_arr.entry_step(__base);\n"
+            cpp += f"{indent}    auto ENTRIES = blk_{f['cpp_name']}_arr.entry_count(__base);\n"
+            cpp += f"{indent}    auto blk_item_ptr = blk_{f['cpp_name']}_arr.entries(__base);\n"
+            cpp += f"{indent}    for (uint32_t i = 0; i < ENTRIES; ++i, blk_item_ptr += STEP) {{\n"
+            
             if f['fhir_type'] in ('string', 'code'):
                 code_enum = f.get('code_enum')
-                cpp += f"{indent}        Offset __str_off = LOAD_U64(__item_ptr);\n"
-                cpp += f"{indent}        if (__str_off != FF_NULL_OFFSET) {{\n"
-                cpp += f"{indent}            FF_STRING _blk(__str_off, __size, __version);\n"
+                cpp += f"{indent}        Offset blk_str_off = LOAD_U64(blk_item_ptr);\n"
+                cpp += f"{indent}        if (blk_str_off != FF_NULL_OFFSET) {{\n"
+                cpp += f"{indent}            FF_STRING blk_str(blk_str_off, __size, __version);\n"
                 if code_enum:
-                    cpp += f"{indent}            data.{f['cpp_name']}.push_back({code_enum['parse']}(_blk.read(__base)));\n"
+                    cpp += f"{indent}            data.{f['cpp_name']}.push_back({code_enum['parse']}(blk_str.read(__base)));\n"
                 else:
-                    cpp += f"{indent}            data.{f['cpp_name']}.push_back(_blk.read_view(__base));\n"
+                    cpp += f"{indent}            data.{f['cpp_name']}.push_back(blk_str.read_view(__base));\n"
                 cpp += f"{indent}        }}\n"
             else:
                 type_call = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
-                cpp += f"{indent}        {type_call} _blk(static_cast<Offset>(__item_ptr - __base), __size, __version);\n"
-                cpp += f"{indent}        data.{f['cpp_name']}.push_back(_blk.read(__base));\n"
+                cpp += f"{indent}        {type_call} blk_nested(static_cast<Offset>(blk_item_ptr - __base), __size, __version);\n"
+                cpp += f"{indent}        data.{f['cpp_name']}.push_back(blk_nested.read(__base));\n"
             cpp += f"{indent}    }}\n{indent}}}\n"
+            
         elif f['fhir_type'] == 'string':
-            cpp += f"{indent}auto __{f['cpp_name']} = get_{f['cpp_name']}(__base);\n"
-            cpp += f"{indent}if (__{f['cpp_name']}) data.{f['cpp_name']} = __{f['cpp_name']}.read_view(__base);\n"
+            cpp += f"{indent}auto blk_{f['cpp_name']} = get_{f['cpp_name']}(__base);\n"
+            cpp += f"{indent}if (blk_{f['cpp_name']}) data.{f['cpp_name']} = blk_{f['cpp_name']}.read_view(__base);\n"
+            
         elif f['cpp_type'] == 'Offset':
-            cpp += f"{indent}auto __{f['cpp_name']} = get_{f['cpp_name']}(__base);\n"
+            cpp += f"{indent}auto blk_{f['cpp_name']} = get_{f['cpp_name']}(__base);\n"
             data_type = _resolve_data_type_name(f['fhir_type'], f['orig_name'], block_struct_name, f.get('resolved_path'))
-            cpp += f"{indent}if (__{f['cpp_name']}) data.{f['cpp_name']} = std::make_unique<{data_type}>(__{f['cpp_name']}.read(__base));\n"
+            cpp += f"{indent}if (blk_{f['cpp_name']}) data.{f['cpp_name']} = std::make_unique<{data_type}>(blk_{f['cpp_name']}.read(__base));\n"
+            
         elif f['fhir_type'] == 'code':
             code_enum = f.get('code_enum')
             if code_enum:
@@ -358,6 +364,7 @@ def generate_read_fields(layout, block_struct_name):
                 cpp += f"{indent}data.{f['cpp_name']} = FF_ResolveCode(LOAD_U32(__base + __offset + {block_struct_name}::{f['name']}), __version);\n"
         else:
             cpp += f"{indent}data.{f['cpp_name']} = {f['macro']}(__base + __offset + {block_struct_name}::{f['name']});\n"
+            
         if f['first_version_idx'] > 0: cpp += f"    }}\n"
     return cpp
 
@@ -412,14 +419,14 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 code_enum = f.get('code_enum')
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
-                cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
-                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_{block_struct_name}, TYPE_SIZE_OFFSET, __n);\n"
-                cpp += f"        Offset __off_tbl = child_off;\n"
-                cpp += f"        child_off += static_cast<Offset>(__n) * TYPE_SIZE_OFFSET;\n"
-                cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
-                cpp += f"            STORE_U64(__base + __off_tbl + __i * TYPE_SIZE_OFFSET, child_off);\n"
-                if code_enum: cpp += f"            child_off += STORE_FF_STRING(__base, child_off, std::string({code_enum['serialize']}({data_name}.{f['cpp_name']}[__i])));\n"
-                else:         cpp += f"            child_off += STORE_FF_STRING(__base, child_off, {data_name}.{f['cpp_name']}[__i]);\n"
+                cpp += f"        auto blk_n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
+                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_{block_struct_name}, TYPE_SIZE_OFFSET, blk_n);\n"
+                cpp += f"        Offset blk_off_tbl = child_off;\n"
+                cpp += f"        child_off += static_cast<Offset>(blk_n) * TYPE_SIZE_OFFSET;\n"
+                cpp += f"        for (uint32_t blk_i = 0; blk_i < blk_n; ++blk_i) {{\n"
+                cpp += f"            STORE_U64(__base + blk_off_tbl + blk_i * TYPE_SIZE_OFFSET, child_off);\n"
+                if code_enum: cpp += f"            child_off += STORE_FF_STRING(__base, child_off, std::string({code_enum['serialize']}({data_name}.{f['cpp_name']}[blk_i])));\n"
+                else:         cpp += f"            child_off += STORE_FF_STRING(__base, child_off, {data_name}.{f['cpp_name']}[blk_i]);\n"
                 cpp += f"        }}\n"
                 cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             else:
