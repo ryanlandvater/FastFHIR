@@ -16,6 +16,18 @@ import os
 import json
 import re
 
+TARGET_TYPES = [
+    "Extension", 
+    "Coding", "CodeableConcept", "Quantity", "Identifier",
+    "Range", "Period", "Reference", "Meta", "Narrative",
+    "Annotation", "HumanName", "Address", "ContactPoint",
+    "Attachment", "Ratio", "SampledData", "Duration",
+    "Timing", "Dosage", "Signature", "CodeableReference", "VirtualServiceDetail"
+]
+TARGET_RESOURCES = [
+    "Observation", "Patient", "Encounter", "DiagnosticReport", "Bundle"
+]
+
 # =====================================================================
 # 1. FASTFHIR TYPE MAPPING & NORMALIZATION
 # =====================================================================
@@ -45,15 +57,6 @@ def align_up(offset, alignment):
 
 def get_store_macro(load_macro):
     return load_macro.replace('LOAD_', 'STORE_')
-
-TARGET_TYPES = [
-    "Extension", 
-    "Coding", "CodeableConcept", "Quantity", "Identifier",
-    "Range", "Period", "Reference", "Meta", "Narrative",
-    "Annotation", "HumanName", "Address", "ContactPoint",
-    "Attachment", "Ratio", "SampledData", "Duration",
-    "Timing", "Dosage",
-]
 
 def _annotate_code_enums(master_blocks, code_enum_map):
     for path, blk in master_blocks.items():
@@ -489,8 +492,12 @@ def merge_fhir_versions(schemas_by_version, root_resource):
             mapping = TYPE_MAP['DEFAULT'] if (is_array or f_type not in TYPE_MAP) else TYPE_MAP[f_type]
             if field_name not in blk['seen']:
                 off = align_up(16 if not blk['layout'] else blk['layout'][-1]['offset'] + blk['layout'][-1]['size'], min(mapping['size'], 8))
+                # C++ Keyword Sanitization
+                cpp_safe_name = field_name.lower()
+                if cpp_safe_name in ["class", "template", "namespace", "operator", "new", "delete", "default", "struct", "enum", "concept", "requires", "export", "import", "module"]:
+                    cpp_safe_name += "_"     
                 blk['layout'].append({
-                    'name': field_name.upper(), 'cpp_name': field_name.lower(), 'orig_name': field_name,
+                    'name': field_name.upper(), 'cpp_name': cpp_safe_name, 'orig_name': field_name,
                     'is_array': is_array, 'fhir_type': f_type, 'size': mapping['size'],
                     'size_const': mapping['size_const'], 'cpp_type': mapping['cpp'],
                     'data_type': mapping['data_type'], 'macro': mapping['macro'],
@@ -572,7 +579,10 @@ def generate_cxx_for_blocks(master_blocks, versions):
             hpp += f"        {f['name']:<20}= {prev_name} + {prev_size},\n"
             prev_name, prev_size = f['name'], f"{f['name']}_S"
         for v, sz in sizes.items(): hpp += f"        HEADER_{v}_SIZE = {sz},\n"
-        hpp += f"        HEADER_SIZE = HEADER_{versions[-1]}_SIZE\n    }};\n"
+        # Safely determine the maximum version that actually exists for this specific block
+        present_versions = [v for v in versions if v in sizes]
+        max_v = max(present_versions, key=lambda x: versions.index(x))
+        hpp += f"        HEADER_SIZE = HEADER_{max_v}_SIZE\n    }};\n"
         
         min_version = next((v for v in versions if v in sizes), None)
         hpp += f"    inline Size get_header_size() const {{\n"
@@ -844,9 +854,6 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
             
         cpp += f"    }}\n    return data;\n}}\n\n"
 
-    hpp += "\n} // namespace FastFHIR::Ingest\n"
-    cpp += "} // namespace FastFHIR::Ingest\n"
-
     # ==========================================
     # Auto-Generated Master Dispatcher
     # ==========================================
@@ -868,6 +875,9 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
     cpp += '    if (logger) logger->log("[Warning] FastFHIR Ingestion: Unknown root resource type encountered.");\n'
     cpp += '    return FastFHIR::ObjectHandle(&builder, FF_NULL_OFFSET);\n'
     cpp += f'}}\n\n'
+
+    hpp += "\n} // namespace FastFHIR::Ingest\n"
+    cpp += "} // namespace FastFHIR::Ingest\n"
 
     out_hpp = os.path.join(output_dir, "FF_IngestMappings.hpp")
     out_cpp = os.path.join(output_dir, "FF_IngestMappings.cpp")
@@ -949,6 +959,7 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
             generated_resources.append(res)
             blocks = merge_fhir_versions(sch, res)
             _annotate_code_enums(blocks, code_enums)
+            all_blocks.update(blocks)
             all_block_paths.update(blocks.keys())
             reflected_block_names.update({"FF_" + path.replace('.', '_').upper() for path in blocks})
             for path, blk in blocks.items():
@@ -1012,10 +1023,36 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     # Generate the simdjson ingestion mappings for all discovered blocks
     generate_ingest_mappings(all_blocks, resources, output_dir)
 
+def _version_sort_key(label):
+	"""Sort labels like R4, R4B, R5, R65 deterministically."""
+	m = re.match(r"^R(\d+)([A-Za-z]*)$", label)
+	if not m:
+		return (10**9, label)
+	major = int(m.group(1))
+	minor = m.group(2).upper()
+	return (major, minor)
+
+def _discover_versions(specs_dir="fhir_specs"):
+	"""Discover available FHIR versions from extracted spec folders."""
+	if not os.path.isdir(specs_dir):
+		return []
+	versions = []
+	for name in os.listdir(specs_dir):
+		full = os.path.join(specs_dir, name)
+		if os.path.isdir(full) and re.match(r"^R\d+[A-Za-z]*$", name):
+			versions.append(name)
+	return sorted(set(versions), key=_version_sort_key)
+
+def main (spec_dir="fhir_specs", output_dir="generated_src"):
+    versions = _discover_versions(spec_dir)
+    print(f"Discovered FHIR Versions: {', '.join(versions)}")
+    enum_map = {}
+    if versions:
+        from generator.ffcs import generate_code_systems
+        enum_map = generate_code_systems(TARGET_TYPES, TARGET_RESOURCES, versions)
+    compile_fhir_library(TARGET_RESOURCES, versions, code_enum_map=enum_map, output_dir=output_dir)
+    print("\n[Success] Build Complete: generated_src/ contains all FastFHIR artifacts."
+)
+    
 if __name__ == "__main__":
-    from generator.ffcs import generate_code_systems
-    resources = ["Observation", "Patient", "Encounter", "DiagnosticReport", "Bundle"]
-    versions = ["R4", "R5"]
-    enum_map = generate_code_systems(TARGET_TYPES, resources, versions)
-    compile_fhir_library(resources, versions, code_enum_map=enum_map)
-    print("\n[Success] Build Complete: generated_src/ contains all FastFHIR artifacts.")
+    main()

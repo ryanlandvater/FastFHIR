@@ -195,6 +195,7 @@ install(TARGETS fastfhir
 install(FILES
     ${FASTFHIR_INCLUDE_DIR}/FastFHIR.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Parser.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Builder.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
     DESTINATION include
 )

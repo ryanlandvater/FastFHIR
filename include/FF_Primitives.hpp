@@ -63,6 +63,8 @@ enum FF_Result_Code : uint32_t {
 struct FF_Result {
     FF_Result_Code code;
     std::string message;
+    FF_Result(FF_Result_Code c, std::string msg) : code(c), message(std::move(msg)) {}
+    FF_Result(FF_Result_Code c) : code(c), message("") {}
     inline operator bool() const { return code == FF_SUCCESS; }
     inline bool operator==(FF_Result_Code c) const { return code == c; }
     inline bool operator!=(FF_Result_Code c) const { return code != c; }
