@@ -234,7 +234,7 @@ namespace FastFHIR
         }
 
         // Finalization sanity check: Ensure a root resource was set and is within bounds
-        if (m_root_offset < m_stream_head.load(std::memory_order_relaxed) || m_root_offset >= m_capacity)
+        if (m_root_offset >= m_stream_head.load(std::memory_order_relaxed) || m_root_offset >= m_capacity)
         {
             throw std::runtime_error("FastFHIR: Cannot finalize without a valid in-range root resource.");
         }

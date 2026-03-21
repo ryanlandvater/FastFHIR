@@ -84,7 +84,9 @@ endif()
 add_library(fastfhir_obj 
     OBJECT
         ${FASTFHIR_CORE_SOURCES}
+        ${FASTFHIR_CORE_HEADERS}       # Added for IDE visibility
         ${FASTFHIR_GENERATED_SOURCES}
+        ${FASTFHIR_GENERATED_HEADERS}   # Added for IDE visibility
 )
 
 target_include_directories(fastfhir_obj 
@@ -232,9 +234,26 @@ if(FASTFHIR_BUILD_INGESTOR)
 endif()
 
 # ---------------------------------------------------------------------
+# CLI Exporter Executable (Standalone)
+# ---------------------------------------------------------------------
+add_executable(ff_export tools/exporter/FF_Export.cpp)
+
+target_include_directories(ff_export 
+    PRIVATE
+        ${FASTFHIR_INCLUDE_DIR}
+        ${FASTFHIR_GENERATED_DIR}
+)
+
+# Link directly to the intermediate object library for a standalone binary
+target_link_libraries(ff_export 
+    PRIVATE 
+        $<TARGET_OBJECTS:fastfhir_obj>
+)
+
+# ---------------------------------------------------------------------
 # Install / Export Targets
 # ---------------------------------------------------------------------
-install(TARGETS fastfhir EXPORT FastFHIRTargets
+install(TARGETS fastfhir ff_export EXPORT FastFHIRTargets
     LIBRARY DESTINATION lib 
     ARCHIVE DESTINATION lib 
     RUNTIME DESTINATION bin 
@@ -267,3 +286,29 @@ install(EXPORT FastFHIRTargets
     NAMESPACE FastFHIR:: 
     DESTINATION lib/cmake/FastFHIR
 ) 
+
+# ---------------------------------------------------------------------
+# Xcode Project Navigator Organization
+# ---------------------------------------------------------------------
+if(APPLE)
+    # Automatically creates groups in Xcode matching the folder structure
+    source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Source Files" FILES ${FASTFHIR_CORE_SOURCES})
+    # source_group(TREE "${FASTFHIR_INCLUDE_DIR}" PREFIX "Header Files" FILES 
+    #     ${FASTFHIR_INCLUDE_DIR}/FastFHIR.hpp 
+    #     ${FASTFHIR_INCLUDE_DIR}/FF_Parser.hpp 
+    #     ${FASTFHIR_INCLUDE_DIR}/FF_Builder.hpp 
+    #     ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
+    # )
+
+    # Mirror the physical 'include' folder in Xcode
+    source_group(TREE "${FASTFHIR_INCLUDE_DIR}" PREFIX "Header Files" FILES ${FASTFHIR_CORE_HEADERS})
+
+    # Group the generated files separately so they are easy to find
+    source_group(TREE "${FASTFHIR_GENERATED_DIR}" PREFIX "Generated" FILES ${FASTFHIR_GENERATED_SOURCES})
+    
+    if(FASTFHIR_RUN_GENERATOR)
+        # Ensure the generated files are marked as 'GENERATED' so Xcode doesn't 
+        # complain if they aren't on disk the first time you open the project.
+        set_source_files_properties(${FASTFHIR_GENERATED_SOURCES} PROPERTIES GENERATED TRUE)
+    endif()
+endif()

@@ -68,6 +68,12 @@ public:
     Node root() const;
 
     /**
+     * @brief Stream the entire FastFHIR file back out as minified FHIR JSON.
+     * @param out The output stream (e.g., std::cout, std::ofstream).
+     */
+    void print_json(std::ostream& out) const;
+
+    /**
     * @struct ChecksumValidation
     * @brief Checksum metadata extracted from the file.
      * 
@@ -265,6 +271,11 @@ public:
      * @return A @ref Value containing `kind` plus decoded payload fields.
      */
     Value value() const;
+    /**
+     * @brief Recursively print this node and all children as minified FHIR JSON.
+     * @param out The output stream.
+     */
+    void print_json(std::ostream& out) const;
 };
 
 

@@ -572,6 +572,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
             elif code_enum: hpp += f"    {code_enum['enum']} {f['cpp_name']} = {code_enum['enum']}::Unknown;\n"
             elif f['cpp_type'] == 'Offset': hpp += f"    std::unique_ptr<{_resolve_data_type_name(f['fhir_type'], f['orig_name'], path, f.get('resolved_path'))}> {f['cpp_name']};\n"
             elif f['data_type'] == 'bool': hpp += f"    bool {f['cpp_name']} = false;\n"
+            elif f['data_type'] == 'std::string': hpp += f"    std::string {f['cpp_name']};\n"
             else: hpp += f"    {f['data_type']} {f['cpp_name']} = 0;\n"
         hpp += f"}};\n\n"
 

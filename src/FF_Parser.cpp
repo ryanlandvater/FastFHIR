@@ -266,3 +266,94 @@ Node Parser::root() const {
 }
 
 } // namespace FastFHIR
+
+
+// =====================================================================
+// JSON Serialization
+// =====================================================================
+
+#include <ostream>
+namespace FastFHIR {
+
+
+// High-speed string escaper for clinical narratives and markdown
+static void escape_json_string(std::ostream& out, std::string_view str) {
+    for (char c : str) {
+        switch (c) {
+            case '"':  out << "\\\""; break;
+            case '\\': out << "\\\\"; break;
+            case '\b': out << "\\b";  break;
+            case '\f': out << "\\f";  break;
+            case '\n': out << "\\n";  break;
+            case '\r': out << "\\r";  break;
+            case '\t': out << "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    // Optional: Hex encode other control characters if needed
+                } else {
+                    out << c;
+                }
+        }
+    }
+}
+
+void Node::print_json(std::ostream& out) const {
+    if (!*this) {
+        out << "null";
+        return;
+    }
+
+    if (is_object()) {
+        out << "{";
+        auto k = keys();
+        bool first = true;
+
+        for (size_t i = 0; i < k.size(); ++i) {
+            auto child = (*this)[k[i]];
+            if (child) {
+                if (!first) out << ",";
+                out << "\"" << k[i] << "\":";
+                child.print_json(out);
+                first = false;
+            }
+        }
+        out << "}";
+    } 
+    else if (is_array()) {
+        out << "[";
+        auto arr = entries();
+        for (size_t i = 0; i < arr.size(); ++i) {
+            if (i > 0) out << ",";
+            arr[i].print_json(out);
+        }
+        out << "]";
+    } 
+    else {
+        // Scalar / Leaf Node
+        auto val = value();
+        if (!val) {
+            out << "null";
+        } else if (m_kind == FF_FIELD_STRING || m_kind == FF_FIELD_CODE) {
+            out << "\"";
+            escape_json_string(out, val.as_string());
+            out << "\"";
+        } else if (m_kind == FF_FIELD_BOOL) {
+            out << (val.as_bool() ? "true" : "false");
+        } else if (m_kind == FF_FIELD_UINT32) {
+            out << val.as_uint32();
+        } else if (m_kind == FF_FIELD_FLOAT64) {
+            out << val.as_float64();
+        }
+    }
+}
+
+void Parser::print_json(std::ostream& out) const {
+    auto r = root();
+    if (r) {
+        r.print_json(out);
+    } else {
+        out << "{\"error\":\"Invalid FastFHIR Root Node\"}";
+    }
+}
+
+} // namespace FastFHIR
