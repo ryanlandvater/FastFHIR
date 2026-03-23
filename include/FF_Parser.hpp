@@ -167,8 +167,9 @@ public:
         /** @brief Convenience check for payload presence. */
         explicit operator bool() const { return has_value; }
         
-        /** @brief Get the value as a string. Returns an empty string if the value is not present or not a string. */
-        std::string_view as_string() const { return has_value && kind == FF_FIELD_STRING ? payload.string_value : std::string_view{}; }
+        /** @brief Get the value as a string. Returns an empty string if the value is not present or not a string/code. */
+        std::string_view as_string() const {return has_value && (kind == FF_FIELD_STRING || kind == FF_FIELD_CODE)
+                   ? payload.string_value : std::string_view{};}
         
         /** @brief Get the value as a boolean. Returns false if the value is not present or not a boolean. */
         bool as_bool() const { return has_value && kind == FF_FIELD_BOOL ? payload.bool_value : false; }

@@ -225,19 +225,24 @@ Node::Value Node::value() const {
                 // 1. Trap the MAX null before bitwise operations
                 if (raw_code == FF_CODE_NULL) {
                     out.has_value = false;
-                } 
-                // 2. Standard Dictionary Lookup
-                else if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
-                    out.payload.string_value = resolved;
-                    out.has_value = true;
-                } 
-                // 3. Evaluate the MSB for Custom Strings safely
+                }
+                // 2. Evaluate the MSB for Custom Strings safely
                 else if ((raw_code & FF_CUSTOM_STRING_FLAG) != 0) {
                     Offset rel_off = static_cast<Offset>(raw_code & ~FF_CUSTOM_STRING_FLAG);
                     Offset custom_off = m_offset + rel_off;
                     if (rel_off > 0 && custom_off < m_size) {
                         out.payload.string_value = FF_STRING(custom_off, m_size, m_version).read_view(m_base);
                         out.has_value = true;
+                    }
+                }
+                // 3. Standard Dictionary Lookup
+                else if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
+                    // Ensure valid pointer AND that it isn't an out-of-bounds empty string fallback
+                    if (resolved && resolved[0] != '\0') {
+                        out.payload.string_value = resolved;
+                        out.has_value = true;
+                    } else {
+                        out.has_value = false;
                     }
                 }
             }

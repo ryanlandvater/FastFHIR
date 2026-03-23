@@ -46,98 +46,132 @@ static_assert(sizeof(long long) == 8, "long long must be 8 bytes");
 // =====================================================================
 // ARCHITECTURE & COMPILER FLAGS
 // =====================================================================
-constexpr bool little_endian = std::endian::native == std::endian::little;
+// FastFHIR is strictly Little-Endian on the wire.
+constexpr bool requires_byteswap = std::endian::native != std::endian::little;
 constexpr bool is_ieee754 = std::numeric_limits<float>::is_iec559;
 
-// Standard 8-byte alignment for IFE/FastFHIR blocks
-inline uint64_t ff_align(uint64_t off) { return (off + 7) & ~7; }
-
 // =====================================================================
-// MEMORY ALIGNMENT & UNALIGNED ACCESS
+// ENDIAN-AWARE UNALIGNED LOADERS
 // =====================================================================
-inline Offset align_up(Offset offset, uint32_t alignment)
-{
-    return (offset + (alignment - 1)) & ~(static_cast<Offset>(alignment - 1));
+inline uint8_t LOAD_U8(const void* ptr) { 
+    uint8_t v; 
+    std::memcpy(&v, ptr, 1); 
+    return v; 
 }
 
-// =====================================================================
-// SAFE UNALIGNED MEMORY ACCESS
-// =====================================================================
-template <typename T>
-inline T load_unaligned(const void *ptr)
-{
-    static_assert(std::is_trivially_copyable_v<T>, "load_unaligned requires trivially copyable type");
-    T val;
-    std::memcpy(&val, ptr, sizeof(T));
-    return val;
+inline uint16_t LOAD_U16(const void* ptr) { 
+    uint16_t v; 
+    std::memcpy(&v, ptr, 2); 
+    if constexpr (requires_byteswap) return bswap16(v);
+    return v; 
 }
 
-template <typename T>
-inline void store_unaligned(void *const ptr, T val)
-{
-    static_assert(std::is_trivially_copyable_v<T>, "store_unaligned requires trivially copyable type");
-    std::memcpy(ptr, &val, sizeof(T));
+inline uint32_t LOAD_U32(const void* ptr) { 
+    uint32_t v; 
+    std::memcpy(&v, ptr, 4); 
+    if constexpr (requires_byteswap) return bswap32(v);
+    return v; 
 }
 
-// =====================================================================
-// ZERO-COST LOADERS & STORERS (Compile-Time Endian Resolution)
-// =====================================================================
-inline uint8_t LOAD_U8(const void *ptr) { return *static_cast<const uint8_t *>(ptr); }
-inline void STORE_U8(void *ptr, uint8_t v) { *static_cast<uint8_t *>(ptr) = v; }
-
-inline uint16_t LOAD_U16(const void *ptr)
-{
-    if constexpr (little_endian)
-        return load_unaligned<uint16_t>(ptr);
-    else
-        return bswap16(load_unaligned<uint16_t>(ptr));
-}
-inline void STORE_U16(void *ptr, uint16_t v)
-{
-    if constexpr (little_endian)
-        store_unaligned<uint16_t>(ptr, v);
-    else
-        store_unaligned<uint16_t>(ptr, bswap16(v));
-}
-
-inline uint32_t LOAD_U32(const void *ptr)
-{
-    if constexpr (little_endian)
-        return load_unaligned<uint32_t>(ptr);
-    else
-        return bswap32(load_unaligned<uint32_t>(ptr));
-}
-inline void STORE_U32(void *ptr, uint32_t v)
-{
-    if constexpr (little_endian)
-        store_unaligned<uint32_t>(ptr, v);
-    else
-        store_unaligned<uint32_t>(ptr, bswap32(v));
-}
-
-inline uint64_t LOAD_U64(const void *ptr)
-{
-    if constexpr (little_endian)
-        return load_unaligned<uint64_t>(ptr);
-    else
-        return bswap64(load_unaligned<uint64_t>(ptr));
-}
-inline void STORE_U64(void *ptr, uint64_t v)
-{
-    if constexpr (little_endian)
-        store_unaligned<uint64_t>(ptr, v);
-    else
-        store_unaligned<uint64_t>(ptr, bswap64(v));
+inline uint64_t LOAD_U64(const void* ptr) { 
+    uint64_t v; 
+    std::memcpy(&v, ptr, 8); 
+    if constexpr (requires_byteswap) return bswap64(v);
+    return v; 
 }
 
 // =====================================================================
-// FLOATING POINT SUPPORT
+// ENDIAN-AWARE UNALIGNED EMITTERS
 // =====================================================================
-// Forward declarations for non-IEEE hardware support
-inline float F32_CONVERT_NON_IEEE(uint32_t val);
-inline uint32_t F32_CONVERT_NON_IEEE(float val);
-inline double F64_CONVERT_NON_IEEE(uint64_t val);
-inline uint64_t F64_CONVERT_NON_IEEE(double val);
+inline void STORE_U8(void* ptr, uint8_t v) { 
+    std::memcpy(ptr, &v, 1); 
+}
+
+inline void STORE_U16(void* ptr, uint16_t v) { 
+    if constexpr (requires_byteswap) v = bswap16(v);
+    std::memcpy(ptr, &v, 2); 
+}
+
+inline void STORE_U32(void* ptr, uint32_t v) { 
+    if constexpr (requires_byteswap) v = bswap32(v);
+    std::memcpy(ptr, &v, 4); 
+}
+
+inline void STORE_U64(void* ptr, uint64_t v) { 
+    if constexpr (requires_byteswap) v = bswap64(v);
+    std::memcpy(ptr, &v, 8); 
+}
+
+// =====================================================================
+// NON-IEEE 754 FALLBACK CONVERSIONS
+// =====================================================================
+
+// --- 32-Bit (Float) Conversions ---
+inline float F32_CONVERT_NON_IEEE(uint32_t val) {
+    constexpr uint32_t SIGN_BIT = 0x80000000;
+    constexpr uint32_t EXP_MASK = 0x7F800000;
+    constexpr uint32_t MANTISSA_MASK = 0x007FFFFF;
+    constexpr double IEEE_BASE = 8388608.0; // 2^23
+
+    if ((val & ~SIGN_BIT) == 0) return 0.0f; // Handle 0.0 and -0.0
+
+    float result = std::ldexp(1.0 + static_cast<double>(val & MANTISSA_MASK) / IEEE_BASE,
+                              static_cast<int>((val & EXP_MASK) >> 23) - 127);
+                              
+    return (val & SIGN_BIT) ? -result : result;
+}
+
+inline uint32_t F32_CONVERT_NON_IEEE(float val) {
+    constexpr uint32_t SIGN_BIT = 0x80000000;
+    constexpr uint32_t EXP_MASK = 0x7F800000;
+    constexpr uint32_t MANTISSA_MASK = 0x007FFFFF;
+
+    if (val == 0.0f) return std::signbit(val) ? SIGN_BIT : 0;
+    if (std::isinf(val)) return std::signbit(val) ? (SIGN_BIT | 0x7F800000) : 0x7F800000;
+    if (std::isnan(val)) return 0x7FC00000; // qNaN
+
+    uint32_t neg = std::signbit(val) ? SIGN_BIT : 0;
+    int exp = 0;
+    
+    // frexp returns fraction in [0.5, 1.0). Scale to [0.0, 1.0) and shift 23 bits
+    uint32_t mantissa = static_cast<uint32_t>(std::round(std::ldexp(std::frexp(std::fabs(val), &exp) * 2.0 - 1.0, 23)));
+    
+    return neg | (((static_cast<int32_t>(exp) + 126) << 23) & EXP_MASK) | (mantissa & MANTISSA_MASK);
+}
+
+// --- 64-Bit (Double) Conversions ---
+inline double F64_CONVERT_NON_IEEE(uint64_t val) {
+    constexpr uint64_t SIGN_BIT = 0x8000000000000000ULL;
+    constexpr uint64_t EXP_MASK = 0x7FF0000000000000ULL;
+    constexpr uint64_t MANTISSA_MASK = 0x000FFFFFFFFFFFFFULL;
+    constexpr double IEEE_BASE = 4503599627370496.0; // 2^52
+
+    if ((val & ~SIGN_BIT) == 0) return 0.0; 
+
+    double result = std::ldexp(1.0 + static_cast<double>(val & MANTISSA_MASK) / IEEE_BASE,
+                               static_cast<int>((val & EXP_MASK) >> 52) - 1023);
+                               
+    return (val & SIGN_BIT) ? -result : result;
+}
+
+inline uint64_t F64_CONVERT_NON_IEEE(double val) {
+    constexpr uint64_t SIGN_BIT = 0x8000000000000000ULL;
+    constexpr uint64_t EXP_MASK = 0x7FF0000000000000ULL;
+    constexpr uint64_t MANTISSA_MASK = 0x000FFFFFFFFFFFFFULL;
+
+    if (val == 0.0) return std::signbit(val) ? SIGN_BIT : 0;
+    // FIXED: Infinity is 0x7FF0, not 0x7FF8
+    if (std::isinf(val)) return std::signbit(val) ? (SIGN_BIT | 0x7FF0000000000000ULL) : 0x7FF0000000000000ULL;
+    if (std::isnan(val)) return 0x7FF8000000000000ULL; // qNaN
+
+    uint64_t neg = std::signbit(val) ? SIGN_BIT : 0;
+    int exp = 0;
+    
+    // FIXED: Removed 1.0f truncation bug and replaced abs() with std::fabs()
+    uint64_t mantissa = static_cast<uint64_t>(std::round(std::ldexp(std::frexp(std::fabs(val), &exp) * 2.0 - 1.0, 52)));
+    
+    return neg | (((static_cast<int64_t>(exp) + 1022) << 52) & EXP_MASK) | (mantissa & MANTISSA_MASK);
+}
 
 inline float LOAD_F32(const void *ptr)
 {

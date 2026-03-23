@@ -137,7 +137,6 @@ BYTE* STORE_FF_CHECKSUM_METADATA(BYTE* const __base, Offset start_offset, FF_Che
     STORE_U64(__ptr + DATA_BLOCK::VALIDATION, start_offset);
     STORE_U16(__ptr + DATA_BLOCK::RECOVERY,   RECOVER_FF_CHECKSUM);
     STORE_U16(__ptr + FF_CHECKSUM::ALGORITHM, algo);
-    STORE_U32(__ptr + FF_CHECKSUM::PADDING,   0); // Zero out alignment padding
     
     // Identify the payload pointer
     BYTE* hash_buffer = __ptr + FF_CHECKSUM::HASH_DATA;
@@ -249,11 +248,11 @@ void STORE_FF_RESOURCE(BYTE* const __base, Offset entry_off, Offset& write_head,
 // =====================================================================
 Size SIZE_FF_STRING(std::string_view str) {
     if (str.empty()) return 0;
-    return align_up(FF_STRING::HEADER_SIZE + str.size(), 8);
+    return FF_STRING::HEADER_SIZE + str.size();
 }
 Size SIZE_FF_CODE(std::string_view code_str, uint32_t version = FHIR_VERSION_R5) {
     if (code_str.empty()) return 0;
-    if (FF_GetDictionaryCode(std::string(code_str), version) != 0) return 0;
+    if (FF_GetDictionaryCode(std::string(code_str), version) != FF_CODE_NULL) return 0;
     return SIZE_FF_STRING(code_str);
 }
 Size STORE_FF_STRING(BYTE* const __base, Offset start_offset, std::string_view str) {
@@ -266,11 +265,11 @@ Size STORE_FF_STRING(BYTE* const __base, Offset start_offset, std::string_view s
     
     std::memcpy(__ptr + FF_STRING::STRING_DATA, str.data(), length);
     
-    return align_up(FF_STRING::HEADER_SIZE + length, 8); 
+    return FF_STRING::HEADER_SIZE + length;
 }
 
 uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_off, const std::string& code_str, uint32_t version) {
-    if (code_str.empty()) return 0; // FF_CODE_NULL
+    if (code_str.empty()) return FF_CODE_NULL;
 
     uint32_t dict_code = FF_GetDictionaryCode(code_str, version);
     if (dict_code != FF_CODE_NULL) {

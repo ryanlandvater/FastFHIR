@@ -96,7 +96,7 @@ int main(int argc, char* argv[]) {
 
         // 1. Determine Source & Validate Path 
         if (input_file.empty() || input_file == "-") {
-            std::cerr << "[CLI] Reading from stdin...\n";
+            std::cerr << "[FastFHIR Injest CLI] Reading from stdin...\n";
             std::istreambuf_iterator<char> begin(std::cin), end;
             std::string temp_data(begin, end);
             json_buffer = simdjson::padded_string(temp_data);
@@ -104,11 +104,11 @@ int main(int argc, char* argv[]) {
             // Standard Library Path Validation
             fs::path p(input_file);
             if (!fs::exists(p)) {
-                std::cerr << "[CLI] Error: Path does not exist: " << input_file << "\n";
+                std::cerr << "[FastFHIR Injest CLI] Error: Path does not exist: " << input_file << "\n";
                 return 1;
             }
             if (!fs::is_regular_file(p)) {
-                std::cerr << "[CLI] Error: Not a regular file: " << input_file << "\n";
+                std::cerr << "[FastFHIR Injest CLI] Error: Not a regular file: " << input_file << "\n";
                 return 1;
             }
             json_buffer = simdjson::padded_string::load(input_file);
@@ -121,26 +121,26 @@ int main(int argc, char* argv[]) {
 
         switch (format) {
             case ClinicalFormat::FHIR_JSON:
-                std::cerr << "[CLI] Format Detected: FHIR JSON\n";
+                std::cerr << "[FastFHIR Injest CLI] Format Detected: FHIR JSON\n";
                 source_type = Ingest::SourceType::FHIR_JSON;
                 break;
             case ClinicalFormat::HL7_V2:
-                std::cerr << "[CLI] Format Detected: HL7 v2\n";
-                std::cerr << "[CLI] Error: HL7 v2 ingestion is not yet fully implemented in FastFHIR.\n";
+                std::cerr << "[FastFHIR Injest CLI] Format Detected: HL7 v2\n";
+                std::cerr << "[FastFHIR Injest CLI] Error: HL7 v2 ingestion is not yet fully implemented in FastFHIR.\n";
                 source_type = Ingest::SourceType::HL7_V2;
                 return 1;
             case ClinicalFormat::HL7_V3:
-                std::cerr << "[CLI] Format Detected: HL7 v3 / CDA\n";
-                std::cerr << "[CLI] Error: HL7 v3 ingestion is not yet fully implemented in FastFHIR.\n";
+                std::cerr << "[FastFHIR Injest CLI] Format Detected: HL7 v3 / CDA\n";
+                std::cerr << "[FastFHIR Injest CLI] Error: HL7 v3 ingestion is not yet fully implemented in FastFHIR.\n";
                 source_type = Ingest::SourceType::HL7_V3;
                 return 1;
             case ClinicalFormat::FHIR_XML:
-                std::cerr << "[CLI] Format Detected: FHIR XML\n";
-                std::cerr << "[CLI] Error: FastFHIR currently requires FHIR JSON. XML parser pending.\n";
+                std::cerr << "[FastFHIR Injest CLI] Format Detected: FHIR XML\n";
+                std::cerr << "[FastFHIR Injest CLI] Error: FastFHIR currently requires FHIR JSON. XML parser pending.\n";
                 return 1;
             default:
-                std::cerr << "[CLI] Format Detected: Unknown\n";
-                std::cerr << "[CLI] Error: Unrecognized clinical data stream signature.\n";
+                std::cerr << "[FastFHIR Injest CLI] Format Detected: Unknown\n";
+                std::cerr << "[FastFHIR Injest CLI] Error: Unrecognized clinical data stream signature.\n";
                 return 1;
         }
 
@@ -165,11 +165,11 @@ int main(int argc, char* argv[]) {
         FF_Result result = ingestor.ingest(request, root_handle, parsed_count);
 
         if (result.code != FF_SUCCESS) {
-            std::cerr << "[CLI] Fatal Ingestion Error: " << result.message << "\n";
+            std::cerr << "[FastFHIR Injest CLI] Fatal Ingestion Error: " << result.message << "\n";
             return 1;
         }
 
-        std::cerr << "[CLI] Successfully parsed " << parsed_count << " resources.\n";
+        std::cerr << "[FastFHIR Injest CLI] Successfully parsed " << parsed_count << " resources.\n";
 
         builder.set_root(root_handle);
         builder.finalize(FF_CHECKSUM_SHA256, [](const unsigned char* data, Size size) {
@@ -184,7 +184,7 @@ int main(int argc, char* argv[]) {
                 EVP_DigestFinal_ex(ctx, hash.data(), &out_len);
                 EVP_MD_CTX_free(ctx);
             } else {
-                std::cerr << "[CLI] Warning: Failed to initialize OpenSSL context. Hash will be empty.\n";
+                std::cerr << "[FastFHIR Injest CLI] Warning: Failed to initialize OpenSSL context. Hash will be empty.\n";
             }
             
             // Shrink if a smaller algorithm was somehow used, otherwise a no-op
@@ -202,16 +202,16 @@ int main(int argc, char* argv[]) {
         } else {
             std::ofstream outfile(output_file, std::ios::binary);
             if (!outfile.is_open()) {
-                std::cerr << "[CLI] Error: Could not open output file " << output_file << " for writing.\n";
+                std::cerr << "[FastFHIR Injest CLI] Error: Could not open output file " << output_file << " for writing.\n";
                 return 1;
             }
             outfile.write(reinterpret_cast<const char*>(buffer), buffer_size);
             outfile.close();
-            std::cerr << "[CLI] Binary saved to " << output_file << " (" << buffer_size << " bytes)\n";
+            std::cerr << "[FastFHIR Injest CLI] Binary saved to " << output_file << " (" << buffer_size << " bytes)\n";
         }
 
     } catch (const std::exception& e) {
-        std::cerr << "[CLI] Unhandled Engine Exception: " << e.what() << "\n";
+        std::cerr << "[FastFHIR Injest CLI] Unhandled Engine Exception: " << e.what() << "\n";
         return 1;
     }
 

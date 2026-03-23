@@ -261,23 +261,23 @@ struct FF_EXPORT FF_HEADER : DATA_BLOCK {
     static constexpr char type [] = "FF_HEADER";
     static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_HEADER;
     enum vtable_sizes {
-        MAGIC_S             = TYPE_SIZE_UINT32,
-        RECOVERY_S          = TYPE_SIZE_UINT16,
-        VERSION_S           = TYPE_SIZE_UINT32,
-        CHECKSUM_OFFSET_S   = TYPE_SIZE_UINT64,
-        ROOT_OFFSET_S       = TYPE_SIZE_UINT64,
-        ROOT_RECOVERY_S     = TYPE_SIZE_UINT16,
-        PAYLOAD_SIZE_S      = TYPE_SIZE_UINT64,
+        MAGIC_S             = TYPE_SIZE_UINT32, // 4
+        RECOVERY_S          = TYPE_SIZE_UINT16, // 2
+        VERSION_S           = TYPE_SIZE_UINT32, // 4
+        CHECKSUM_OFFSET_S   = TYPE_SIZE_UINT64, // 8
+        ROOT_OFFSET_S       = TYPE_SIZE_UINT64, // 8
+        ROOT_RECOVERY_S     = TYPE_SIZE_UINT16, // 2
+        PAYLOAD_SIZE_S      = TYPE_SIZE_UINT64, // 8
     };
     enum vtable_offsets {
         MAGIC           = 0,
-        RECOVERY        = MAGIC         + MAGIC_S,
-        VERSION         = RECOVERY      + RECOVERY_S,
-        CHECKSUM_OFFSET = VERSION       + VERSION_S,
-        ROOT_OFFSET     = CHECKSUM_OFFSET + CHECKSUM_OFFSET_S,
-        ROOT_RECOVERY   = ROOT_OFFSET   + ROOT_OFFSET_S,
-        PAYLOAD_SIZE    = ROOT_RECOVERY + ROOT_RECOVERY_S,
-        HEADER_SIZE     = PAYLOAD_SIZE + PAYLOAD_SIZE_S,
+        RECOVERY        = MAGIC + MAGIC_S,               // 4
+        VERSION         = RECOVERY + RECOVERY_S,         // 6
+        CHECKSUM_OFFSET = VERSION + VERSION_S,           // 10
+        ROOT_OFFSET     = CHECKSUM_OFFSET + CHECKSUM_OFFSET_S, // 18
+        ROOT_RECOVERY   = ROOT_OFFSET + ROOT_OFFSET_S,   // 26
+        PAYLOAD_SIZE    = ROOT_RECOVERY + ROOT_RECOVERY_S, // 28
+        HEADER_SIZE     = PAYLOAD_SIZE + PAYLOAD_SIZE_S, // 36 bytes exactly
     };
 
     explicit FF_HEADER(Size file_size) noexcept;
@@ -303,21 +303,17 @@ struct FF_EXPORT FF_CHECKSUM : DATA_BLOCK {
     static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_CHECKSUM;
     
     enum vtable_sizes {
-        VALIDATION_S    = TYPE_SIZE_UINT64,
-        RECOVERY_S      = TYPE_SIZE_UINT16,
-        ALGORITHM_S     = TYPE_SIZE_UINT16,
-        PADDING_S       = 4,
-        HASH_DATA_S     = FF_MAX_HASH_BYTES, // 256 bits
+        VALIDATION_S    = TYPE_SIZE_UINT64, // 8
+        RECOVERY_S      = TYPE_SIZE_UINT16, // 2
+        ALGORITHM_S     = TYPE_SIZE_UINT16, // 2
+        HASH_DATA_S     = FF_MAX_HASH_BYTES,// 32
     };
     enum vtable_offsets {
         VALIDATION      = 0,
-        RECOVERY        = VALIDATION + VALIDATION_S,
-        ALGORITHM       = RECOVERY   + RECOVERY_S,
-        PADDING         = ALGORITHM  + ALGORITHM_S,
-        HASH_DATA       = PADDING    + PADDING_S,
-        
-        // Exact predictable size: 48 bytes
-        HEADER_SIZE     = HASH_DATA  + HASH_DATA_S,
+        RECOVERY        = VALIDATION + VALIDATION_S, // 8
+        ALGORITHM       = RECOVERY + RECOVERY_S,     // 10
+        HASH_DATA       = ALGORITHM + ALGORITHM_S,   // 12
+        HEADER_SIZE     = HASH_DATA + HASH_DATA_S,   // 44 bytes exactly
     };
 
     explicit FF_CHECKSUM(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
@@ -368,16 +364,16 @@ struct FF_EXPORT FF_STRING : DATA_BLOCK {
     static constexpr char type [] = "FF_STRING";
     static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_STRING;
     enum vtable_sizes {
-        VALIDATION_S    = TYPE_SIZE_UINT64,
-        RECOVERY_S      = TYPE_SIZE_UINT16,
-        LENGTH_S        = TYPE_SIZE_UINT32,
+        VALIDATION_S    = TYPE_SIZE_UINT64, // 8
+        RECOVERY_S      = TYPE_SIZE_UINT16, // 2
+        LENGTH_S        = TYPE_SIZE_UINT32, // 4
     };
     enum vtable_offsets {
         VALIDATION      = 0,
-        RECOVERY        = VALIDATION + VALIDATION_S,
-        LENGTH          = RECOVERY   + RECOVERY_S,
-        STRING_DATA     = LENGTH     + LENGTH_S,
-        HEADER_SIZE     = STRING_DATA,
+        RECOVERY        = VALIDATION + VALIDATION_S, // 8
+        LENGTH          = RECOVERY + RECOVERY_S,     // 10
+        STRING_DATA     = LENGTH + LENGTH_S,         // 14
+        HEADER_SIZE     = STRING_DATA,               // 14 bytes exactly
     };
 
     explicit FF_STRING(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
@@ -404,17 +400,17 @@ struct FF_EXPORT FF_RESOURCE : DATA_BLOCK {
     static constexpr char type [] = "FF_RESOURCE";
     static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_RESOURCE;
     enum vtable_sizes {
-        VALIDATION_S      = TYPE_SIZE_UINT64,
-        RECOVERY_S        = TYPE_SIZE_UINT16,
-        PAYLOAD_RECOVERY_S= TYPE_SIZE_UINT16,
-        PAYLOAD_OFFSET_S  = TYPE_SIZE_UINT64,
+        VALIDATION_S      = TYPE_SIZE_UINT64, // 8
+        RECOVERY_S        = TYPE_SIZE_UINT16, // 2
+        PAYLOAD_RECOVERY_S= TYPE_SIZE_UINT16, // 2
+        PAYLOAD_OFFSET_S  = TYPE_SIZE_UINT64, // 8
     };
     enum vtable_offsets {
         VALIDATION        = 0,
-        RECOVERY          = VALIDATION + VALIDATION_S,
-        PAYLOAD_RECOVERY  = RECOVERY + RECOVERY_S,
-        PAYLOAD_OFFSET    = PAYLOAD_RECOVERY + PAYLOAD_RECOVERY_S,
-        HEADER_SIZE       = PAYLOAD_OFFSET + PAYLOAD_OFFSET_S,
+        RECOVERY          = VALIDATION + VALIDATION_S, // 8
+        PAYLOAD_RECOVERY  = RECOVERY + RECOVERY_S,     // 10
+        PAYLOAD_OFFSET    = PAYLOAD_RECOVERY + PAYLOAD_RECOVERY_S, // 12
+        HEADER_SIZE       = PAYLOAD_OFFSET + PAYLOAD_OFFSET_S, // 20 bytes exactly
     };
 
     explicit FF_RESOURCE(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}

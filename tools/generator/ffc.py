@@ -41,6 +41,8 @@ TYPE_MAP = {
     'DEFAULT':      {'cpp': 'Offset',   'data_type': 'Offset', 'null': 'FF_NULL_OFFSET',    'size': 8, 'size_const': 'TYPE_SIZE_OFFSET',  'macro': 'LOAD_U64'}  
 }
 
+BASE_BLOCK_HEADER_SIZE = 10
+
 STRING_TYPES = {
     'string', 'id', 'oid', 'uuid', 'uri', 'url', 'canonical', 
     'markdown', 'date', 'datetime', 'instant', 'time', 'base64binary', 'xhtml'
@@ -52,12 +54,10 @@ def sanitize_fhir_type(raw_type):
     if raw_type.lower() in STRING_TYPES: return 'string'
     return raw_type
 
-def align_up(offset, alignment):
-    return (offset + (alignment - 1)) & ~(alignment - 1)
-
 def get_store_macro(load_macro):
     return load_macro.replace('LOAD_', 'STORE_')
 
+# Helper to annotate code fields with their corresponding ValueSet enums
 def _annotate_code_enums(master_blocks, code_enum_map):
     for path, blk in master_blocks.items():
         for f in blk['layout']:
@@ -144,7 +144,7 @@ def _field_kind_expr(f):
         return 'FF_FIELD_BLOCK'
     if f['fhir_type'] == 'code':
         return 'FF_FIELD_CODE'
-    if f['data_type'] == 'bool':
+    if f['fhir_type'] == 'boolean':
         return 'FF_FIELD_BOOL'
     if f['data_type'] == 'double':
         return 'FF_FIELD_FLOAT64'
@@ -458,7 +458,7 @@ def generate_size_fields(layout, block_struct_name, data_name):
             else:         
                 cpp += f"    __total += SIZE_FF_CODE({data_name}.{f['cpp_name']}, __version);\n"
             
-    cpp += "    return ff_align(__total);\n"
+    cpp += "    return __total;\n"
     return cpp
 
 def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
@@ -551,7 +551,7 @@ def merge_fhir_versions(schemas_by_version, root_resource):
             is_array = el.get('max') == '*'
             mapping = TYPE_MAP['DEFAULT'] if (is_array or f_type not in TYPE_MAP) else TYPE_MAP[f_type]
             if field_name not in blk['seen']:
-                off = align_up(16 if not blk['layout'] else blk['layout'][-1]['offset'] + blk['layout'][-1]['size'], min(mapping['size'], 8))
+                off = 10 if not blk['layout'] else blk['layout'][-1]['offset'] + blk['layout'][-1]['size']
                 # C++ Keyword Sanitization
                 cpp_safe_name = field_name.lower()
                 if cpp_safe_name in ["class", "template", "namespace", "operator", "new", "delete", "default", "struct", "enum", "concept", "requires", "export", "import", "module"]:
@@ -564,7 +564,7 @@ def merge_fhir_versions(schemas_by_version, root_resource):
                     'first_version_name': v_name, 'first_version_idx': v_idx, 'offset': off
                 })
                 blk['seen'].add(field_name)
-            blk['sizes'][v_name] = align_up(blk['layout'][-1]['offset'] + blk['layout'][-1]['size'], 8)
+            blk['sizes'][v_name] = blk['layout'][-1]['offset'] + blk['layout'][-1]['size']
             
     for parent_path, blk in master_blocks.items():
         for f in blk['layout']:
@@ -635,10 +635,10 @@ def generate_cxx_for_blocks(master_blocks, versions):
         hpp += f"struct FF_EXPORT {s_name} : DATA_BLOCK {{\n"
         hpp += f"    static constexpr char type [] = \"{s_name}\";\n"
         hpp += f"    static constexpr enum RECOVERY_TAG recovery = RECOVER_{s_name};\n"
-        hpp += f"    enum vtable_sizes {{\n        VALIDATION_S = TYPE_SIZE_UINT64,\n        RECOVERY_S = TYPE_SIZE_UINT16,\n        PADDING_S = 6,\n"
+        hpp += f"    enum vtable_sizes {{\n        VALIDATION_S = TYPE_SIZE_UINT64,\n        RECOVERY_S = TYPE_SIZE_UINT16,\n"
         for f in layout: hpp += f"        {f['name']}_S = {f['size_const']},\n"
-        hpp += f"    }};\n    enum vtable_offsets {{\n        VALIDATION = 0,\n        RECOVERY = VALIDATION + VALIDATION_S,\n        PADDING = RECOVERY + RECOVERY_S,\n"
-        prev_name, prev_size = "PADDING", "PADDING_S"
+        hpp += f"    }};\n    enum vtable_offsets {{\n        VALIDATION = 0,\n        RECOVERY = VALIDATION + VALIDATION_S,\n"
+        prev_name, prev_size = "RECOVERY", "RECOVERY_S"
         for f in layout:
             hpp += f"        {f['name']:<20}= {prev_name} + {prev_size},\n"
             prev_name, prev_size = f['name'], f"{f['name']}_S"
@@ -901,10 +901,10 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                 cpp += f'            }} else {{ {err_log} }}\n'
             
             # --- Primitives ---
-            elif f['data_type'] == 'bool':
+            elif f['fhir_type'] == 'boolean':
                 cpp += f'            bool val;\n'
                 cpp += f'            if (field.value().get_bool().get(val) == simdjson::SUCCESS) {{\n'
-                cpp += f'                data.{cpp_name} = val;\n'
+                cpp += f'                data.{cpp_name} = val ? 1 : 0;\n'
                 cpp += f'            }} else {{ {err_log} }}\n'
             elif f['data_type'] == 'double':
                 cpp += f'            double val;\n'
