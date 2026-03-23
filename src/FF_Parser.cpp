@@ -33,14 +33,41 @@ Node::Node(const BYTE* base, Size size, uint32_t version, Offset offset,
       m_array_entries_are_offsets(array_entries_are_offsets) {}
 
 Node Node::scalar(const BYTE* base, Size size, uint32_t version,
-                  Offset scalar_offset, FF_FieldKind kind) {
+                  Offset parent_offset, Offset scalar_offset, FF_FieldKind kind) {
     Node node;
     node.m_base = base;
     node.m_size = size;
     node.m_version = version;
+    node.m_offset = parent_offset;        
     node.m_scalar_offset = scalar_offset;
     node.m_kind = kind;
     return node;
+}
+
+bool Node::is_empty() const {
+    if (!*this) return true;
+    
+    if (is_array()) return size() == 0;
+    
+    if (is_string() || kind() == FF_FIELD_CODE) {
+        auto val = value();
+        return !val || val.as_string().empty();
+    }
+    
+    if (is_scalar()) {
+        auto val = value();
+        return !val.has_value; 
+    }
+    
+    if (is_object()) {
+        auto k = keys();
+        for (size_t i = 0; i < k.size(); ++i) {
+            if (!(*this)[k[i]].is_empty()) return false;
+        }
+        return true;
+    }
+    
+    return true;
 }
 
 // =====================================================================
@@ -141,7 +168,7 @@ Node Node::operator[](FF_FieldKey key) const {
                           child_offset, key.child_recovery, FF_FIELD_BLOCK);
     } else {
         result = Node::scalar(m_base, m_size, m_version,
-                              value_offset, key.kind);
+                              m_offset, value_offset, key.kind);
     }
 
     return result;
@@ -177,45 +204,75 @@ Node Node::operator[](size_t index) const {
 Node::Value Node::value() const {
     Value out;
     out.kind = m_kind;
-
-    if (!m_base)
-        return out;
+    if (!m_base) return out;
 
     switch (m_kind) {
+        case FF_FIELD_BOOL:
+            if (m_scalar_offset != FF_NULL_OFFSET) {
+                uint8_t raw_bool = LOAD_U8(m_base + m_scalar_offset);
+                if (raw_bool == FF_NULL_UINT8) {
+                    out.has_value = false;
+                } else {
+                    out.payload.bool_value = (raw_bool != 0); // 0 is False, 1 is True
+                    out.has_value = true;
+                }
+            }
+            break;
+        case FF_FIELD_CODE:
+            if (m_scalar_offset != FF_NULL_OFFSET) {
+                uint32_t raw_code = LOAD_U32(m_base + m_scalar_offset);
+                
+                // 1. Trap the MAX null before bitwise operations
+                if (raw_code == FF_CODE_NULL) {
+                    out.has_value = false;
+                } 
+                // 2. Standard Dictionary Lookup
+                else if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
+                    out.payload.string_value = resolved;
+                    out.has_value = true;
+                } 
+                // 3. Evaluate the MSB for Custom Strings safely
+                else if ((raw_code & FF_CUSTOM_STRING_FLAG) != 0) {
+                    Offset rel_off = static_cast<Offset>(raw_code & ~FF_CUSTOM_STRING_FLAG);
+                    Offset custom_off = m_offset + rel_off;
+                    if (rel_off > 0 && custom_off < m_size) {
+                        out.payload.string_value = FF_STRING(custom_off, m_size, m_version).read_view(m_base);
+                        out.has_value = true;
+                    }
+                }
+            }
+            break;
+        case FF_FIELD_UINT32:
+            if (m_scalar_offset != FF_NULL_OFFSET) {
+                uint32_t raw = LOAD_U32(m_base + m_scalar_offset);
+                if (raw == FF_NULL_UINT32) {
+                    out.has_value = false;
+                } else {
+                    out.payload.uint32_value = raw;
+                    out.has_value = true;
+                }
+            }
+            break;
+        case FF_FIELD_FLOAT64:
+            if (m_scalar_offset != FF_NULL_OFFSET) {
+                double raw = LOAD_F64(m_base + m_scalar_offset);
+                if (raw == FF_NULL_F64) {
+                    out.has_value = false;
+                } else {
+                    out.payload.float64_value = raw;
+                    out.has_value = true;
+                }
+            }
+            break;
         case FF_FIELD_STRING:
             if (m_offset != FF_NULL_OFFSET) {
                 out.payload.string_value = FF_STRING(m_offset, m_size, m_version).read_view(m_base);
                 out.has_value = true;
             }
             break;
-        case FF_FIELD_CODE:
-            if (m_scalar_offset != FF_NULL_OFFSET) {
-                out.payload.string_value = FF_ResolveCode(LOAD_U32(m_base + m_scalar_offset), m_version);
-                out.has_value = true;
-            }
-            break;
-        case FF_FIELD_BOOL:
-            if (m_scalar_offset != FF_NULL_OFFSET) {
-                out.payload.bool_value = LOAD_U8(m_base + m_scalar_offset) != 0;
-                out.has_value = true;
-            }
-            break;
-        case FF_FIELD_UINT32:
-            if (m_scalar_offset != FF_NULL_OFFSET) {
-                out.payload.uint32_value = LOAD_U32(m_base + m_scalar_offset);
-                out.has_value = true;
-            }
-            break;
-        case FF_FIELD_FLOAT64:
-            if (m_scalar_offset != FF_NULL_OFFSET) {
-                out.payload.float64_value = LOAD_F64(m_base + m_scalar_offset);
-                out.has_value = true;
-            }
-            break;
         default:
             break;
     }
-
     return out;
 }
 
@@ -297,20 +354,25 @@ static void escape_json_string(std::ostream& out, std::string_view str) {
     }
 }
 
+
 void Node::print_json(std::ostream& out) const {
-    if (!*this) {
-        out << "null";
-        return;
-    }
+    if (is_empty()) return;
 
     if (is_object()) {
         out << "{";
         auto k = keys();
         bool first = true;
 
+        // FastFHIR assigns standard Resources to the 0x0200 recovery tag range.
+        // BackboneElements (0x0300) and DataTypes (0x0100) do not get a resourceType.
+        if (m_recovery >= 0x0200 && m_recovery < 0x0300) {
+            out << "\"resourceType\":\"" << reflected_resource_type(m_recovery) << "\"";
+            first = false;
+        }
+
         for (size_t i = 0; i < k.size(); ++i) {
             auto child = (*this)[k[i]];
-            if (child) {
+            if (!child.is_empty()) {
                 if (!first) out << ",";
                 out << "\"" << k[i] << "\":";
                 child.print_json(out);
@@ -322,18 +384,20 @@ void Node::print_json(std::ostream& out) const {
     else if (is_array()) {
         out << "[";
         auto arr = entries();
+        bool first = true;
         for (size_t i = 0; i < arr.size(); ++i) {
-            if (i > 0) out << ",";
-            arr[i].print_json(out);
+            if (!arr[i].is_empty()) {
+                if (!first) out << ",";
+                arr[i].print_json(out);
+                first = false;
+            }
         }
         out << "]";
     } 
+    // Scalar / Leaf Node
     else {
-        // Scalar / Leaf Node
         auto val = value();
-        if (!val) {
-            out << "null";
-        } else if (m_kind == FF_FIELD_STRING || m_kind == FF_FIELD_CODE) {
+        if (m_kind == FF_FIELD_STRING || m_kind == FF_FIELD_CODE) {
             out << "\"";
             escape_json_string(out, val.as_string());
             out << "\"";

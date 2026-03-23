@@ -15,6 +15,8 @@ import os
 import json
 import re
 
+
+
 def _version_sort_key(label):
     m = re.match(r'^R(\d+)([A-Za-z]*)$', label)
     if not m:
@@ -23,8 +25,29 @@ def _version_sort_key(label):
     minor = m.group(2).upper()
     return (major, minor)
 
-def _sanitize_identifier(raw, prefix=""):
-    token = re.sub(r'[^A-Za-z0-9_]', '_', raw.upper())
+
+# Map of special characters to descriptive names for enum generation
+SYMBOL_MAP = {
+    '%': 'PERCENT',
+    '/': 'PER',
+    '<=': 'LESS_OR_EQUAL',
+    '>=': 'GREATER_OR_EQUAL',
+    '<': 'LESS_THAN',
+    '>': 'GREATER_THAN',
+    '=': 'EQUAL',
+    '+': 'PLUS',
+    '-': 'MINUS',
+    '*': 'STAR',
+    '@': 'AT',
+    '#': 'HASH',
+    '&': 'AND'
+}
+def _sanitize_identifier(raw, prefix="", is_uri=False):
+    token = raw
+    if not is_uri:
+        for sym, word in SYMBOL_MAP.items():
+            token = token.replace(sym, f"_{word}_")
+    token = re.sub(r'[^A-Za-z0-9_]', '_', token.upper())
     token = re.sub(r'_+', '_', token).strip('_')
     if not token:
         token = "EMPTY"
@@ -52,8 +75,10 @@ def generate_fastfhir_dictionary(v_name, input_dir="fhir_specs", output_dir="gen
         for inc in includes:
             system = inc.get('system', '')
             if system and system not in seen_enums:
-                clean_sys = _sanitize_identifier(system.split('/')[-1], prefix="")
+                # Flag as URI to bypass symbol translation ---
+                clean_sys = _sanitize_identifier(system.split('/')[-1], prefix="", is_uri=True)
                 enum_name = f"FF_{v_name}_URI_{clean_sys}"
+                
                 if enum_name in seen_enums:
                     enum_name += f"_{len(mappings) + 1}"
                 mappings.append((system, enum_name))
@@ -63,8 +88,10 @@ def generate_fastfhir_dictionary(v_name, input_dir="fhir_specs", output_dir="gen
             for concept in inc.get('concept', []):
                 code = concept.get('code', '')
                 if code and code not in seen_enums:
-                    clean_code = _sanitize_identifier(code, prefix="")
+                    # Flag as a Code (default) ---
+                    clean_code = _sanitize_identifier(code, prefix="", is_uri=False)
                     enum_name = f"FF_{v_name}_CODE_{clean_code}"
+                    
                     if enum_name in seen_enums: enum_name += f"_{len(seen_enums)}"
                     mappings.append((code, enum_name))
                     seen_enums.add(code)
@@ -81,17 +108,21 @@ def generate_fastfhir_dictionary(v_name, input_dir="fhir_specs", output_dir="gen
     mappings = sorted(mappings, key=lambda x: x[0])
 
     # Content generation logic
-    hpp = f"{auto_header}// Generated from {v_name} ValueSets\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n\nenum FF_{v_name}_Code : uint32_t {{\n    FF_{v_name}_NULL = 0,\n"
+    hpp =  f"{auto_header}// Generated from {v_name} ValueSets\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n\n"
+    hpp += f"enum FF_{v_name}_Code : uint32_t {{\n    FF_{v_name}_NULL = FF_CODE_NULL,\n"
     for i, (raw, enum) in enumerate(mappings, 1): hpp += f"    {enum:<40} = {i},\n"
-    hpp += f"}};\n\nFF_EXPORT const char* FF_{v_name}_Resolve(uint32_t code);\nFF_EXPORT uint32_t FF_{v_name}_GetCode(const std::string& str);\n"
-
-    cpp = f"{auto_header}#include \"FF_{v_name}_Dictionary.hpp\"\n#include <unordered_map>\n\nconst char* FF_{v_name}_Resolve(uint32_t code) {{\n"
+    hpp += f"}};\n\nFF_EXPORT const char* FF_{v_name}_Resolve(FF_{v_name}_Code code);\nFF_EXPORT uint32_t FF_{v_name}_GetCode(const std::string& str);\n"
+    
+    cpp = f"{auto_header}#include \"FF_{v_name}_Dictionary.hpp\"\n#include <unordered_map>\n\n"
+    cpp += f"const char* FF_{v_name}_Resolve(FF_{v_name}_Code code) {{\n"
+    cpp += f"    uint32_t idx = static_cast<uint32_t>(code);\n"
     cpp += f"    static constexpr const char* DICT[] = {{\"\",\n"
     for raw, enum in mappings: cpp += f"        \"{raw}\",\n"
-    cpp += f"    }};\n    if (code >= {len(mappings)+1}) return \"\";\n    return DICT[code];\n}}\n\n"
-    cpp += f"uint32_t FF_{v_name}_GetCode(const std::string& str) {{\n    static const std::unordered_map<std::string, uint32_t> MAP = {{\n"
+    cpp += f"    }};\n    if (idx >= {len(mappings)+1}) return \"\";\n    return DICT[idx];\n}}\n\n"
+    cpp += f"uint32_t FF_{v_name}_GetCode(const std::string& str) {{\n"
+    cpp += f"    static const std::unordered_map<std::string, uint32_t> MAP = {{\n"
     for i, (raw, enum) in enumerate(mappings, 1): cpp += f"        {{\"{raw}\", {i}}},\n"
-    cpp += f"    }}; auto it = MAP.find(str); return it != MAP.end() ? it->second : 0;\n}}\n"
+    cpp += f"    }}; auto it = MAP.find(str); return it != MAP.end() ? it->second : FF_CODE_NULL;\n}}\n"
 
     # Write to generated_src/
     os.makedirs(output_dir, exist_ok=True)
@@ -140,7 +171,7 @@ def generate_master_dictionary(versions, input_dir="fhir_specs", output_dir="gen
     hpp += "\ninline const char* FF_ResolveCode(uint32_t code, uint32_t version) {\n    if (code & FF_CUSTOM_STRING_FLAG) return nullptr;\n"
     for i, v in enumerate(reversed(active_versions)):
         prefix = "if" if i == 0 else "else if"
-        hpp += f"    {prefix} (version >= FHIR_VERSION_{v}) return FF_{v}_Resolve(code);\n"
+        hpp += f"    {prefix} (version >= FHIR_VERSION_{v}) return FF_{v}_Resolve(static_cast<FF_{v}_Code>(code));\n"
     hpp += "    return \"\";\n}\n\ninline uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t version) {\n"
     for i, v in enumerate(reversed(active_versions)):
         prefix = "if" if i == 0 else "else if"

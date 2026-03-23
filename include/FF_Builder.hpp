@@ -129,7 +129,7 @@ public:
         } guard{this};
 
         // Automatically resolved via ffc.py generated traits
-        Size exact_size = TypeTraits<T_Data>::size(data);
+        Size exact_size = TypeTraits<T_Data>::size(data, m_version);
         
         Offset start = m_stream_head.fetch_add(exact_size, std::memory_order_relaxed);
         
@@ -137,7 +137,7 @@ public:
             throw std::runtime_error("FastFHIR: Exceeded maximum virtual arena capacity.");
         }
         
-        TypeTraits<T_Data>::store(m_base, start, data);
+        TypeTraits<T_Data>::store(m_base, start, data, m_version);
         
         return start;
     }

@@ -189,11 +189,14 @@ public:
          RECOVERY_TAG recovery, FF_FieldKind kind,
          RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED, bool array_entries_are_offsets = false);
 
+    /** @brief Check whether this node contains a value */
+    bool is_empty() const;
+
     /**
     * @brief Construct a node backed by an inline scalar value.
     */
     static Node scalar(const BYTE* base, Size size, uint32_t version,
-                       Offset scalar_offset, FF_FieldKind kind);
+                       Offset parent_offset, Offset scalar_offset, FF_FieldKind kind);
 
     /**
      * @brief Check whether this node references a valid underlying value.

@@ -41,8 +41,20 @@ typedef uint8_t  BYTE;
 typedef uint64_t Offset;
 typedef uint64_t Size;
 
-constexpr Offset FF_NULL_OFFSET = 0xFFFFFFFFFFFFFFFF;
-constexpr uint32_t FF_CUSTOM_STRING_FLAG = 0x80000000;
+// Standard Integer MAX Nulls
+constexpr uint8_t   FF_NULL_UINT8  = 0xFF;
+constexpr uint16_t  FF_NULL_UINT16 = 0xFFFF;
+constexpr uint32_t  FF_NULL_UINT32 = 0xFFFFFFFF;
+constexpr uint64_t  FF_NULL_UINT64 = 0xFFFFFFFFFFFFFFFF;
+
+// Code Null (Safely traps 0xFFFFFFFF before custom string masking)
+constexpr uint32_t  FF_CODE_NULL   = FF_NULL_UINT32;
+
+// Float Nulls (Using max to adhere to the rule, though NaN is also an option)
+constexpr float     FF_NULL_F32    = FF_NULL_UINT32;
+constexpr double    FF_NULL_F64    = FF_NULL_UINT64;
+constexpr Offset    FF_NULL_OFFSET = FF_NULL_UINT64;
+constexpr uint32_t  FF_CUSTOM_STRING_FLAG = 0x80000000;
 
 // FastFHIR magic bytes: "FFHR" in little-endian
 constexpr uint32_t FF_MAGIC_BYTES = 0x52484646;
@@ -416,6 +428,7 @@ void STORE_FF_RESOURCE(BYTE* const __base, Offset entry_off, Offset& write_head,
 // =====================================================================
 // LOCK-FREE EMITTER SIGNATURES
 // =====================================================================
-Size     SIZE_FF_CODE    (std::string_view code_str);
+Size     SIZE_FF_STRING(std::string_view str);
+Size     SIZE_FF_CODE(std::string_view code_str, uint32_t version);
 Size     STORE_FF_STRING (BYTE* const __base, Offset start_offset, std::string_view str);
 uint32_t ENCODE_FF_CODE  (BYTE* const __base, Offset block_offset, Offset& child_off, const std::string& code_str, uint32_t version = FHIR_VERSION_R5);

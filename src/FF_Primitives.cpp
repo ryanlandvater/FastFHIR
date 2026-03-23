@@ -247,15 +247,15 @@ void STORE_FF_RESOURCE(BYTE* const __base, Offset entry_off, Offset& write_head,
 // =====================================================================
 // LOCK-FREE STRING & MSB DICTIONARY EMITTERS
 // =====================================================================
-
-Size SIZE_FF_CODE(std::string_view code_str) {
-    if (code_str.empty()) return 0;
-    // Fallback std::string allocation for dictionary check
-    uint32_t dict_code = FF_GetDictionaryCode(std::string(code_str), FHIR_VERSION_R5);
-    if (dict_code != 0) return 0; // Fits inside the 32-bit slot
-    return align_up(FF_STRING::HEADER_SIZE + code_str.size(), 8);
+Size SIZE_FF_STRING(std::string_view str) {
+    if (str.empty()) return 0;
+    return align_up(FF_STRING::HEADER_SIZE + str.size(), 8);
 }
-
+Size SIZE_FF_CODE(std::string_view code_str, uint32_t version = FHIR_VERSION_R5) {
+    if (code_str.empty()) return 0;
+    if (FF_GetDictionaryCode(std::string(code_str), version) != 0) return 0;
+    return SIZE_FF_STRING(code_str);
+}
 Size STORE_FF_STRING(BYTE* const __base, Offset start_offset, std::string_view str) {
     auto __ptr = __base + start_offset;
     uint32_t length = static_cast<uint32_t>(str.size());
@@ -273,14 +273,13 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
     if (code_str.empty()) return 0; // FF_CODE_NULL
 
     uint32_t dict_code = FF_GetDictionaryCode(code_str, version);
-    if (dict_code != 0) {
-        return dict_code; // MSB is 0
+    if (dict_code != FF_CODE_NULL) {
+        return dict_code; 
     }
 
     // Custom String Fallback
     Offset string_offset = child_off;
     child_off += STORE_FF_STRING(__base, string_offset, code_str);
-    
     Offset relative_offset = string_offset - block_offset;
     if (relative_offset > 0x7FFFFFFF) {
         throw std::runtime_error("FastFHIR: Custom string relative offset exceeds 2GB.");
