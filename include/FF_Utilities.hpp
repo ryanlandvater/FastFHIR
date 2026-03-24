@@ -239,3 +239,28 @@ inline bool FF_IsChoicePresent(uint64_t choice_offset)
 {
     return choice_offset != FF_NULL_OFFSET;
 }
+
+/**
+ * @brief Zero-allocation raw memory peek to determine if a FastFHIR field is null/empty.
+ */
+inline bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_offset, FF_FieldKind kind) {
+    switch (kind) {
+        case FF_FIELD_STRING:
+        case FF_FIELD_ARRAY:
+        case FF_FIELD_BLOCK:
+            return LOAD_U64(base + field_absolute_offset) == FF_NULL_OFFSET;
+            
+        case FF_FIELD_CODE:
+        case FF_FIELD_UINT32:
+            return LOAD_U32(base + field_absolute_offset) == FF_NULL_UINT32;
+            
+        case FF_FIELD_FLOAT64:
+            return LOAD_U64(base + field_absolute_offset) == FF_NULL_UINT64;
+            
+        case FF_FIELD_BOOL:
+            return LOAD_U8(base + field_absolute_offset) == FF_NULL_UINT8;
+            
+        default:
+            return true;
+    }
+}

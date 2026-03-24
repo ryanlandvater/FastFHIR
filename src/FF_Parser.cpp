@@ -60,9 +60,11 @@ bool Node::is_empty() const {
     }
     
     if (is_object()) {
-        auto k = keys();
-        for (size_t i = 0; i < k.size(); ++i) {
-            if (!(*this)[k[i]].is_empty()) return false;
+        auto f_list = fields(); 
+        for (size_t i = 0; i < f_list.size(); ++i) {
+            const auto& f = f_list[i];
+            if (!FF_IsFieldEmpty(m_base, m_offset + f.field_offset, f.kind)) 
+                return false;
         }
         return true;
     }
@@ -113,15 +115,29 @@ size_t Node::size() const {
 std::vector<Node> Node::entries() const {
     std::vector<Node> out;
     if (!is_array()) return out;
+
     FF_ARRAY array(m_offset, m_size, m_version);
-    auto count = array.entry_count(m_base);
+    uint32_t count = array.entry_count(m_base);
+    uint16_t step  = array.entry_step(m_base);
+
     out.reserve(count);
+
+    Offset entries_start = m_offset + FF_ARRAY::HEADER_SIZE;
+
     for (uint32_t i = 0; i < count; ++i) {
-        out.push_back((*this)[static_cast<size_t>(i)]);
+        if (m_array_entries_are_offsets) {
+            // Array of pointers (e.g., strings or polymorphic resources)
+            Offset child_off = LOAD_U64(m_base + entries_start + (i * step));
+            out.push_back(Node(m_base, m_size, m_version, child_off, m_child_recovery, FF_FIELD_BLOCK));
+        } else {
+            // Inline array (e.g., our Bundle.entry 82-byte structs)
+            Offset item_off = entries_start + (i * step);
+            // The item_off is correctly shifted past the array header
+            out.push_back(Node(m_base, m_size, m_version, item_off, m_child_recovery, FF_FIELD_BLOCK));
+        }
     }
     return out;
 }
-
 // =====================================================================
 // Node child lookup
 // =====================================================================
@@ -365,7 +381,7 @@ void Node::print_json(std::ostream& out) const {
 
     if (is_object()) {
         out << "{";
-        auto k = keys();
+        auto f_list = fields();
         bool first = true;
 
         // First print the standard Resource Type! It's not required but encouraged.
@@ -376,17 +392,30 @@ void Node::print_json(std::ostream& out) const {
             first = false;
         }
 
-        for (size_t i = 0; i < k.size(); ++i) {
-            auto child = (*this)[k[i]];
-            if (!child.is_empty()) {
-                if (!first) out << ",";
-                out << "\"" << k[i] << "\":";
-                child.print_json(out);
-                first = false;
+        for (size_t i = 0; i < f_list.size(); ++i) {
+            const auto& f = f_list[i];
+
+            // 1. FAST PATH: Raw memory peek. Skip completely if empty!
+            if (FF_IsFieldEmpty(m_base, m_offset + f.field_offset, f.kind)) {
+                continue;
             }
+
+            // 2. Construct the O(1) field key blueprint
+            FF_FieldKey key = FF_FieldKey::from_cstr(
+                m_recovery, f.kind, f.field_offset, 
+                f.child_recovery, f.array_entries_are_offsets, f.name
+            );
+
+            // 3. Pure pointer-math lookup (Zero loops)
+            auto child = (*this)[key];
+            
+            if (!first) out << ",";
+            out << "\"" << f.name << "\":";
+            child.print_json(out);
+            first = false;
         }
         out << "}";
-    } 
+    }
     else if (is_array()) {
         out << "[";
         auto arr = entries();
