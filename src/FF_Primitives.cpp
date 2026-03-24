@@ -165,6 +165,24 @@ uint16_t FF_ARRAY::entry_step(const BYTE* const __base) const { return LOAD_U16(
 uint32_t FF_ARRAY::entry_count(const BYTE* const __base) const { return LOAD_U32(__base + __offset + ENTRY_COUNT); }
 const BYTE* FF_ARRAY::entries(const BYTE* const __base) const { return __base + __offset + HEADER_SIZE; }
 
+void STORE_FF_ARRAY_HEADER(BYTE* const __base, Offset& write_head, uint16_t entry_step, uint32_t entry_count) {
+    auto __ptr = __base + write_head;
+    STORE_U64(__ptr + DATA_BLOCK::VALIDATION, write_head);
+    STORE_U16(__ptr + DATA_BLOCK::RECOVERY, RECOVER_FF_ARRAY);
+    STORE_U16(__ptr + FF_ARRAY::ENTRY_STEP, entry_step);
+    STORE_U32(__ptr + FF_ARRAY::ENTRY_COUNT, entry_count);
+    write_head += FF_ARRAY::HEADER_SIZE;
+}
+
+void STORE_FF_POINTER_ARRAY(BYTE* const __base, Offset& write_head, const std::vector<Offset>& offsets) {
+    uint32_t entry_count = static_cast<uint32_t>(offsets.size());
+    STORE_FF_ARRAY_HEADER(__base, write_head, sizeof(Offset), entry_count);
+    for (const auto& off : offsets) {
+        STORE_U64(__base + write_head, off);
+        write_head += sizeof(Offset);
+    }
+}
+
 // =====================================================================
 // STRING BLOCK IMPLEMENTATION
 // =====================================================================

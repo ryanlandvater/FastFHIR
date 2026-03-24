@@ -35,20 +35,7 @@ class ObjectHandle;
 struct PointerRef {
     Offset object_offset = FF_NULL_OFFSET;
     size_t field_vtable_offset = 0;
-};
-
-/**
- * @brief Ephemeral proxy object for atomically patching array entry offsets in a concurrent context.
- * 
- */
-class ArrayPatchProxy {
-    Builder& m_builder;
-    Offset m_slot_addr;
-public:
-    ArrayPatchProxy(Builder& b, Offset addr) : m_builder(b), m_slot_addr(addr) {}
-    
-    // Atomic thread-safe assignment
-    void operator=(const ObjectHandle& child);
+    RECOVERY_TAG target_recovery = FF_RECOVER_UNDEFINED;
 };
 
 /**
@@ -62,16 +49,16 @@ class PointerPatchProxy {
 public:
     PointerPatchProxy(Builder* builder, PointerRef ref) : m_builder(builder), m_ref(ref) {}
 
-    // Option A: Assign an existing offset (e.g., for data already in the stream)
-    PointerPatchProxy& operator=(Offset new_target_offset);
+    // Option A: Assign an existing handle for data already in the stream (with strict type checking)
+    PointerPatchProxy& operator=(const ObjectHandle& child);
 
     // Option B: Concurrently append NEW data to the stream 
     // and patch the pointer simultaneously!
     template <typename T_Data>
     Offset operator=(const T_Data& data);
 
-    // Array indexer (Dereferences the vtable pointer to find the array)
-    ArrayPatchProxy operator[](size_t index) const;
+    // Array indexer (Dereferences the vtable pointer to find the entry object)
+    ObjectHandle operator[](size_t index) const;
 };
 
 // =====================================================================
@@ -88,7 +75,10 @@ class ObjectHandle {
 
 public:
     ObjectHandle(Builder* builder, Offset offset, RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED) 
-        : m_builder(builder), m_offset(offset), m_recovery(recovery) {}
+        : m_builder(builder), m_offset(offset), m_recovery(recovery) {
+            if (offset != FF_NULL_OFFSET && recovery == FF_RECOVER_UNDEFINED) 
+            throw std::invalid_argument("FastFHIR: Cannot instantiate an ObjectHandle with valid offset but with an UNDEFINED recovery tag.");
+        }
 
     Offset offset() const { return m_offset; }
     RECOVERY_TAG recovery() const { return m_recovery; }
@@ -114,7 +104,6 @@ class AdvancedBuilderAccess;
 class Builder {
     friend class FastFHIR::AdvancedBuilderAccess;
     friend class FastFHIR::PointerPatchProxy;  
-    friend class FastFHIR::ArrayPatchProxy;
     BYTE* m_base;
     size_t              m_capacity;
     std::atomic<Offset> m_stream_head;
@@ -212,7 +201,6 @@ public:
 
     protected:
     Offset allocate_raw(Size size);
-    FF_Result patch_offset_atomic(Offset target_addr, Offset child_offset);
     FF_Result write_offset_at(Offset target_addr, Offset child_offset);
 };
 
@@ -245,17 +233,6 @@ public:
     }
 
     /**
-     * @brief Unsafely patches an offset atomically within the builder's arena.
-     * 
-     * @param target_addr The address of the target offset to patch.
-     * @param child_offset The new offset value to write.
-     */
-    FF_Result UNSAFE_patch_offset_atomic(Offset target_addr, Offset child_offset) {
-        return m_builder ? m_builder->patch_offset_atomic(target_addr, child_offset) : 
-        FF_Result{FF_FAILURE,"AdvancedBuilderAccess: Builder instance is null."};
-    }   
-
-    /**
     * @brief Unsafely writes an offset directly (non-atomically) within the builder's arena.
     * 
     * @param target_addr The address of the target offset to write.
@@ -270,14 +247,37 @@ public:
 // =====================================================================
 // INLINE TEMPLATE IMPLEMENTATIONS
 // =====================================================================
+inline constexpr bool is_resource_tag(RECOVERY_TAG tag) {
+    // True for anything in the top level resource 0x0200 block (Patient, Observation, etc.)
+    return (tag >= 0x0200 && tag < 0x0300); 
+}
 
-inline PointerPatchProxy& PointerPatchProxy::operator=(Offset new_target_offset) {
-    m_builder->amend_pointer(m_ref.object_offset, m_ref.field_vtable_offset, new_target_offset);
+inline PointerPatchProxy& PointerPatchProxy::operator=(const ObjectHandle& child) {
+    // --- STRICT SCHEMA VALIDATION ---
+    if (m_ref.target_recovery == RECOVER_FF_RESOURCE) {
+        // Polymorphic field: Ensure the child is actually a top-level Resource
+        if (!is_resource_tag(child.recovery())) 
+            throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range), but received a different block type.");
+    } else if (child.recovery() != m_ref.target_recovery) 
+        // Strictly typed field: Ensure an exact match
+        throw std::invalid_argument("FastFHIR Schema Violation: Attempted to assign an incompatible type.");
+
+    m_builder->amend_pointer(m_ref.object_offset, m_ref.field_vtable_offset, child.offset());
     return *this;
 }
 
 template <typename T_Data>
 Offset PointerPatchProxy::operator=(const T_Data& data) {
+    // --- STRICT SCHEMA VALIDATION ---
+    RECOVERY_TAG child_tag = TypeTraits<T_Data>::recovery;
+    if (m_ref.target_recovery == RECOVER_FF_RESOURCE) {
+        // Polymorphic field: Ensure the child is actually a top-level Resource
+        if (!is_resource_tag(child_tag)) 
+            throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range), but received a different block type.");
+    } else if (child_tag != m_ref.target_recovery) {
+        throw std::invalid_argument("FastFHIR Schema Violation: Attempted to append an incompatible type to a strictly typed field.");
+    }
+
     // 1. Thread-safe append of the child data
     Offset child_offset = m_builder->append(data);
     
@@ -288,8 +288,15 @@ Offset PointerPatchProxy::operator=(const T_Data& data) {
 }
 
 inline PointerPatchProxy ObjectHandle::operator[](FF_FieldKey key) const {
+    if (m_offset == FF_NULL_OFFSET) 
+        throw std::runtime_error("FastFHIR: Invalid ObjectHandle; cannot assign field '" + 
+                                 std::string(key.name) + "' on a null/unallocated object.");
+    else if (key.kind != FF_FIELD_BLOCK && key.kind != FF_FIELD_ARRAY && key.kind != FF_FIELD_STRING) 
+        throw std::runtime_error("FastFHIR: Field '" + std::string(key.name) + 
+                                 "' is not a pointer-backed field. PointerPatchProxy only supports BLOCK/ARRAY/STRING.");
+    
     // Assuming FF_FieldKey generated by ffc.py contains the direct field offset
-    return PointerPatchProxy(m_builder, PointerRef{m_offset, key.field_offset}); 
+    return PointerPatchProxy(m_builder, PointerRef{m_offset, key.field_offset, key.child_recovery}); 
 }
 
 } // namespace FastFHIR

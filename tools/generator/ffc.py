@@ -471,7 +471,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto blk_n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
-                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_{block_struct_name}, TYPE_SIZE_OFFSET, blk_n);\n"
+                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_FF_ARRAY, TYPE_SIZE_OFFSET, blk_n);\n"
                 cpp += f"        child_off += FF_ARRAY::HEADER_SIZE;\n"
                 cpp += f"        Offset blk_off_tbl = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(blk_n) * TYPE_SIZE_OFFSET;\n"
@@ -487,7 +487,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
-                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_{block_struct_name}, {child_struct}::HEADER_SIZE, __n);\n"
+                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_FF_ARRAY, {child_struct}::HEADER_SIZE, __n);\n"
                 cpp += f"        child_off += FF_ARRAY::HEADER_SIZE;\n"
                 cpp += f"        Offset __entries_start = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(__n) * {child_struct}::HEADER_SIZE;\n"
@@ -501,7 +501,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"    else if (!{data_name}.{f['cpp_name']}_handles.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}_handles.size());\n"
-                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_{block_struct_name}, TYPE_SIZE_OFFSET, __n);\n"
+                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_FF_ARRAY, TYPE_SIZE_OFFSET, __n);\n"
                 cpp += f"        child_off += FF_ARRAY::HEADER_SIZE;\n"
                 cpp += f"        Offset __entries_start = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(__n) * TYPE_SIZE_OFFSET;\n"
@@ -844,15 +844,9 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                 if path == 'Bundle' and f['orig_name'] == 'entry':
                     cpp += f'                if (concurrent_queue) {{\n'
                     cpp += f'                    for (auto item : arr) {{\n'
-                    cpp += f'                        simdjson::ondemand::object entry_obj;\n'
-                    cpp += f'                        if (item.get_object().get(entry_obj) == simdjson::SUCCESS) {{\n'
-                    cpp += f'                            simdjson::ondemand::value res_val;\n'
-                    cpp += f'                            if (entry_obj["resource"].get(res_val) == simdjson::SUCCESS) {{\n'
-                    cpp += f'                                std::string_view full_res;\n'
-                    cpp += f'                                if (res_val.raw_json().get(full_res) == simdjson::SUCCESS) {{\n'
-                    cpp += f'                                    concurrent_queue->push_back(full_res);\n'
-                    cpp += f'                                }}\n'
-                    cpp += f'                            }}\n'
+                    cpp += f'                        std::string_view full_entry;\n'
+                    cpp += f'                        if (item.raw_json().get(full_entry) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                            concurrent_queue->push_back(full_entry);\n'
                     cpp += f'                        }}\n'
                     cpp += f'                    }}\n'
                     cpp += f'                }} else {{\n'
@@ -941,6 +935,120 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
             
         cpp += f"    }}\n    return data;\n}}\n\n"
 
+        # =====================================================================
+        # CONCURRENT PATCHING GENERATOR (Zero-Copy Inline Array Support)
+        # =====================================================================
+        patch_fn_name = f"patch_{path.replace('.', '_')}_from_json"
+        owner_struct = f"FF_{path.replace('.', '_').upper()}"
+        owner_ns = _block_key_namespace(path)
+
+        # Declaration
+        hpp += f"void {patch_fn_name}(simdjson::ondemand::object& obj, FastFHIR::ObjectHandle& wrapper, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+
+        # Implementation
+        cpp += f"void {patch_fn_name}(simdjson::ondemand::object& obj, FastFHIR::ObjectHandle& wrapper, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {{\n"
+        cpp += f"    for (auto field : obj) {{\n"
+        cpp += f"        std::string_view key = field.unescaped_key().value_unsafe();\n"
+
+        is_first_patch = True
+        for f in blk['layout']:
+            json_key = f['orig_name']
+            cpp_name = f['cpp_name']
+            field_key_enum = f"FastFHIR::Fields::{owner_ns}::{_field_key_short_name(json_key)}"
+            
+            err_log = f'if (logger) logger->log("[Warning] FastFHIR Patching: Malformed data at {path}.{json_key}");'
+
+            if is_first_patch:
+                cpp += f'        if (key == "{json_key}") {{\n'
+                is_first_patch = False
+            else:
+                cpp += f'        else if (key == "{json_key}") {{\n'
+
+            # --- String Logic ---
+            if f['fhir_type'] == 'string':
+                cpp += f'            std::string_view val;\n'
+                cpp += f'            if (field.value().get_string().get(val) == simdjson::SUCCESS) {{\n'
+                cpp += f'                // Naturally resolved via TypeTraits<std::string_view>!\n'
+                cpp += f'                wrapper[{field_key_enum}] = builder.append_obj(val);\n'
+                cpp += f'            }} else {{ {err_log} }}\n'
+
+            # --- Nested Object Logic (e.g., request, response, resource) ---
+            elif f['cpp_type'] == 'Offset' and not f['is_array']:
+                if f['fhir_type'] == 'Resource':
+                    cpp += f'            simdjson::ondemand::object res_obj;\n'
+                    cpp += f'            if (field.value().get_object().get(res_obj) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                std::string_view child_type;\n'
+                    cpp += f'                if (res_obj["resourceType"].get_string().get(child_type) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                    FastFHIR::ObjectHandle child = dispatch_resource(child_type, res_obj, builder, logger);\n'
+                    cpp += f'                    if (child.offset() != FF_NULL_OFFSET) {{\n'
+                    cpp += f'                        wrapper[{field_key_enum}] = child;\n'
+                    cpp += f'                    }}\n'
+                    cpp += f'                }}\n'
+                    cpp += f'            }} else {{ {err_log} }}\n'
+                else:
+                    # Leverage the existing builder function to create the sub-block
+                    if f['fhir_type'] in ('BackboneElement', 'Element'):
+                        child_fn = f.get('resolved_path', f"{path}.{json_key}").replace('.', '_') + "_from_json"
+                    else:
+                        child_fn = f"{f['fhir_type']}_from_json"
+
+                    cpp += f'            simdjson::ondemand::object obj_val;\n'
+                    cpp += f'            if (field.value().get_object().get(obj_val) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                auto child_data = {child_fn}(obj_val, logger);\n'
+                    cpp += f'                FastFHIR::ObjectHandle child_handle = builder.append_obj(child_data);\n'
+                    cpp += f'                wrapper[{field_key_enum}] = child_handle;\n'
+                    cpp += f'            }} else {{ {err_log} }}\n'
+
+            # --- Array Logic ---
+            elif f['is_array']:
+                cpp += f'            simdjson::ondemand::array arr;\n'
+                cpp += f'            if (field.value().get_array().get(arr) == simdjson::SUCCESS) {{\n'
+                cpp += f'                std::vector<FastFHIR::ObjectHandle> handles;\n'
+                
+                if f['fhir_type'] in ('string', 'code'):
+                    cpp += f'                for (auto item : arr) {{\n'
+                    cpp += f'                    std::string_view val;\n'
+                    cpp += f'                    if (item.get_string().get(val) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                        handles.push_back(builder.append_obj(val));\n'
+                    cpp += f'                    }}\n'
+                    cpp += f'                }}\n'
+                elif f['fhir_type'] == 'Resource':
+                    cpp += f'                for (auto item : arr) {{\n'
+                    cpp += f'                    simdjson::ondemand::object res_obj;\n'
+                    cpp += f'                    if (item.get_object().get(res_obj) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                        std::string_view child_type;\n'
+                    cpp += f'                        if (res_obj["resourceType"].get_string().get(child_type) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                            FastFHIR::ObjectHandle child = dispatch_resource(child_type, res_obj, builder, logger);\n'
+                    cpp += f'                            if (child.offset() != FF_NULL_OFFSET) handles.push_back(child);\n'
+                    cpp += f'                        }}\n'
+                    cpp += f'                    }}\n'
+                    cpp += f'                }}\n'
+                else:
+                    if f['fhir_type'] in ('BackboneElement', 'Element'):
+                        child_fn = f.get('resolved_path', f"{path}.{json_key}").replace('.', '_') + "_from_json"
+                    else:
+                        child_fn = f"{f['fhir_type']}_from_json"
+                        
+                    cpp += f'                for (auto item : arr) {{\n'
+                    cpp += f'                    simdjson::ondemand::object obj_val;\n'
+                    cpp += f'                    if (item.get_object().get(obj_val) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                        auto child_data = {child_fn}(obj_val, logger);\n'
+                    cpp += f'                        handles.push_back(builder.append_obj(child_data));\n'
+                    cpp += f'                    }}\n'
+                    cpp += f'                }}\n'
+                    
+                cpp += f'                // Naturally resolved via TypeTraits<std::vector<ObjectHandle>>!\n'
+                cpp += f'                wrapper[{field_key_enum}] = builder.append_obj(handles);\n'
+                cpp += f'            }} else {{ {err_log} }}\n'
+
+            # --- Array / Primitive bypass for wrappers ---
+            else:
+                cpp += f'            // [Arrays and inline primitives inside wrappers currently bypass concurrent patch generation]\n'
+
+            cpp += f'        }}\n'
+            
+        cpp += f"    }}\n}}\n\n"
+
     # ==========================================
     # Auto-Generated Master Dispatcher
     # ==========================================
@@ -998,9 +1106,23 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
         "// Copyright (c) Ryan Landvater. All rights reserved.\n"
         "// ============================================================\n"
     )
-
     hpp_head = f"{auto_header}// MARK: - Universal Data Types\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n#include \"../include/FF_Builder.hpp\"\n#include \"FF_CodeSystems.hpp\"\n#include <vector>\n#include <string_view>\n#include <memory>\n\n"
-    hpp_head += "namespace FastFHIR { template<typename T> struct TypeTraits; }\n\n"
+    hpp_head += "namespace FastFHIR { template<typename T> struct TypeTraits; \n\n"
+    hpp_head += "template<> struct TypeTraits<std::string_view> {\n"
+    hpp_head += "    static constexpr auto recovery = RECOVER_FF_STRING;\n"
+    hpp_head += "    static Size size(std::string_view d, uint32_t = FHIR_VERSION_R5) { return SIZE_FF_STRING(d); }\n"
+    hpp_head += "    static void store(BYTE* const base, Offset off, std::string_view d, uint32_t = FHIR_VERSION_R5) { STORE_FF_STRING(base, off, d); }\n"
+    hpp_head += "};\n\n"
+    hpp_head += "template<> struct TypeTraits<std::vector<ObjectHandle>> {\n"
+    hpp_head += "    static constexpr auto recovery = RECOVER_FF_ARRAY;\n"
+    hpp_head += "    static Size size(const std::vector<ObjectHandle>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * sizeof(Offset)); }\n"
+    hpp_head += "    static void store(BYTE* const base, Offset off, const std::vector<ObjectHandle>& d, uint32_t = FHIR_VERSION_R5) {\n"
+    hpp_head += "        std::vector<Offset>h(d.size()); int i = 0;\n"
+    hpp_head += "        for (auto&&obj:d) { h[i++]=obj.offset(); }\n"
+    hpp_head += "        STORE_FF_POINTER_ARRAY(base, off, h);\n"
+    hpp_head += "    }\n"
+    hpp_head += "};\n"
+    hpp_head += "} // namespace FastFHIR\n\n"
     for decl in sorted(fwd_decls): hpp_head += f"struct {decl};\n"
     hpp_head += "\n"
 

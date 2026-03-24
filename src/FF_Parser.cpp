@@ -368,6 +368,7 @@ void Node::print_json(std::ostream& out) const {
         auto k = keys();
         bool first = true;
 
+        // First print the standard Resource Type! It's not required but encouraged.
         // FastFHIR assigns standard Resources to the 0x0200 recovery tag range.
         // BackboneElements (0x0300) and DataTypes (0x0100) do not get a resourceType.
         if (m_recovery >= 0x0200 && m_recovery < 0x0300) {

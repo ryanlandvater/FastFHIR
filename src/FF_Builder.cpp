@@ -155,47 +155,55 @@ namespace FastFHIR
             throw std::runtime_error("FastFHIR: Pointer amendment out of bounds.");
         }
 
-        // Atomic store makes concurrent amendments to the same slot data-race free.
-        Offset *ptr_location = reinterpret_cast<Offset *>(m_base + object_offset + field_vtable_offset);
-        std::atomic_ref<Offset> ptr_atomic(*ptr_location);
-        Offset expected = FF_NULL_OFFSET;
-        if (!ptr_atomic.compare_exchange_strong(expected, new_target_offset,
-                                                std::memory_order_release, std::memory_order_relaxed))
+        // SAFELY load the current value to check if it has already been assigned
+        Offset current_val = LOAD_U64(m_base + object_offset + field_vtable_offset);
+        
+        if (current_val != FF_NULL_OFFSET)
         {
-            std::string msg = "FastFHIR: Pointer amendment failed — attempted to insert offset " + std::to_string(new_target_offset) + " into object at offset " + std::to_string(object_offset) + ", field vtable offset " + std::to_string(field_vtable_offset) + ". This field was already assigned. Attempting to patch an already-assigned pointer risks orphaning elements of the stream. " + "If you are inserting a new object, ensure you are not overwriting an existing reference. " + "(Concurrent modification detected.)";
+            std::string msg = "FastFHIR: Pointer amendment failed — attempted to insert offset " + std::to_string(new_target_offset) +
+            " into object at offset " + std::to_string(object_offset) + ". This field was already assigned. " +
+            "Attempting to patch an already-assigned pointer risks orphaning elements of the stream.";
             throw std::runtime_error(msg);
         }
+        
+        // SAFELY write the new offset without triggering hardware alignment traps
+        STORE_U64(m_base + object_offset + field_vtable_offset, new_target_offset);
     }
 
-
-    // =====================================================================
-    // Array Patching Implementations
-    // =====================================================================
-
-    void ArrayPatchProxy::operator=(const ObjectHandle& child) {
-        if (m_builder.write_offset_at(m_slot_addr, child.offset()).code != FF_SUCCESS) {
-            throw std::runtime_error("FastFHIR: Failed to patch array slot atomically; concurrent modification detected.");
-        }
-    }
-
-    ArrayPatchProxy PointerPatchProxy::operator[](size_t index) const {
-        // 1. Read the relative offset stored in the parent object's vtable
-        Offset* vtable_slot = reinterpret_cast<Offset*>(
-            m_builder->m_base + m_ref.object_offset + m_ref.field_vtable_offset
-        );
-        Offset rel_off = *vtable_slot;
-
-        if (rel_off == FF_NULL_OFFSET) {
+    ObjectHandle PointerPatchProxy::operator[](size_t index) const {
+        // 1. Read the ABSOLUTE offset stored in the parent object's vtable
+        Offset abs_array_off = LOAD_U64(m_builder->m_base + m_ref.object_offset + m_ref.field_vtable_offset);
+        if (abs_array_off == FF_NULL_OFFSET) 
             throw std::runtime_error("FastFHIR: Cannot index into an unallocated array.");
+
+        // 2. Instantiate the FF_ARRAY view object using the absolute offset
+        FF_ARRAY array_block(abs_array_off, m_builder->total_written(), m_builder->m_version);
+
+        // --- STRICT SAFETY: Verify it is actually an array ---
+        if (array_block.validate_full(m_builder->m_base).code != FF_SUCCESS) 
+            throw std::runtime_error("FastFHIR: Schema Violation. Memory block at offset is not a valid FF_ARRAY.");
+
+        // --- STRICT SAFETY: Prevent Buffer Overflows ---
+        uint32_t count = array_block.entry_count(m_builder->m_base);
+        if (index >= count) {
+            throw std::out_of_range("FastFHIR PointerPatchProxy: Array index out of bounds. Attempted to access index " + 
+                                    std::to_string(index) + " in an array of size " + std::to_string(count) + ".");
         }
 
-        // 2. Calculate the absolute address of the Array Block
-        Offset abs_array_off = m_ref.object_offset + rel_off;
+        // 3. Use the encapsulated methods to find the data
+        uint16_t step = array_block.entry_step(m_builder->m_base);
+        const BYTE* entries_ptr = array_block.entries(m_builder->m_base);
+        
+        // Convert the raw memory pointer back into an absolute arena Offset
+        Offset item_addr = static_cast<Offset>(entries_ptr - m_builder->m_base) + (index * step);
 
-        // 3. Jump past the 8-byte Array Header (Length + Padding) to the specific index
-        Offset slot_addr = abs_array_off + 8 + (index * sizeof(Offset));
-
-        return ArrayPatchProxy(*m_builder, slot_addr);
+        // Array of entries or an array of offsets to entries?
+        if (step == sizeof(Offset)) {
+            Offset actual_object_off = LOAD_U64(m_builder->m_base + item_addr);
+            return ObjectHandle(m_builder, actual_object_off, m_ref.target_recovery);
+        } else {
+            return ObjectHandle(m_builder, item_addr, m_ref.target_recovery);
+        }
     }
 
     // =====================================================================
@@ -223,7 +231,7 @@ namespace FastFHIR
                     throw std::runtime_error("FastFHIR: Assignment supports only pointer-backed fields (BLOCK/ARRAY/STRING).");
                 }
 
-                return PointerPatchProxy(m_builder, PointerRef{m_offset, field.field_offset});
+                return PointerPatchProxy(m_builder, PointerRef{m_offset, field.field_offset, field.child_recovery});
             }
         }
 
@@ -236,6 +244,10 @@ namespace FastFHIR
 
     void Builder::set_root(const ObjectHandle &handle)
     {
+        if (handle.offset() != FF_NULL_OFFSET && handle.recovery() == FF_RECOVER_UNDEFINED) {
+            throw std::invalid_argument("FastFHIR: Cannot set a root resource with an UNDEFINED recovery tag.");
+        }
+
         if (!try_begin_mutation())
         {
             throw std::runtime_error("FastFHIR: Builder is finalizing; set_root is no longer allowed.");
@@ -253,16 +265,6 @@ namespace FastFHIR
 
     Offset Builder::allocate_raw(Size size) {
         return m_stream_head.fetch_add(size, std::memory_order_relaxed);
-    }
-
-    FF_Result Builder::patch_offset_atomic(Offset target_addr, Offset child_offset) {
-        auto* ptr = reinterpret_cast<std::atomic<uint64_t>*>(m_base + target_addr);
-        uint64_t expected = ptr->load(std::memory_order_relaxed);
-        if (ptr->compare_exchange_strong(expected, child_offset, std::memory_order_release)) {
-            return FF_SUCCESS;
-        }
-        // If the compare_exchange_strong fails, it means another thread has already written to this
-        return FF_Result(FF_FAILURE, "Failed to patch offset atomically; concurrent modification detected.");
     }
     
     FF_Result Builder::write_offset_at(Offset target_addr, Offset child_offset) {
@@ -286,10 +288,10 @@ namespace FastFHIR
         }
 
         // Finalization sanity check: Ensure a root resource was set and is within bounds
-        if (m_root_offset >= m_stream_head.load(std::memory_order_relaxed) || m_root_offset >= m_capacity)
-        {
+        if (m_root_offset == FF_NULL_OFFSET || m_root_offset >= m_stream_head.load(std::memory_order_relaxed) || m_root_offset >= m_capacity)
             throw std::runtime_error("FastFHIR: Cannot finalize without a valid in-range root resource.");
-        }
+        else if (m_root_recovery == FF_RECOVER_UNDEFINED) 
+            throw std::runtime_error("FastFHIR: Cannot finalize stream. Root resource recovery tag is UNDEFINED.");
 
         // m_checksum_offset is the exact byte where the 48-byte footer begins
         m_checksum_offset = m_stream_head.fetch_add(FF_CHECKSUM::HEADER_SIZE, std::memory_order_relaxed);
