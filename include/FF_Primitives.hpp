@@ -333,17 +333,17 @@ struct FF_EXPORT FF_ARRAY : DATA_BLOCK {
     static constexpr char type [] = "FF_ARRAY";
     static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_ARRAY;
     enum vtable_sizes {
-        VALIDATION_S    = TYPE_SIZE_UINT64,
-        RECOVERY_S      = TYPE_SIZE_UINT16,
-        ENTRY_STEP_S    = TYPE_SIZE_UINT16,
-        ENTRY_COUNT_S   = TYPE_SIZE_UINT32,
+        VALIDATION_S    = TYPE_SIZE_UINT64, // 8
+        RECOVERY_S      = TYPE_SIZE_UINT16, // 2
+        ENTRY_STEP_S    = TYPE_SIZE_UINT16, // 2
+        ENTRY_COUNT_S   = TYPE_SIZE_UINT32, // 4
     };
     enum vtable_offsets {
         VALIDATION      = 0,
-        RECOVERY        = VALIDATION  + VALIDATION_S,
-        ENTRY_STEP      = RECOVERY    + RECOVERY_S,
-        ENTRY_COUNT     = ENTRY_STEP  + ENTRY_STEP_S,
-        HEADER_SIZE     = ENTRY_COUNT + ENTRY_COUNT_S,
+        RECOVERY        = VALIDATION  + VALIDATION_S, // 8
+        ENTRY_STEP      = RECOVERY    + RECOVERY_S, // 10
+        ENTRY_COUNT     = ENTRY_STEP  + ENTRY_STEP_S, // 12
+        HEADER_SIZE     = ENTRY_COUNT + ENTRY_COUNT_S, // 16 bytes exactly
     };
 
     explicit FF_ARRAY(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}

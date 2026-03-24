@@ -6,7 +6,8 @@ Designed for high-performance healthcare applications and heavy data ingestion, 
 
 * **Seriously High Performance**
     * **Zero-Copy Parsing:** Read massive FHIR payloads instantly using a pure offset-based binary layout.
-    * **Lock-Free Concurrent Generation:** Serialize thousands of resources simultaneously across a thread pool using a Virtual Memory Arena without a single mutex, zero heap allocations, and zero pointer invalidation.
+    * **Lock-Free Concurrent Generation:** Serialize thousands of resources simultaneously across a thread pool using a Virtual Memory Arena with zero heap allocations, zero pointer invalidation, and without a single mutex.
+
 * **Deterministic Memory Footprint**
 
     FastFHIR’s binary architecture provides a level of speed and safety that legacy text-based standards cannot achieve:

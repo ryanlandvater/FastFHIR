@@ -64,67 +64,54 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle&
             return FF_SUCCESS;
         }
 
-        // =====================================================================
-        // CONCURRENT PATH: BUNDLE
-        // =====================================================================
-        m_logger.log("[Info] FastFHIR: Ingesting Bundle metadata...");
 
-        BundleData bundle_data;
+
+        // =====================================================================
+        // CONCURRENT PATH: BUNDLE (Top-Down)
+        // =====================================================================
+        m_logger.log("[Info] FastFHIR: Allocating Top-Down Bundle structure...");
+        root_obj.reset(); 
         std::vector<std::string_view> task_payloads;
 
         // =====================================================================
-        // 1. FORWARD-ONLY METADATA EXTRACTION
+        // 1. EXTRACT DATA & QUEUE TASKS
         // =====================================================================
-        for (auto field : root_obj) {
-            std::string_view key = field.unescaped_key().value_unsafe();
-            
-            if (key == "id") {
-                std::string_view val;
-                if (field.value().get_string().get(val) == simdjson::SUCCESS) bundle_data.id = val;
-            } 
-            else if (key == "type") {
-                std::string_view val;
-                if (field.value().get_string().get(val) == simdjson::SUCCESS) bundle_data.type = FF_ParseBundleType(std::string(val)); 
-            } 
-            else if (key == "timestamp") {
-                std::string_view val;
-                if (field.value().get_string().get(val) == simdjson::SUCCESS) bundle_data.timestamp = val;
-            } 
-            else if (key == "total") {
-                uint64_t val;
-                if (field.value().get_uint64().get(val) == simdjson::SUCCESS) bundle_data.total = static_cast<uint32_t>(val);
-            } 
-            else if (key == "entry") {
-                simdjson::ondemand::array entries;
-                if (field.value().get_array().get(entries) == simdjson::SUCCESS) {
-                    for (auto entry : entries) {
-                        simdjson::ondemand::object entry_obj;
-                        if (entry.get_object().get(entry_obj) == simdjson::SUCCESS) {
-                            
-                            // Extract the raw JSON string boundary for the worker threads to parse independently (zero-copy)
-                            simdjson::ondemand::value res_val;
-                            if (entry_obj["resource"].get(res_val) == simdjson::SUCCESS) {
-                                task_payloads.push_back(res_val.raw_json_token());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // =====================================================================
-        // 2. CONCURRENT BUNDLE THREADS PROCESSING
-        // =====================================================================
-        out_parsed_count = task_payloads.size();
-        std::vector<ObjectHandle> results(out_parsed_count, ObjectHandle(&m_builder, FF_NULL_OFFSET));
-        std::atomic<size_t> current_task{0};
+        // This single line parses all metadata AND slices the entry array into our task vector.
+        BundleData pre_bundle = Bundle_from_json(root_obj, &m_logger, &task_payloads);
         
-        std::vector<std::thread> workers;
-        workers.reserve(m_num_threads);
+        // =====================================================================
+        // 2. PREPARE THE PREALLOCATED ARRAY
+        // =====================================================================
+        // Pre-fill the vector with exactly N null handles
+        size_t count = task_payloads.size();
+        pre_bundle.entry_handles.assign(count, ObjectHandle(&m_builder, FF_NULL_OFFSET));
 
+        // =====================================================================
+        // 3. WRITE THE PREALLOCATED BUNDLE TOP-DOWN
+        // =====================================================================
+        // This safely writes the strings, the header, and the null-filled array block to mmap.
+        ObjectHandle root_handle = m_builder.append_obj(pre_bundle);
+        Offset bundle_offset = root_handle.offset();
+
+        // =====================================================================
+        // 4. LOCATE THE PREALLOCATED ARRAY BLOCK FOR PATCHING
+        // =====================================================================
+        // Safely retrieve the ArrayPatchProxy using the generated reflection key
+        auto entry_array = root_handle[Fields::BUNDLE::ENTRY];
+
+        // =====================================================================
+        // 5. CONCURRENT ARRAY PATCHING
+        // =====================================================================
+        // Each worker thread will parse its assigned entry, append it to the arena,
+        // and atomically patch the offset into the correct slot in the array block.
+        out_parsed_count = count;
+        std::atomic<size_t> current_task{0};
+        std::vector<std::thread> workers;
+        
         for (unsigned int i = 0; i < m_num_threads; ++i) {
-            workers.emplace_back([this, i, &task_payloads, &results, &current_task, &m_builder]() {
-                auto& local_parser = m_parser_pool[i]; 
+            // Note: capturing 'entry_array' by value, not the old absolute offset
+            workers.emplace_back([this, i, &task_payloads, entry_array, &current_task, &m_builder]() mutable {
+                auto& local_parser = m_parser_pool[i];
                 
                 while (!m_engine_faulted.load(std::memory_order_relaxed)) {
                     size_t task_idx = current_task.fetch_add(1, std::memory_order_relaxed);
@@ -133,15 +120,32 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle&
                     try {
                         simdjson::padded_string local_pad(task_payloads[task_idx]);
                         simdjson::ondemand::document local_doc = local_parser.iterate(local_pad);
+                        simdjson::ondemand::object local_obj = local_doc.get_object();
                         
                         std::string_view child_type;
-                        if (local_doc["resourceType"].get(child_type) == simdjson::SUCCESS) {
-                            results[task_idx] = dispatch_resource(child_type, local_doc.get_object(), m_builder, &m_logger);
+                        if (local_obj["resourceType"].get_string().get(child_type) == simdjson::SUCCESS) {
+                            
+                            // A. Worker parses and appends the child to the arena
+                            ObjectHandle child = dispatch_resource(child_type, local_obj, m_builder, &m_logger);
+                            
+                            // B. Safely atomically patch the child resource via an ArrayPatchProxy
+                            entry_array[task_idx] = child;
                         }
+                    } catch (const simdjson::simdjson_error& e) {
+                        m_engine_faulted.store(true, std::memory_order_release);
+                        m_logger.log(std::string("[Fatal] Worker thread crashed on resource index ") + 
+                                     std::to_string(task_idx) + " (simdjson): " + e.what());
+                        break; // Exit the while loop
                     } catch (const std::exception& e) {
                         m_engine_faulted.store(true, std::memory_order_release);
-                        m_logger.log(std::string("[Fatal] Thread crashed on resource index ") + std::to_string(task_idx) + ": " + e.what());
-                        break; 
+                        m_logger.log(std::string("[Fatal] Worker thread crashed on resource index ") + 
+                                     std::to_string(task_idx) + " (std::exception): " + e.what());
+                        break; // Exit the while loop
+                    } catch (...) {
+                        m_engine_faulted.store(true, std::memory_order_release);
+                        m_logger.log(std::string("[Fatal] Worker thread crashed on resource index ") + 
+                                     std::to_string(task_idx) + " with an unknown exception.");
+                        break; // Exit the while loop
                     }
                 }
             });
@@ -149,21 +153,16 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle&
 
         for (auto& worker : workers) worker.join();
 
+        // Check if the engine faulted during the worker runs
         if (m_engine_faulted.load(std::memory_order_acquire)) {
             return FF_Result{FF_FAILURE, "Ingestion aborted due to worker thread crash."};
         }
 
         // =====================================================================
-        // 3. ROOT FINALIZATION
+        // 6. Return Root
         // =====================================================================
-        
-        // Pass the pre-serialized worker results into the bypass vector
-        bundle_data.entry_handles = std::move(results); 
-        
-        out_root = m_builder.append_obj(bundle_data);
-        
-        m_logger.log("[Success] FastFHIR: Bundle ingestion complete.");
-        return FF_Result{FF_SUCCESS, "Bundle parsed successfully."};
+        out_root = root_handle;
+        return FF_SUCCESS;
 
     } catch (const simdjson::simdjson_error& e) {
         return FF_Result{FF_FAILURE, std::string("simdjson Exception: ") + e.what()};

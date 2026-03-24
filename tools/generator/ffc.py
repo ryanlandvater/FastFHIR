@@ -472,6 +472,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto blk_n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
                 cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_{block_struct_name}, TYPE_SIZE_OFFSET, blk_n);\n"
+                cpp += f"        child_off += FF_ARRAY::HEADER_SIZE;\n"
                 cpp += f"        Offset blk_off_tbl = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(blk_n) * TYPE_SIZE_OFFSET;\n"
                 cpp += f"        for (uint32_t blk_i = 0; blk_i < blk_n; ++blk_i) {{\n"
@@ -487,6 +488,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
                 cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_{block_struct_name}, {child_struct}::HEADER_SIZE, __n);\n"
+                cpp += f"        child_off += FF_ARRAY::HEADER_SIZE;\n"
                 cpp += f"        Offset __entries_start = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(__n) * {child_struct}::HEADER_SIZE;\n"
                 cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
@@ -500,6 +502,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}_handles.size());\n"
                 cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_{block_struct_name}, TYPE_SIZE_OFFSET, __n);\n"
+                cpp += f"        child_off += FF_ARRAY::HEADER_SIZE;\n"
                 cpp += f"        Offset __entries_start = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(__n) * TYPE_SIZE_OFFSET;\n"
                 cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
@@ -811,10 +814,10 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         fn_name = path.replace('.', '_') + "_from_json"
         
         # Declaration
-        hpp += f"{data_type} {fn_name}(simdjson::ondemand::object obj, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+        hpp += f"{data_type} {fn_name}(simdjson::ondemand::object obj, FastFHIR::ConcurrentLogger* logger = nullptr, std::vector<std::string_view>* concurrent_queue = nullptr);\n"
 
         # Implementation
-        cpp += f"{data_type} {fn_name}(simdjson::ondemand::object obj, FastFHIR::ConcurrentLogger* logger) {{\n"
+        cpp += f"{data_type} {fn_name}(simdjson::ondemand::object obj, FastFHIR::ConcurrentLogger* logger, std::vector<std::string_view>* concurrent_queue) {{\n"
         cpp += f"    obj.reset(); // Reset simdjson reel else will error.\n"
         cpp += f"    {data_type} data;\n"
         cpp += f"    for (auto field : obj) {{\n"
@@ -838,6 +841,21 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
             if f['is_array']:
                 cpp += f'            simdjson::ondemand::array arr;\n'
                 cpp += f'            if (field.value().get_array().get(arr) == simdjson::SUCCESS) {{\n'
+                if path == 'Bundle' and f['orig_name'] == 'entry':
+                    cpp += f'                if (concurrent_queue) {{\n'
+                    cpp += f'                    for (auto item : arr) {{\n'
+                    cpp += f'                        simdjson::ondemand::object entry_obj;\n'
+                    cpp += f'                        if (item.get_object().get(entry_obj) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                            simdjson::ondemand::value res_val;\n'
+                    cpp += f'                            if (entry_obj["resource"].get(res_val) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                                std::string_view full_res;\n'
+                    cpp += f'                                if (res_val.raw_json().get(full_res) == simdjson::SUCCESS) {{\n'
+                    cpp += f'                                    concurrent_queue->push_back(full_res);\n'
+                    cpp += f'                                }}\n'
+                    cpp += f'                            }}\n'
+                    cpp += f'                        }}\n'
+                    cpp += f'                    }}\n'
+                    cpp += f'                }} else {{\n'
                 cpp += f'                for (auto item : arr) {{\n'
                 if f['fhir_type'] in ('string', 'code'):
                     code_enum = f.get('code_enum')
@@ -861,6 +879,8 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                     cpp += f'                        data.{cpp_name}.push_back({child_fn}(obj_val, logger));\n'
                     cpp += f'                    }} else {{ {err_log} }}\n'
                 cpp += f'                }}\n'
+                if path == 'Bundle' and f['orig_name'] == 'entry':
+                    cpp += f'                }}\n'
                 cpp += f'            }} else {{ {err_log} }}\n'
                 cpp += f'        }}\n'
                 continue

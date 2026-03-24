@@ -8,6 +8,7 @@
  * @remark FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
  */
 
+#include "FF_Utilities.hpp"
 #include "FF_Builder.hpp"
 #include "FF_Parser.hpp"
 #include "../generated_src/FF_Reflection.hpp"
@@ -166,6 +167,37 @@ namespace FastFHIR
         }
     }
 
+
+    // =====================================================================
+    // Array Patching Implementations
+    // =====================================================================
+
+    void ArrayPatchProxy::operator=(const ObjectHandle& child) {
+        if (m_builder.write_offset_at(m_slot_addr, child.offset()).code != FF_SUCCESS) {
+            throw std::runtime_error("FastFHIR: Failed to patch array slot atomically; concurrent modification detected.");
+        }
+    }
+
+    ArrayPatchProxy PointerPatchProxy::operator[](size_t index) const {
+        // 1. Read the relative offset stored in the parent object's vtable
+        Offset* vtable_slot = reinterpret_cast<Offset*>(
+            m_builder->m_base + m_ref.object_offset + m_ref.field_vtable_offset
+        );
+        Offset rel_off = *vtable_slot;
+
+        if (rel_off == FF_NULL_OFFSET) {
+            throw std::runtime_error("FastFHIR: Cannot index into an unallocated array.");
+        }
+
+        // 2. Calculate the absolute address of the Array Block
+        Offset abs_array_off = m_ref.object_offset + rel_off;
+
+        // 3. Jump past the 8-byte Array Header (Length + Padding) to the specific index
+        Offset slot_addr = abs_array_off + 8 + (index * sizeof(Offset));
+
+        return ArrayPatchProxy(*m_builder, slot_addr);
+    }
+
     // =====================================================================
     // ObjectHandle String Lookup (Reflection)
     // =====================================================================
@@ -217,6 +249,26 @@ namespace FastFHIR
 
         m_root_offset = handle.offset();
         m_root_recovery = handle.recovery();
+    }
+
+    Offset Builder::allocate_raw(Size size) {
+        return m_stream_head.fetch_add(size, std::memory_order_relaxed);
+    }
+
+    FF_Result Builder::patch_offset_atomic(Offset target_addr, Offset child_offset) {
+        auto* ptr = reinterpret_cast<std::atomic<uint64_t>*>(m_base + target_addr);
+        uint64_t expected = ptr->load(std::memory_order_relaxed);
+        if (ptr->compare_exchange_strong(expected, child_offset, std::memory_order_release)) {
+            return FF_SUCCESS;
+        }
+        // If the compare_exchange_strong fails, it means another thread has already written to this
+        return FF_Result(FF_FAILURE, "Failed to patch offset atomically; concurrent modification detected.");
+    }
+    
+    FF_Result Builder::write_offset_at(Offset target_addr, Offset child_offset) {
+        // Use STORE_FF_OFFSET for proper endianness and atomicity guarantees?
+        STORE_U64(m_base+target_addr, child_offset);
+        return FF_SUCCESS;
     }
 
     std::string_view Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &hasher)
