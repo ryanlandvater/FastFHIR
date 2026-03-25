@@ -55,7 +55,7 @@ bool Node::is_empty() const {
     if (is_scalar())
         return FF_IsFieldEmpty(m_base, m_global_scalar_offset, m_kind);
     
-    if (is_object()) {
+    if (is_object()) { 
         auto f_list = fields(); 
         for (size_t i = 0; i < f_list.size(); ++i) {
             const auto& f = f_list[i];
