@@ -9,7 +9,7 @@
  */
 #pragma once
 
-#include "FF_Primitives.hpp"
+#include "FF_Utilities.hpp"
 #include <atomic>
 #include <stdexcept>
 #include <string_view>
@@ -247,16 +247,11 @@ public:
 // =====================================================================
 // INLINE TEMPLATE IMPLEMENTATIONS
 // =====================================================================
-inline constexpr bool is_resource_tag(RECOVERY_TAG tag) {
-    // True for anything in the top level resource 0x0200 block (Patient, Observation, etc.)
-    return (tag >= 0x0200 && tag < 0x0300); 
-}
-
 inline PointerPatchProxy& PointerPatchProxy::operator=(const ObjectHandle& child) {
     // --- STRICT SCHEMA VALIDATION ---
     if (m_ref.target_recovery == RECOVER_FF_RESOURCE) {
         // Polymorphic field: Ensure the child is actually a top-level Resource
-        if (!is_resource_tag(child.recovery())) 
+        if (!FF_IsResourceTag(child.recovery())) 
             throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range), but received a different block type.");
     } else if (child.recovery() != m_ref.target_recovery) 
         // Strictly typed field: Ensure an exact match
@@ -272,7 +267,7 @@ Offset PointerPatchProxy::operator=(const T_Data& data) {
     RECOVERY_TAG child_tag = TypeTraits<T_Data>::recovery;
     if (m_ref.target_recovery == RECOVER_FF_RESOURCE) {
         // Polymorphic field: Ensure the child is actually a top-level Resource
-        if (!is_resource_tag(child_tag)) 
+        if (!FF_IsResourceTag(child_tag)) 
             throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range), but received a different block type.");
     } else if (child_tag != m_ref.target_recovery) {
         throw std::invalid_argument("FastFHIR Schema Violation: Attempted to append an incompatible type to a strictly typed field.");

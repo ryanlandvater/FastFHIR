@@ -121,73 +121,97 @@ std::vector<Node> Node::entries() const {
     uint16_t step  = array.entry_step(m_base);
 
     out.reserve(count);
-
     Offset entries_start = m_offset + FF_ARRAY::HEADER_SIZE;
 
     for (uint32_t i = 0; i < count; ++i) {
         if (m_array_entries_are_offsets) {
-            // Array of pointers (e.g., strings or polymorphic resources)
             Offset child_off = LOAD_U64(m_base + entries_start + (i * step));
-            out.push_back(Node(m_base, m_size, m_version, child_off, m_child_recovery, FF_FIELD_BLOCK));
+            
+            // FAST PATH: Early exit for sparse array null pointers
+            if (child_off == FF_NULL_OFFSET) {
+                out.push_back(Node());
+                continue;
+            }
+
+            RECOVERY_TAG actual_recovery = m_child_recovery;
+            FF_FieldKind child_kind = (m_child_recovery == FF_STRING::recovery) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
+            
+            // Polymorphic Array Resolution with Validation
+            if (actual_recovery == RECOVER_FF_RESOURCE) {
+                actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + child_off + 8));
+                if (!FF_IsResourceTag(actual_recovery)) {
+                    out.push_back(Node()); // Safety check: invalid resource tag prevents garbage reads
+                    continue;
+                }
+            }
+            
+            out.push_back(Node(m_base, m_size, m_version, child_off, actual_recovery, child_kind));
         } else {
-            // Inline array (e.g., our Bundle.entry 82-byte structs)
+            // FAST PATH: Inline arrays inherently exist, just slice the pre-allocated memory offset
             Offset item_off = entries_start + (i * step);
-            // The item_off is correctly shifted past the array header
             out.push_back(Node(m_base, m_size, m_version, item_off, m_child_recovery, FF_FIELD_BLOCK));
         }
     }
+    
     return out;
 }
 // =====================================================================
 // Node child lookup
 // =====================================================================
-Node Node::operator[](std::string_view key) const {
-    if (!is_object()) return {};
-
-    Node result = reflected_child_node(
-        m_base, m_size, m_version,
-        m_offset, m_recovery, key);
-
-    return result;
-}
-
 Node Node::operator[](FF_FieldKey key) const {
     if (!is_object()) return {};
 
-    if (key.owner_recovery != 0 && key.owner_recovery != m_recovery)
+    if (key.owner_recovery != FF_RECOVER_UNDEFINED &&
+        key.owner_recovery != m_recovery)
         return {};
 
     if (key.kind == FF_FIELD_UNKNOWN) {
         const std::string_view key_name = key.view();
-        if (!key_name.empty()) return this->operator[](key_name);
+        if (!key_name.empty()) 
+            return reflected_child_node(m_base, m_size, m_version, m_offset, m_recovery, key_name);
         return {};
     }
 
     const Offset value_offset = m_offset + key.field_offset;
-    Node result;
 
-    if (key.kind == FF_FIELD_STRING) {
-        const Offset child_offset = LOAD_U64(m_base + value_offset);
-        if (child_offset != FF_NULL_OFFSET)
-            result = Node(m_base, m_size, m_version,
-                          child_offset, FF_STRING::recovery, FF_FIELD_STRING);
-    } else if (key.kind == FF_FIELD_ARRAY) {
-        const Offset child_offset = LOAD_U64(m_base + value_offset);
-        if (child_offset != FF_NULL_OFFSET)
-            result = Node(m_base, m_size, m_version,
-                          child_offset, FF_ARRAY::recovery, FF_FIELD_ARRAY,
-                          key.child_recovery, key.array_entries_are_offsets != 0);
-    } else if (key.kind == FF_FIELD_BLOCK) {
-        const Offset child_offset = LOAD_U64(m_base + value_offset);
-        if (child_offset != FF_NULL_OFFSET)
-            result = Node(m_base, m_size, m_version,
-                          child_offset, key.child_recovery, FF_FIELD_BLOCK);
-    } else {
-        result = Node::scalar(m_base, m_size, m_version,
-                              m_offset, value_offset, key.kind);
+    // 1. FAST PATH: Early exit if the field is empty (bypasses object creation entirely)
+    if (FF_IsFieldEmpty(m_base, value_offset, key.kind)) {
+        return {};
     }
 
-    return result;
+    // 2. We now guarantee the data exists. Switch directly to the correct instantiation.
+    switch (key.kind) {
+        case FF_FIELD_STRING: {
+            const Offset child_offset = LOAD_U64(m_base + value_offset);
+            return Node(m_base, m_size, m_version, child_offset, FF_STRING::recovery, FF_FIELD_STRING);
+        }
+        case FF_FIELD_ARRAY: {
+            const Offset child_offset = LOAD_U64(m_base + value_offset);
+            return Node(m_base, m_size, m_version, child_offset, FF_ARRAY::recovery, FF_FIELD_ARRAY,
+                        key.child_recovery, key.array_entries_are_offsets != 0);
+        }
+        case FF_FIELD_BLOCK: {
+            const Offset child_offset = LOAD_U64(m_base + value_offset);
+            RECOVERY_TAG actual_recovery = key.child_recovery;
+            
+            // Polymorphic Resolution with Validation
+            if (actual_recovery == RECOVER_FF_RESOURCE) {
+                actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + child_offset + 8)); 
+                if (!FF_IsResourceTag(actual_recovery)) return {}; // Safety check: invalid resource tag
+            }
+            
+            return Node(m_base, m_size, m_version, child_offset, actual_recovery, FF_FIELD_BLOCK);
+        }
+        case FF_FIELD_CODE:
+        case FF_FIELD_BOOL:
+        case FF_FIELD_UINT32:
+        case FF_FIELD_FLOAT64:
+            // Inline scalar values
+            return Node::scalar(m_base, m_size, m_version, m_offset, value_offset, key.kind);
+            
+        default:
+            return {};
+    }
 }
 
 Node Node::operator[](size_t index) const {
@@ -198,20 +222,29 @@ Node Node::operator[](size_t index) const {
     if (index >= count) return {};
 
     const BYTE* entry = array.entries(m_base) + index * array.entry_step(m_base);
-    Node result;
 
     if (m_array_entries_are_offsets) {
         Offset child_offset = LOAD_U64(entry);
-        if (child_offset != FF_NULL_OFFSET)
-            result = Node(m_base, m_size, m_version,
-                          child_offset, m_child_recovery, FF_FIELD_STRING);
-    } else {
-        result = Node(m_base, m_size, m_version,
-                      static_cast<Offset>(entry - m_base),
-                      m_child_recovery, FF_FIELD_BLOCK);
-    }
+        
+        // FAST PATH: Early exit for sparse array null pointers
+        if (child_offset == FF_NULL_OFFSET) return {}; 
 
-    return result;
+        RECOVERY_TAG actual_recovery = m_child_recovery;
+        FF_FieldKind child_kind = (m_child_recovery == FF_STRING::recovery) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
+        
+        // Polymorphic Lookup with Validation
+        if (actual_recovery == RECOVER_FF_RESOURCE) {
+            actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + child_offset + 8));
+            if (!FF_IsResourceTag(actual_recovery)) return {}; // Safety check: invalid resource tag
+        }
+        
+        return Node(m_base, m_size, m_version, child_offset, actual_recovery, child_kind);
+    } 
+    
+    // FAST PATH: Inline arrays inherently exist, just return the exact memory slice
+    return Node(m_base, m_size, m_version,
+                static_cast<Offset>(entry - m_base),
+                m_child_recovery, FF_FIELD_BLOCK);
 }
 
 // =====================================================================
@@ -395,7 +428,7 @@ void Node::print_json(std::ostream& out) const {
         for (size_t i = 0; i < f_list.size(); ++i) {
             const auto& f = f_list[i];
 
-            // 1. FAST PATH: Raw memory peek. Skip completely if empty!
+            // 1. FAST PATH: Raw memory peek. Skip completely field if empty!
             if (FF_IsFieldEmpty(m_base, m_offset + f.field_offset, f.kind)) {
                 continue;
             }

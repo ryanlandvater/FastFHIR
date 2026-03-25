@@ -18,6 +18,7 @@
 #include "FF_Primitives.hpp"
 
 namespace FastFHIR {
+template<typename T> struct TypeTraits;
 class Node;
 /**
  * @class Parser
@@ -251,13 +252,6 @@ public:
     std::vector<Node> entries() const;
 
     /**
-     * @brief Lookup an object child by key text.
-     * @param key Field name to resolve.
-     * @return Matching child node, or an empty node if not found or not an object.
-     */
-    Node operator[](std::string_view key) const;
-
-    /**
      * @brief Lookup an object child by precomputed field key descriptor.
      * @param key Field key descriptor produced from generated field metadata.
      * @return Matching child node, or an empty node if incompatible/not found.
@@ -270,11 +264,31 @@ public:
      * @return Matching child node, or an empty node if out of bounds/not an array.
      */
     Node operator[](size_t index) const;
+
     /**
      * @brief Decode this node in one call to a tagged payload.
      * @return A @ref Value containing `kind` plus decoded payload fields.
      */
     Value value() const;
+    
+    /**
+     * @brief Eagerly parses this node into its concrete C++ POD structure.
+     * @tparam T_Data The generated FastFHIR Data struct (e.g., PatientData).
+     * @throws std::invalid_argument if the node's recovery tag doesn't match the requested type.
+     */
+    template <typename T_Data>
+    T_Data as() const {
+        if (!*this || is_empty()) return T_Data{};
+
+        // Strict schema validation!
+        if (m_recovery != TypeTraits<T_Data>::recovery) {
+            throw std::invalid_argument("FastFHIR Schema Violation: Cannot cast Node to requested type.");
+        }
+
+        return TypeTraits<T_Data>::read(m_base, m_offset, m_size, m_version);
+    }
+    
+    
     /**
      * @brief Recursively print this node and all children as minified FHIR JSON.
      * @param out The output stream.

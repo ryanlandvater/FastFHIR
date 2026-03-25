@@ -677,6 +677,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
         hpp += f"    static constexpr auto recovery = {s_name}::recovery;\n"
         hpp += f"    static Size size(const {d_name}& d, uint32_t v = FHIR_VERSION_R5) {{ return SIZE_{s_name}(d, v); }}\n"
         hpp += f"    static void store(BYTE* const base, Offset off, const {d_name}& d, uint32_t v = FHIR_VERSION_R5) {{ STORE_{s_name}(base, off, d, v); }}\n"
+        hpp += f"    static {d_name} read(const BYTE* const base, Offset off, Size size, uint32_t v) {{ return {s_name}(off, size, v).read(base); }}\n"
         hpp += f"}};\n"
         hpp += f"}} // namespace FastFHIR\n\n"
 

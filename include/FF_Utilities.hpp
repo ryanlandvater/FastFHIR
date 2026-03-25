@@ -20,13 +20,6 @@
 #pragma once
 
 #include "FF_Primitives.hpp"
-#include <limits>
-#include <cstdint>
-#include <cstring>
-#include <bit>
-#include <limits>
-#include <type_traits>
-#include <string>
 
 #ifdef _MSC_VER
 #include <stdlib.h>
@@ -238,6 +231,15 @@ struct FF_ArrayHeader
 inline bool FF_IsChoicePresent(uint64_t choice_offset)
 {
     return choice_offset != FF_NULL_OFFSET;
+}
+
+/**
+ * @brief Utility to determine if a given RECOVERY_TAG corresponds to a top-level FHIR resource.
+ * This is used for validation and to apply resource-specific logic during parsing and building.
+ */
+inline constexpr bool FF_IsResourceTag(RECOVERY_TAG tag) {
+    // True for anything in the top level resource 0x0200 block (Patient, Observation, etc.)
+    return (tag >= 0x0200 && tag < 0x0300); 
 }
 
 /**
