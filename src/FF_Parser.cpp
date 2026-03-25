@@ -26,7 +26,7 @@ Node::Node(const BYTE* base, Size size, uint32_t version, Offset offset,
     : m_base(base),
       m_size(size),
       m_version(version),
-      m_offset(offset),
+      m_node_offset(offset),
       m_recovery(recovery),
       m_child_recovery(child_recovery),
       m_kind(kind),
@@ -38,8 +38,8 @@ Node Node::scalar(const BYTE* base, Size size, uint32_t version,
     node.m_base = base;
     node.m_size = size;
     node.m_version = version;
-    node.m_offset = parent_offset;        
-    node.m_scalar_offset = scalar_offset;
+    node.m_node_offset = parent_offset;        
+    node.m_global_scalar_offset = scalar_offset;
     node.m_kind = kind;
     return node;
 }
@@ -49,21 +49,17 @@ bool Node::is_empty() const {
     
     if (is_array()) return size() == 0;
     
-    if (is_string() || kind() == FF_FIELD_CODE) {
-        auto val = value();
-        return !val || val.as_string().empty();
-    }
+    if (is_string() || kind() == FF_FIELD_CODE) 
+        return as<std::string_view>().empty();
     
-    if (is_scalar()) {
-        auto val = value();
-        return !val.has_value; 
-    }
+    if (is_scalar())
+        return FF_IsFieldEmpty(m_base, m_global_scalar_offset, m_kind);
     
     if (is_object()) {
         auto f_list = fields(); 
         for (size_t i = 0; i < f_list.size(); ++i) {
             const auto& f = f_list[i];
-            if (!FF_IsFieldEmpty(m_base, m_offset + f.field_offset, f.kind)) 
+            if (!FF_IsFieldEmpty(m_base, m_node_offset + f.field_offset, f.kind)) 
                 return false;
         }
         return true;
@@ -77,13 +73,13 @@ bool Node::is_empty() const {
 // =====================================================================
 Node::operator bool() const {
     return m_base != nullptr
-        && (m_offset != FF_NULL_OFFSET || m_scalar_offset != FF_NULL_OFFSET);
+        && (m_node_offset != FF_NULL_OFFSET || m_global_scalar_offset != FF_NULL_OFFSET);
 }
 
 bool Node::is_array()  const { return m_kind == FF_FIELD_ARRAY; }
 bool Node::is_object() const { return m_kind == FF_FIELD_BLOCK; }
 bool Node::is_string() const { return m_kind == FF_FIELD_STRING; }
-bool Node::is_scalar() const { return m_scalar_offset != FF_NULL_OFFSET; }
+bool Node::is_scalar() const { return m_global_scalar_offset != FF_NULL_OFFSET; }
 
 FF_FieldKind Node::kind()     const { return m_kind; }
 RECOVERY_TAG Node::recovery() const { return m_recovery; }
@@ -103,7 +99,7 @@ std::vector<std::string_view> Node::keys() const {
 
 size_t Node::size() const {
     if (is_array()) {
-        FF_ARRAY array(m_offset, m_size, m_version);
+        FF_ARRAY array(m_node_offset, m_size, m_version);
         return array.entry_count(m_base);
     }
     if (is_object()) {
@@ -116,12 +112,12 @@ std::vector<Node> Node::entries() const {
     std::vector<Node> out;
     if (!is_array()) return out;
 
-    FF_ARRAY array(m_offset, m_size, m_version);
+    FF_ARRAY array(m_node_offset, m_size, m_version);
     uint32_t count = array.entry_count(m_base);
     uint16_t step  = array.entry_step(m_base);
 
     out.reserve(count);
-    Offset entries_start = m_offset + FF_ARRAY::HEADER_SIZE;
+    Offset entries_start = m_node_offset + FF_ARRAY::HEADER_SIZE;
 
     for (uint32_t i = 0; i < count; ++i) {
         if (m_array_entries_are_offsets) {
@@ -168,11 +164,11 @@ Node Node::operator[](FF_FieldKey key) const {
     if (key.kind == FF_FIELD_UNKNOWN) {
         const std::string_view key_name = key.view();
         if (!key_name.empty()) 
-            return reflected_child_node(m_base, m_size, m_version, m_offset, m_recovery, key_name);
+            return reflected_child_node(m_base, m_size, m_version, m_node_offset, m_recovery, key_name);
         return {};
     }
 
-    const Offset value_offset = m_offset + key.field_offset;
+    const Offset value_offset = m_node_offset + key.field_offset;
 
     // 1. FAST PATH: Early exit if the field is empty (bypasses object creation entirely)
     if (FF_IsFieldEmpty(m_base, value_offset, key.kind)) {
@@ -207,7 +203,7 @@ Node Node::operator[](FF_FieldKey key) const {
         case FF_FIELD_UINT32:
         case FF_FIELD_FLOAT64:
             // Inline scalar values
-            return Node::scalar(m_base, m_size, m_version, m_offset, value_offset, key.kind);
+            return Node::scalar(m_base, m_size, m_version, m_node_offset, value_offset, key.kind);
             
         default:
             return {};
@@ -217,7 +213,7 @@ Node Node::operator[](FF_FieldKey key) const {
 Node Node::operator[](size_t index) const {
     if (!is_array()) return {};
 
-    FF_ARRAY array(m_offset, m_size, m_version);
+    FF_ARRAY array(m_node_offset, m_size, m_version);
     auto count = array.entry_count(m_base);
     if (index >= count) return {};
 
@@ -248,86 +244,53 @@ Node Node::operator[](size_t index) const {
 }
 
 // =====================================================================
-// Node value accessor
+// Node primitive accessors
 // =====================================================================
-Node::Value Node::value() const {
-    Value out;
-    out.kind = m_kind;
-    if (!m_base) return out;
+template <>
+std::string_view Node::as<std::string_view>() const {
+    if (!*this || m_kind == FF_FIELD_UNKNOWN) return {};
 
-    switch (m_kind) {
-        case FF_FIELD_BOOL:
-            if (m_scalar_offset != FF_NULL_OFFSET) {
-                uint8_t raw_bool = LOAD_U8(m_base + m_scalar_offset);
-                if (raw_bool == FF_NULL_UINT8) {
-                    out.has_value = false;
-                } else {
-                    out.payload.bool_value = (raw_bool != 0); // 0 is False, 1 is True
-                    out.has_value = true;
-                }
+    switch (m_kind)
+    {
+    case FF_FIELD_STRING:
+        return FF_STRING(m_node_offset, m_size, m_version).read_view(m_base);
+        case FF_FIELD_CODE: {
+            uint32_t raw_code = LOAD_U32(m_base + m_global_scalar_offset);
+            if (raw_code == FF_CODE_NULL) return {};
+            
+            // 1. Evaluate the MSB for Custom Strings safely
+            if ((raw_code & FF_CUSTOM_STRING_FLAG) != 0) {
+                Offset rel_off = static_cast<Offset>(raw_code & ~FF_CUSTOM_STRING_FLAG);
+                return FF_STRING(m_node_offset + rel_off, m_size, m_version).read_view(m_base);
             }
-            break;
-        case FF_FIELD_CODE:
-            if (m_scalar_offset != FF_NULL_OFFSET) {
-                uint32_t raw_code = LOAD_U32(m_base + m_scalar_offset);
-                
-                // 1. Trap the MAX null before bitwise operations
-                if (raw_code == FF_CODE_NULL) {
-                    out.has_value = false;
-                }
-                // 2. Evaluate the MSB for Custom Strings safely
-                else if ((raw_code & FF_CUSTOM_STRING_FLAG) != 0) {
-                    Offset rel_off = static_cast<Offset>(raw_code & ~FF_CUSTOM_STRING_FLAG);
-                    Offset custom_off = m_offset + rel_off;
-                    if (rel_off > 0 && custom_off < m_size) {
-                        out.payload.string_value = FF_STRING(custom_off, m_size, m_version).read_view(m_base);
-                        out.has_value = true;
-                    }
-                }
-                // 3. Standard Dictionary Lookup
-                else if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
-                    // Ensure valid pointer AND that it isn't an out-of-bounds empty string fallback
-                    if (resolved && resolved[0] != '\0') {
-                        out.payload.string_value = resolved;
-                        out.has_value = true;
-                    } else {
-                        out.has_value = false;
-                    }
-                }
+            // 2. Standard Dictionary Lookup
+            else if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
+                return {resolved};
             }
-            break;
-        case FF_FIELD_UINT32:
-            if (m_scalar_offset != FF_NULL_OFFSET) {
-                uint32_t raw = LOAD_U32(m_base + m_scalar_offset);
-                if (raw == FF_NULL_UINT32) {
-                    out.has_value = false;
-                } else {
-                    out.payload.uint32_value = raw;
-                    out.has_value = true;
-                }
-            }
-            break;
-        case FF_FIELD_FLOAT64:
-            if (m_scalar_offset != FF_NULL_OFFSET) {
-                double raw = LOAD_F64(m_base + m_scalar_offset);
-                if (raw == FF_NULL_F64) {
-                    out.has_value = false;
-                } else {
-                    out.payload.float64_value = raw;
-                    out.has_value = true;
-                }
-            }
-            break;
-        case FF_FIELD_STRING:
-            if (m_offset != FF_NULL_OFFSET) {
-                out.payload.string_value = FF_STRING(m_offset, m_size, m_version).read_view(m_base);
-                out.has_value = true;
-            }
-            break;
-        default:
-            break;
+        } break;
+
+    default:
+        break;
     }
-    return out;
+    return {};
+}
+
+template <>
+bool Node::as<bool>() const {
+    if (!*this || m_kind != FF_FIELD_BOOL) return false;
+    return LOAD_U8(m_base + m_global_scalar_offset) != 0;
+}
+
+template <>
+uint32_t Node::as<uint32_t>() const {
+    if (!*this || m_kind != FF_FIELD_UINT32) return 0;
+    return LOAD_U32(m_base + m_global_scalar_offset);
+}
+
+template <>
+double Node::as<double>() const {
+    if (!*this || m_kind != FF_FIELD_FLOAT64) return 0.0;
+    return LOAD_F64(m_base + m_global_scalar_offset);
 }
 
 uint32_t Parser::version()   const { return m_version; }
@@ -429,7 +392,7 @@ void Node::print_json(std::ostream& out) const {
             const auto& f = f_list[i];
 
             // 1. FAST PATH: Raw memory peek. Skip completely field if empty!
-            if (FF_IsFieldEmpty(m_base, m_offset + f.field_offset, f.kind)) {
+            if (FF_IsFieldEmpty(m_base, m_node_offset + f.field_offset, f.kind)) {
                 continue;
             }
 
@@ -464,17 +427,24 @@ void Node::print_json(std::ostream& out) const {
     } 
     // Scalar / Leaf Node
     else {
-        auto val = value();
-        if (m_kind == FF_FIELD_STRING || m_kind == FF_FIELD_CODE) {
+        switch (m_kind) {
+        case FF_FIELD_STRING:
+        case FF_FIELD_CODE:
             out << "\"";
-            escape_json_string(out, val.as_string());
+            escape_json_string(out, as<std::string_view>());
             out << "\"";
-        } else if (m_kind == FF_FIELD_BOOL) {
-            out << (val.as_bool() ? "true" : "false");
-        } else if (m_kind == FF_FIELD_UINT32) {
-            out << val.as_uint32();
-        } else if (m_kind == FF_FIELD_FLOAT64) {
-            out << val.as_float64();
+            break;
+        case FF_FIELD_BOOL:
+            out << (as<bool>() ? "true" : "false");
+            break;
+        case FF_FIELD_UINT32:
+            out << as<uint32_t>();
+            break;
+        case FF_FIELD_FLOAT64:
+            out << as<double>();
+            break;
+        default:
+            break;
         }
     }
 }

@@ -125,63 +125,14 @@ class Node {
     const BYTE*   m_base = nullptr;
     Size          m_size = 0;
     uint32_t      m_version = 0;
-    Offset        m_offset = FF_NULL_OFFSET;
-    Offset        m_scalar_offset = FF_NULL_OFFSET;
+    Offset        m_node_offset = FF_NULL_OFFSET;
+    Offset        m_global_scalar_offset = FF_NULL_OFFSET;
     RECOVERY_TAG  m_recovery = FF_RECOVER_UNDEFINED;
     RECOVERY_TAG  m_child_recovery = FF_RECOVER_UNDEFINED;
     FF_FieldKind  m_kind = FF_FIELD_UNKNOWN;
     bool          m_array_entries_are_offsets = false;
 
 public:
-    /**
-     * @struct Value
-     * @brief Tagged decoded value payload for a node.
-     *
-     * This is a lightweight tagged-union style result for single-call value reads.
-     * The active field is identified by @ref kind.
-     */
-    struct Value {
-        /**
-         * @union Payload
-         * @brief Union storage for decoded scalar/text values.
-         */
-        union Payload {
-            /** @brief Decoded string/code text. */
-            std::string_view string_value;
-            /** @brief Decoded boolean value. */
-            bool bool_value;
-            /** @brief Decoded uint32 value. */
-            uint32_t uint32_value;
-            /** @brief Decoded float64 value. */
-            double float64_value;
-
-            /** @brief Initialize the union to a stable default state. */
-            constexpr Payload() : uint32_value(0) {}
-        } payload;
-
-        /** @brief Field kind associated with this decoded value. */
-        FF_FieldKind kind = FF_FIELD_UNKNOWN;
-        
-        /** @brief Whether the requested scalar/string payload was present and decoded. */
-        bool has_value = false;
-
-        /** @brief Convenience check for payload presence. */
-        explicit operator bool() const { return has_value; }
-        
-        /** @brief Get the value as a string. Returns an empty string if the value is not present or not a string/code. */
-        std::string_view as_string() const {return has_value && (kind == FF_FIELD_STRING || kind == FF_FIELD_CODE)
-                   ? payload.string_value : std::string_view{};}
-        
-        /** @brief Get the value as a boolean. Returns false if the value is not present or not a boolean. */
-        bool as_bool() const { return has_value && kind == FF_FIELD_BOOL ? payload.bool_value : false; }
-        
-        /** @brief Get the value as a uint32. Returns 0 if the value is not present or not a uint32. */
-        uint32_t as_uint32() const { return has_value && kind == FF_FIELD_UINT32 ? payload.uint32_value : 0; }
-        
-        /** @brief Get the value as a float64. Returns 0.0 if the value is not present or not a float64. */
-        double as_float64() const { return has_value && kind == FF_FIELD_FLOAT64 ? payload.float64_value : 0.0; }
-    };
-
     /** @brief Construct an empty/invalid node handle. */
     Node() = default;
     /**
@@ -264,12 +215,6 @@ public:
      * @return Matching child node, or an empty node if out of bounds/not an array.
      */
     Node operator[](size_t index) const;
-
-    /**
-     * @brief Decode this node in one call to a tagged payload.
-     * @return A @ref Value containing `kind` plus decoded payload fields.
-     */
-    Value value() const;
     
     /**
      * @brief Eagerly parses this node into its concrete C++ POD structure.
@@ -285,9 +230,8 @@ public:
             throw std::invalid_argument("FastFHIR Schema Violation: Cannot cast Node to requested type.");
         }
 
-        return TypeTraits<T_Data>::read(m_base, m_offset, m_size, m_version);
+        return TypeTraits<T_Data>::read(m_base, m_node_offset, m_size, m_version);
     }
-    
     
     /**
      * @brief Recursively print this node and all children as minified FHIR JSON.
@@ -295,6 +239,14 @@ public:
      */
     void print_json(std::ostream& out) const;
 };
+
+// =====================================================================
+// Explicit Node Specializations for Primitives
+// =====================================================================
+template <> std::string_view Node::as<std::string_view>() const;
+template <> bool Node::as<bool>() const;
+template <> uint32_t Node::as<uint32_t>() const;
+template <> double Node::as<double>() const;
 
 
 } // namespace FastFHIR
