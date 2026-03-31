@@ -311,14 +311,13 @@ struct FF_EXPORT FF_HEADER : DATA_BLOCK
     explicit FF_HEADER(Size file_size) noexcept;
 
     FF_Result validate_full(const BYTE *const __base) const noexcept;
-    uint32_t get_version(const BYTE *const __base) const;
+    uint32_t get_engine_version(const BYTE *const __base) const;
     uint16_t get_fhir_rev(const BYTE *const __base) const;
     FF_CHECKSUM get_checksum(const BYTE *const __base) const;
     Offset get_root(const BYTE *const __base) const;
     RECOVERY_TAG get_root_type(const BYTE *const __base) const;
 };
-
-void FF_EXPORT STORE_FF_HEADER(BYTE *const __base, uint32_t version,
+void FF_EXPORT STORE_FF_HEADER(BYTE *const __base, uint16_t fhir_revision,
                                Offset checksum_offset, Offset root_offset,
                                RECOVERY_TAG root_recovery, Size payload_size);
 

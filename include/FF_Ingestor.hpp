@@ -39,7 +39,7 @@ public:
     /**
      * @brief Initializes the FastFHIR Ingestor.
      * @param log_capacity Maximum bytes for the lock-free warning buffer.
-     * @param concurrency Number of worker threads. Defaults to hardware concurrency.
+     * @param concurrency Number of worker threads. Default (0) is replaced by hardware concurrency.
      */
     explicit Ingestor(size_t logger_byte_capacity = 64 * 1024 * 1024, unsigned int concurrency = 0) 
         : m_logger(logger_byte_capacity) 
@@ -59,12 +59,11 @@ public:
 
     /**
      * @brief Parses a payload and inserts the resulting complex object at a specific Field token.
-     * @param parent_builder The builder containing the parent object frame.
-     * @param registry_index The O(1) field token from FastFHIR::FieldKeys::Registry.
+     * @param parent_object The mutable handle to the specific resource being amended.
+     * @param key The field token from FastFHIR::FieldKeys for the field within the parent_object being amended.
      * @param payload The raw string to parse.
-     * @return Result code indicating success or failure.
      */
-    FF_Result insert_at_field(Builder& parent_builder, uint32_t registry_index, std::string_view payload);
+    FF_Result insert_at_field(ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload, SourceType fmt = SourceType::FHIR_JSON);
 
     /**
      * @brief Resets the engine state for a new file and returns all accumulated logs.
@@ -82,6 +81,7 @@ public:
 
 private:
     FF_Result ingest_fhir_json(const IngestRequest& request, ObjectHandle& out_root, size_t& out_parsed_count);
+    FF_Result insert_at_field_json(ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload);
 };
 
 } // namespace FastFHIR::Ingest

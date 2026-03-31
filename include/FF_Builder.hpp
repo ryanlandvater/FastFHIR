@@ -81,7 +81,8 @@ public:
             if (offset != FF_NULL_OFFSET && recovery == FF_RECOVER_UNDEFINED) 
             throw std::invalid_argument("FastFHIR: Cannot instantiate an ObjectHandle with valid offset but with an UNDEFINED recovery tag.");
         }
-
+    
+    Builder* get_builder() const { return m_builder; }
     Offset offset() const { return m_offset; }
     RECOVERY_TAG recovery() const { return m_recovery; }
     PointerPatchProxy operator[](FF_FieldKey key) const;
@@ -106,7 +107,7 @@ class AdvancedBuilderAccess;
 class Builder {
     friend class FastFHIR::AdvancedBuilderAccess;
     friend class FastFHIR::PointerPatchProxy;
-    FF_Memory m_memory;
+    Memory m_memory;
     BYTE* const         m_base;
     Offset              m_checksum_offset;
     Offset              m_root_offset;
@@ -131,7 +132,7 @@ public:
     * @param memory Shared pointer to an initialized FF_Memory providing the arena for building or modifying the stream.
      * @param version FHIR version to target for schema-specific encoding rules (default: R5).
      */
-    explicit Builder(const FF_Memory& memory, uint16_t fhir_revision = FHIR_VERSION_R5);
+    explicit Builder(const Memory& memory, uint16_t fhir_revision = FHIR_VERSION_R5);
     ~Builder();
 
     /**
@@ -162,13 +163,13 @@ public:
         } guard{this};
 
         // Automatically resolved via ffc.py generated traits
-        Size data_size = TypeTraits<T_Data>::size(data, m_version);
+        Size data_size = TypeTraits<T_Data>::size(data, m_fhir_rev);
         
         // Thread-safe claim of space in the arena for the new data
         Offset offset = m_memory.claim_space(data_size);
         
         // Thread-safe write of the data into the claimed space
-        TypeTraits<T_Data>::store(m_base, offset, data, m_version);
+        TypeTraits<T_Data>::store(m_base, offset, data, m_fhir_rev);
         
         // Return the offset where the data was written for potential pointer patching
         return offset;
@@ -207,7 +208,7 @@ public:
      * @param hasher A callback that takes the payload and returns the raw hash bytes.
      * @return A view of the complete, sealed file (including the checksum footer) ready for network transmission.
      */
-    FF_Memory::View finalize(FF_Checksum_Algorithm algo = FF_CHECKSUM_NONE, const HashCallback& hasher = nullptr);
+    Memory::View finalize(FF_Checksum_Algorithm algo = FF_CHECKSUM_NONE, const HashCallback& hasher = nullptr);
 
     protected:
     Offset allocate_raw(Size size);

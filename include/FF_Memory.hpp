@@ -23,7 +23,7 @@ class FF_Memory_t;
  * * Acts as a copyable proxy to the underlying OS memory mapping. Multiple handles 
  * can point to the same physical memory arena safely.
  */
-class FF_Memory {
+class Memory {
 public:
     constexpr static uint64_t STREAM_LOCK_BIT = 1ULL << 63;
     constexpr static uint64_t OFFSET_MASK = ~STREAM_LOCK_BIT;
@@ -34,10 +34,10 @@ public:
     // --- Lifecycle ---
     
     /** @brief Constructs a null/empty memory handle. */
-    FF_Memory() = default;
+    Memory() = default;
     
     /** @brief Constructs a handle taking shared ownership of an existing core. */
-    explicit FF_Memory(std::shared_ptr<FF_Memory_t> core) : m_core(std::move(core)) {}
+    explicit Memory(std::shared_ptr<FF_Memory_t> core) : m_core(std::move(core)) {}
 
     /**
      * @brief Factory allocation for the Virtual Memory Arena.
@@ -45,7 +45,7 @@ public:
      * @param capacity Defaults to a 4GB sparse allocation.
      * @return Initialized memory handle.
      */
-    static FF_Memory create(std::string shm_name = "", size_t capacity = 4ULL * 1024 * 1024 * 1024);
+    static Memory create(size_t capacity = 4ULL * 1024 * 1024 * 1024, std::string shm_name = "");
     
     /**
      * @brief Factory allocation for a file-backed Virtual Memory Arena.
@@ -53,7 +53,7 @@ public:
      * @param capacity Defaults to a 4GB sparse allocation.
      * @return Initialized memory handle.
      */
-    static FF_Memory createFromFile(const std::filesystem::path& filepath, size_t capacity = 4ULL * 1024 * 1024 * 1024);
+    static Memory createFromFile(const std::filesystem::path& filepath, size_t capacity = 4ULL * 1024 * 1024 * 1024);
 
     /** @brief Checks if this handle points to a valid, instantiated memory core. */
     explicit operator bool() const { return m_core != nullptr; }
@@ -145,7 +145,7 @@ public:
          */
         bool empty() const noexcept;
     private:
-        friend class FF_Memory;
+        friend class Memory;
         const std::shared_ptr<FF_Memory_t> m_vma_ref;
         explicit View(std::shared_ptr<FF_Memory_t> vma_ref) : m_vma_ref(std::move(vma_ref)) {}
     };
@@ -163,7 +163,7 @@ public:
         FF_Memory_t* m_memory;
 
         friend class FF_Memory_t;
-        friend class FF_Memory;
+        friend class Memory;
         
         /**
          * @brief Internal constructor utilized by `FF_Memory::try_acquire_stream()`.
@@ -235,9 +235,9 @@ private:
 // ============================================================================
 
 class FF_Memory_t : public std::enable_shared_from_this<FF_Memory_t> {
-    friend class FF_Memory;
-    friend class FF_Memory::StreamHead;
-    friend class FF_Memory::View;
+    friend class Memory;
+    friend class Memory::StreamHead;
+    friend class Memory::View;
 
 public:
     ~FF_Memory_t();
@@ -247,7 +247,7 @@ private:
     explicit FF_Memory_t(uint8_t* base, size_t capacity, void* fh, void* osh, int fd, const std::string& name);
     
     uint64_t claim_space(size_t bytes);
-    std::optional<FF_Memory::StreamHead> try_acquire_stream();
+    std::optional<Memory::StreamHead> try_acquire_stream();
     void release_stream_lock() noexcept;
 
     std::string m_name;
@@ -266,30 +266,30 @@ private:
 // Inline Implementations
 // ============================================================================
 
-inline uint64_t FF_Memory::claim_space(size_t bytes) { return m_core->claim_space(bytes); }
-inline std::optional<FF_Memory::StreamHead> FF_Memory::try_acquire_stream() { return m_core->try_acquire_stream(); }
-inline uint8_t* FF_Memory::base() const { return m_core->m_base; }
-inline size_t FF_Memory::capacity() const { return m_core->m_capacity; }
-inline std::string FF_Memory::name() const { return m_core->m_name; }
-inline uint64_t FF_Memory::size() const { return m_core->m_head.load(std::memory_order_acquire); }
+inline uint64_t Memory::claim_space(size_t bytes) { return m_core->claim_space(bytes); }
+inline std::optional<Memory::StreamHead> Memory::try_acquire_stream() { return m_core->try_acquire_stream(); }
+inline uint8_t* Memory::base() const { return m_core->m_base; }
+inline size_t Memory::capacity() const { return m_core->m_capacity; }
+inline std::string Memory::name() const { return m_core->m_name; }
+inline uint64_t Memory::size() const { return m_core->m_head.load(std::memory_order_acquire); }
 
-inline FF_Memory::View::operator std::string_view() const noexcept {
+inline Memory::View::operator std::string_view() const noexcept {
     return std::string_view(reinterpret_cast<const char*>(m_vma_ref->m_base), m_vma_ref->m_head.load(std::memory_order_acquire));
 }
-inline const char* FF_Memory::View::data() const noexcept {
+inline const char* Memory::View::data() const noexcept {
     return reinterpret_cast<const char*>(m_vma_ref->m_base);
 }
-inline size_t FF_Memory::View::size() const noexcept {
+inline size_t Memory::View::size() const noexcept {
     return m_vma_ref->m_head.load(std::memory_order_acquire);
 }
-inline bool FF_Memory::View::empty() const noexcept {
+inline bool Memory::View::empty() const noexcept {
     return size() == 0;
 }
 
-inline FF_Memory::StreamHead::StreamHead(StreamHead&& other) noexcept : m_memory(other.m_memory) {
+inline Memory::StreamHead::StreamHead(StreamHead&& other) noexcept : m_memory(other.m_memory) {
     other.m_memory = nullptr;
 }
-inline FF_Memory::StreamHead& FF_Memory::StreamHead::operator=(StreamHead&& other) noexcept {
+inline Memory::StreamHead& Memory::StreamHead::operator=(StreamHead&& other) noexcept {
     if (this != &other) {
         release(); 
         m_memory = other.m_memory;
@@ -297,15 +297,15 @@ inline FF_Memory::StreamHead& FF_Memory::StreamHead::operator=(StreamHead&& othe
     }
     return *this;
 }
-inline uint8_t* FF_Memory::StreamHead::write_ptr() const {
+inline uint8_t* Memory::StreamHead::write_ptr() const {
     if (!m_memory) throw std::logic_error("Invalid StreamHead access");
     return m_memory->m_base + (m_memory->m_head.load(std::memory_order_relaxed) & OFFSET_MASK);
 }
-inline size_t FF_Memory::StreamHead::available_space() const {
+inline size_t Memory::StreamHead::available_space() const {
     if (!m_memory) return 0;
     return m_memory->m_capacity - (m_memory->m_head.load(std::memory_order_relaxed) & OFFSET_MASK);
 }
-inline void FF_Memory::StreamHead::release() {
+inline void Memory::StreamHead::release() {
     if (m_memory) {
         m_memory->release_stream_lock();
         m_memory = nullptr;

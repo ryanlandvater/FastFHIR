@@ -357,23 +357,23 @@ Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast
     FF_HEADER header(size);
     auto validation_result = header.validate_full(m_base);
     if (validation_result != FF_SUCCESS) {
-        throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with code " + std::to_string(validation_result));
+        throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with error " + validation_result.message);
     }
-    m_version = header.get_version(m_base);
+    m_version = header.get_fhir_rev(m_base);
     m_root_offset = header.get_root(m_base);
     m_root_recovery = header.get_root_type(m_base);
 }
 
-Parser::Parser(const FF_Memory& memory) : m_memory(memory), m_base(memory.base()), m_size(memory.size()) {
+Parser::Parser(const Memory& memory) : m_memory(memory), m_base(memory.base()), m_size(memory.size()) {
     if (m_size < FF_HEADER::HEADER_SIZE) {
         throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
     }
     FF_HEADER header(m_size);
     auto validation_result = header.validate_full(m_base);
     if (validation_result != FF_SUCCESS) {
-        throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with code " + std::to_string(validation_result));
+        throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with code " + validation_result.message);
     }
-    m_version = header.get_version(m_base);
+    m_version = header.get_fhir_rev(m_base);
     m_root_offset = header.get_root(m_base);
     m_root_recovery = header.get_root_type(m_base);
 }

@@ -29,7 +29,7 @@ class Node;
  * accessors for header metadata, checksum metadata, and the root node.
  */
 class Parser {
-    const FF_Memory m_memory;
+    const Memory m_memory;
     const BYTE*     m_base = nullptr;
     Size            m_size = 0;
     uint32_t        m_version = 0;
@@ -53,7 +53,7 @@ public:
      * @return A valid parser bound to the supplied allocator.
      * @throws std::runtime_error If the header is truncated or fails validation.
      */
-    explicit Parser (const FF_Memory& memory);
+    explicit Parser (const Memory& memory);
 
     /** 
     * @brief Check whether this parser instance references a parsed buffer.

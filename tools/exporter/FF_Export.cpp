@@ -161,7 +161,7 @@ int main(int argc, char** argv) {
         }
 
         // 3. Mount the Parser
-        auto parser = FastFHIR::Parser::create(parse_buffer, parse_size);
+        FastFHIR::Parser parser (parse_buffer, parse_size);
 
         // 4. Resolve Output Strategy
         if (!output_file.empty()) {

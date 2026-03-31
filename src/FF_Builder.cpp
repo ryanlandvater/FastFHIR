@@ -61,7 +61,7 @@ void PointerPatchProxy::validate_assignment(RECOVERY_TAG child_tag) const
 // Constructor / Destructor
 // =====================================================================
 
-Builder::Builder(const FF_Memory& memory, uint16_t fhir_revision)
+Builder::Builder(const Memory& memory, uint16_t fhir_revision)
 : m_memory(memory),
 m_base(memory.base()),
 m_checksum_offset(FF_NULL_OFFSET),
@@ -221,91 +221,87 @@ PointerPatchProxy ObjectHandle::operator[](std::string_view key_name) const
 // =====================================================================
 // Finalization & Checksums
 // =====================================================================
-
 void Builder::set_root(const ObjectHandle &handle)
 {
     if (handle.offset() != FF_NULL_OFFSET && handle.recovery() == FF_RECOVER_UNDEFINED) {
         throw std::invalid_argument("FastFHIR: Cannot set a root resource with an UNDEFINED recovery tag.");
     }
-    
-    if (!try_begin_mutation())
-    {
+
+    if (!try_begin_mutation()) {
         throw std::runtime_error("FastFHIR: Builder is finalizing; set_root is no longer allowed.");
     }
-    
-    struct MutationGuard
-    {
+
+    struct MutationGuard {
         Builder *self;
         ~MutationGuard() { self->end_mutation(); }
     } guard{this};
-    
+
     m_root_offset = handle.offset();
     m_root_recovery = handle.recovery();
 }
 
-Offset Builder::allocate_raw(Size size) {
-    return m_stream_head.fetch_add(size, std::memory_order_relaxed);
+Offset Builder::allocate_raw(Size size)
+{
+    return m_memory.claim_space(size);
 }
 
-FF_Result Builder::write_offset_at(Offset target_addr, Offset child_offset) {
-    // Use STORE_FF_OFFSET for proper endianness and atomicity guarantees?
-    STORE_U64(m_base+target_addr, child_offset);
+FF_Result Builder::write_offset_at(Offset target_addr, Offset child_offset)
+{
+    STORE_U64(m_base + target_addr, child_offset);
     return FF_SUCCESS;
 }
 
-std::string_view Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &hasher)
+Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &hasher)
 {
     bool expected = false;
     if (!m_finalizing.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
-    {
         throw std::runtime_error("FastFHIR: finalize() has already started or completed.");
-    }
-    
+
     // Wait for in-flight append/amend/set_root calls to finish.
     while (m_active_mutators.load(std::memory_order_acquire) != 0)
-    {
         std::this_thread::yield();
-    }
-    
+
     // Finalization sanity check: Ensure a root resource was set and is within bounds
-    if (m_root_offset == FF_NULL_OFFSET || m_root_offset >= m_stream_head.load(std::memory_order_relaxed) || m_root_offset >= m_capacity)
+    if (m_root_offset == FF_NULL_OFFSET || m_root_offset >= m_memory.capacity())
         throw std::runtime_error("FastFHIR: Cannot finalize without a valid in-range root resource.");
     else if (m_root_recovery == FF_RECOVER_UNDEFINED)
         throw std::runtime_error("FastFHIR: Cannot finalize stream. Root resource recovery tag is UNDEFINED.");
-    
-    // m_checksum_offset is the exact byte where the 48-byte footer begins
-    m_checksum_offset = m_stream_head.fetch_add(FF_CHECKSUM::HEADER_SIZE, std::memory_order_relaxed);
-    Size final_file_size = m_stream_head.load(std::memory_order_relaxed);
-    
-    if (hasher == nullptr || algo == FF_CHECKSUM_NONE)
-    {
+
+    // Reserve space for the checksum at the end of the stream and write the header metadata
+    m_checksum_offset = m_memory.claim_space(FF_CHECKSUM::HEADER_SIZE);
+
+    // If no hasher or algorithm is provided, default to FF_CHECKSUM_NONE and emit a warning. 
+    // The stream will still be valid but with a zeroed checksum.
+    if (hasher == nullptr || algo == FF_CHECKSUM_NONE) {
         std::cerr << "[FastFHIR] Warning: No hash function provided; file will be emitted with zeroed checksum.\n";
         algo = FF_CHECKSUM_NONE;
     }
     
+    // Write the FF_HEADER with the root resource info and checksum location, 
+    // which is needed for validation and recovery tools to find the root and checksum.
     STORE_FF_HEADER(
-                    m_base,
-                    m_fhir_rev,       // 16-bit FHIR schema revision
-                    final_file_size,  // Stream size (Total bytes written)
-                    m_root_offset,    // Pointer to root resource
-                    m_root_recovery,  // Root schema type
-                    m_checksum_offset // Pointer to footer
-                    );
-    
-    // Writes the 16 bytes of metadata, returns a pointer to byte 16 (the 32-byte slot)
+        m_base,             // BYTE *const __base
+        m_fhir_rev,         // uint16_t fhir_revision
+        m_memory.size(),    // Offset checksum_offset
+        m_root_offset,      // Offset root_offset
+        m_root_recovery,    // RECOVERY_TAG root_recovery
+        m_checksum_offset   // Size payload_size
+    );
+
+    // Writes the 12 bytes of metadata, returns a pointer to byte 12 (the 32-byte slot)
     BYTE *hash_dst = STORE_FF_CHECKSUM_METADATA(m_base, m_checksum_offset, algo);
-    
-    if (hasher != nullptr && algo != FF_CHECKSUM_NONE)
-    {
-        
-        // Hash the payload + the 16 bytes of metadata, stopping exactly where the hash slot begins.
+
+    // Seal the stream with the hash algorithm
+    if (hasher != nullptr && algo != FF_CHECKSUM_NONE) {
+        // Hash the payload + the 12 bytes of metadata, stopping exactly where the hash slot begins.
         Size bytes_to_hash = m_checksum_offset + FF_CHECKSUM::HASH_DATA;
         std::vector<BYTE> hash_value = hasher(m_base, bytes_to_hash);
-        
+
         size_t copy_len = std::min(hash_value.size(), static_cast<size_t>(FF_MAX_HASH_BYTES));
         std::memcpy(hash_dst, hash_value.data(), copy_len);
     }
-    
-    return std::string_view(reinterpret_cast<const char *>(m_base), final_file_size);
+
+    // Return the lifetime-safe view to the memory
+    return m_memory.view();
 }
 } // namespace FastFHIR

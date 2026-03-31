@@ -54,55 +54,76 @@ void DATA_BLOCK::check_and_fetch_remote(const BYTE *const &base) {
 // HEADER IMPLEMENTATION
 // =====================================================================
 FF_HEADER::FF_HEADER(Size file_size) noexcept :
-DATA_BLOCK (0, file_size, UINT32_MAX) {
-    
+    DATA_BLOCK(0, file_size, UINT32_MAX)
+{
 }
+
 FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
+    // 1. Magic Bytes Check
     if (LOAD_U32(__base + MAGIC) != FF_MAGIC_BYTES) {
         return {FF_VALIDATION_FAILURE, "FF_HEADER magic bytes mismatch."};
     }
-    uint32_t ver = LOAD_U32(__base + VERSION);
-    if (ver < FHIR_VERSION_R4) {
-        return {FF_VALIDATION_FAILURE, "FF_HEADER unsupported FHIR version."};
+    
+    // 2. FHIR Schema Revision Check (Uses 16-bit FHIR_REV)
+    uint16_t fhir_rev = LOAD_U16(__base + FHIR_REV);
+    if (fhir_rev < FHIR_VERSION_R4) {
+        return {FF_VALIDATION_FAILURE, "FF_HEADER unsupported FHIR schema revision."};
     }
 
+    // 3. FastFHIR Engine Version Check (Optional: reject future incompatible files)
+     uint32_t engine_ver = LOAD_U32(__base + VERSION);
+    // if ((engine_ver >> 16) > FF_VERSION_MAJOR) return {FF_VALIDATION_FAILURE, "Unsupported engine."};
+
+    // 4. Footer Checksum Validation
     Offset checksum_off = LOAD_U64(__base + CHECKSUM_OFFSET);
     if (checksum_off != FF_NULL_OFFSET) {
-        FF_CHECKSUM checksum(checksum_off, __size, ver);
+        FF_CHECKSUM checksum(checksum_off, __size, engine_ver);
         auto checksum_result = checksum.validate_full(__base);
         if (checksum_result != FF_SUCCESS) return checksum_result;
     }
+    
     return {FF_SUCCESS, ""};
 }
 
-uint32_t FF_HEADER::get_version(const BYTE* const __base) const { return LOAD_U32(__base + VERSION); }
-FF_CHECKSUM FF_HEADER::get_checksum(const BYTE* const __base) const {
-    auto checksum = FF_CHECKSUM(LOAD_U64(__base + CHECKSUM_OFFSET), __size, get_version(__base));
-    if (!checksum) return checksum;
-    auto result = checksum.validate_offset(__base, FF_CHECKSUM::type, FF_CHECKSUM::recovery);
-    if (result != FF_SUCCESS) throw std::runtime_error("Failed to retrieve checksum: " + result.message);
-    return checksum;
-}
+// Accessors correctly split between Engine Version and FHIR Schema
+uint32_t FF_HEADER::get_engine_version(const BYTE* const __base) const { return LOAD_U32(__base + VERSION); }
+uint16_t FF_HEADER::get_fhir_rev(const BYTE* const __base) const { return LOAD_U16(__base + FHIR_REV); }
+
 Offset FF_HEADER::get_root(const BYTE* const __base) const { return LOAD_U64(__base + ROOT_OFFSET); }
 RECOVERY_TAG FF_HEADER::get_root_type(const BYTE* const __base) const { return static_cast<RECOVERY_TAG>(LOAD_U16(__base + ROOT_RECOVERY)); }
 
-void STORE_FF_HEADER(BYTE* const __base, 
-                     uint16_t fhir_rev, 
-                     Size stream_size, 
-                     Offset root_offset, 
-                     RECOVERY_TAG root_recovery, 
-                     Offset checksum_offset) {
+FF_CHECKSUM FF_HEADER::get_checksum(const BYTE* const __base) const {
+    // Pass the FHIR revision to the checksum block, not the engine version
+    auto checksum = FF_CHECKSUM(LOAD_U64(__base + CHECKSUM_OFFSET), __size, get_fhir_rev(__base));
+    if (!checksum) return checksum;
+    
+    auto result = checksum.validate_offset(__base, FF_CHECKSUM::type, FF_CHECKSUM::recovery);
+    if (result != FF_SUCCESS) throw std::runtime_error("Failed to retrieve checksum: " + result.message);
+    
+    return checksum;
+}
+
+// Strongly-typed C++ implementation (Replaces the Macro)
+void STORE_FF_HEADER (BYTE* const __base,
+                            uint16_t fhir_rev,
+                            Size stream_size,
+                            Offset root_offset,
+                            RECOVERY_TAG root_recovery,
+                            Offset checksum_offset) {
+                            
     STORE_U32(__base + FF_HEADER::MAGIC, FF_MAGIC_BYTES);
-    STORE_U16(__base + FF_HEADER::RECOVERY, RECOVER_FF_HEADER);
+    STORE_U16(__base + FF_HEADER::RECOVERY, RECOVER_FF_HEADER); // Assumes you defined this tag
     STORE_U16(__base + FF_HEADER::FHIR_REV, fhir_rev);
 
-    // Hardware-aligned Stream Size for atomic updates
+    // Hardware-aligned 64-bit boundaries (Safe for std::atomic_ref)
     STORE_U64(__base + FF_HEADER::STREAM_SIZE, stream_size);
-
-    STORE_U64(__base + FF_HEADER::ROOT_OFFSET, root_offset); 
-    STORE_U16(__base + FF_HEADER::ROOT_RECOVERY, root_recovery); 
-    STORE_U64(__base + FF_HEADER::CHECKSUM_OFFSET, checksum_offset); 
-    STORE_U32(__base + FF_HEADER::VERSION,  (static_cast<uint32_t>(FF_VERSION_MAJOR) << 16) | 
+    STORE_U64(__base + FF_HEADER::ROOT_OFFSET, root_offset);
+    
+    STORE_U16(__base + FF_HEADER::ROOT_RECOVERY, root_recovery);
+    STORE_U64(__base + FF_HEADER::CHECKSUM_OFFSET, checksum_offset);
+    
+    // Bake the preprocessor engine version bits into the 32-bit slot
+    STORE_U32(__base + FF_HEADER::VERSION,  (static_cast<uint32_t>(FF_VERSION_MAJOR) << 16) |
                                             (static_cast<uint32_t>(FF_VERSION_MINOR) & 0xFFFF));
 }
 

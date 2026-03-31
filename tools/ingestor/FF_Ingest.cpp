@@ -150,8 +150,9 @@ int main(int argc, char* argv[]) {
         // HEURISTIC: Clinical JSON is heavy on syntax (quotes, braces, keys).
         // FastFHIR binary is dense. 2x input size is a safe "one-and-done" allocation.
         size_t capacity_hint = json_buffer.size() * 2;
-        Builder builder (capacity_hint);
-        Ingest::Ingestor ingestor; 
+        auto memory = Memory::create(capacity_hint);
+        Builder builder (memory);
+        Ingest::Ingestor ingestor;
 
         Ingest::IngestRequest request {
             .builder = builder,
@@ -172,7 +173,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "[FastFHIR Injest CLI] Successfully parsed " << parsed_count << " resources.\n";
 
         builder.set_root(root_handle);
-        builder.finalize(FF_CHECKSUM_SHA256, [](const unsigned char* data, Size size) {
+        std::string_view view = builder.finalize(FF_CHECKSUM_SHA256, [](const unsigned char* data, Size size) {
             // Pre-allocate strictly to the compile-time upper bound
             std::vector<BYTE> hash(FF_MAX_HASH_BYTES, 0); 
             unsigned int out_len = 0;
@@ -192,12 +193,9 @@ int main(int argc, char* argv[]) {
             return hash;
         });
 
-        const BYTE* buffer = builder.data();
-        Size buffer_size = builder.total_written();
-
         if (output_file.empty()) {
             std::cerr.flush();
-            std::cout.write(reinterpret_cast<const char*>(buffer), buffer_size);
+            std::cout << view;
             std::cout.flush();
         } else {
             std::ofstream outfile(output_file, std::ios::binary);
@@ -205,9 +203,9 @@ int main(int argc, char* argv[]) {
                 std::cerr << "[FastFHIR Injest CLI] Error: Could not open output file " << output_file << " for writing.\n";
                 return 1;
             }
-            outfile.write(reinterpret_cast<const char*>(buffer), buffer_size);
+            outfile << view;
             outfile.close();
-            std::cerr << "[FastFHIR Injest CLI] Binary saved to " << output_file << " (" << buffer_size << " bytes)\n";
+            std::cerr << "[FastFHIR Injest CLI] Binary saved to " << output_file << " (" << view.length() << " bytes)\n";
         }
 
     } catch (const std::exception& e) {
