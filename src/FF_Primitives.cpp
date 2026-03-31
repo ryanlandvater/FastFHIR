@@ -86,14 +86,24 @@ FF_CHECKSUM FF_HEADER::get_checksum(const BYTE* const __base) const {
 Offset FF_HEADER::get_root(const BYTE* const __base) const { return LOAD_U64(__base + ROOT_OFFSET); }
 RECOVERY_TAG FF_HEADER::get_root_type(const BYTE* const __base) const { return static_cast<RECOVERY_TAG>(LOAD_U16(__base + ROOT_RECOVERY)); }
 
-void STORE_FF_HEADER(BYTE* const __base, uint32_t version, Offset checksum_offset, Offset root_offset, RECOVERY_TAG root_recovery, Size payload_size) {
+void STORE_FF_HEADER(BYTE* const __base, 
+                     uint16_t fhir_rev, 
+                     Size stream_size, 
+                     Offset root_offset, 
+                     RECOVERY_TAG root_recovery, 
+                     Offset checksum_offset) {
     STORE_U32(__base + FF_HEADER::MAGIC, FF_MAGIC_BYTES);
     STORE_U16(__base + FF_HEADER::RECOVERY, RECOVER_FF_HEADER);
-    STORE_U32(__base + FF_HEADER::VERSION, version);
-    STORE_U64(__base + FF_HEADER::CHECKSUM_OFFSET, checksum_offset);
-    STORE_U64(__base + FF_HEADER::ROOT_OFFSET, root_offset);
-    STORE_U16(__base + FF_HEADER::ROOT_RECOVERY, root_recovery);
-    STORE_U64(__base + FF_HEADER::PAYLOAD_SIZE, payload_size);
+    STORE_U16(__base + FF_HEADER::FHIR_REV, fhir_rev);
+
+    // Hardware-aligned Stream Size for atomic updates
+    STORE_U64(__base + FF_HEADER::STREAM_SIZE, stream_size);
+
+    STORE_U64(__base + FF_HEADER::ROOT_OFFSET, root_offset); 
+    STORE_U16(__base + FF_HEADER::ROOT_RECOVERY, root_recovery); 
+    STORE_U64(__base + FF_HEADER::CHECKSUM_OFFSET, checksum_offset); 
+    STORE_U32(__base + FF_HEADER::VERSION,  (static_cast<uint32_t>(FF_VERSION_MAJOR) << 16) | 
+                                            (static_cast<uint32_t>(FF_VERSION_MINOR) & 0xFFFF));
 }
 
 // =====================================================================

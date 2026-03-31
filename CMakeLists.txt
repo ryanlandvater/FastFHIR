@@ -27,6 +27,17 @@ option(FASTFHIR_BUILD_SHARED "Build FastFHIR as a shared library (dynamic linkin
 # Toggle for building the high-speed JSON Ingestor module
 option(FASTFHIR_BUILD_INGESTOR "Build the FastFHIR Ingestor (requires simdjson)" OFF)
 
+# Toggle for building Python bindings using pybind11
+option(FASTFHIR_BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
+
+# =====================================================================
+# Dependency Enforcement
+# =====================================================================
+if(FASTFHIR_BUILD_PYTHON_BINDINGS AND NOT FASTFHIR_BUILD_INGESTOR)
+    message(STATUS "FastFHIR: Python bindings require the Ingestor module. Automatically enabling FASTFHIR_BUILD_INGESTOR.")
+    set(FASTFHIR_BUILD_INGESTOR ON CACHE BOOL "Build the FastFHIR Ingestor (requires simdjson)" FORCE)
+endif()
+
 # Enable position-independent code globally for shared libs and ASLR-enabled EXEs.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -251,6 +262,66 @@ target_link_libraries(ff_export
 )
 
 # ---------------------------------------------------------------------
+# Python Bindings (fastfhir)
+# ---------------------------------------------------------------------
+if (FASTFHIR_BUILD_PYTHON_BINDINGS)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+
+    set(PYBIND11_FINDPYTHON ON)
+    include(FetchContent)
+    FetchContent_Declare(
+        pybind11
+        GIT_REPOSITORY https://github.com/pybind/pybind11.git
+        GIT_TAG        v2.11.1
+        GIT_SHALLOW    ON
+        FETCHCONTENT_QUIET ON
+    )
+    FetchContent_MakeAvailable(pybind11)
+
+    if (NOT CMAKE_INSTALL_PYTHON_LIBDIR)
+        set(CMAKE_INSTALL_PYTHON_LIBDIR "lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages")
+    endif ()
+    string(REPLACE "\\" "/" FASTFHIR_INSTALL_PYTHON_LIBDIR ${CMAKE_INSTALL_PYTHON_LIBDIR})
+
+    # Compile the monolithic Python module
+    pybind11_add_module(
+        fastfhir_python
+        $<TARGET_OBJECTS:fastfhir_obj>
+        $<TARGET_OBJECTS:fastfhir_ingest_obj>
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/FF_PythonBindings.cpp
+    )
+    # Link Time Optimization (LTO) - Strips unused template instantiations
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT lto_supported)
+    if(lto_supported)
+        set_property(TARGET fastfhir_python PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    endif()
+    # Strip Symbols - Removes heavy debugging metadata
+    if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        if(APPLE)
+            target_link_options(fastfhir_python PRIVATE "-Wl,-S") # macOS
+        else()
+            target_link_options(fastfhir_python PRIVATE "-Wl,-s") # Linux
+        endif()
+    endif()
+
+    target_include_directories(fastfhir_python PRIVATE 
+        ${FASTFHIR_INCLUDE_DIR}
+        ${FASTFHIR_GENERATED_DIR}
+    )
+
+    # Unconditionally link the ingestor dependencies
+    target_link_libraries(fastfhir_python PRIVATE 
+        simdjson::simdjson
+        OpenSSL::Crypto
+    )
+
+    set_property(TARGET fastfhir_python PROPERTY OUTPUT_NAME fastfhir)
+    install(TARGETS fastfhir_python DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR})
+
+endif(FASTFHIR_BUILD_PYTHON_BINDINGS)
+
+# ---------------------------------------------------------------------
 # Install / Export Targets
 # ---------------------------------------------------------------------
 install(TARGETS fastfhir ff_export EXPORT FastFHIRTargets
@@ -286,6 +357,34 @@ install(EXPORT FastFHIRTargets
     NAMESPACE FastFHIR:: 
     DESTINATION lib/cmake/FastFHIR
 ) 
+
+# ---------------------------------------------------------------------
+# Python Package Installation
+# ---------------------------------------------------------------------
+if (FASTFHIR_BUILD_PYTHON_BINDINGS)
+
+    # 1. Install the core __init__.py and logic from tools
+    # This assumes tools/python/fastfhir/ contains your __init__.py
+    install(
+        DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/fastfhir 
+        DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR}
+    )
+
+    # 2. Install the generated fields.py into the package folder
+    install(
+        FILES ${CMAKE_CURRENT_SOURCE_DIR}/generated_src/fields.py
+        DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR}/fastfhir
+    )
+
+    # 3. Install the compiled C++ extension (_core.so) into the package folder
+    # Note: Ensure OUTPUT_NAME is set to _core so it matches 'from . import _core'
+    set_property(TARGET fastfhir_python PROPERTY OUTPUT_NAME _core)
+    install(
+        TARGETS fastfhir_python 
+        DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR}/fastfhir
+    )
+
+endif()
 
 # ---------------------------------------------------------------------
 # Xcode Project Navigator Organization

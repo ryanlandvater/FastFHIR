@@ -29,6 +29,19 @@ FF_Result Ingestor::ingest(const IngestRequest& request, ObjectHandle& out_root,
     }
 }
 
+FF_Result Ingestor::insert_at_field(Builder& parent_builder, uint32_t registry_index, std::string_view payload, SourceType fmt) {
+    switch (fmt) {
+        case SourceType::FHIR_JSON:
+            return insert_at_field_json(parent_builder, registry_index, payload);
+        case SourceType::HL7_V2:
+            return FF_Result{FF_FAILURE, "HL7 v2 field ingestion not implemented."};
+        case SourceType::HL7_V3:
+            return FF_Result{FF_FAILURE, "HL7 v3 field ingestion not implemented."};
+        default:
+            return FF_Result{FF_FAILURE, "Unknown source type."};
+    }
+} 
+
 FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle& out_root, size_t& out_parsed_count) {
     if (is_faulted()) return FF_Result{FF_FAILURE, "Engine is faulted. Reset() before ingesting new data."};
 
@@ -162,6 +175,55 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle&
         return FF_Result{FF_FAILURE, std::string("simdjson Exception: ") + e.what()};
     } catch (const std::exception& e) {
         return FF_Result{FF_FAILURE, std::string("Standard Exception: ") + e.what()};
+    }
+}
+
+
+// =====================================================================
+// FIELD-LEVEL JSON ENGINE
+// =====================================================================
+FF_Result Ingestor::insert_at_field_json(Builder& parent_builder, uint32_t registry_index, std::string_view payload) {
+    if (is_faulted()) return FF_Result{FF_FAILURE, "Engine is faulted. Reset() before ingesting new data."};
+
+    // 1. Bounds check the Python/C++ boundary token
+    if (registry_index >= FastFHIR::FieldKeys::RegistrySize) {
+        return FF_Result{FF_FAILURE, "Invalid FastFHIR field registry index."};
+    }
+
+    const FastFHIR::FF_FieldKey& key = *FastFHIR::FieldKeys::Registry[registry_index];
+
+    // 2. Prevent scalar waste
+    if (key.kind != FF_FIELD_BLOCK && key.kind != FF_FIELD_ARRAY) {
+        return FF_Result{FF_FAILURE, "insert_at_field is strictly for Objects/Arrays. Use Builder.append for scalars like " + std::string(key.name)};
+    }
+
+    try {
+        // Use the main thread's parser to avoid tape reallocation
+        auto& parser = m_parser_pool[0];
+        
+        simdjson::ondemand::document doc = parser.iterate(
+            payload.data(), 
+            payload.size(), 
+            payload.size() + simdjson::SIMDJSON_PADDING
+        );
+        simdjson::ondemand::value json_val = doc.get_value();
+
+        // 3. Dispatch to the generated memory allocator based on the EXPECTED child tag
+        ObjectHandle child_handle = dispatch_block(key.child_recovery, json_val, parent_builder, &m_logger);
+        
+        if (child_handle.offset() == FF_NULL_OFFSET) {
+            return FF_Result{FF_FAILURE, "Failed to parse child JSON payload into FastFHIR arena."};
+        }
+
+        // 4. Link the new block/array to the parent builder using the O(1) index
+        parent_builder.append_by_index(registry_index, child_handle.offset());
+
+        return FF_SUCCESS;
+
+    } catch (const simdjson::simdjson_error& e) {
+        return FF_Result{FF_FAILURE, std::string("simdjson Exception during field insert: ") + e.what()};
+    } catch (const std::exception& e) {
+        return FF_Result{FF_FAILURE, std::string("Standard Exception during field insert: ") + e.what()};
     }
 }
 

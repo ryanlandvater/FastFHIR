@@ -243,6 +243,60 @@ Node Node::operator[](size_t index) const {
                 m_child_recovery, FF_FIELD_BLOCK);
 }
 
+//Node Node::operator[](FF_PackedToken token) const {
+//    if (is_empty() || !is_object()) return Node();
+//
+//    // 1. Strict Schema Validation (O(1) memory peek)
+//    // Assumes the first 4 bytes of any object block hold its RECOVERY_TAG
+//    uint32_t actual_recovery = *reinterpret_cast<const uint32_t*>(m_base);
+//    
+//    if (actual_recovery != token.expected_recovery()) {
+//        throw std::invalid_argument("FastFHIR Schema Violation: Attempted to read field belonging to a different resource type.");
+//    }
+//
+//    // 2. Safe O(1) Memory Jump
+//    const Offset value_offset = m_node_offset + token.offset();
+//
+//    // 1. FAST PATH: Early exit if the field is empty (bypasses object creation entirely)
+//    if (FF_IsFieldEmpty(m_base, value_offset, key.kind)) {
+//        return {};
+//    }
+//
+//    // 2. We now guarantee the data exists. Switch directly to the correct instantiation.
+//    switch (key.kind) {
+//        case FF_FIELD_STRING: {
+//            const Offset child_offset = LOAD_U64(m_base + value_offset);
+//            return Node(m_base, m_size, m_version, child_offset, FF_STRING::recovery, FF_FIELD_STRING);
+//        }
+//        case FF_FIELD_ARRAY: {
+//            const Offset child_offset = LOAD_U64(m_base + value_offset);
+//            return Node(m_base, m_size, m_version, child_offset, FF_ARRAY::recovery, FF_FIELD_ARRAY,
+//                        key.child_recovery, key.array_entries_are_offsets != 0);
+//        }
+//        case FF_FIELD_BLOCK: {
+//            const Offset child_offset = LOAD_U64(m_base + value_offset);
+//            RECOVERY_TAG actual_recovery = key.child_recovery;
+//            
+//            // Polymorphic Resolution with Validation
+//            if (actual_recovery == RECOVER_FF_RESOURCE) {
+//                actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + child_offset + 8)); 
+//                if (!FF_IsResourceTag(actual_recovery)) return {}; // Safety check: invalid resource tag
+//            }
+//            
+//            return Node(m_base, m_size, m_version, child_offset, actual_recovery, FF_FIELD_BLOCK);
+//        }
+//        case FF_FIELD_CODE:
+//        case FF_FIELD_BOOL:
+//        case FF_FIELD_UINT32:
+//        case FF_FIELD_FLOAT64:
+//            // Inline scalar values
+//            return Node::scalar(m_base, m_size, m_version, m_node_offset, value_offset, key.kind);
+//            
+//        default:
+//            return {};
+//    }
+//}
+
 // =====================================================================
 // Node primitive accessors
 // =====================================================================
@@ -293,31 +347,39 @@ double Node::as<double>() const {
     return LOAD_F64(m_base + m_global_scalar_offset);
 }
 
+// =====================================================================
+// Parser implementation
+// =====================================================================
+Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast<const BYTE*>(buffer)), m_size(size) {
+    if (size < FF_HEADER::HEADER_SIZE) {
+        throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
+    }
+    FF_HEADER header(size);
+    auto validation_result = header.validate_full(m_base);
+    if (validation_result != FF_SUCCESS) {
+        throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with code " + std::to_string(validation_result));
+    }
+    m_version = header.get_version(m_base);
+    m_root_offset = header.get_root(m_base);
+    m_root_recovery = header.get_root_type(m_base);
+}
+
+Parser::Parser(const FF_Memory& memory) : m_memory(memory), m_base(memory.base()), m_size(memory.size()) {
+    if (m_size < FF_HEADER::HEADER_SIZE) {
+        throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
+    }
+    FF_HEADER header(m_size);
+    auto validation_result = header.validate_full(m_base);
+    if (validation_result != FF_SUCCESS) {
+        throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with code " + std::to_string(validation_result));
+    }
+    m_version = header.get_version(m_base);
+    m_root_offset = header.get_root(m_base);
+    m_root_recovery = header.get_root_type(m_base);
+}
+
 uint32_t Parser::version()   const { return m_version; }
 uint16_t Parser::root_type() const { return m_root_recovery; }
-
-// =====================================================================
-// Parser factory
-// =====================================================================
-Parser Parser::create(const void* buffer, size_t size) {
-    auto base = static_cast<const BYTE*>(buffer);
-
-    if (size < FF_HEADER::HEADER_SIZE)
-        throw std::runtime_error("FastFHIR: Buffer too small to contain file header.");
-
-    FF_HEADER header(size);
-    auto res = header.validate_full(base);
-    if (!res)
-        throw std::runtime_error("FastFHIR Header Validation: " + res.message);
-
-    Parser parser;
-    parser.m_base = base;
-    parser.m_size = size;
-    parser.m_version = header.get_version(base);
-    parser.m_root_offset = header.get_root(base);
-    parser.m_root_recovery = header.get_root_type(base);
-    return parser;
-}
 
 Parser::ChecksumValidation Parser::checksum() const {
     FF_HEADER header(m_size);

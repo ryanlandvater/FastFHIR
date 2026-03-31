@@ -58,6 +58,15 @@ public:
     FF_Result ingest(const IngestRequest& request, ObjectHandle& out_root, size_t& out_parsed_count);
 
     /**
+     * @brief Parses a payload and inserts the resulting complex object at a specific Field token.
+     * @param parent_builder The builder containing the parent object frame.
+     * @param registry_index The O(1) field token from FastFHIR::FieldKeys::Registry.
+     * @param payload The raw string to parse.
+     * @return Result code indicating success or failure.
+     */
+    FF_Result insert_at_field(Builder& parent_builder, uint32_t registry_index, std::string_view payload);
+
+    /**
      * @brief Resets the engine state for a new file and returns all accumulated logs.
      * @return A string containing all warnings and errors from the previous run.
      */

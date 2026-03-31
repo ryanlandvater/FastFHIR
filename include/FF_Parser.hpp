@@ -16,6 +16,7 @@
  #pragma once
 
 #include "FF_Primitives.hpp"
+#include "FF_Memory.hpp"
 
 namespace FastFHIR {
 template<typename T> struct TypeTraits;
@@ -28,6 +29,7 @@ class Node;
  * accessors for header metadata, checksum metadata, and the root node.
  */
 class Parser {
+    const FF_Memory m_memory;
     const BYTE*     m_base = nullptr;
     Size            m_size = 0;
     uint32_t        m_version = 0;
@@ -42,7 +44,16 @@ public:
     * @return A valid parser bound to the supplied buffer.
     * @throws std::runtime_error If the header is truncated or fails validation.
      */
-    static Parser create(const void* buffer, size_t size);
+    explicit Parser (const void* buffer, size_t size);
+
+    /**
+    * @brief Create a parser directly from an FF_Memory's memory mapping.
+     * 
+    * @param memory Shared pointer to an initialized FF_Memory providing the memory mapping for the parser.
+     * @return A valid parser bound to the supplied allocator.
+     * @throws std::runtime_error If the header is truncated or fails validation.
+     */
+    explicit Parser (const FF_Memory& memory);
 
     /** 
     * @brief Check whether this parser instance references a parsed buffer.

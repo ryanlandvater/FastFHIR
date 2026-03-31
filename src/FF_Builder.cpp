@@ -10,7 +10,6 @@
 
 #include "FF_Utilities.hpp"
 #include "FF_Builder.hpp"
-#include "FF_Parser.hpp"
 #include "../generated_src/FF_Reflection.hpp"
 #include <atomic>
 #include <stdexcept>
@@ -26,299 +25,287 @@
 #include <sys/mman.h>
 #endif
 
-namespace FastFHIR
+namespace FastFHIR {
+// =====================================================================
+// PointerPatchProxy Implementation
+// =====================================================================
+
+PointerPatchProxy& PointerPatchProxy::operator=(const ObjectHandle& child)
 {
+    // --- STRICT SCHEMA VALIDATION ---
+    if (m_ref.target_recovery == RECOVER_FF_RESOURCE) {
+        // Polymorphic field: Ensure the child is actually a top-level Resource
+        if (!FF_IsResourceTag(child.recovery()))
+            throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range), but received a different block type.");
+    } else if (child.recovery() != m_ref.target_recovery)
+        // Strictly typed field: Ensure an exact match
+        throw std::invalid_argument("FastFHIR Schema Violation: Attempted to assign an incompatible type.");
 
-    // =====================================================================
-    // Constructor / Destructor
-    // =====================================================================
+    m_builder->amend_pointer(m_ref.object_offset, m_ref.field_vtable_offset, child.offset());
+    return *this;
+}
 
-    Builder::Builder(size_t size_hint, size_t virtual_capacity, uint32_t version)
-        : m_base(nullptr),
-          // If the user provides a size hint larger than the default virtual capacity,
-          // use it (doubled for safety). Otherwise, use the default virtual capacity.
-          m_capacity(size_hint > virtual_capacity ? size_hint * 2 : virtual_capacity),
-          m_stream_head(0),
-          m_checksum_offset(FF_NULL_OFFSET),
-          m_root_offset(FF_NULL_OFFSET),
-          m_root_recovery(FF_RECOVER_UNDEFINED),
-          m_version(version),
-          m_finalizing(false),
-          m_active_mutators(0)
-    {
-#ifdef _WIN32
-        // WINDOWS: Reserve address space and commit pages on demand
-        m_base = static_cast<BYTE *>(VirtualAlloc(nullptr, m_capacity,
-                                                  MEM_RESERVE | MEM_COMMIT,
-                                                  PAGE_READWRITE));
-        if (m_base == nullptr)
-        {
-            throw std::runtime_error("FastFHIR: Failed to reserve Virtual Memory Arena via VirtualAlloc.");
+void PointerPatchProxy::validate_assignment(RECOVERY_TAG child_tag) const
+{
+    if (m_ref.target_recovery == RECOVER_FF_RESOURCE) {
+        // Polymorphic field: Ensure the child is actually a top-level Resource
+        if (!FF_IsResourceTag(child_tag)) {
+            throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range).");
         }
-#else
-        // UNIX/macOS: Anonymous private mapping with lazy physical RAM allocation
-        int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
-#ifdef MAP_NORESERVE
-        mmap_flags |= MAP_NORESERVE;
-#endif
-        m_base = static_cast<BYTE *>(mmap(nullptr, m_capacity,
-                                          PROT_READ | PROT_WRITE,
-                                          mmap_flags,
-                                          -1, 0));
-        if (m_base == MAP_FAILED)
-        {
-            throw std::runtime_error("FastFHIR: Failed to reserve Virtual Memory Arena via mmap.");
-        }
-#endif
+        // Strictly typed field: Ensure an exact match
+    } else if (child_tag != m_ref.target_recovery)
+        throw std::invalid_argument("FastFHIR Schema Violation: Attempted to assign an incompatible type.");
+}
 
-        // Reserve space for the mandatory stream header
-        m_stream_head.store(FF_HEADER::HEADER_SIZE, std::memory_order_relaxed);
+// =====================================================================
+// Constructor / Destructor
+// =====================================================================
+
+Builder::Builder(const FF_Memory& memory, uint16_t fhir_revision)
+: m_memory(memory),
+m_base(memory.base()),
+m_checksum_offset(FF_NULL_OFFSET),
+m_root_offset(FF_NULL_OFFSET),
+m_root_recovery(FF_RECOVER_UNDEFINED),
+m_fhir_rev(fhir_revision),
+m_ff_version(FF_VERSION_MAJOR<<16|FF_VERSION_MINOR),
+m_finalizing(false),
+m_active_mutators(0)
+{
+    if (!m_memory) {
+        throw std::invalid_argument("FastFHIR: Cannot initialize Builder with a null FF_Memory handle.");
     }
+}
 
-    Builder::~Builder()
-    {
-#ifdef _WIN32
-        if (m_base != nullptr)
-        {
-            VirtualFree(m_base, 0, MEM_RELEASE);
-        }
-#else
-        if (m_base != nullptr && m_base != MAP_FAILED)
-        {
-            munmap(m_base, m_capacity);
-        }
-#endif
-    }
+Builder::~Builder() = default; // m_memory handles its own OS cleanup
 
-    // =====================================================================
-    // Concurrency Guards
-    // =====================================================================
+// =====================================================================
+// Concurrency Guards
+// =====================================================================
 
-    bool Builder::try_begin_mutation()
-    {
-        if (m_finalizing.load(std::memory_order_acquire))
-        {
-            return false;
-        }
+bool Builder::try_begin_mutation()
+{
+    if (m_finalizing.load(std::memory_order_acquire))
+        return false;
 
-        m_active_mutators.fetch_add(1, std::memory_order_acq_rel);
+    m_active_mutators.fetch_add(1, std::memory_order_acq_rel);
 
-        // Close race where finalize starts after first check but before increment.
-        if (m_finalizing.load(std::memory_order_acquire))
-        {
-            m_active_mutators.fetch_sub(1, std::memory_order_acq_rel);
-            return false;
-        }
-
-        return true;
-    }
-
-    void Builder::end_mutation()
-    {
+    // Close race where finalize starts after first check but before increment.
+    if (m_finalizing.load(std::memory_order_acquire)) {
         m_active_mutators.fetch_sub(1, std::memory_order_acq_rel);
+        return false;
     }
 
-    // =====================================================================
-    // View Node & Amend Pointer
-    // =====================================================================
+    return true;
+}
 
-    Node Builder::view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind) const
-    {
-        // 1. Snapshot the atomic boundary once
-        Size current_total = total_written();
+void Builder::end_mutation()
+{
+    m_active_mutators.fetch_sub(1, std::memory_order_acq_rel);
+}
 
-        if (offset == FF_NULL_OFFSET || offset >= current_total)
-        {
-            return Node();
-        }
+// =====================================================================
+// View Node & Amend Pointer
+// =====================================================================
 
-        // 2. Use the exact same boundary for the Node's validation
-        return Node(m_base, current_total, m_version, offset, recovery, kind);
-    }
+Node Builder::view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind) const
+{
+    // 1. Snapshot the atomic boundary once
+    Size size = m_memory.size();
 
-    void Builder::amend_pointer(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset)
-    {
-        if (!try_begin_mutation())
-        {
-            throw std::runtime_error("FastFHIR: Builder is finalizing; amend is no longer allowed.");
-        }
+    if (offset == FF_NULL_OFFSET || offset >= size)
+        return Node();
 
-        struct MutationGuard
-        {
-            Builder *self;
-            ~MutationGuard() { self->end_mutation(); }
-        } guard{this};
+    // 2. Use the exact same boundary for the Node's validation
+    return Node(m_base, size, m_fhir_rev, offset, recovery, kind);
+}
 
-        if (object_offset > m_capacity || field_vtable_offset > (m_capacity - object_offset) ||
-            sizeof(Offset) > (m_capacity - object_offset - field_vtable_offset))
-        {
-            throw std::runtime_error("FastFHIR: Pointer amendment out of bounds.");
-        }
+void Builder::amend_pointer(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset)
+{
+    // Mutate the stream. Increment mutators if possible and store auto decrementor (guard) for autodestruction
+    if (!try_begin_mutation())
+        throw std::runtime_error("FastFHIR: Builder is finalizing; amend is no longer allowed.");
+    struct MutationGuard {
+        Builder *self;
+        ~MutationGuard() { self->end_mutation(); }
+    } guard{this};
 
-        // SAFELY load the current value to check if it has already been assigned
-        Offset current_val = LOAD_U64(m_base + object_offset + field_vtable_offset);
-        
-        if (current_val != FF_NULL_OFFSET)
-        {
-            std::string msg = "FastFHIR: Pointer amendment failed — attempted to insert offset " + std::to_string(new_target_offset) +
-            " into object at offset " + std::to_string(object_offset) + ". This field was already assigned. " +
-            "Attempting to patch an already-assigned pointer risks orphaning elements of the stream.";
-            throw std::runtime_error(msg);
-        }
-        
-        // SAFELY write the new offset without triggering hardware alignment traps
-        STORE_U64(m_base + object_offset + field_vtable_offset, new_target_offset);
-    }
+    // Bounds checks
+    size_t capacity = m_memory.capacity();
+    if (object_offset > capacity || field_vtable_offset > (capacity - object_offset) ||
+        sizeof(Offset) > (capacity - object_offset - field_vtable_offset))
+        throw std::runtime_error("FastFHIR: Pointer amendment out of bounds.");
 
-    ObjectHandle PointerPatchProxy::operator[](size_t index) const {
-        // 1. Read the ABSOLUTE offset stored in the parent object's vtable
-        Offset abs_array_off = LOAD_U64(m_builder->m_base + m_ref.object_offset + m_ref.field_vtable_offset);
-        if (abs_array_off == FF_NULL_OFFSET) 
-            throw std::runtime_error("FastFHIR: Cannot index into an unallocated array.");
-
-        // 2. Instantiate the FF_ARRAY view object using the absolute offset
-        FF_ARRAY array_block(abs_array_off, m_builder->total_written(), m_builder->m_version);
-
-        // --- STRICT SAFETY: Verify it is actually an array ---
-        if (array_block.validate_full(m_builder->m_base).code != FF_SUCCESS) 
-            throw std::runtime_error("FastFHIR: Schema Violation. Memory block at offset is not a valid FF_ARRAY.");
-
-        // --- STRICT SAFETY: Prevent Buffer Overflows ---
-        uint32_t count = array_block.entry_count(m_builder->m_base);
-        if (index >= count) {
-            throw std::out_of_range("FastFHIR PointerPatchProxy: Array index out of bounds. Attempted to access index " + 
-                                    std::to_string(index) + " in an array of size " + std::to_string(count) + ".");
-        }
-
-        // 3. Use the encapsulated methods to find the data
-        uint16_t step = array_block.entry_step(m_builder->m_base);
-        const BYTE* entries_ptr = array_block.entries(m_builder->m_base);
-        
-        // Convert the raw memory pointer back into an absolute arena Offset
-        Offset item_addr = static_cast<Offset>(entries_ptr - m_builder->m_base) + (index * step);
-
-        // Array of entries or an array of offsets to entries?
-        if (step == sizeof(Offset)) {
-            Offset actual_object_off = LOAD_U64(m_builder->m_base + item_addr);
-            return ObjectHandle(m_builder, actual_object_off, m_ref.target_recovery);
-        } else {
-            return ObjectHandle(m_builder, item_addr, m_ref.target_recovery);
-        }
-    }
-
-    // =====================================================================
-    // ObjectHandle String Lookup (Reflection)
-    // =====================================================================
-
-    PointerPatchProxy ObjectHandle::operator[](std::string_view key_name) const
-    {
-        if (m_offset == FF_NULL_OFFSET || m_recovery == FF_RECOVER_UNDEFINED)
-        {
-            throw std::runtime_error("FastFHIR: Invalid ObjectHandle; cannot resolve field assignment.");
-        }
-
-        // Use the generated reflection engine to find the field metadata
-        const std::vector<FF_FieldInfo> fields = reflected_fields(m_recovery);
-
-        for (const FF_FieldInfo &field : fields)
-        {
-            if (field.name && key_name == std::string_view(field.name))
-            {
-
-                // FastFHIR only supports appending complex types/strings out-of-line
-                if (field.kind != FF_FIELD_BLOCK && field.kind != FF_FIELD_ARRAY && field.kind != FF_FIELD_STRING)
-                {
-                    throw std::runtime_error("FastFHIR: Assignment supports only pointer-backed fields (BLOCK/ARRAY/STRING).");
-                }
-
-                return PointerPatchProxy(m_builder, PointerRef{m_offset, field.field_offset, field.child_recovery});
-            }
-        }
-
-        throw std::runtime_error("FastFHIR: Field key '" + std::string(key_name) + "' not found on current object.");
-    }
-
-    // =====================================================================
-    // Finalization & Checksums
-    // =====================================================================
-
-    void Builder::set_root(const ObjectHandle &handle)
-    {
-        if (handle.offset() != FF_NULL_OFFSET && handle.recovery() == FF_RECOVER_UNDEFINED) {
-            throw std::invalid_argument("FastFHIR: Cannot set a root resource with an UNDEFINED recovery tag.");
-        }
-
-        if (!try_begin_mutation())
-        {
-            throw std::runtime_error("FastFHIR: Builder is finalizing; set_root is no longer allowed.");
-        }
-
-        struct MutationGuard
-        {
-            Builder *self;
-            ~MutationGuard() { self->end_mutation(); }
-        } guard{this};
-
-        m_root_offset = handle.offset();
-        m_root_recovery = handle.recovery();
-    }
-
-    Offset Builder::allocate_raw(Size size) {
-        return m_stream_head.fetch_add(size, std::memory_order_relaxed);
+    // SAFELY load the current value to check if it has already been assigned
+    Offset current_val = LOAD_U64(m_base + object_offset + field_vtable_offset);
+    
+    // NOTE: I don't like this. It's not concurrency protected and limits functionality
+    if (current_val != FF_NULL_OFFSET) {
+        std::string msg = "FastFHIR: Pointer amendment failed — attempted to insert offset " + std::to_string(new_target_offset) +
+        " into object at offset " + std::to_string(object_offset) + ". This field was already assigned. " +
+        "Attempting to patch an already-assigned pointer risks orphaning elements of the stream.";
+        throw std::runtime_error(msg);
     }
     
-    FF_Result Builder::write_offset_at(Offset target_addr, Offset child_offset) {
-        // Use STORE_FF_OFFSET for proper endianness and atomicity guarantees?
-        STORE_U64(m_base+target_addr, child_offset);
-        return FF_SUCCESS;
+    // SAFELY write the new offset without triggering hardware alignment traps
+    // Note: Cast away constness if m_base remains const BYTE* in the header
+    STORE_U64(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset, new_target_offset);
+}
+
+// =====================================================================
+// ObjectHandle from Array Index Lookup
+// =====================================================================
+
+ObjectHandle PointerPatchProxy::operator[](size_t index) const
+{
+    // 1. Read the ABSOLUTE offset stored in the parent object's vtable
+    Offset abs_array_off = LOAD_U64(m_builder->m_base + m_ref.object_offset + m_ref.field_vtable_offset);
+    if (abs_array_off == FF_NULL_OFFSET)
+        throw std::runtime_error("FastFHIR PointerPatchProxy: Cannot index into an unallocated array.");
+
+    // 2. Instantiate the FF_ARRAY view object using the absolute offset
+    FF_ARRAY array_block(abs_array_off, m_builder->m_memory.size(), m_builder->m_fhir_rev);
+
+    // --- STRICT SAFETY: Verify it is actually an array ---
+    if (array_block.validate_full(m_builder->m_base).code != FF_SUCCESS)
+        throw std::runtime_error("FastFHIR PointerPatchProxy reports SCHEMA VIOLATION. Memory block at offset is not a valid FF_ARRAY.");
+
+    // --- STRICT SAFETY: Prevent Buffer Overflows ---
+    uint32_t count = array_block.entry_count(m_builder->m_base);
+    if (index >= count)
+        throw std::out_of_range("FastFHIR PointerPatchProxy: Array index out of bounds. Attempted to access index " +
+                                std::to_string(index) + " in an array of size " + std::to_string(count) + ".");
+
+    // 3. Use the encapsulated methods to find the data
+    uint16_t step = array_block.entry_step(m_builder->m_base);
+    const BYTE* entries_ptr = array_block.entries(m_builder->m_base);
+    
+    // Convert the raw memory pointer back into an absolute arena Offset
+    Offset item_addr = static_cast<Offset>(entries_ptr - m_builder->m_base) + (index * step);
+
+    // Array of entries or an array of offsets to entries?
+    if (step == sizeof(Offset)) {
+        Offset actual_object_off = LOAD_U64(m_builder->m_base + item_addr);
+        return ObjectHandle(m_builder, actual_object_off, m_ref.target_recovery);
+    } else {
+        return ObjectHandle(m_builder, item_addr, m_ref.target_recovery);
+    }
+}
+
+// =====================================================================
+// ObjectHandle String Lookup (Reflection)
+// =====================================================================
+
+PointerPatchProxy ObjectHandle::operator[](std::string_view key_name) const
+{
+    if (m_offset == FF_NULL_OFFSET || m_recovery == FF_RECOVER_UNDEFINED)
+        throw std::runtime_error("FastFHIR: Invalid ObjectHandle; cannot resolve field assignment.");
+
+    // Use the generated reflection engine to find the field metadata
+    const std::vector<FF_FieldInfo> fields = reflected_fields(m_recovery);
+
+    for (const FF_FieldInfo &field : fields) {
+        if (field.name && key_name == std::string_view(field.name)) {
+
+            // FastFHIR only supports appending complex types/strings out-of-line
+            if (field.kind != FF_FIELD_BLOCK && field.kind != FF_FIELD_ARRAY && field.kind != FF_FIELD_STRING)
+                throw std::runtime_error("FastFHIR: Assignment supports only pointer-backed fields (BLOCK/ARRAY/STRING).");
+
+            return PointerPatchProxy(m_builder, PointerRef{m_offset, field.field_offset, field.child_recovery});
+        }
     }
 
-    std::string_view Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &hasher)
+    throw std::runtime_error("FastFHIR: Field key '" + std::string(key_name) + "' not found on current object.");
+}
+
+// =====================================================================
+// Finalization & Checksums
+// =====================================================================
+
+void Builder::set_root(const ObjectHandle &handle)
+{
+    if (handle.offset() != FF_NULL_OFFSET && handle.recovery() == FF_RECOVER_UNDEFINED) {
+        throw std::invalid_argument("FastFHIR: Cannot set a root resource with an UNDEFINED recovery tag.");
+    }
+    
+    if (!try_begin_mutation())
     {
-        bool expected = false;
-        if (!m_finalizing.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
-        {
-            throw std::runtime_error("FastFHIR: finalize() has already started or completed.");
-        }
-
-        // Wait for in-flight append/amend/set_root calls to finish.
-        while (m_active_mutators.load(std::memory_order_acquire) != 0)
-        {
-            std::this_thread::yield();
-        }
-
-        // Finalization sanity check: Ensure a root resource was set and is within bounds
-        if (m_root_offset == FF_NULL_OFFSET || m_root_offset >= m_stream_head.load(std::memory_order_relaxed) || m_root_offset >= m_capacity)
-            throw std::runtime_error("FastFHIR: Cannot finalize without a valid in-range root resource.");
-        else if (m_root_recovery == FF_RECOVER_UNDEFINED) 
-            throw std::runtime_error("FastFHIR: Cannot finalize stream. Root resource recovery tag is UNDEFINED.");
-
-        // m_checksum_offset is the exact byte where the 48-byte footer begins
-        m_checksum_offset = m_stream_head.fetch_add(FF_CHECKSUM::HEADER_SIZE, std::memory_order_relaxed);
-        Size final_file_size = m_stream_head.load(std::memory_order_relaxed);
-
-        if (hasher == nullptr || algo == FF_CHECKSUM_NONE)
-        {
-            std::cerr << "[FastFHIR] Warning: No hash function provided; file will be emitted with zeroed checksum.\n";
-            algo = FF_CHECKSUM_NONE;
-        }
-
-        STORE_FF_HEADER(m_base, m_version, m_checksum_offset, m_root_offset, m_root_recovery, final_file_size);
-
-        // Writes the 16 bytes of metadata, returns a pointer to byte 16 (the 32-byte slot)
-        BYTE *hash_dst = STORE_FF_CHECKSUM_METADATA(m_base, m_checksum_offset, algo);
-
-        if (hasher != nullptr && algo != FF_CHECKSUM_NONE)
-        {
-
-            // Hash the payload + the 16 bytes of metadata, stopping exactly where the hash slot begins.
-            Size bytes_to_hash = m_checksum_offset + FF_CHECKSUM::HASH_DATA;
-            std::vector<BYTE> hash_value = hasher(m_base, bytes_to_hash);
-
-            size_t copy_len = std::min(hash_value.size(), static_cast<size_t>(FF_MAX_HASH_BYTES));
-            std::memcpy(hash_dst, hash_value.data(), copy_len);
-        }
-
-        return std::string_view(reinterpret_cast<const char *>(m_base), final_file_size);
+        throw std::runtime_error("FastFHIR: Builder is finalizing; set_root is no longer allowed.");
     }
+    
+    struct MutationGuard
+    {
+        Builder *self;
+        ~MutationGuard() { self->end_mutation(); }
+    } guard{this};
+    
+    m_root_offset = handle.offset();
+    m_root_recovery = handle.recovery();
+}
+
+Offset Builder::allocate_raw(Size size) {
+    return m_stream_head.fetch_add(size, std::memory_order_relaxed);
+}
+
+FF_Result Builder::write_offset_at(Offset target_addr, Offset child_offset) {
+    // Use STORE_FF_OFFSET for proper endianness and atomicity guarantees?
+    STORE_U64(m_base+target_addr, child_offset);
+    return FF_SUCCESS;
+}
+
+std::string_view Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &hasher)
+{
+    bool expected = false;
+    if (!m_finalizing.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+    {
+        throw std::runtime_error("FastFHIR: finalize() has already started or completed.");
+    }
+    
+    // Wait for in-flight append/amend/set_root calls to finish.
+    while (m_active_mutators.load(std::memory_order_acquire) != 0)
+    {
+        std::this_thread::yield();
+    }
+    
+    // Finalization sanity check: Ensure a root resource was set and is within bounds
+    if (m_root_offset == FF_NULL_OFFSET || m_root_offset >= m_stream_head.load(std::memory_order_relaxed) || m_root_offset >= m_capacity)
+        throw std::runtime_error("FastFHIR: Cannot finalize without a valid in-range root resource.");
+    else if (m_root_recovery == FF_RECOVER_UNDEFINED)
+        throw std::runtime_error("FastFHIR: Cannot finalize stream. Root resource recovery tag is UNDEFINED.");
+    
+    // m_checksum_offset is the exact byte where the 48-byte footer begins
+    m_checksum_offset = m_stream_head.fetch_add(FF_CHECKSUM::HEADER_SIZE, std::memory_order_relaxed);
+    Size final_file_size = m_stream_head.load(std::memory_order_relaxed);
+    
+    if (hasher == nullptr || algo == FF_CHECKSUM_NONE)
+    {
+        std::cerr << "[FastFHIR] Warning: No hash function provided; file will be emitted with zeroed checksum.\n";
+        algo = FF_CHECKSUM_NONE;
+    }
+    
+    STORE_FF_HEADER(
+                    m_base,
+                    m_fhir_rev,       // 16-bit FHIR schema revision
+                    final_file_size,  // Stream size (Total bytes written)
+                    m_root_offset,    // Pointer to root resource
+                    m_root_recovery,  // Root schema type
+                    m_checksum_offset // Pointer to footer
+                    );
+    
+    // Writes the 16 bytes of metadata, returns a pointer to byte 16 (the 32-byte slot)
+    BYTE *hash_dst = STORE_FF_CHECKSUM_METADATA(m_base, m_checksum_offset, algo);
+    
+    if (hasher != nullptr && algo != FF_CHECKSUM_NONE)
+    {
+        
+        // Hash the payload + the 16 bytes of metadata, stopping exactly where the hash slot begins.
+        Size bytes_to_hash = m_checksum_offset + FF_CHECKSUM::HASH_DATA;
+        std::vector<BYTE> hash_value = hasher(m_base, bytes_to_hash);
+        
+        size_t copy_len = std::min(hash_value.size(), static_cast<size_t>(FF_MAX_HASH_BYTES));
+        std::memcpy(hash_dst, hash_value.data(), copy_len);
+    }
+    
+    return std::string_view(reinterpret_cast<const char *>(m_base), final_file_size);
+}
 } // namespace FastFHIR

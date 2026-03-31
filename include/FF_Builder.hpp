@@ -5,11 +5,11 @@
  * @version 0.1
  * @date 2026-03-18
  * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
- * @license FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
+ * @remark FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
  */
 #pragma once
 
-#include "FF_Utilities.hpp"
+#include "FF_Parser.hpp"
 #include <atomic>
 #include <stdexcept>
 #include <string_view>
@@ -43,8 +43,8 @@ struct PointerRef {
  * Allows assigning either an existing Offset or dynamically appending new data.
  */
 class PointerPatchProxy {
-    Builder* m_builder;
-    PointerRef m_ref;
+    Builder*    m_builder;
+    PointerRef  m_ref;
 
 public:
     PointerPatchProxy(Builder* builder, PointerRef ref) : m_builder(builder), m_ref(ref) {}
@@ -59,6 +59,8 @@ public:
 
     // Array indexer (Dereferences the vtable pointer to find the entry object)
     ObjectHandle operator[](size_t index) const;
+private:
+    void validate_assignment(const RECOVERY_TAG) const;
 };
 
 // =====================================================================
@@ -69,7 +71,7 @@ public:
  * Replaces the unsafe global operator[] on the Builder itself.
  */
 class ObjectHandle {
-    Builder* m_builder;
+    Builder*        m_builder;
     Offset          m_offset;
     RECOVERY_TAG    m_recovery;
 
@@ -103,14 +105,14 @@ class AdvancedBuilderAccess;
  */
 class Builder {
     friend class FastFHIR::AdvancedBuilderAccess;
-    friend class FastFHIR::PointerPatchProxy;  
-    BYTE* m_base;
-    size_t              m_capacity;
-    std::atomic<Offset> m_stream_head;
+    friend class FastFHIR::PointerPatchProxy;
+    FF_Memory m_memory;
+    BYTE* const         m_base;
     Offset              m_checksum_offset;
     Offset              m_root_offset;
     RECOVERY_TAG        m_root_recovery;
-    uint32_t            m_version;
+    uint16_t            m_fhir_rev;
+    uint32_t            m_ff_version;     
     std::atomic<bool>   m_finalizing;
     std::atomic<uint64_t> m_active_mutators;
 
@@ -124,15 +126,24 @@ public:
     Builder& operator=(Builder&&) = delete;
 
     /**
-     * @brief Reserves a massive Virtual Address Space without consuming physical RAM.
+     * @brief Constructs a builder bound to an existing Virtual Memory Arena.
+     * 
+    * @param memory Shared pointer to an initialized FF_Memory providing the arena for building or modifying the stream.
+     * @param version FHIR version to target for schema-specific encoding rules (default: R5).
      */
-    Builder(size_t size_hint = 0, size_t virtual_capacity = 2ULL * 1024 * 1024 * 1024, uint32_t version = FHIR_VERSION_R5);
+    explicit Builder(const FF_Memory& memory, uint16_t fhir_revision = FHIR_VERSION_R5);
     ~Builder();
 
-    // --- Core Stream Access ---
-    
-    const BYTE* data() const { return m_base; }
-    Size total_written() const { return m_stream_head.load(std::memory_order_relaxed); }
+    /**
+     * @brief Generates a lightweight, snapshot of the current stream.
+     * Creating this is nearly zero-cost as it only populates CPU registers.
+     * 
+     * @return A new Parser instance that can be used to read the current state of the stream without 
+     * interfering with ongoing mutations.
+     */
+    Parser query() const {
+        return Parser(m_memory);
+    }
 
     // --- Lock-Free Concurrent Appending ---
 
@@ -151,17 +162,16 @@ public:
         } guard{this};
 
         // Automatically resolved via ffc.py generated traits
-        Size exact_size = TypeTraits<T_Data>::size(data, m_version);
+        Size data_size = TypeTraits<T_Data>::size(data, m_version);
         
-        Offset start = m_stream_head.fetch_add(exact_size, std::memory_order_relaxed);
+        // Thread-safe claim of space in the arena for the new data
+        Offset offset = m_memory.claim_space(data_size);
         
-        if (start + exact_size > m_capacity) {
-            throw std::runtime_error("FastFHIR: Exceeded maximum virtual arena capacity.");
-        }
+        // Thread-safe write of the data into the claimed space
+        TypeTraits<T_Data>::store(m_base, offset, data, m_version);
         
-        TypeTraits<T_Data>::store(m_base, start, data, m_version);
-        
-        return start;
+        // Return the offset where the data was written for potential pointer patching
+        return offset;
     }
 
     /**
@@ -197,7 +207,7 @@ public:
      * @param hasher A callback that takes the payload and returns the raw hash bytes.
      * @return A view of the complete, sealed file (including the checksum footer) ready for network transmission.
      */
-    std::string_view finalize(FF_Checksum_Algorithm algo = FF_CHECKSUM_NONE, const HashCallback& hasher = nullptr);
+    FF_Memory::View finalize(FF_Checksum_Algorithm algo = FF_CHECKSUM_NONE, const HashCallback& hasher = nullptr);
 
     protected:
     Offset allocate_raw(Size size);
@@ -247,47 +257,26 @@ public:
 // =====================================================================
 // INLINE TEMPLATE IMPLEMENTATIONS
 // =====================================================================
-inline PointerPatchProxy& PointerPatchProxy::operator=(const ObjectHandle& child) {
-    // --- STRICT SCHEMA VALIDATION ---
-    if (m_ref.target_recovery == RECOVER_FF_RESOURCE) {
-        // Polymorphic field: Ensure the child is actually a top-level Resource
-        if (!FF_IsResourceTag(child.recovery())) 
-            throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range), but received a different block type.");
-    } else if (child.recovery() != m_ref.target_recovery) 
-        // Strictly typed field: Ensure an exact match
-        throw std::invalid_argument("FastFHIR Schema Violation: Attempted to assign an incompatible type.");
-
-    m_builder->amend_pointer(m_ref.object_offset, m_ref.field_vtable_offset, child.offset());
-    return *this;
-}
-
 template <typename T_Data>
 Offset PointerPatchProxy::operator=(const T_Data& data) {
-    // --- STRICT SCHEMA VALIDATION ---
-    RECOVERY_TAG child_tag = TypeTraits<T_Data>::recovery;
-    if (m_ref.target_recovery == RECOVER_FF_RESOURCE) {
-        // Polymorphic field: Ensure the child is actually a top-level Resource
-        if (!FF_IsResourceTag(child_tag)) 
-            throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range), but received a different block type.");
-    } else if (child_tag != m_ref.target_recovery) {
-        throw std::invalid_argument("FastFHIR Schema Violation: Attempted to append an incompatible type to a strictly typed field.");
-    }
-
-    // 1. Thread-safe append of the child data
+    // 1. Offload strict schema validation to the translation unit
+    validate_assignment(TypeTraits<T_Data>::recovery);
+    
+    // 2. Thread-safe append of the child data
     Offset child_offset = m_builder->append(data);
     
-    // 2. Thread-safe pointer patch on the parent V-Table
+    // 3. Thread-safe pointer patch on the parent V-Table
     m_builder->amend_pointer(m_ref.object_offset, m_ref.field_vtable_offset, child_offset);
     
     return child_offset;
 }
 
 inline PointerPatchProxy ObjectHandle::operator[](FF_FieldKey key) const {
-    if (m_offset == FF_NULL_OFFSET) 
-        throw std::runtime_error("FastFHIR: Invalid ObjectHandle; cannot assign field '" + 
+    if (m_offset == FF_NULL_OFFSET)
+        throw std::runtime_error("FastFHIR: Invalid ObjectHandle; cannot assign field '" +
                                  std::string(key.name) + "' on a null/unallocated object.");
-    else if (key.kind != FF_FIELD_BLOCK && key.kind != FF_FIELD_ARRAY && key.kind != FF_FIELD_STRING) 
-        throw std::runtime_error("FastFHIR: Field '" + std::string(key.name) + 
+    else if (key.kind != FF_FIELD_BLOCK && key.kind != FF_FIELD_ARRAY && key.kind != FF_FIELD_STRING)
+        throw std::runtime_error("FastFHIR: Field '" + std::string(key.name) +
                                  "' is not a pointer-backed field. PointerPatchProxy only supports BLOCK/ARRAY/STRING.");
     
     // Assuming FF_FieldKey generated by ffc.py contains the direct field offset

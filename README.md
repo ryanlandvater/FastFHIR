@@ -11,17 +11,17 @@ Healthcare interoperability has historically relied on formats that are inherent
 ### 1. Extreme Performance
 FastFHIR turns data traversal into pure pointer arithmetic, fundamentally outpacing both legacy text formats and modern serialized binaries.
 * **O(1) Random Access:** Jump instantly to any deeply nested FHIR field. This completely bypasses the `O(N)` linear scanning of HL7v2 and the `O(N)` string-hashing and DOM construction of JSON.
-* **Zero-Heap Allocation:** Reading a FastFHIR stream requires 0 heap allocations. A lightweight `Node` viewing lens is passed directly over the raw memory buffer, enabling nanosecond read times the instant the message hits RAM.
+* **Zero-Heap Allocation:** Reading a FastFHIR stream requires 0 heap allocations. A lightweight `Node` viewing lens is passed directly over the raw memory buffer, enabling nanosecond read times from the instant the message hits RAM.
 * **Zero-Copy Engine:** FastFHIR outperforms even Google Research's Protobuf FHIR implementation because it skips the deserialization phase entirely, operating natively at the absolute memory-bandwidth limit without unpacking varints or allocating C++ message objects.
 
 ### 2. Hardware-Level Safety & Security
 Legacy text standards expose systems to XML injection (CDA) and heap fragmentation (JSON). FastFHIR guarantees deterministic memory and structural integrity.
-* **OS-Protected Memory:** By utilizing Virtual Memory Arenas (via POSIX `mmap` or Win32 `VirtualAlloc`), FastFHIR ensures pointers remain perfectly stable and memory access is protected by the kernel kernel, eliminating "pointer chasing" corruption.
-* **Strict Schema Validation:** The binary layout embeds explicit `RECOVERY_TAG` metadata for every object. This provides guaranteed safe polymorphic resolution and strict C++ type checking at runtime, preventing garbage reads and buffer overflows.
+* **OS-Protected Memory:** By utilizing Virtual Memory Arenas (via POSIX `mmap` or Win32 `VirtualAlloc`), FastFHIR ensures pointers remain perfectly stable and memory access is protected by the OS kernel.
+* **Strict Schema Validation:** The binary layout embeds explicit `RECOVERY_TAG` metadata for every object. This provides guaranteed safe polymorphic resolution and strict C++ type checking at runtime, preventing incorrect information context, garbage reads, and buffer overflows.
 * **Cryptographic Sealing:** Built-in checksum footers (SHA-256/512) guarantee record immutability, providing a hardware-verified security layer for clinical data lakes.
 
 ### 3. Clinical Informatics: Lock-Free Enrichment
-* **In-Stream Lazy Enrichment:** Read a `Patient.id` or route a payload in a nanosecond without parsing the other 9,999 fields in a `Bundle`. You only pay for the exact bytes you traverse. This means you can simply add a laboratory result for a patient in the bundle without parsing any other aspect of the bundle record. Simply add the new result and reseal it before passing the entire message along to the rest of the clinical workflow. 
+* **In-Stream Lazy Enrichment:** Read a `Patient.id` or route a payload in a nanosecond without parsing the other 9,999 fields in a `Bundle`. You only pay for the exact bytes you traverse. This means you can simply append a new laboratory result for a patient in the bundle without parsing any other aspect of the bundle record or rewritting it. Simply add the new result and reseal it before passing the entire message along to the rest of the clinical workflow. 
 * **Concurrent Mutex-Free Generation:** Serialize thousands of resources simultaneously across a thread pool. FastFHIR's atomic pointer-patching architecture allows surgical data appends (like NLP annotations) into a single contiguous stream without a single lock.
 
 ### 4. Developer Ergonomics
@@ -223,5 +223,5 @@ The "right to repair" clause allows minimal patching only if the author fails to
 
 See the LICENSE file for the full legal text and compliance requirements.
 
-# Attribution
-The design of FastFHIR is based upon the [Iris File Extension](https://www.sciencedirect.com/science/article/pii/S2153353925000471) (by Dr. Ryan Erik Landvater) and [FlatBuffers](https://github.com/google/flatbuffers) (by Wouter van Oortmerssen and the Google Fun Propulsion Labs team).
+---
+**Attribution**: The design of FastFHIR is based upon the [Iris File Extension](https://www.sciencedirect.com/science/article/pii/S2153353925000471) (by Ryan Landvater) and [FlatBuffers](https://github.com/google/flatbuffers) (by Wouter van Oortmerssen and the Google Fun Propulsion Labs team).
