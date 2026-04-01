@@ -288,7 +288,7 @@ if (FASTFHIR_BUILD_PYTHON_BINDINGS)
         fastfhir_python
         $<TARGET_OBJECTS:fastfhir_obj>
         $<TARGET_OBJECTS:fastfhir_ingest_obj>
-        ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/FF_PythonBindings.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/FF_PythonBindings.cpp
     )
     # Link Time Optimization (LTO) - Strips unused template instantiations
     include(CheckIPOSupported)
@@ -363,11 +363,10 @@ install(EXPORT FastFHIRTargets
 # ---------------------------------------------------------------------
 if (FASTFHIR_BUILD_PYTHON_BINDINGS)
 
-    # 1. Install the core __init__.py and logic from tools
-    # This assumes tools/python/fastfhir/ contains your __init__.py
+    # 1. Install the core __init__.py from the new python directory
     install(
-        DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/fastfhir 
-        DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR}
+        FILES ${CMAKE_CURRENT_SOURCE_DIR}/python/__init__.py 
+        DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR}/fastfhir
     )
 
     # 2. Install the generated fields.py into the package folder
