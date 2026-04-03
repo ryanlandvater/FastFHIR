@@ -59,8 +59,10 @@ constexpr uint32_t FF_CUSTOM_STRING_FLAG = 0x80000000;
 // FastFHIR magic bytes: "FFHR" in little-endian
 constexpr uint32_t FF_MAGIC_BYTES = 0x52484646;
 
-#define FHIR_VERSION_R4 0x0400
-#define FHIR_VERSION_R5 0x0500
+enum FHIR_VERSION : uint16_t {
+    FHIR_VERSION_R4 = 0x0400,
+    FHIR_VERSION_R5 = 0x0500,
+};
 
 #ifndef FF_VERSION_MAJOR
 #define FF_VERSION_MAJOR 0
@@ -362,31 +364,47 @@ struct FF_EXPORT FF_ARRAY : DATA_BLOCK
 {
     static constexpr char type[] = "FF_ARRAY";
     static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_ARRAY;
+
+    // Bitmasks for the packed 16-bit Kind & Step field at offset 10
+    static constexpr uint16_t KIND_MASK = 0xC000; // Bits 15-14
+    static constexpr uint16_t STEP_MASK = 0x3FFF; // Bits 13-0
+
+    // High-bit flags identifying the physical layout of the elements
+    enum EntryKind : uint16_t {
+        SCALAR       = 0x0000, // 00... (e.g., bool, double, uint32)
+        OFFSET       = 0x4000, // 01... (64-bit pointers to blocks)
+        INLINE_BLOCK = 0x8000  // 10... (Contiguous structured blocks)
+    };
+
     enum vtable_sizes
     {
-        VALIDATION_S = TYPE_SIZE_UINT64,  // 8
-        RECOVERY_S = TYPE_SIZE_UINT16,    // 2
-        ENTRY_STEP_S = TYPE_SIZE_UINT16,  // 2
-        ENTRY_COUNT_S = TYPE_SIZE_UINT32, // 4
+        VALIDATION_S = TYPE_SIZE_UINT64,    // 8
+        RECOVERY_S = TYPE_SIZE_UINT16,      // 2
+        KIND_AND_STEP_S = TYPE_SIZE_UINT16, // 2 (Packed Kind & Step)
+        ENTRY_COUNT_S = TYPE_SIZE_UINT32,   // 4
     };
+    
     enum vtable_offsets
     {
         VALIDATION = 0,
-        RECOVERY = VALIDATION + VALIDATION_S,      // 8
-        ENTRY_STEP = RECOVERY + RECOVERY_S,        // 10
-        ENTRY_COUNT = ENTRY_STEP + ENTRY_STEP_S,   // 12
-        HEADER_SIZE = ENTRY_COUNT + ENTRY_COUNT_S, // 16 bytes exactly
+        RECOVERY = VALIDATION + VALIDATION_S,          // 8
+        KIND_AND_STEP = RECOVERY + RECOVERY_S,         // 10
+        ENTRY_COUNT = KIND_AND_STEP + KIND_AND_STEP_S, // 12
+        HEADER_SIZE = ENTRY_COUNT + ENTRY_COUNT_S,     // 16 bytes exactly
     };
 
     explicit FF_ARRAY(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
 
     FF_Result validate_full(const BYTE *const __base) const noexcept;
     uint16_t entry_step(const BYTE *const __base) const;
+    EntryKind entry_kind(const BYTE *const __base) const;
+    bool entries_are_pointers(const BYTE *const __base) const;
     uint32_t entry_count(const BYTE *const __base) const;
     const BYTE *entries(const BYTE *const __base) const;
 };
 
 void FF_EXPORT STORE_FF_ARRAY_HEADER(BYTE *const __base, Offset &write_head,
+                                     FF_ARRAY::EntryKind kind,
                                      uint16_t entry_step, uint32_t entry_count);
 void FF_EXPORT STORE_FF_POINTER_ARRAY(BYTE *const __base, Offset &write_head,
                                       const std::vector<Offset> &offsets);

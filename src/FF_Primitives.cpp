@@ -184,34 +184,62 @@ BYTE* STORE_FF_CHECKSUM_METADATA(BYTE* const __base, Offset start_offset, FF_Che
 FF_Result FF_ARRAY::validate_full(const BYTE* const __base) const noexcept {
     auto result = validate_offset(__base, type, recovery);
     if (result != FF_SUCCESS) return result;
-    uint16_t step = LOAD_U16(__base + __offset + ENTRY_STEP);
+    
+    // Fix 1: Use the masked entry_step method
+    uint16_t step = entry_step(__base);
+    switch (entry_kind(__base)) {
+        case SCALAR:
+        case OFFSET:
+        case INLINE_BLOCK: break;
+        default: return {FF_VALIDATION_FAILURE, "FF_ARRAY contains undefined entry kind"};}
     uint32_t count = LOAD_U32(__base + __offset + ENTRY_COUNT);
+    
     if (__offset + HEADER_SIZE + static_cast<uint64_t>(step) * count > __size) {
         return {FF_VALIDATION_FAILURE, "FF_ARRAY entries exceed file boundaries."};
     }
-    return {FF_SUCCESS, ""};
+    return FF_SUCCESS;
 }
 
-uint16_t FF_ARRAY::entry_step(const BYTE* const __base) const { return LOAD_U16(__base + __offset + ENTRY_STEP); }
-uint32_t FF_ARRAY::entry_count(const BYTE* const __base) const { return LOAD_U32(__base + __offset + ENTRY_COUNT); }
-const BYTE* FF_ARRAY::entries(const BYTE* const __base) const { return __base + __offset + HEADER_SIZE; }
+uint16_t FF_ARRAY::entry_step(const BYTE* const __base) const
+{ return LOAD_U16(__base + __offset + KIND_AND_STEP) & STEP_MASK; }
 
-void STORE_FF_ARRAY_HEADER(BYTE* const __base, Offset& write_head, uint16_t entry_step, uint32_t entry_count) {
+FF_ARRAY::EntryKind FF_ARRAY::entry_kind(const BYTE *const __base) const
+{ return static_cast<EntryKind>(LOAD_U16(__base + __offset + KIND_AND_STEP) & KIND_MASK); }
+
+bool FF_ARRAY::entries_are_pointers(const BYTE *const base) const
+{return entry_kind(base) == OFFSET;}
+
+uint32_t FF_ARRAY::entry_count(const BYTE* const __base) const
+{ return LOAD_U32(__base + __offset + ENTRY_COUNT); }
+
+const BYTE* FF_ARRAY::entries(const BYTE* const __base) const
+{ return __base + __offset + HEADER_SIZE; }
+
+void STORE_FF_ARRAY_HEADER(BYTE* const __base, Offset& write_head, FF_ARRAY::EntryKind kind, uint16_t entry_step, uint32_t entry_count) {
+    // Validate that the step size doesn't overflow into the kind bits (max 16.38kb)
+    if (entry_step > FF_ARRAY::STEP_MASK) {
+        throw std::runtime_error("FastFHIR: FF_ARRAY entry step size exceeds maximum 14-bit permitted value.");
+    }
     auto __ptr = __base + write_head;
-    STORE_U64(__ptr + DATA_BLOCK::VALIDATION, write_head);
-    STORE_U16(__ptr + DATA_BLOCK::RECOVERY, RECOVER_FF_ARRAY);
-    STORE_U16(__ptr + FF_ARRAY::ENTRY_STEP, entry_step);
+    // Dynamic pointer validation maintained
+    STORE_U64(__ptr + FF_ARRAY::VALIDATION, write_head);
+    STORE_U16(__ptr + FF_ARRAY::RECOVERY, RECOVER_FF_ARRAY);
+    // Bitwise pack the Kind (top 2 bits) and the Step (bottom 14 bits)
+    STORE_U16(__ptr + FF_ARRAY::KIND_AND_STEP, kind | entry_step);
     STORE_U32(__ptr + FF_ARRAY::ENTRY_COUNT, entry_count);
     write_head += FF_ARRAY::HEADER_SIZE;
 }
 
 void STORE_FF_POINTER_ARRAY(BYTE* const __base, Offset& write_head, const std::vector<Offset>& offsets) {
     uint32_t entry_count = static_cast<uint32_t>(offsets.size());
-    STORE_FF_ARRAY_HEADER(__base, write_head, sizeof(Offset), entry_count);
-    for (const auto& off : offsets) {
-        STORE_U64(__base + write_head, off);
-        write_head += sizeof(Offset);
-    }
+        
+        // Fix 3: Pass the 'kind' flag to the header write
+        STORE_FF_ARRAY_HEADER(__base, write_head, FF_ARRAY::OFFSET, sizeof(Offset), entry_count);
+        
+        for (const auto& off : offsets) {
+            STORE_U64(__base + write_head, off);
+            write_head += sizeof(Offset);
+        }
 }
 
 // =====================================================================

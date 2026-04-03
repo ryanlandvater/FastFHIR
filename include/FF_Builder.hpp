@@ -32,35 +32,53 @@ template<typename T> struct TypeTraits;
 // =====================================================================
 class Builder;
 class ObjectHandle;
-struct PointerRef {
-    Offset object_offset = FF_NULL_OFFSET;
-    size_t field_vtable_offset = 0;
-    RECOVERY_TAG target_recovery = FF_RECOVER_UNDEFINED;
-};
 
 /**
  * @brief Ephemeral proxy object returned by ObjectHandle::operator[].
  * Allows assigning either an existing Offset or dynamically appending new data.
  */
-class PointerPatchProxy {
-    Builder*    m_builder;
-    PointerRef  m_ref;
+class MutableEntry {
+    Builder* m_builder;
+    Offset       m_parent_offset;
+    size_t       m_vtable_offset;
+    RECOVERY_TAG m_target_recovery;
 
 public:
-    PointerPatchProxy(Builder* builder, PointerRef ref) : m_builder(builder), m_ref(ref) {}
+    MutableEntry(Builder* b, Offset p, size_t v, RECOVERY_TAG r)
+    : m_builder(b), m_parent_offset(p), m_vtable_offset(v), m_target_recovery(r) {}
 
+    // Elevates the resolved pointer into a mutable handle for traversal
+    ObjectHandle as_handle() const;
+    
     // Option A: Assign an existing handle for data already in the stream (with strict type checking)
-    PointerPatchProxy& operator=(const ObjectHandle& child);
-
-    // Option B: Concurrently append NEW data to the stream 
+    MutableEntry& operator=(const ObjectHandle& child);
+    
+    // Option B: Concurrently append NEW data to the stream
     // and patch the pointer simultaneously!
     template <typename T_Data>
     Offset operator=(const T_Data& data);
+    
+    // Pass through to retrieve a mutable entry for an array
+    
 
-    // Array indexer (Dereferences the vtable pointer to find the entry object)
-    ObjectHandle operator[](size_t index) const;
+    // 1. Implicit Conversion
+    operator ObjectHandle() const;
+
+    // 2. Pass-through Read Access
+    Node as_node() const;
+    Offset offset() const;
+
+    // 3. Pass-through Traversal
+    MutableEntry operator[](FF_FieldKey key) const;
+    MutableEntry operator[](size_t index) const;
+    
+    // In-place updates for inline scalars (bypasses the V-Table append)
+    template <typename T_Data>
+    requires std::is_arithmetic_v<T_Data>
+    void assign_inline(T_Data value);
+    
 private:
-    void validate_assignment(const RECOVERY_TAG) const;
+    void validate_assignment(const RECOVERY_TAG child_tag) const;
 };
 
 // =====================================================================
@@ -70,26 +88,34 @@ private:
  * @brief Thread-local handle representing a specific parent object being built.
  * Replaces the unsafe global operator[] on the Builder itself.
  */
+
 class ObjectHandle {
-    Builder*        m_builder;
+    Builder* m_builder;
     Offset          m_offset;
     RECOVERY_TAG    m_recovery;
-
+    
 public:
-    ObjectHandle(Builder* builder, Offset offset, RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED) 
-        : m_builder(builder), m_offset(offset), m_recovery(recovery) {
-            if (offset != FF_NULL_OFFSET && recovery == FF_RECOVER_UNDEFINED) 
+    ObjectHandle(Builder* builder, Offset offset, RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED)
+    : m_builder(builder), m_offset(offset), m_recovery(recovery) {
+        if (offset != FF_NULL_OFFSET && recovery == FF_RECOVER_UNDEFINED)
             throw std::invalid_argument("FastFHIR: Cannot instantiate an ObjectHandle with valid offset but with an UNDEFINED recovery tag.");
-        }
+    }
     
     Builder* get_builder() const { return m_builder; }
     Offset offset() const { return m_offset; }
     RECOVERY_TAG recovery() const { return m_recovery; }
-    PointerPatchProxy operator[](FF_FieldKey key) const;
-    PointerPatchProxy operator[](std::string_view key_name) const;
-    inline PointerPatchProxy operator[](const char* key_name) const {
-        return operator[](std::string_view(key_name));
-    }
+    
+    // Spawns a lightweight read-only snapshot
+    Node as_node() const;
+    
+    // Spawns a mutable bridge for a specific field
+    MutableEntry operator[](FF_FieldKey key) const;
+    
+    // Checks if the given object handle represents an FF_ARRAY
+    bool is_array() const;
+    
+    // Spawns a mutable bridge for an array entry
+    MutableEntry operator[](size_t index) const;
 };
 class AdvancedBuilderAccess;
 
@@ -106,14 +132,14 @@ class AdvancedBuilderAccess;
  */
 class Builder {
     friend class FastFHIR::AdvancedBuilderAccess;
-    friend class FastFHIR::PointerPatchProxy;
-    Memory m_memory;
+
+    Memory              m_memory;
     BYTE* const         m_base;
     Offset              m_checksum_offset;
     Offset              m_root_offset;
     RECOVERY_TAG        m_root_recovery;
-    uint16_t            m_fhir_rev;
-    uint32_t            m_ff_version;     
+    FHIR_VERSION        m_fhir_rev;
+    uint32_t            m_ff_version;
     std::atomic<bool>   m_finalizing;
     std::atomic<uint64_t> m_active_mutators;
 
@@ -125,6 +151,8 @@ public:
     Builder& operator=(const Builder&) = delete;
     Builder(Builder&&) = delete;
     Builder& operator=(Builder&&) = delete;
+    const Memory& memory() const { return m_memory; }
+    const FHIR_VERSION FhirVersion () const { return m_fhir_rev; }
 
     /**
      * @brief Constructs a builder bound to an existing Virtual Memory Arena.
@@ -132,7 +160,7 @@ public:
     * @param memory Shared pointer to an initialized FF_Memory providing the arena for building or modifying the stream.
      * @param version FHIR version to target for schema-specific encoding rules (default: R5).
      */
-    explicit Builder(const Memory& memory, uint16_t fhir_revision = FHIR_VERSION_R5);
+    explicit Builder(const Memory& memory, FHIR_VERSION fhir_revision = FHIR_VERSION_R5);
     ~Builder();
 
     /**
@@ -258,30 +286,41 @@ public:
 // =====================================================================
 // INLINE TEMPLATE IMPLEMENTATIONS
 // =====================================================================
+// 1. Implicit Conversion
+inline MutableEntry::operator ObjectHandle() const { return as_handle(); }
+inline Node MutableEntry::as_node() const { return as_handle().as_node(); }
+inline Offset MutableEntry::offset() const { return as_handle().offset(); }
+inline MutableEntry MutableEntry::operator[](FF_FieldKey key) const { return as_handle()[key]; }
+inline MutableEntry MutableEntry::operator[](size_t index) const { return as_handle()[index]; }
+
 template <typename T_Data>
-Offset PointerPatchProxy::operator=(const T_Data& data) {
+Offset MutableEntry::operator=(const T_Data& data) {
     // 1. Offload strict schema validation to the translation unit
     validate_assignment(TypeTraits<T_Data>::recovery);
     
     // 2. Thread-safe append of the child data
     Offset child_offset = m_builder->append(data);
     
-    // 3. Thread-safe pointer patch on the parent V-Table
-    m_builder->amend_pointer(m_ref.object_offset, m_ref.field_vtable_offset, child_offset);
+    // 3. Thread-safe pointer patch on the parent V-Table using direct offsets
+    m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child_offset);
     
     return child_offset;
 }
 
-inline PointerPatchProxy ObjectHandle::operator[](FF_FieldKey key) const {
+inline Node ObjectHandle::as_node() const {
+    // Ensure the Parser knows to treat this as an array structure
+    FF_FieldKind node_kind = (m_recovery == RECOVER_FF_ARRAY) ? FF_FIELD_ARRAY : FF_FIELD_BLOCK;
+    return m_builder->view_node(m_offset, m_recovery, node_kind);
+}
+
+inline MutableEntry ObjectHandle::operator[](FF_FieldKey key) const {
     if (m_offset == FF_NULL_OFFSET)
-        throw std::runtime_error("FastFHIR: Invalid ObjectHandle; cannot assign field '" +
-                                 std::string(key.name) + "' on a null/unallocated object.");
-    else if (key.kind != FF_FIELD_BLOCK && key.kind != FF_FIELD_ARRAY && key.kind != FF_FIELD_STRING)
-        throw std::runtime_error("FastFHIR: Field '" + std::string(key.name) +
-                                 "' is not a pointer-backed field. PointerPatchProxy only supports BLOCK/ARRAY/STRING.");
+        throw std::runtime_error("FastFHIR: Invalid ObjectHandle...");
+                                 
+    // Map the array field directly to the array container tag
+    RECOVERY_TAG target_tag = (key.kind == FF_FIELD_ARRAY) ? RECOVER_FF_ARRAY : key.child_recovery;
     
-    // Assuming FF_FieldKey generated by ffc.py contains the direct field offset
-    return PointerPatchProxy(m_builder, PointerRef{m_offset, key.field_offset, key.child_recovery}); 
+    return MutableEntry(m_builder, m_offset, key.field_offset, target_tag);
 }
 
 } // namespace FastFHIR

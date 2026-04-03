@@ -471,7 +471,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto blk_n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
-                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_FF_ARRAY, TYPE_SIZE_OFFSET, blk_n);\n"
+                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, blk_n);\n"
                 cpp += f"        Offset blk_off_tbl = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(blk_n) * TYPE_SIZE_OFFSET;\n"
                 cpp += f"        for (uint32_t blk_i = 0; blk_i < blk_n; ++blk_i) {{\n"
@@ -486,7 +486,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
-                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_FF_ARRAY, {child_struct}::HEADER_SIZE, __n);\n"
+                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, {child_struct}::HEADER_SIZE, __n);\n"
                 cpp += f"        Offset __entries_start = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(__n) * {child_struct}::HEADER_SIZE;\n"
                 cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
@@ -499,7 +499,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"    else if (!{data_name}.{f['cpp_name']}_handles.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}_handles.size());\n"
-                cpp += f"        FF_ArrayHeader::Store(__base, child_off, RECOVER_FF_ARRAY, TYPE_SIZE_OFFSET, __n);\n"
+                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, __n);\n"
                 cpp += f"        Offset __entries_start = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(__n) * TYPE_SIZE_OFFSET;\n"
                 cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
@@ -819,7 +819,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         # Exception: Bundle must be public for the Ingestor's concurrent queue slicing
         if path == 'Bundle':
             continue
-        
+
         data_type = path.replace('.', '') + 'Data'
         fn_name = path.replace('.', '_') + "_from_json"
         cpp += f"static {data_type} {fn_name}(simdjson::ondemand::object obj, FastFHIR::ConcurrentLogger* logger = nullptr, std::vector<std::string_view>* concurrent_queue = nullptr);\n"
@@ -967,10 +967,10 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         owner_ns = _block_key_namespace(path)
 
         # Declaration (REMAINS IN HPP as it is used by the Ingestor worker threads)
-        hpp += f"void {patch_fn_name}(simdjson::ondemand::object& obj, FastFHIR::ObjectHandle& wrapper, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+        hpp += f"void {patch_fn_name}(simdjson::ondemand::object& obj, FastFHIR::MutableEntry& wrapper, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
 
         # Implementation
-        cpp += f"void {patch_fn_name}(simdjson::ondemand::object& obj, FastFHIR::ObjectHandle& wrapper, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {{\n"
+        cpp += f"void {patch_fn_name}(simdjson::ondemand::object& obj, FastFHIR::MutableEntry& wrapper, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {{\n"
         cpp += f"    for (auto field : obj) {{\n"
         cpp += f"        std::string_view key = field.unescaped_key().value_unsafe();\n"
 

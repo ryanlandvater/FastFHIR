@@ -67,13 +67,13 @@ public:
      * @return The relative offset claimed for exclusive writing.
      * @throws std::runtime_error if the request exceeds VMA capacity.
      */
-    uint64_t claim_space(size_t bytes);
-
+    uint64_t claim_space(size_t bytes) const;
+    
     /**
      * @brief Attempts to acquire the exclusive network ingestion lock.
      * @return A StreamHead RAII guard if the lock is acquired, or std::nullopt if another socket is actively streaming.
      */
-    std::optional<StreamHead> try_acquire_stream();
+    std::optional<StreamHead> try_acquire_stream() const;
 
     /**
      * @brief Retrieves the mathematically strict base pointer of the Data Arena.
@@ -266,21 +266,22 @@ private:
 // Inline Implementations
 // ============================================================================
 
-inline uint64_t Memory::claim_space(size_t bytes) { return m_core->claim_space(bytes); }
-inline std::optional<Memory::StreamHead> Memory::try_acquire_stream() { return m_core->try_acquire_stream(); }
+inline uint64_t Memory::claim_space(size_t bytes) const { return m_core->claim_space(bytes); }
+inline std::optional<Memory::StreamHead> Memory::try_acquire_stream() const { return m_core->try_acquire_stream(); }
 inline uint8_t* Memory::base() const { return m_core->m_base; }
 inline size_t Memory::capacity() const { return m_core->m_capacity; }
 inline std::string Memory::name() const { return m_core->m_name; }
-inline uint64_t Memory::size() const { return m_core->m_head.load(std::memory_order_acquire); }
-
-inline Memory::View::operator std::string_view() const noexcept {
-    return std::string_view(reinterpret_cast<const char*>(m_vma_ref->m_base), m_vma_ref->m_head.load(std::memory_order_acquire));
+inline uint64_t Memory::size() const {
+    return m_core->m_head.load(std::memory_order_acquire) & OFFSET_MASK;
 }
 inline const char* Memory::View::data() const noexcept {
     return reinterpret_cast<const char*>(m_vma_ref->m_base);
 }
 inline size_t Memory::View::size() const noexcept {
-    return m_vma_ref->m_head.load(std::memory_order_acquire);
+    return m_vma_ref->m_head.load(std::memory_order_acquire) & OFFSET_MASK;
+}
+inline Memory::View::operator std::string_view() const noexcept {
+    return std::string_view(reinterpret_cast<const char*>(m_vma_ref->m_base), size());
 }
 inline bool Memory::View::empty() const noexcept {
     return size() == 0;

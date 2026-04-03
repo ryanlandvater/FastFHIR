@@ -134,31 +134,31 @@ PYBIND11_MODULE(_core, m) {
         })
         
         // -----------------------------------------------------------------
-        // READ PATH: O(1) Field Access using C++ Parser & Node APIs
+        // READ PATH: Pure Node Traversal
         // -----------------------------------------------------------------
         .def("__getitem__", [](const ObjectHandle& self, const PythonFieldProxy& field) -> py::object {
             if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) throw py::index_error();
             const auto& key = *FastFHIR::FieldKeys::Registry[field.registry_index];
             
-            // 1. Elevate ObjectHandle to a read-only Node using the Builder's snapshot
-            Node parent_node = self.get_builder()->view_node(self.offset(), self.recovery(), FF_FIELD_BLOCK);
-            
-            // 2. Extract child using the C++ Node::operator[]
-            Node child = parent_node[key];
+            // 1. Read-only extraction via Node engine
+            Node child = self.as_node()[key];
             if (child.is_empty()) return py::none();
 
-            // 3. Delegate to Node::as<T>() for safe, native casting mapped to FF_FieldKind
+            // 2. Delegate to Node::as<T>() for safe casting
             switch (child.kind()) {
                 case FF_FIELD_BOOL:     return py::bool_(child.as<bool>());
                 case FF_FIELD_UINT32:   return py::int_(child.as<uint32_t>());
                 case FF_FIELD_FLOAT64:  return py::float_(child.as<double>());
                 case FF_FIELD_STRING:   return py::str(child.as<std::string_view>());
                 
-                // Blocks, Arrays, and Codes return a new StreamNode proxy for traversal
+                // 3. Elevate structured data to a MutableHandle via the entry proxy
                 case FF_FIELD_BLOCK:   
                 case FF_FIELD_ARRAY:   
-                case FF_FIELD_CODE:
-                    return py::cast(ObjectHandle(self.get_builder(), child.offset(), key.child_recovery));
+                case FF_FIELD_CODE: {
+                    ObjectHandle child = self[key].as_handle();
+                    if (child.offset() == FF_NULL_OFFSET) return py::none();
+                    return py::cast(child);
+                }
                 
                 default:
                     return py::none();
@@ -166,22 +166,35 @@ PYBIND11_MODULE(_core, m) {
         })
         
         // -----------------------------------------------------------------
-        // WRITE PATH: Append-Only Proxy updates
+        // WRITE PATH: MutableEntry Routing
         // -----------------------------------------------------------------
         .def("__setitem__", [](ObjectHandle& self, const PythonFieldProxy& field, py::object value) {
             if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) throw py::index_error();
             const auto& key = *FastFHIR::FieldKeys::Registry[field.registry_index];
             
-            // 1. Grab the patch proxy. 
-            // Note: If this is an inline scalar (bool/uint32), ObjectHandle::operator[] throws a runtime_error natively!
-            auto patch_proxy = self[key]; 
+            // Generate the bridge
+            MutableEntry entry = self[key]; 
 
-            // 2. Route based on Python type
+            // 1. Inline Primitives
+            
+            if (key.kind != FF_FIELD_BLOCK && key.kind != FF_FIELD_ARRAY && key.kind != FF_FIELD_STRING) {
+                if (py::isinstance<py::bool_>(value)) {
+                    entry.assign_inline(value.cast<bool>());
+                } else if (py::isinstance<py::int_>(value)) {
+                    entry.assign_inline(value.cast<uint32_t>());
+                } else if (py::isinstance<py::float_>(value)) {
+                    entry.assign_inline(value.cast<double>());
+                } else {
+                    throw py::type_error("Expected a boolean, integer, or float for this inline field.");
+                }
+                return;
+            }
+
+            // 2. Pointer-Backed Fields
             if (py::isinstance<py::str>(value)) {
-                patch_proxy = value.cast<std::string_view>(); 
+                entry = value.cast<std::string_view>(); 
             } 
             else if (py::isinstance<py::dict>(value) || py::isinstance<py::list>(value)) {
-                // Stringify and route to Ingestor for nested arrays/blocks
                 py::module_ json = py::module_::import("json");
                 std::string json_string = py::cast<std::string>(json.attr("dumps")(value));
                 
@@ -192,8 +205,7 @@ PYBIND11_MODULE(_core, m) {
                 if (res.code != FF_SUCCESS) throw std::runtime_error(res.message);
             } 
             else if (py::isinstance<ObjectHandle>(value)) {
-                // Zero-copy internal link
-                patch_proxy = value.cast<ObjectHandle>();
+                entry = value.cast<ObjectHandle>();
             } else {
                 throw py::type_error("Unsupported Python type for FastFHIR assignment.");
             }

@@ -112,7 +112,7 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle&
         // 4. LOCATE THE PREALLOCATED ARRAY BLOCK FOR PATCHING
         // =====================================================================
         // Safely retrieve the proxy using the generated reflection key
-        auto entry_array = root_handle[FastFHIR::Fields::BUNDLE::ENTRY];
+        ObjectHandle entry_array = root_handle[Fields::BUNDLE::ENTRY];
 
         // =====================================================================
         // 5. CONCURRENT ARRAY PATCHING
@@ -135,10 +135,10 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle&
                         simdjson::ondemand::object local_obj = local_doc.get_object();
                         
                         // 1. Get the handle to the absolute memory offset of this specific array slot
-                        ObjectHandle entry_wrapper = entry_array[task_idx];
+                        MutableEntry entry_wrapper = entry_array[task_idx];
 
                         // 2. Pass the JSON tape and the wrapper handle directly to the auto-generated patcher
-                        FastFHIR::Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
+                        Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
                             
                     } catch (const simdjson::simdjson_error& e) {
                         m_engine_faulted.store(true, std::memory_order_release);

@@ -27,41 +27,108 @@
 
 namespace FastFHIR {
 // =====================================================================
-// PointerPatchProxy Implementation
+// Mutable Entry Implementation
 // =====================================================================
+ObjectHandle MutableEntry::as_handle() const
+{
+    auto base = m_builder->memory().base();
+    
+    // Magic of the self-referential validation flag:
+    // If the slot is a pointer, this loads the target offset.
+    // If the slot is an INLINE_BLOCK, this loads its own absolute offset!
+    Offset target = LOAD_U64(base + m_parent_offset + m_vtable_offset);
+    
+    if (target == FF_NULL_OFFSET)
+        return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
 
-PointerPatchProxy& PointerPatchProxy::operator=(const ObjectHandle& child)
+    // Because every FastFHIR block (Array, String, Struct) stores its tag at +8,
+    // we can flawlessly discover the true type directly from the destination preamble.
+    RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + target + DATA_BLOCK::RECOVERY));
+    
+    return ObjectHandle(m_builder, target, actual_tag);
+}
+
+MutableEntry& MutableEntry::operator=(const ObjectHandle& child)
 {
     // --- STRICT SCHEMA VALIDATION ---
-    if (m_ref.target_recovery == RECOVER_FF_RESOURCE) {
-        // Polymorphic field: Ensure the child is actually a top-level Resource
-        if (!FF_IsResourceTag(child.recovery()))
-            throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range), but received a different block type.");
-    } else if (child.recovery() != m_ref.target_recovery)
-        // Strictly typed field: Ensure an exact match
-        throw std::invalid_argument("FastFHIR Schema Violation: Attempted to assign an incompatible type.");
-
-    m_builder->amend_pointer(m_ref.object_offset, m_ref.field_vtable_offset, child.offset());
+    validate_assignment(child.recovery());
+    m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child.offset());
     return *this;
 }
 
-void PointerPatchProxy::validate_assignment(RECOVERY_TAG child_tag) const
+// Inlined in header MutableEntry::operator[](size_t index) const
+
+void MutableEntry::validate_assignment(RECOVERY_TAG child_tag) const
 {
-    if (m_ref.target_recovery == RECOVER_FF_RESOURCE) {
+    if (m_target_recovery == RECOVER_FF_RESOURCE) {
         // Polymorphic field: Ensure the child is actually a top-level Resource
         if (!FF_IsResourceTag(child_tag)) {
             throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range).");
         }
         // Strictly typed field: Ensure an exact match
-    } else if (child_tag != m_ref.target_recovery)
-        throw std::invalid_argument("FastFHIR Schema Violation: Attempted to assign an incompatible type.");
+    } else if (child_tag != m_target_recovery)
+        throw std::invalid_argument("FastFHIR Schema Violation: MutableEntry attempted to assign an incompatible ObjectHandle type. Assigned types must match current types");
 }
+
+// =====================================================================
+// Object Handle Implementation
+// =====================================================================
+
+MutableEntry ObjectHandle::operator[](size_t index) const
+{
+    // 1. High-level bounds checking
+    Node arr_node = as_node();
+    if (!arr_node.is_array())
+        throw std::runtime_error("FastFHIR: Memory block is not an array.");
+    if (index >= arr_node.size())
+        throw std::out_of_range("FastFHIR: Array index out of bounds.");
+
+    // 2. Low-level geometry calculation
+    FF_ARRAY array_block(m_offset, 0, 0);
+    auto base = m_builder->memory().base();
+    
+    uint16_t step = array_block.entry_step(base);
+    const BYTE* entries_ptr = array_block.entries(base);
+    
+    size_t entry_vtable_offset = static_cast<size_t>(entries_ptr - (base + m_offset)) + (index * step);
+
+    // Return the bridge to the slot.
+    // Type discovery happens lazily in as_handle(), and schema safety is
+    // enforced at compile-time by the ffc.py generated code.
+    return MutableEntry(
+        m_builder,
+        m_offset,
+        entry_vtable_offset,
+        FF_RECOVER_UNDEFINED
+    );
+}
+//    // As you suggested: Look at the first entry to discover the array's schema tag
+//    RECOVERY_TAG array_element_tag = FF_RECOVER_UNDEFINED;
+//    if (array_block.entry_count(base) > 0) {
+//        if (array_kind == FF_ARRAY::INLINE_BLOCK) {
+//            array_element_tag = static_cast<RECOVERY_TAG>(LOAD_U16(entries_ptr + 8));
+//        } else if (array_kind == FF_ARRAY::OFFSET) {
+//            Offset first_target = LOAD_U64(entries_ptr);
+//            if (first_target != FF_NULL_OFFSET) {
+//                array_element_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + first_target + 8));
+//            }
+//        }
+//    }
+//
+//    size_t entry_vtable_offset = static_cast<size_t>(entries_ptr - (base + m_offset)) + (index * step);
+//
+//    return MutableEntry(
+//        m_builder,
+//        m_offset,
+//        entry_vtable_offset,
+//        array_element_tag // Enforces type-safety during assignment!
+//    );
 
 // =====================================================================
 // Constructor / Destructor
 // =====================================================================
 
-Builder::Builder(const Memory& memory, uint16_t fhir_revision)
+Builder::Builder(const Memory& memory, FHIR_VERSION fhir_revision)
 : m_memory(memory),
 m_base(memory.base()),
 m_checksum_offset(FF_NULL_OFFSET),
@@ -147,75 +214,8 @@ void Builder::amend_pointer(Offset object_offset, size_t field_vtable_offset, Of
         throw std::runtime_error(msg);
     }
     
-    // SAFELY write the new offset without triggering hardware alignment traps
-    // Note: Cast away constness if m_base remains const BYTE* in the header
+    // Standard, non-atomic memory write
     STORE_U64(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset, new_target_offset);
-}
-
-// =====================================================================
-// ObjectHandle from Array Index Lookup
-// =====================================================================
-
-ObjectHandle PointerPatchProxy::operator[](size_t index) const
-{
-    // 1. Read the ABSOLUTE offset stored in the parent object's vtable
-    Offset abs_array_off = LOAD_U64(m_builder->m_base + m_ref.object_offset + m_ref.field_vtable_offset);
-    if (abs_array_off == FF_NULL_OFFSET)
-        throw std::runtime_error("FastFHIR PointerPatchProxy: Cannot index into an unallocated array.");
-
-    // 2. Instantiate the FF_ARRAY view object using the absolute offset
-    FF_ARRAY array_block(abs_array_off, m_builder->m_memory.size(), m_builder->m_fhir_rev);
-
-    // --- STRICT SAFETY: Verify it is actually an array ---
-    if (array_block.validate_full(m_builder->m_base).code != FF_SUCCESS)
-        throw std::runtime_error("FastFHIR PointerPatchProxy reports SCHEMA VIOLATION. Memory block at offset is not a valid FF_ARRAY.");
-
-    // --- STRICT SAFETY: Prevent Buffer Overflows ---
-    uint32_t count = array_block.entry_count(m_builder->m_base);
-    if (index >= count)
-        throw std::out_of_range("FastFHIR PointerPatchProxy: Array index out of bounds. Attempted to access index " +
-                                std::to_string(index) + " in an array of size " + std::to_string(count) + ".");
-
-    // 3. Use the encapsulated methods to find the data
-    uint16_t step = array_block.entry_step(m_builder->m_base);
-    const BYTE* entries_ptr = array_block.entries(m_builder->m_base);
-    
-    // Convert the raw memory pointer back into an absolute arena Offset
-    Offset item_addr = static_cast<Offset>(entries_ptr - m_builder->m_base) + (index * step);
-
-    // Array of entries or an array of offsets to entries?
-    if (step == sizeof(Offset)) {
-        Offset actual_object_off = LOAD_U64(m_builder->m_base + item_addr);
-        return ObjectHandle(m_builder, actual_object_off, m_ref.target_recovery);
-    } else {
-        return ObjectHandle(m_builder, item_addr, m_ref.target_recovery);
-    }
-}
-
-// =====================================================================
-// ObjectHandle String Lookup (Reflection)
-// =====================================================================
-
-PointerPatchProxy ObjectHandle::operator[](std::string_view key_name) const
-{
-    if (m_offset == FF_NULL_OFFSET || m_recovery == FF_RECOVER_UNDEFINED)
-        throw std::runtime_error("FastFHIR: Invalid ObjectHandle; cannot resolve field assignment.");
-
-    // Use the generated reflection engine to find the field metadata
-    const std::vector<FF_FieldInfo> fields = reflected_fields(m_recovery);
-
-    for (const FF_FieldInfo &field : fields) {
-        if (field.name && key_name == std::string_view(field.name)) {
-
-            // FastFHIR only supports appending complex types/strings out-of-line
-            if (field.kind != FF_FIELD_BLOCK && field.kind != FF_FIELD_ARRAY && field.kind != FF_FIELD_STRING)
-                throw std::runtime_error("FastFHIR: Assignment supports only pointer-backed fields (BLOCK/ARRAY/STRING).");
-
-            return PointerPatchProxy(m_builder, PointerRef{m_offset, field.field_offset, field.child_recovery});
-        }
-    }
-
-    throw std::runtime_error("FastFHIR: Field key '" + std::string(key_name) + "' not found on current object.");
 }
 
 // =====================================================================

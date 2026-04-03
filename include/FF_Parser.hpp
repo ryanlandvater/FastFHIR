@@ -251,6 +251,10 @@ public:
     void print_json(std::ostream& out) const;
 };
 
+class ArrayNode : public Node {
+    
+};
+
 // =====================================================================
 // Explicit Node Specializations for Primitives
 // =====================================================================
