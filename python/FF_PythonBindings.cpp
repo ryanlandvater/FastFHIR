@@ -9,7 +9,8 @@
 #include "FF_Ingestor.hpp"
 #include "FF_Primitives.hpp"
 
-// The auto-generated FieldKeys Registry
+// The auto-generated Registry
+#include "FF_AllTypes.hpp"
 #include "FF_FieldKeys.hpp" 
 
 namespace py = pybind11;
@@ -22,8 +23,86 @@ struct PythonFieldProxy {
     std::string parent;
 };
 
+// =====================================================================
+// Type-Safe Python to C++ Assignment Dispatcher
+// =====================================================================
+void assign_py_obj(MutableEntry& entry, py::handle obj, ObjectHandle& parent_handle, const FF_FieldKey& key) {
+    if (py::isinstance<ObjectHandle>(obj)) {
+        entry = obj.cast<ObjectHandle>();
+    } 
+    else if (py::isinstance<py::str>(obj)) {
+        entry = obj.cast<std::string_view>();
+    } 
+    else if (py::isinstance<py::bool_>(obj)) {
+        entry.assign_inline<uint8_t>(obj.cast<bool>() ? 1 : 0);
+    } 
+    else if (py::isinstance<py::int_>(obj)) {
+        entry.assign_inline<uint32_t>(obj.cast<uint32_t>());
+    } 
+    else if (py::isinstance<py::float_>(obj)) {
+        entry.assign_inline<double>(obj.cast<double>());
+    } 
+    else if (py::isinstance<py::list>(obj) || py::isinstance<py::dict>(obj)) {
+        auto list = py::isinstance<py::list>(obj) ? obj.cast<py::list>() : py::list();
+        
+        // Fast-path: Native array of ObjectHandles
+        if (!list.empty() && py::isinstance<ObjectHandle>(list[0])) {
+            entry = list.cast<std::vector<ObjectHandle>>();
+            return;
+        }
+        
+        // Fallback: Serialize raw Python dicts/lists and pipe to the Ingestor
+        py::module_ json = py::module_::import("json");
+        std::string json_string = py::cast<std::string>(json.attr("dumps")(obj));
+        
+        Ingest::Ingestor ingestor; 
+        FF_Result res = ingestor.insert_at_field(parent_handle, key, json_string);
+        if (res.code != FF_SUCCESS) throw std::runtime_error(res.message);
+    } 
+    else {
+        throw py::type_error("FastFHIR: Unsupported Python type for stream assignment.");
+    }
+}
+
+// =====================================================================
+// Deep AST Traversal Helper (Executes entirely in C++)
+// =====================================================================
+MutableEntry resolve_ast_path(ObjectHandle root, py::tuple path) {
+    if (path.empty()) throw py::value_error("FastFHIR: Cannot traverse an empty AST path.");
+    
+    // Initialize the bridge from the root handle
+    MutableEntry current_bridge = [&]() {
+        py::handle first = path[0];
+        if (py::isinstance<py::int_>(first)) {
+            return root[first.cast<size_t>()];
+        } else if (py::isinstance<PythonFieldProxy>(first)) {
+            auto field = first.cast<PythonFieldProxy>();
+            if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) throw py::index_error();
+            return root[*FastFHIR::FieldKeys::Registry[field.registry_index]];
+        }
+        throw py::type_error("FastFHIR: AST path elements must be Field objects or integers.");
+    }();
+
+    // Loop through the remaining path elements natively in C++
+    for (size_t i = 1; i < path.size(); ++i) {
+        py::handle item = path[i];
+        if (py::isinstance<py::int_>(item)) {
+            current_bridge = current_bridge[item.cast<size_t>()];
+        } else if (py::isinstance<PythonFieldProxy>(item)) {
+            auto field = item.cast<PythonFieldProxy>();
+            if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) throw py::index_error();
+            current_bridge = current_bridge[*FastFHIR::FieldKeys::Registry[field.registry_index]];
+        } else {
+            throw py::type_error("FastFHIR: AST path elements must be Field objects or integers.");
+        }
+    }
+    
+    return current_bridge;
+}
+
 PYBIND11_MODULE(_core, m) {
     m.doc() = "FastFHIR core C++ engine.";
+
 
     // =====================================================================
     // 1. Enums
@@ -120,13 +199,14 @@ PYBIND11_MODULE(_core, m) {
         .def("view", &Memory::view);
 
     // =====================================================================
-    // 3. Object Proxies (Node / ObjectHandle)
+    // 3. Object Proxies (Node / ObjectHandle / MutableEntry)
     // =====================================================================
     
     // Unified StreamNode wrapping ObjectHandle
     py::class_<ObjectHandle>(m, "StreamNode")
         .def_property_readonly("offset", &ObjectHandle::offset)
         .def_property_readonly("recovery_tag", &ObjectHandle::recovery)
+        .def("is_array", &ObjectHandle::is_array)
         
         // Enforce the use of Field Enums rather than strings for O(1) safety
         .def("__getitem__", [](const ObjectHandle& self, const std::string& key) -> py::object {
@@ -134,80 +214,104 @@ PYBIND11_MODULE(_core, m) {
         })
         
         // -----------------------------------------------------------------
-        // READ PATH: Pure Node Traversal
+        // READ PATH: Deep AST Traversal
         // -----------------------------------------------------------------
-        .def("__getitem__", [](const ObjectHandle& self, const PythonFieldProxy& field) -> py::object {
+        .def("__getitem__", [](const ObjectHandle& self, py::object ast_node) -> py::object {
+            if (!py::hasattr(ast_node, "path")) {
+                throw py::type_error("FastFHIR: Bracket notation strictly requires an ASTNode (e.g., bundle[Bundle.ENTRY[0]]).");
+            }
+            py::tuple path = ast_node.attr("path").cast<py::tuple>();
+            return py::cast(resolve_ast_path(self, path));
+        })
+        
+        // -----------------------------------------------------------------
+        // WRITE PATH: Deep AST Assignment
+        // -----------------------------------------------------------------
+        .def("__setitem__", [](ObjectHandle& self, py::object ast_node, py::object value) {
+            if (!py::hasattr(ast_node, "path")) {
+                throw py::type_error("FastFHIR: Bracket notation strictly requires an ASTNode.");
+            }
+            py::tuple path = ast_node.attr("path").cast<py::tuple>();
+            
+            MutableEntry leaf_entry = resolve_ast_path(self, path);
+            py::handle last_step = path[path.size() - 1];
+            
+            if (py::isinstance<PythonFieldProxy>(last_step)) {
+                auto field = last_step.cast<PythonFieldProxy>();
+                const auto& key = *FastFHIR::FieldKeys::Registry[field.registry_index];
+                
+                py::tuple parent_path = path[py::slice(0, path.size() - 1, 1)];
+                ObjectHandle parent_handle = parent_path.empty() ? self : resolve_ast_path(self, parent_path).as_handle();
+                
+                assign_py_obj(leaf_entry, value, parent_handle, key);
+            } 
+            else {
+                // If appending to an array index, there is no JSON dictionary fallback
+                ObjectHandle dummy_parent = self; 
+                FF_FieldKey dummy_key;
+                assign_py_obj(leaf_entry, value, dummy_parent, dummy_key);
+            }
+        });
+
+    // Mirror Class for MutableEntry to allow deep chaining
+    py::class_<MutableEntry>(m, "MutableEntry")
+        .def("offset", &MutableEntry::offset)
+        
+        // Read Chaining
+        .def("__getitem__", [](const MutableEntry& self, const PythonFieldProxy& field) -> py::object {
             if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) throw py::index_error();
             const auto& key = *FastFHIR::FieldKeys::Registry[field.registry_index];
+            return py::cast(self[key]);
+        })
+        // Read Chaining via AST
+        .def("__getitem__", [](const MutableEntry& self, py::object ast_node) -> py::object {
+            if (!py::hasattr(ast_node, "path")) throw py::type_error("FastFHIR: Bracket notation strictly requires an ASTNode.");
+            py::tuple path = ast_node.attr("path").cast<py::tuple>();
+            return py::cast(resolve_ast_path(self.as_handle(), path));
+        })
+        
+        // Write Chaining via AST
+        .def("__setitem__", [](const MutableEntry& self, py::object ast_node, py::object value) {
+            if (!py::hasattr(ast_node, "path")) throw py::type_error("FastFHIR: Bracket notation strictly requires an ASTNode.");
+            py::tuple path = ast_node.attr("path").cast<py::tuple>();
             
-            // 1. Read-only extraction via Node engine
-            Node child = self.as_node()[key];
+            ObjectHandle self_elevated = self.as_handle();
+            MutableEntry leaf_entry = resolve_ast_path(self_elevated, path);
+            py::handle last_step = path[path.size() - 1];
+            
+            if (py::isinstance<PythonFieldProxy>(last_step)) {
+                auto field = last_step.cast<PythonFieldProxy>();
+                const auto& key = *FieldKeys::Registry[field.registry_index];
+                
+                py::tuple parent_path = path[py::slice(0, path.size() - 1, 1)];
+                ObjectHandle parent_handle = parent_path.empty() ? self_elevated : resolve_ast_path(self_elevated, parent_path).as_handle();
+                
+                assign_py_obj(leaf_entry, value, parent_handle, key);
+            } else {
+                ObjectHandle dummy_parent = self_elevated; 
+                FF_FieldKey dummy_key;
+                assign_py_obj(leaf_entry, value, dummy_parent, dummy_key);
+            }
+        })
+        
+        // Final evaluation to extract native types from the bridge
+        .def("value", [](const MutableEntry& self) -> py::object {
+            Node child = self.as_node();
             if (child.is_empty()) return py::none();
 
-            // 2. Delegate to Node::as<T>() for safe casting
             switch (child.kind()) {
                 case FF_FIELD_BOOL:     return py::bool_(child.as<bool>());
                 case FF_FIELD_UINT32:   return py::int_(child.as<uint32_t>());
                 case FF_FIELD_FLOAT64:  return py::float_(child.as<double>());
                 case FF_FIELD_STRING:   return py::str(child.as<std::string_view>());
-                
-                // 3. Elevate structured data to a MutableHandle via the entry proxy
                 case FF_FIELD_BLOCK:   
                 case FF_FIELD_ARRAY:   
                 case FF_FIELD_CODE: {
-                    ObjectHandle child = self[key].as_handle();
-                    if (child.offset() == FF_NULL_OFFSET) return py::none();
-                    return py::cast(child);
+                    ObjectHandle elevated = self.as_handle();
+                    if (elevated.offset() == FF_NULL_OFFSET) return py::none();
+                    return py::cast(elevated);
                 }
-                
-                default:
-                    return py::none();
-            }
-        })
-        
-        // -----------------------------------------------------------------
-        // WRITE PATH: MutableEntry Routing
-        // -----------------------------------------------------------------
-        .def("__setitem__", [](ObjectHandle& self, const PythonFieldProxy& field, py::object value) {
-            if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) throw py::index_error();
-            const auto& key = *FastFHIR::FieldKeys::Registry[field.registry_index];
-            
-            // Generate the bridge
-            MutableEntry entry = self[key]; 
-
-            // 1. Inline Primitives
-            
-            if (key.kind != FF_FIELD_BLOCK && key.kind != FF_FIELD_ARRAY && key.kind != FF_FIELD_STRING) {
-                if (py::isinstance<py::bool_>(value)) {
-                    entry.assign_inline(value.cast<bool>());
-                } else if (py::isinstance<py::int_>(value)) {
-                    entry.assign_inline(value.cast<uint32_t>());
-                } else if (py::isinstance<py::float_>(value)) {
-                    entry.assign_inline(value.cast<double>());
-                } else {
-                    throw py::type_error("Expected a boolean, integer, or float for this inline field.");
-                }
-                return;
-            }
-
-            // 2. Pointer-Backed Fields
-            if (py::isinstance<py::str>(value)) {
-                entry = value.cast<std::string_view>(); 
-            } 
-            else if (py::isinstance<py::dict>(value) || py::isinstance<py::list>(value)) {
-                py::module_ json = py::module_::import("json");
-                std::string json_string = py::cast<std::string>(json.attr("dumps")(value));
-                
-                Ingest::Ingestor ingestor; 
-                ObjectHandle mutable_self = self;
-                FF_Result res = ingestor.insert_at_field(mutable_self, key, json_string);
-                
-                if (res.code != FF_SUCCESS) throw std::runtime_error(res.message);
-            } 
-            else if (py::isinstance<ObjectHandle>(value)) {
-                entry = value.cast<ObjectHandle>();
-            } else {
-                throw py::type_error("Unsupported Python type for FastFHIR assignment.");
+                default: return py::none();
             }
         });
 
@@ -216,7 +320,7 @@ PYBIND11_MODULE(_core, m) {
     // =====================================================================
     py::class_<Builder>(m, "Stream")
         .def(py::init([](const Memory& memory, FHIRVersion fhir_version) {
-            return std::make_unique<Builder>(memory, static_cast<uint16_t>(fhir_version));
+            return std::make_unique<Builder>(memory, static_cast<FHIR_VERSION>(fhir_version));
         }), 
         py::arg("memory"), 
         py::arg("fhir_version") = FHIRVersion::R5)

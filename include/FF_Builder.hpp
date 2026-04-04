@@ -57,12 +57,12 @@ public:
     // and patch the pointer simultaneously!
     template <typename T_Data>
     Offset operator=(const T_Data& data);
-    
-    // Pass through to retrieve a mutable entry for an array
-    
 
     // 1. Implicit Conversion
+    // 1. Implicitly decay to a read-only Node for getters
+    operator Node() const;
     operator ObjectHandle() const;
+    
 
     // 2. Pass-through Read Access
     Node as_node() const;
@@ -287,6 +287,7 @@ public:
 // INLINE TEMPLATE IMPLEMENTATIONS
 // =====================================================================
 // 1. Implicit Conversion
+inline MutableEntry::operator Node() const { return as_node(); }
 inline MutableEntry::operator ObjectHandle() const { return as_handle(); }
 inline Node MutableEntry::as_node() const { return as_handle().as_node(); }
 inline Offset MutableEntry::offset() const { return as_handle().offset(); }

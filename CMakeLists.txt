@@ -365,13 +365,13 @@ if (FASTFHIR_BUILD_PYTHON_BINDINGS)
 
     # 1. Install the core __init__.py from the new python directory
     install(
-        FILES ${CMAKE_CURRENT_SOURCE_DIR}/python/__init__.py 
+        FILES ${CMAKE_CURRENT_SOURCE_DIR}/python/fastFHIR/__init__.py 
         DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR}/fastfhir
     )
 
-    # 2. Install the generated fields.py into the package folder
+    # 2. Install the generated AST directory (fields/) into the package folder
     install(
-        FILES ${CMAKE_CURRENT_SOURCE_DIR}/generated_src/fields.py
+        DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/generated_src/python/fields
         DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR}/fastfhir
     )
 
