@@ -1196,16 +1196,22 @@ def emit_python_ast(master_blocks, block_key_defs, token_registry, output_dir="g
     os.makedirs(target_dir, exist_ok=True)
     
     # 1. Base AST Node: Handles array indexing and polymorphic casting
+# 1. Base AST Nodes: Split between Scalars/Structs and Arrays
     with open(os.path.join(target_dir, "base.py"), "w") as f:
         f.write("class ASTNode:\n")
         f.write("    def __init__(self, current_path=None):\n")
         f.write("        self.path = current_path or tuple()\n")
+        f.write("    def cast(self, target_class):\n")
+        f.write("        return target_class(self.path)\n\n")
+
+        f.write("class ASTArrayNode(ASTNode):\n")
+        f.write("    def __init__(self, current_path, item_class):\n")
+        f.write("        super().__init__(current_path)\n")
+        f.write("        self.item_class = item_class\n")
         f.write("    def __getitem__(self, index):\n")
         f.write("        if isinstance(index, int):\n")
-        f.write("            return self.__class__(self.path + (index,))\n")
+        f.write("            return self.item_class(self.path + (index,))\n")
         f.write("        raise TypeError('FastFHIR: Only integer indexing is allowed for arrays.')\n")
-        f.write("    def cast(self, target_class):\n")
-        f.write("        return target_class(self.path)\n")
 
     # 2. Emit the Strongly-Typed Path Builders
     for path, layout in block_key_defs:
@@ -1234,13 +1240,20 @@ def emit_python_ast(master_blocks, block_key_defs, token_registry, output_dir="g
                 
                 # Check if this field points to another known FHIR block
                 target_path = f_def.get('resolved_path', f"{path}.{orig_name}")
+                is_array = f_def.get('is_array', False)
+                
+                target_class_name = "ASTNode"
                 if target_path in master_blocks:
-                    target_class = target_path.replace('.', '_').upper()
-                    f.write(f"        from .{target_class.lower()} import {target_class}_PATH\n")
-                    f.write(f"        return {target_class}_PATH(self.path + (tok,))\n")
+                    base_name = target_path.replace('.', '_')
+                    target_class_name = f"{base_name.upper()}_PATH"
+                    f.write(f"        from .{base_name.lower()} import {target_class_name}\n")
+                
+                # STUB: Enforce array geometry at compile time
+                if is_array:
+                    f.write(f"        from .base import ASTArrayNode\n")
+                    f.write(f"        return ASTArrayNode(self.path + (tok,), {target_class_name})\n")
                 else:
-                    # Leaf nodes and primitives fallback to the generic ASTNode
-                    f.write(f"        return ASTNode(self.path + (tok,))\n")
+                    f.write(f"        return {target_class_name}(self.path + (tok,))\n")
 
 # =====================================================================
 # 7. MASTER BUILD ORCHESTRATOR

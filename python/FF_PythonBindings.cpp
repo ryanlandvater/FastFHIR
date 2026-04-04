@@ -2,6 +2,7 @@
 #include <pybind11/stl.h>
 #include <pybind11/functional.h>
 #include <pybind11/eval.h>
+#include <pybind11/stl/filesystem.h>
 
 #include "FF_Memory.hpp"
 #include "FF_Builder.hpp"
@@ -207,6 +208,13 @@ PYBIND11_MODULE(_core, m) {
         .def_property_readonly("offset", &ObjectHandle::offset)
         .def_property_readonly("recovery_tag", &ObjectHandle::recovery)
         .def("is_array", &ObjectHandle::is_array)
+        .def("__bool__", [](const ObjectHandle& self) { 
+            return self.offset() != FF_NULL_OFFSET; 
+        })
+        .def("__len__", [](const ObjectHandle& self) -> size_t {
+            if (!self.is_array()) return 0;
+            return self.as_node().size();
+        })
         
         // Enforce the use of Field Enums rather than strings for O(1) safety
         .def("__getitem__", [](const ObjectHandle& self, const std::string& key) -> py::object {
@@ -256,6 +264,17 @@ PYBIND11_MODULE(_core, m) {
     // Mirror Class for MutableEntry to allow deep chaining
     py::class_<MutableEntry>(m, "MutableEntry")
         .def("offset", &MutableEntry::offset)
+        .def("__bool__", [](const MutableEntry& self) { 
+            return !self.as_node().is_empty(); 
+        })
+        .def_property_readonly("is_array", [](const MutableEntry& self) {
+            // Evaluates the raw node kind without elevating
+            return self.as_node().kind() == FF_FIELD_ARRAY; 
+        })
+        .def("__len__", [](const MutableEntry& self) -> size_t {
+            if (self.as_node().kind() != FF_FIELD_ARRAY) return 0;
+            return self.as_node().size(); // NOTE: Adjust to your exact C++ array length method
+        })
         
         // Read Chaining
         .def("__getitem__", [](const MutableEntry& self, const PythonFieldProxy& field) -> py::object {
@@ -268,6 +287,15 @@ PYBIND11_MODULE(_core, m) {
             if (!py::hasattr(ast_node, "path")) throw py::type_error("FastFHIR: Bracket notation strictly requires an ASTNode.");
             py::tuple path = ast_node.attr("path").cast<py::tuple>();
             return py::cast(resolve_ast_path(self.as_handle(), path));
+        })
+        .def("__getitem__", [](const MutableEntry& self, size_t index) -> py::object {
+            ObjectHandle elevated = self.as_handle();
+            
+            // Bounds check is REQUIRED for Python iterators to terminate
+            if (index >= elevated.as_node().size()) {
+                throw py::index_error("FastFHIR: Array index out of bounds.");
+            }
+            return py::cast(self[index]);
         })
         
         // Write Chaining via AST

@@ -112,7 +112,7 @@ public:
     MutableEntry operator[](FF_FieldKey key) const;
     
     // Checks if the given object handle represents an FF_ARRAY
-    bool is_array() const;
+    bool is_array() const { return m_recovery == RECOVER_FF_ARRAY; }
     
     // Spawns a mutable bridge for an array entry
     MutableEntry operator[](size_t index) const;
@@ -306,6 +306,23 @@ Offset MutableEntry::operator=(const T_Data& data) {
     m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child_offset);
     
     return child_offset;
+}
+
+template <typename T_Data>
+requires std::is_arithmetic_v<T_Data>
+inline void MutableEntry::assign_inline(T_Data value) {
+    // 1. Read the state to prevent memory corruption
+    Node current_state = as_node();
+    
+    if (!current_state.is_empty() && !current_state.is_scalar()) {
+        throw std::runtime_error("FastFHIR: Cannot inline assign to a complex pointer slot.");
+    }
+
+    // 2. Write directly to the MutableEntry's known V-Table offset
+    uint8_t* ptr = m_builder->memory().base() + this->offset();
+    
+    // 3. Safe unaligned access (compiles to direct hardware STORE instructions)
+    std::memcpy(ptr, &value, sizeof(T_Data));
 }
 
 inline Node ObjectHandle::as_node() const {
