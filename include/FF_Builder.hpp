@@ -100,6 +100,20 @@ public:
         if (offset != FF_NULL_OFFSET && recovery == FF_RECOVER_UNDEFINED)
             throw std::invalid_argument("FastFHIR: Cannot instantiate an ObjectHandle with valid offset but with an UNDEFINED recovery tag.");
     }
+    /**
+     * @brief Authorized bridge to elevate a read-only Node into a writable Handle.
+     */
+    ObjectHandle(Builder* builder, const Node& node)
+        : m_builder(builder) {
+        if (node.is_empty()) {
+            m_offset = FF_NULL_OFFSET;
+            m_recovery = FF_RECOVER_UNDEFINED;
+        } else {
+            // Reaching into the protected/private internals of Node
+            m_offset = node.m_node_offset;
+            m_recovery = node.m_recovery; 
+        }
+    }
     
     Builder* get_builder() const { return m_builder; }
     Offset offset() const { return m_offset; }
@@ -157,7 +171,7 @@ public:
     /**
      * @brief Constructs a builder bound to an existing Virtual Memory Arena.
      * 
-    * @param memory Shared pointer to an initialized FF_Memory providing the arena for building or modifying the stream.
+     * @param memory Shared pointer to an initialized FF_Memory providing the arena for building or modifying the stream.
      * @param version FHIR version to target for schema-specific encoding rules (default: R5).
      */
     explicit Builder(const Memory& memory, FHIR_VERSION fhir_revision = FHIR_VERSION_R5);

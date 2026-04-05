@@ -1195,8 +1195,7 @@ def emit_python_ast(master_blocks, block_key_defs, token_registry, output_dir="g
     target_dir = os.path.join(output_dir, "python", "fields")
     os.makedirs(target_dir, exist_ok=True)
     
-    # 1. Base AST Node: Handles array indexing and polymorphic casting
-# 1. Base AST Nodes: Split between Scalars/Structs and Arrays
+    # 1. Base AST Nodes: Split between Scalars/Structs and Arrays
     with open(os.path.join(target_dir, "base.py"), "w") as f:
         f.write("class ASTNode:\n")
         f.write("    def __init__(self, current_path=None):\n")
@@ -1254,6 +1253,21 @@ def emit_python_ast(master_blocks, block_key_defs, token_registry, output_dir="g
                     f.write(f"        return ASTArrayNode(self.path + (tok,), {target_class_name})\n")
                 else:
                     f.write(f"        return {target_class_name}(self.path + (tok,))\n")
+
+    # 3. Auto-Generate __init__.py for Clean Namespace Imports
+    init_path = os.path.join(target_dir, "__init__.py")
+    with open(init_path, "w") as f:
+        f.write('"""Auto-generated FastFHIR AST Namespace"""\n\n')
+        f.write("from .base import ASTNode, ASTArrayNode\n\n")
+        
+        for block_name in master_blocks.keys():
+            # Only alias top-level resources (ignore nested structs like Patient.contact)
+            if '.' not in block_name:
+                module_name = block_name.lower()
+                class_name = f"{block_name.upper()}_PATH"
+                
+                # Aliases BUNDLE_PATH to Bundle, PATIENT_PATH to Patient
+                f.write(f"from .{module_name} import {class_name} as {block_name}\n")
 
 # =====================================================================
 # 7. MASTER BUILD ORCHESTRATOR

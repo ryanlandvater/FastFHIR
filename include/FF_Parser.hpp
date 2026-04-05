@@ -133,6 +133,7 @@ public:
  * 
  */
 class Node {
+    friend class ObjectHandle;
     const BYTE*   m_base = nullptr;
     Size          m_size = 0;
     uint32_t      m_version = 0;

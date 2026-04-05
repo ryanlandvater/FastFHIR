@@ -25,6 +25,56 @@ struct PythonFieldProxy {
 };
 
 // =====================================================================
+// Python-only adapter to manage C++ memory lifecycle deterministically
+// =====================================================================
+struct PyMemory {
+    std::optional<Memory> m_core;
+
+    PyMemory(size_t capacity, const std::string& shm_name) {
+        m_core = Memory::create(capacity, shm_name);
+    }
+
+    PyMemory(const std::string& filepath, size_t capacity) {
+        m_core = Memory::createFromFile(filepath, capacity);
+    }
+
+    void close() {
+        m_core.reset(); // Instantly destroys the C++ Memory object and drops the shared_ptr to 0
+    }
+
+    // Guard against "zombie" access
+    const Memory& get() const {
+        if (!m_core) {
+            throw py::value_error("I/O operation on closed FastFHIR Memory object.");
+        }
+        return *m_core;
+    }
+};
+
+struct PyStream {
+    std::unique_ptr<Builder> m_builder;
+
+    PyStream(const PyMemory& mem, FHIR_VERSION fhir_version) {
+        // Extracts the raw C++ Memory object from PyMemory safely
+        m_builder = std::make_unique<Builder>(mem.get(),fhir_version);
+    }
+
+    void close() {
+        m_builder.reset(); // Destroys the Builder, dropping the final shared_ptr instantly
+    }
+
+    Builder& get() {
+        if (!m_builder) throw py::value_error("I/O operation on closed FastFHIR Stream.");
+        return *m_builder;
+    }
+    
+    const Builder& get() const {
+        if (!m_builder) throw py::value_error("I/O operation on closed FastFHIR Stream.");
+        return *m_builder;
+    }
+};
+
+// =====================================================================
 // Type-Safe Python to C++ Assignment Dispatcher
 // =====================================================================
 void assign_py_obj(MutableEntry& entry, py::handle obj, ObjectHandle& parent_handle, const FF_FieldKey& key) {
@@ -121,13 +171,9 @@ PYBIND11_MODULE(_core, m) {
         .value("HL7_V3", Ingest::SourceType::HL7_V3)
         .export_values();
 
-    enum class FHIRVersion : uint16_t {
-        R4 = FHIR_VERSION_R4,
-        R5 = FHIR_VERSION_R5
-    };
-    py::enum_<FHIRVersion>(m, "FhirVersion")
-        .value("R4", FHIRVersion::R4)
-        .value("R5", FHIRVersion::R5)
+    py::enum_<FHIR_VERSION>(m, "FhirVersion")
+        .value("R4", FHIR_VERSION_R4)
+        .value("R5", FHIR_VERSION_R5)
         .export_values();
 
     // ---------------------------------------------------------
@@ -180,13 +226,16 @@ PYBIND11_MODULE(_core, m) {
             // Automatically handled by C++ RAII destructor
         });
 
-    // Memory API
-    py::class_<Memory>(m, "Memory")
-        .def(py::init<>())
-        .def_static("create", &Memory::create, 
-                    py::arg("shm_name") = "", 
+    // =====================================================================
+    // Memory Arena (Python Adapter)
+    // =====================================================================
+    py::class_<PyMemory>(m, "Memory")
+        .def_static("create", [](size_t capacity, const std::string& shared_memory_name) {
+            return std::make_unique<PyMemory>(capacity, shared_memory_name); },
+                    py::arg("shared_memory_name") = "", 
                     py::arg("capacity") = 4ULL * 1024 * 1024 * 1024)
-        .def_static("create_from_file", &Memory::createFromFile, 
+        .def_static("create_from_file", [](const std::string& filepath, size_t capacity) {
+            return std::make_unique<PyMemory>(filepath, capacity); }, 
                     py::arg("filepath"), 
                     py::arg("capacity") = 4ULL * 1024 * 1024 * 1024)
         .def("try_acquire_stream", [](Memory& mem) {
@@ -194,10 +243,15 @@ PYBIND11_MODULE(_core, m) {
             if (!sh) throw std::runtime_error("Stream lock currently held by another socket/thread.");
             return std::move(*sh);
         }, "Acquires the exclusive network ingestion lock.")
-        .def_property_readonly("capacity", &Memory::capacity)
-        .def_property_readonly("name", &Memory::name)
-        .def_property_readonly("size", &Memory::size)
-        .def("view", &Memory::view);
+        .def("close", &PyMemory::close, "Explicitly unmaps the file from virtual memory.")
+        .def("__enter__", [](PyMemory& self) -> PyMemory& { return self; })
+        .def("__exit__", [](PyMemory& self, py::object exc_type, py::object exc_val, py::object exc_tb) {
+            self.close(); // Deterministic unmap. Survives Jupyter cell re-runs perfectly.
+        })
+        .def_property_readonly("capacity", [](const PyMemory& self) { return self.get().capacity(); })
+        .def_property_readonly("name", [](const PyMemory& self) { return self.get().name(); })
+        .def_property_readonly("size", [](const PyMemory& self) { return self.get().size(); })
+        .def("view", [](const PyMemory& self) { return self.get().view(); });
 
     // =====================================================================
     // 3. Object Proxies (Node / ObjectHandle / MutableEntry)
@@ -346,37 +400,50 @@ PYBIND11_MODULE(_core, m) {
     // =====================================================================
     // 4. Stream (Builder Wrapper) & Context Manager
     // =====================================================================
-    py::class_<Builder>(m, "Stream")
-        .def(py::init([](const Memory& memory, FHIRVersion fhir_version) {
-            return std::make_unique<Builder>(memory, static_cast<FHIR_VERSION>(fhir_version));
-        }), 
-        py::arg("memory"), 
-        py::arg("fhir_version") = FHIRVersion::R5)
-        .def("__enter__", [](Builder& b) -> Builder& { return b; })
-        .def("__exit__", [](Builder& b, py::object exc_type, py::object exc_val, py::object exc_tb) {})
-        .def("set_root", &Builder::set_root)
+    py::class_<PyStream>(m, "Stream")
+        .def(py::init<const PyMemory&, FHIR_VERSION>(), 
+             py::arg("memory"), py::arg("fhir_version") = FHIR_VERSION_R5)
         
+        .def("__enter__", [](PyStream& self) -> PyStream& { return self; })
+        .def("__exit__", [](PyStream& self, py::object exc_type, py::object exc_val, py::object exc_tb) {
+            self.close(); // Deterministically drops the inner memory reference
+        })
+
+        // Maps seamlessly to native Python: stream.root = handle
+        .def_property("root", 
+            [](PyStream& self) { return ObjectHandle(&self.get(), self.get().query().root()); }, 
+            [](PyStream& self, const ObjectHandle& handle) { self.get().set_root(handle); },
+            "Gets or sets the root StreamNode for this Memory Arena."
+        )
+        
+        .def("query", [](const PyStream& self) { return self.get().query(); }, "Returns a read-only Parser snapshot.")
+
+        // =====================================================================
+        // Unified Read/Write API (Proxying the Parser)
+        // =====================================================================
+        .def_property_readonly("version", [](const PyStream& self) { return self.get().query().version(); })
+        .def_property_readonly("root_type", [](const PyStream& self) { return self.get().query().root_type(); })
+        .def_property_readonly("checksum", [](const PyStream& self) { return self.get().query().checksum(); })
+        
+        .def("to_json", [](const PyStream& self) {
+            std::ostringstream oss;
+            self.get().query().print_json(oss);
+            return oss.str();
+        }, "Serializes the current FastFHIR stream to a minified FHIR JSON string.")
+
         // Finalize now accepts a Python callable
-        .def("finalize", [](Builder& b, FF_Checksum_Algorithm algo, py::object py_hasher) {
+        .def("finalize", [](PyStream& self, FF_Checksum_Algorithm algo, py::object py_hasher) {
             Builder::HashCallback cpp_hasher = nullptr;
-            
             if (!py_hasher.is_none()) {
-                // Wrap the Python hash function in a C++ lambda
                 cpp_hasher = [py_hasher](const unsigned char* data, Size size) -> std::vector<BYTE> {
-                    // 1. Create a zero-copy memoryview of the VMA for Python
                     py::memoryview view = py::memoryview::from_memory(data, size);
-                    
-                    // 2. Execute the Python callback (e.g., hashlib.sha256)
                     py::bytes result = py_hasher(view);
-                    
-                    // 3. Convert the resulting bytes back to C++
                     std::string_view str_view = result;
                     return std::vector<BYTE>(str_view.begin(), str_view.end());
                 };
             }
-            return b.finalize(algo, cpp_hasher); 
+            return self.get().finalize(algo, cpp_hasher); 
         });
-    
     // =====================================================================
     // 5. Ingestor
     // =====================================================================
