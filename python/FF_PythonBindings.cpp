@@ -9,6 +9,7 @@
 #include "FF_Parser.hpp"
 #include "FF_Ingestor.hpp"
 #include "FF_Primitives.hpp"
+#include "FF_Utilities.hpp" 
 
 // The auto-generated Registry
 #include "FF_AllTypes.hpp"
@@ -120,35 +121,29 @@ void assign_py_obj(MutableEntry& entry, py::handle obj, ObjectHandle& parent_han
 // =====================================================================
 MutableEntry resolve_ast_path(ObjectHandle root, py::tuple path) {
     if (path.empty()) throw py::value_error("FastFHIR: Cannot traverse an empty AST path.");
-    
-    // Initialize the bridge from the root handle
-    MutableEntry current_bridge = [&]() {
-        py::handle first = path[0];
-        if (py::isinstance<py::int_>(first)) {
-            return root[first.cast<size_t>()];
-        } else if (py::isinstance<PythonFieldProxy>(first)) {
-            auto field = first.cast<PythonFieldProxy>();
-            if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) throw py::index_error();
-            return root[*FastFHIR::FieldKeys::Registry[field.registry_index]];
-        }
-        throw py::type_error("FastFHIR: AST path elements must be Field objects or integers.");
-    }();
 
-    // Loop through the remaining path elements natively in C++
-    for (size_t i = 1; i < path.size(); ++i) {
-        py::handle item = path[i];
+    auto get_next_leaf = [](ObjectHandle parent, py::handle item) -> MutableEntry {
         if (py::isinstance<py::int_>(item)) {
-            current_bridge = current_bridge[item.cast<size_t>()];
+            return parent[item.cast<size_t>()];
         } else if (py::isinstance<PythonFieldProxy>(item)) {
             auto field = item.cast<PythonFieldProxy>();
-            if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) throw py::index_error();
-            current_bridge = current_bridge[*FastFHIR::FieldKeys::Registry[field.registry_index]];
-        } else {
-            throw py::type_error("FastFHIR: AST path elements must be Field objects or integers.");
+            if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) {
+                throw py::index_error("FastFHIR: Field registry index out of bounds.");
+            }
+            return parent[*FastFHIR::FieldKeys::Registry[field.registry_index]];
         }
-    }
+        throw py::type_error("FastFHIR: AST path elements must be Field objects or integers.");
+    };
+
+    ObjectHandle current_parent = root;
     
-    return current_bridge;
+    // Traverse intermediate nodes
+    for (size_t i = 0; i < path.size() - 1; ++i) {
+        current_parent = get_next_leaf(current_parent, path[i]).as_handle();
+    }
+
+    // Return the final leaf
+    return get_next_leaf(current_parent, path[path.size() - 1]);
 }
 
 PYBIND11_MODULE(_core, m) {
@@ -262,6 +257,21 @@ PYBIND11_MODULE(_core, m) {
         .def_property_readonly("offset", &ObjectHandle::offset)
         .def_property_readonly("recovery_tag", &ObjectHandle::recovery)
         .def("is_array", &ObjectHandle::is_array)
+        .def("to_json", [](const ObjectHandle& self) {
+            std::ostringstream oss;
+            self.as_node().print_json(oss);
+            return oss.str();
+        }, "Serializes the current FastFHIR stream node to a minified FHIR JSON string.")
+        .def("__str__", [](const ObjectHandle& self) {
+            std::ostringstream oss;
+            self.as_node().print_json(oss);
+            return oss.str();
+        })
+        .def("__repr__", [](const ObjectHandle& self) {
+            std::ostringstream oss;
+            self.as_node().print_json(oss);
+            return oss.str();
+        })
         .def("__bool__", [](const ObjectHandle& self) { 
             return self.offset() != FF_NULL_OFFSET; 
         })
@@ -318,6 +328,21 @@ PYBIND11_MODULE(_core, m) {
     // Mirror Class for MutableEntry to allow deep chaining
     py::class_<MutableEntry>(m, "MutableEntry")
         .def("offset", &MutableEntry::offset)
+        .def("to_json", [](const MutableEntry& self) {
+            std::ostringstream oss;
+            self.as_node().print_json(oss);
+            return oss.str();
+        }, "Serializes the current MutableEntry node to a minified FHIR JSON string.")
+        .def("__str__", [](const MutableEntry& self) {
+            std::ostringstream oss;
+            self.as_node().print_json(oss);
+            return oss.str();
+        })
+        .def("__repr__", [](const MutableEntry& self) {
+            std::ostringstream oss;
+            self.as_node().print_json(oss);
+            return oss.str();
+        })
         .def("__bool__", [](const MutableEntry& self) { 
             return !self.as_node().is_empty(); 
         })
@@ -385,15 +410,17 @@ PYBIND11_MODULE(_core, m) {
                 case FF_FIELD_BOOL:     return py::bool_(child.as<bool>());
                 case FF_FIELD_UINT32:   return py::int_(child.as<uint32_t>());
                 case FF_FIELD_FLOAT64:  return py::float_(child.as<double>());
+                case FF_FIELD_CODE:     // Natively resolved by Node's string_view specialization
                 case FF_FIELD_STRING:   return py::str(child.as<std::string_view>());
+                
                 case FF_FIELD_BLOCK:   
-                case FF_FIELD_ARRAY:   
-                case FF_FIELD_CODE: {
+                case FF_FIELD_ARRAY: {
                     ObjectHandle elevated = self.as_handle();
                     if (elevated.offset() == FF_NULL_OFFSET) return py::none();
                     return py::cast(elevated);
                 }
-                default: return py::none();
+                default: 
+                    return py::none();
             }
         });
 
@@ -430,6 +457,16 @@ PYBIND11_MODULE(_core, m) {
             self.get().query().print_json(oss);
             return oss.str();
         }, "Serializes the current FastFHIR stream to a minified FHIR JSON string.")
+        .def("__str__", [](const PyStream& self) {
+            std::ostringstream oss;
+            self.get().query().print_json(oss);
+            return oss.str();
+        })
+        .def("__repr__", [](const PyStream& self) {
+            std::ostringstream oss;
+            self.get().query().print_json(oss);
+            return oss.str();
+        })
 
         // Finalize now accepts a Python callable
         .def("finalize", [](PyStream& self, FF_Checksum_Algorithm algo, py::object py_hasher) {

@@ -276,7 +276,7 @@ FF_Result FF_RESOURCE::validate_full(const BYTE* const __base) const noexcept {
     auto result = validate_offset(__base, type, recovery);
     if (result != FF_SUCCESS) return result;
 
-    uint16_t child_recovery = LOAD_U16(__base + __offset + FF_RESOURCE::PAYLOAD_RECOVERY);
+    uint16_t child_recovery = get_resource_type(__base);
     Offset child_off = LOAD_U64(__base + __offset + FF_RESOURCE::PAYLOAD_OFFSET);
 
     if (child_off == FF_NULL_OFFSET || child_off >= __size) {
@@ -286,7 +286,28 @@ FF_Result FF_RESOURCE::validate_full(const BYTE* const __base) const noexcept {
         FF_STRING s(child_off, __size, __version);
         return s.validate_full(__base);
     }
-    return {FF_WARNING, "FF_RESOURCE payload recovery is not yet supported for typed dispatch."};
+    if (child_recovery != FF_RECOVER_UNDEFINED) {
+        // Check if the child offset is within stream bounds
+        if (child_off + DATA_BLOCK::HEADER_SIZE > __size) {
+            return {FF_VALIDATION_FAILURE, "FF_RESOURCE payload extends beyond stream."};
+        }
+        
+        // Verify the child block's internal recovery tag matches what the wrapper claims it is
+        uint16_t actual_child_tag = LOAD_U16(__base + child_off + DATA_BLOCK::RECOVERY);
+        if (actual_child_tag != child_recovery) {
+            return {FF_VALIDATION_FAILURE, "FF_RESOURCE payload recovery tag mismatch."};
+        }
+        return {FF_SUCCESS, ""};
+    }
+    return {FF_VALIDATION_FAILURE, "FF_RESOURCE payload has an undefined recovery tag!"};
+}
+
+RECOVERY_TAG FF_RESOURCE::get_resource_type(const BYTE* const __base) const {
+    return static_cast<RECOVERY_TAG>(LOAD_U16(__base + __offset + FF_RESOURCE::PAYLOAD_RECOVERY));
+}
+
+Offset FF_RESOURCE::payload_offset(const BYTE* const __base) const {
+    return LOAD_U64(__base + __offset + FF_RESOURCE::PAYLOAD_OFFSET);
 }
 
 ResourceData FF_RESOURCE::read(const BYTE* const __base) const {

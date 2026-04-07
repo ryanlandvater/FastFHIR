@@ -43,7 +43,16 @@ ObjectHandle MutableEntry::as_handle() const
 
     // Because every FastFHIR block (Array, String, Struct) stores its tag at +8,
     // we can flawlessly discover the true type directly from the destination preamble.
-    RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + target + DATA_BLOCK::RECOVERY));
+    RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
+    (LOAD_U16(base + target + DATA_BLOCK::RECOVERY));
+
+    if (actual_tag == RECOVER_FF_RESOURCE) {
+        Offset payload_off = LOAD_U64(base + target + FF_RESOURCE::PAYLOAD_OFFSET);
+        if (payload_off != FF_NULL_OFFSET) {
+            target = payload_off;
+            actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + target + DATA_BLOCK::RECOVERY));
+        }
+    }
     
     return ObjectHandle(m_builder, target, actual_tag);
 }
@@ -102,27 +111,6 @@ MutableEntry ObjectHandle::operator[](size_t index) const
         FF_RECOVER_UNDEFINED
     );
 }
-//    // As you suggested: Look at the first entry to discover the array's schema tag
-//    RECOVERY_TAG array_element_tag = FF_RECOVER_UNDEFINED;
-//    if (array_block.entry_count(base) > 0) {
-//        if (array_kind == FF_ARRAY::INLINE_BLOCK) {
-//            array_element_tag = static_cast<RECOVERY_TAG>(LOAD_U16(entries_ptr + 8));
-//        } else if (array_kind == FF_ARRAY::OFFSET) {
-//            Offset first_target = LOAD_U64(entries_ptr);
-//            if (first_target != FF_NULL_OFFSET) {
-//                array_element_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + first_target + 8));
-//            }
-//        }
-//    }
-//
-//    size_t entry_vtable_offset = static_cast<size_t>(entries_ptr - (base + m_offset)) + (index * step);
-//
-//    return MutableEntry(
-//        m_builder,
-//        m_offset,
-//        entry_vtable_offset,
-//        array_element_tag // Enforces type-safety during assignment!
-//    );
 
 // =====================================================================
 // Constructor / Destructor

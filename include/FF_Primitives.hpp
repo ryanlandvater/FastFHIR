@@ -114,6 +114,7 @@ enum TYPE_SIZE : uint8_t
     TYPE_SIZE_FLOAT32 = 4,
     TYPE_SIZE_FLOAT64 = 8,
     TYPE_SIZE_OFFSET = 8,
+    TYPE_SIZE_RESOURCE = 10,
 };
 
 // =====================================================================
@@ -143,6 +144,7 @@ enum FF_FieldKind : uint16_t
     FF_FIELD_BOOL = 5,
     FF_FIELD_UINT32 = 6,
     FF_FIELD_FLOAT64 = 7,
+    FF_FIELD_RESOURCE = 8,
 };
 
 struct FF_FieldInfo
@@ -475,7 +477,15 @@ struct FF_EXPORT FF_RESOURCE : DATA_BLOCK
     explicit FF_RESOURCE(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
 
     FF_Result validate_full(const BYTE *const __base) const noexcept;
+    RECOVERY_TAG get_resource_type(const BYTE *const __base) const;
+    template <typename T_Block>
+    T_Block get_resource_as_type(const BYTE *const __base) const {
+        if (get_resource_type(__base) != T_Block::recovery)
+            return T_Block(FF_NULL_OFFSET, __size, __version);
+        return T_Block(payload_offset(__base), __size, __version); }
     ResourceData read(const BYTE *const __base) const;
+    private:
+    Offset payload_offset(const BYTE *const __base) const;
 };
 
 void STORE_FF_RESOURCE(BYTE *const __base, Offset entry_off, Offset &write_head, const ResourceData &data);

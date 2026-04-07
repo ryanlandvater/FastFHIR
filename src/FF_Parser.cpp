@@ -132,13 +132,18 @@ std::vector<Node> Node::entries() const {
             RECOVERY_TAG actual_recovery = m_child_recovery;
             FF_FieldKind child_kind = (m_child_recovery == FF_STRING::recovery) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
             
-            // Polymorphic Array Resolution with Validation
+            // --- THE AUTO-UNWRAP ---
             if (actual_recovery == RECOVER_FF_RESOURCE) {
-                actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + child_off + 8));
-                if (!FF_IsResourceTag(actual_recovery)) {
-                    out.push_back(Node()); // Safety check: invalid resource tag prevents garbage reads
+                child_off = LOAD_U64(m_base + child_off + FF_RESOURCE::PAYLOAD_OFFSET);
+                if (child_off == FF_NULL_OFFSET) {
+                    out.push_back(Node());
                     continue;
                 }
+                
+                // Read the actual payload's tag
+                actual_recovery = static_cast<RECOVERY_TAG>(
+                    LOAD_U16(m_base + child_off + DATA_BLOCK::RECOVERY)
+                );
             }
             
             out.push_back(Node(m_base, m_size, m_version, child_off, actual_recovery, child_kind));
@@ -157,10 +162,19 @@ std::vector<Node> Node::entries() const {
 Node Node::operator[](FF_FieldKey key) const {
     if (!is_object()) return {};
 
+    // --- 1. INHERITANCE-AWARE SCHEMA VALIDATION ---
+    // Because of the auto-unwrap at creation, m_recovery is guaranteed 
+    // to be the concrete payload type (e.g., RECOVER_FF_PATIENT).
     if (key.owner_recovery != FF_RECOVER_UNDEFINED &&
-        key.owner_recovery != m_recovery)
-        return {};
+        key.owner_recovery != m_recovery) {
+        
+        // Allow inherited base-class keys (Resource.id) to access valid resource payloads
+        if (!(key.owner_recovery == RECOVER_FF_RESOURCE && FF_IsResourceTag(m_recovery))) {
+            return {}; // Schema violation: Key doesn't match payload, and isn't a base key
+        }
+    }
 
+    // --- 2. DYNAMIC LOOKUP ---
     if (key.kind == FF_FIELD_UNKNOWN) {
         const std::string_view key_name = key.view();
         if (!key_name.empty()) 
@@ -170,41 +184,55 @@ Node Node::operator[](FF_FieldKey key) const {
 
     const Offset value_offset = m_node_offset + key.field_offset;
 
-    // 1. FAST PATH: Early exit if the field is empty (bypasses object creation entirely)
+    // --- 3. FAST PATH: EMPTY SLOT ---
     if (FF_IsFieldEmpty(m_base, value_offset, key.kind)) {
         return {};
     }
 
-    // 2. We now guarantee the data exists. Switch directly to the correct instantiation.
+    // --- 4. AUTOMATIC INDIRECTION & NODE CONSTRUCTION ---
     switch (key.kind) {
-        case FF_FIELD_STRING: {
-            const Offset child_offset = LOAD_U64(m_base + value_offset);
-            return Node(m_base, m_size, m_version, child_offset, FF_STRING::recovery, FF_FIELD_STRING);
-        }
-        case FF_FIELD_ARRAY: {
-            const Offset child_offset = LOAD_U64(m_base + value_offset);
-            return Node(m_base, m_size, m_version, child_offset, FF_ARRAY::recovery, FF_FIELD_ARRAY,
-                        key.child_recovery, key.array_entries_are_offsets != 0);
-        }
-        case FF_FIELD_BLOCK: {
-            const Offset child_offset = LOAD_U64(m_base + value_offset);
-            RECOVERY_TAG actual_recovery = key.child_recovery;
-            
-            // Polymorphic Resolution with Validation
-            if (actual_recovery == RECOVER_FF_RESOURCE) {
-                actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + child_offset + 8)); 
-                if (!FF_IsResourceTag(actual_recovery)) return {}; // Safety check: invalid resource tag
-            }
-            
-            return Node(m_base, m_size, m_version, child_offset, actual_recovery, FF_FIELD_BLOCK);
-        }
-        case FF_FIELD_CODE:
+        
+        // -- INLINE SCALARS (Zero Indirection) --
         case FF_FIELD_BOOL:
         case FF_FIELD_UINT32:
         case FF_FIELD_FLOAT64:
-            // Inline scalar values
-            return Node::scalar(m_base, m_size, m_version, m_node_offset, value_offset, key.kind);
-            
+        case FF_FIELD_CODE: 
+            return Node::scalar(
+                m_base, m_size, m_version, 
+                m_node_offset, value_offset, key.kind
+            );
+
+        // -- COMPLEX TYPES (Automatic Indirection) --
+        case FF_FIELD_BLOCK:
+        case FF_FIELD_ARRAY:
+        case FF_FIELD_STRING: {
+            Offset child_offset = LOAD_U64(m_base + value_offset);
+            if (child_offset == FF_NULL_OFFSET) return {};
+
+            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
+                LOAD_U16(m_base + child_offset + DATA_BLOCK::RECOVERY)
+            );
+
+            // -- THE AUTO-UNWRAP --
+            // If the pointer hit a lock-free VTable wrapper, hop instantly to the payload.
+            if (actual_tag == RECOVER_FF_RESOURCE) {
+                child_offset = LOAD_U64(m_base + child_offset + FF_RESOURCE::PAYLOAD_OFFSET);
+                if (child_offset == FF_NULL_OFFSET) return {};
+                
+                // Read the actual payload's tag
+                actual_tag = static_cast<RECOVERY_TAG>(
+                    LOAD_U16(m_base + child_offset + DATA_BLOCK::RECOVERY)
+                );
+            }
+
+            // Return the Node firmly anchored to the unwrapped, concrete payload
+            return Node(
+                m_base, m_size, m_version, 
+                child_offset, actual_tag, key.kind, 
+                key.child_recovery, key.array_entries_are_offsets
+            );
+        }
+
         default:
             return {};
     }
@@ -220,82 +248,31 @@ Node Node::operator[](size_t index) const {
     const BYTE* entry = array.entries(m_base) + index * array.entry_step(m_base);
 
     if (m_array_entries_are_offsets) {
-        Offset child_offset = LOAD_U64(entry);
-        
-        // FAST PATH: Early exit for sparse array null pointers
-        if (child_offset == FF_NULL_OFFSET) return {}; 
+        Offset child_off = LOAD_U64(entry);
+        if (child_off == FF_NULL_OFFSET) return {}; 
 
         RECOVERY_TAG actual_recovery = m_child_recovery;
         FF_FieldKind child_kind = (m_child_recovery == FF_STRING::recovery) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
         
-        // Polymorphic Lookup with Validation
+        // --- THE AUTO-UNWRAP ---
         if (actual_recovery == RECOVER_FF_RESOURCE) {
-            actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + child_offset + 8));
-            if (!FF_IsResourceTag(actual_recovery)) return {}; // Safety check: invalid resource tag
+            child_off = LOAD_U64(m_base + child_off + FF_RESOURCE::PAYLOAD_OFFSET);
+            if (child_off == FF_NULL_OFFSET) return {}; 
+            
+            // Read the actual payload's tag
+            actual_recovery = static_cast<RECOVERY_TAG>(
+                LOAD_U16(m_base + child_off + DATA_BLOCK::RECOVERY)
+            );
         }
         
-        return Node(m_base, m_size, m_version, child_offset, actual_recovery, child_kind);
+        return Node(m_base, m_size, m_version, child_off, actual_recovery, child_kind);
     } 
     
-    // FAST PATH: Inline arrays inherently exist, just return the exact memory slice
+    // FAST PATH: Inline arrays inherently exist
     return Node(m_base, m_size, m_version,
                 static_cast<Offset>(entry - m_base),
                 m_child_recovery, FF_FIELD_BLOCK);
 }
-
-//Node Node::operator[](FF_PackedToken token) const {
-//    if (is_empty() || !is_object()) return Node();
-//
-//    // 1. Strict Schema Validation (O(1) memory peek)
-//    // Assumes the first 4 bytes of any object block hold its RECOVERY_TAG
-//    uint32_t actual_recovery = *reinterpret_cast<const uint32_t*>(m_base);
-//    
-//    if (actual_recovery != token.expected_recovery()) {
-//        throw std::invalid_argument("FastFHIR Schema Violation: Attempted to read field belonging to a different resource type.");
-//    }
-//
-//    // 2. Safe O(1) Memory Jump
-//    const Offset value_offset = m_node_offset + token.offset();
-//
-//    // 1. FAST PATH: Early exit if the field is empty (bypasses object creation entirely)
-//    if (FF_IsFieldEmpty(m_base, value_offset, key.kind)) {
-//        return {};
-//    }
-//
-//    // 2. We now guarantee the data exists. Switch directly to the correct instantiation.
-//    switch (key.kind) {
-//        case FF_FIELD_STRING: {
-//            const Offset child_offset = LOAD_U64(m_base + value_offset);
-//            return Node(m_base, m_size, m_version, child_offset, FF_STRING::recovery, FF_FIELD_STRING);
-//        }
-//        case FF_FIELD_ARRAY: {
-//            const Offset child_offset = LOAD_U64(m_base + value_offset);
-//            return Node(m_base, m_size, m_version, child_offset, FF_ARRAY::recovery, FF_FIELD_ARRAY,
-//                        key.child_recovery, key.array_entries_are_offsets != 0);
-//        }
-//        case FF_FIELD_BLOCK: {
-//            const Offset child_offset = LOAD_U64(m_base + value_offset);
-//            RECOVERY_TAG actual_recovery = key.child_recovery;
-//            
-//            // Polymorphic Resolution with Validation
-//            if (actual_recovery == RECOVER_FF_RESOURCE) {
-//                actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + child_offset + 8)); 
-//                if (!FF_IsResourceTag(actual_recovery)) return {}; // Safety check: invalid resource tag
-//            }
-//            
-//            return Node(m_base, m_size, m_version, child_offset, actual_recovery, FF_FIELD_BLOCK);
-//        }
-//        case FF_FIELD_CODE:
-//        case FF_FIELD_BOOL:
-//        case FF_FIELD_UINT32:
-//        case FF_FIELD_FLOAT64:
-//            // Inline scalar values
-//            return Node::scalar(m_base, m_size, m_version, m_node_offset, value_offset, key.kind);
-//            
-//        default:
-//            return {};
-//    }
-//}
 
 // =====================================================================
 // Node primitive accessors
