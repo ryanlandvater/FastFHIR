@@ -34,7 +34,6 @@ ObjectHandle MutableEntry::as_handle() const {
     
     // --- INLINE POLYMORPHIC TUPLE ---
     if (m_target_recovery == RECOVER_FF_RESOURCE) {
-        // Offset first (+0), Tag second (+8)
         Offset target = LOAD_U64(base + m_parent_offset + m_vtable_offset); 
         RECOVERY_TAG tag = static_cast<RECOVERY_TAG>
             (LOAD_U16(base + m_parent_offset + m_vtable_offset + DATA_BLOCK::RECOVERY));
@@ -61,10 +60,7 @@ MutableEntry& MutableEntry::operator=(const ObjectHandle& child) {
     
     // --- INLINE POLYMORPHIC TUPLE ---
     if (m_target_recovery == RECOVER_FF_RESOURCE) {
-        // Amend the 64-bit offset first (+0)
-        m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child.offset());
-        // Write the 16-bit tag second (+8)
-        STORE_U16(base + m_parent_offset + m_vtable_offset + DATA_BLOCK::RECOVERY, child.recovery());
+        m_builder->amend_resource(m_parent_offset, m_vtable_offset, child.offset(), child.recovery());
         return *this;
     }
     
@@ -212,6 +208,27 @@ void Builder::amend_pointer(Offset object_offset, size_t field_vtable_offset, Of
     
     // Standard, non-atomic memory write
     STORE_U64(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset, new_target_offset);
+}
+
+void Builder::amend_resource(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset, RECOVERY_TAG new_tag)
+{
+    size_t capacity = m_memory.capacity();
+    
+    // Validate bounds for the full 10-byte span
+    if (object_offset > capacity || field_vtable_offset > (capacity - object_offset) ||
+        (sizeof(Offset) + sizeof(RECOVERY_TAG)) > (capacity - object_offset - field_vtable_offset)) {
+        throw std::runtime_error("FastFHIR: Resource amendment out of bounds.");
+    }
+
+    Offset current_val = LOAD_U64(m_base + object_offset + field_vtable_offset);
+    
+    if (current_val != FF_NULL_OFFSET) {
+        throw std::runtime_error("FastFHIR: Resource amendment failed — field already assigned.");
+    }
+    
+    // Write both pieces natively
+    STORE_U64(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset, new_target_offset);
+    STORE_U16(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset + DATA_BLOCK::RECOVERY, new_tag);
 }
 
 // =====================================================================

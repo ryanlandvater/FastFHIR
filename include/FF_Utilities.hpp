@@ -250,6 +250,7 @@ inline bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_offset, FF_F
         case FF_FIELD_STRING:
         case FF_FIELD_ARRAY:
         case FF_FIELD_BLOCK:
+        case FF_FIELD_RESOURCE: 
             return LOAD_U64(base + field_absolute_offset) == FF_NULL_OFFSET;
             
         case FF_FIELD_CODE:

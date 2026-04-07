@@ -120,37 +120,47 @@ std::vector<Node> Node::entries() const {
     Offset entries_start = m_node_offset + FF_ARRAY::HEADER_SIZE;
 
     for (uint32_t i = 0; i < count; ++i) {
-        // --- INLINE POLYMORPHIC TUPLE ARRAY (e.g., Patient.contained) ---
+        Offset item_ptr = entries_start + (i * step);
+
+        // --- INLINE POLYMORPHIC TUPLE ARRAY ---
         if (m_child_recovery == RECOVER_FF_RESOURCE && !m_array_entries_are_offsets) {
-            Offset item_ptr = entries_start + (i * step);
             Offset actual_off = LOAD_U64(m_base + item_ptr);
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
-                (LOAD_U16(m_base + item_ptr + DATA_BLOCK::RECOVERY));
             
             if (actual_off == FF_NULL_OFFSET) {
                 out.push_back(Node());
-            } else {
-                out.push_back(Node(m_base, m_size, m_version, actual_off, actual_tag, FF_FIELD_BLOCK));
+                continue;
             }
+            
+            RECOVERY_TAG tuple_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + item_ptr + DATA_BLOCK::RECOVERY));
+            RECOVERY_TAG block_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + actual_off + DATA_BLOCK::RECOVERY));
+            
+            if (tuple_tag != block_tag) throw std::runtime_error
+                ("Node::entries() Inline polymorphic tuple array (RECOVERY_FF_RESOURCE) mismatch with actual type");
+            
+            out.push_back(Node(m_base, m_size, m_version, actual_off, tuple_tag, FF_FIELD_BLOCK));
             continue;
         }
-        
-        // --- 2. STANDARD POINTER ARRAY ---
+
+        // --- STANDARD POINTER ARRAY (e.g., Bundle.entry, Patient.name) ---
         if (m_array_entries_are_offsets) {
-            Offset child_off = LOAD_U64(m_base + entries_start + (i * step));
+            Offset child_off = LOAD_U64(m_base + item_ptr);
             if (child_off == FF_NULL_OFFSET) {
                 out.push_back(Node());
                 continue;
             }
-            RECOVERY_TAG actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + child_off + DATA_BLOCK::RECOVERY));
+
+            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
+                LOAD_U16(m_base + child_off + DATA_BLOCK::RECOVERY)
+            );
+            
             FF_FieldKind child_kind = (m_child_recovery == FF_STRING::recovery) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
-            out.push_back(Node(m_base, m_size, m_version, child_off, actual_recovery, child_kind));
-        } 
-        // --- 3. FAST PATH: INLINE STRUCT ARRAY ---
-        else {
-            Offset item_off = entries_start + (i * step);
-            out.push_back(Node(m_base, m_size, m_version, item_off, m_child_recovery, FF_FIELD_BLOCK));
+            
+            out.push_back(Node(m_base, m_size, m_version, child_off, actual_tag, child_kind));
+            continue;
         }
+        
+        // --- FAST PATH: INLINE ARRAY (Structs) ---
+        out.push_back(Node(m_base, m_size, m_version, item_ptr, m_child_recovery, FF_FIELD_BLOCK));
     }
     
     return out;
@@ -202,12 +212,15 @@ Node Node::operator[](FF_FieldKey key) const {
         // -- INLINE POLYMORPHIC TUPLE --
         case FF_FIELD_RESOURCE: {
             Offset actual_off = LOAD_U64(m_base + value_offset);
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
-                (LOAD_U16(m_base + value_offset + DATA_BLOCK::RECOVERY));
-            
             if (actual_off == FF_NULL_OFFSET) return {};
             
-            return Node(m_base, m_size, m_version, actual_off, actual_tag, FF_FIELD_BLOCK);
+            RECOVERY_TAG tuple_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + value_offset + DATA_BLOCK::RECOVERY));
+            RECOVERY_TAG block_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + actual_off + DATA_BLOCK::RECOVERY));
+            
+            if (tuple_tag != block_tag) throw std::runtime_error
+            ("Node::operator[]() Inline polymorphic tuple (RECOVERY_FF_RESOURCE) mismatch with actual type");
+            
+            return Node(m_base, m_size, m_version, actual_off, tuple_tag, FF_FIELD_BLOCK);
         }
 
         // -- COMPLEX TYPES (Standard 8-Byte Pointers) --
@@ -244,15 +257,17 @@ Node Node::operator[](size_t index) const {
     // Jump to the specific array slot based on the pre-calculated step size
     const BYTE* entry = array.entries(m_base) + index * array.entry_step(m_base);
 
-    // --- INLINE POLYMORPHIC TUPLE ARRAY (e.g., Patient.contained) ---
+    // --- INLINE POLYMORPHIC TUPLE ARRAY ---
     if (m_child_recovery == RECOVER_FF_RESOURCE && !m_array_entries_are_offsets) {
         Offset actual_off = LOAD_U64(entry);
-        RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
-            (LOAD_U16(entry + DATA_BLOCK::RECOVERY));
-        
         if (actual_off == FF_NULL_OFFSET) return {};
         
-        return Node(m_base, m_size, m_version, actual_off, actual_tag, FF_FIELD_BLOCK);
+        RECOVERY_TAG tuple_tag = static_cast<RECOVERY_TAG>(LOAD_U16(entry + DATA_BLOCK::RECOVERY));
+        RECOVERY_TAG block_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + actual_off + DATA_BLOCK::RECOVERY));
+        
+        if (tuple_tag != block_tag) return {}; 
+        
+        return Node(m_base, m_size, m_version, actual_off, tuple_tag, FF_FIELD_BLOCK);
     }
 
     // --- STANDARD POINTER ARRAY (e.g., Patient.name) ---

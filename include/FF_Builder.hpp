@@ -238,6 +238,11 @@ public:
      */
     void amend_pointer(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset);
 
+    /**
+     * @brief Low-level mutable access to a V-Table pointer for amending polymorphic data.
+     */
+    void amend_resource(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset, RECOVERY_TAG new_tag);
+
     // --- Finalization & Checksums ---
 
     /** 
