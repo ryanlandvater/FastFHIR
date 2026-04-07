@@ -29,38 +29,46 @@ namespace FastFHIR {
 // =====================================================================
 // Mutable Entry Implementation
 // =====================================================================
-ObjectHandle MutableEntry::as_handle() const
-{
+ObjectHandle MutableEntry::as_handle() const {
     auto base = m_builder->memory().base();
     
-    // Magic of the self-referential validation flag:
-    // If the slot is a pointer, this loads the target offset.
-    // If the slot is an INLINE_BLOCK, this loads its own absolute offset!
-    Offset target = LOAD_U64(base + m_parent_offset + m_vtable_offset);
-    
-    if (target == FF_NULL_OFFSET)
-        return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
-
-    // Because every FastFHIR block (Array, String, Struct) stores its tag at +8,
-    // we can flawlessly discover the true type directly from the destination preamble.
-    RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
-    (LOAD_U16(base + target + DATA_BLOCK::RECOVERY));
-
-    if (actual_tag == RECOVER_FF_RESOURCE) {
-        Offset payload_off = LOAD_U64(base + target + FF_RESOURCE::PAYLOAD_OFFSET);
-        if (payload_off != FF_NULL_OFFSET) {
-            target = payload_off;
-            actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + target + DATA_BLOCK::RECOVERY));
-        }
+    // --- INLINE POLYMORPHIC TUPLE ---
+    if (m_target_recovery == RECOVER_FF_RESOURCE) {
+        // Offset first (+0), Tag second (+8)
+        Offset target = LOAD_U64(base + m_parent_offset + m_vtable_offset); 
+        RECOVERY_TAG tag = static_cast<RECOVERY_TAG>
+            (LOAD_U16(base + m_parent_offset + m_vtable_offset + DATA_BLOCK::RECOVERY));
+        
+        if (target == FF_NULL_OFFSET) 
+            return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
+            
+        return ObjectHandle(m_builder, target, tag);
     }
     
+    // --- STANDARD 8-BYTE POINTER ---
+    Offset target = LOAD_U64(base + m_parent_offset + m_vtable_offset);
+    if (target == FF_NULL_OFFSET)
+        return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
+        
+    RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
+        (LOAD_U16(base + target + DATA_BLOCK::RECOVERY));
     return ObjectHandle(m_builder, target, actual_tag);
 }
 
-MutableEntry& MutableEntry::operator=(const ObjectHandle& child)
-{
-    // --- STRICT SCHEMA VALIDATION ---
+MutableEntry& MutableEntry::operator=(const ObjectHandle& child) {
     validate_assignment(child.recovery());
+    auto base = const_cast<BYTE*>(m_builder->memory().base());
+    
+    // --- INLINE POLYMORPHIC TUPLE ---
+    if (m_target_recovery == RECOVER_FF_RESOURCE) {
+        // Amend the 64-bit offset first (+0)
+        m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child.offset());
+        // Write the 16-bit tag second (+8)
+        STORE_U16(base + m_parent_offset + m_vtable_offset + DATA_BLOCK::RECOVERY, child.recovery());
+        return *this;
+    }
+    
+    // --- STANDARD 8-BYTE POINTER ---
     m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child.offset());
     return *this;
 }

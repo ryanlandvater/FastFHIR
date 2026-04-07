@@ -10,7 +10,6 @@
  * - FF_HEADER: The main file header containing metadata, checksum, and root resource information.
  * - FF_ARRAY: A zero-copy array block for efficient storage of homogeneous entries.
  * - FF_STRING: A zero-copy string block for efficient storage of string data.
- * - FF_RESOURCE: A generic wrapper for FHIR resources, allowing for flexible payload storage.
  *
  * Each structure includes validation methods to ensure data integrity and recovery tags for error handling.
  * The primitives are designed for high performance and low overhead, enabling zero-copy parsing
@@ -238,7 +237,6 @@ struct FF_HEADER;   // Stream header block
 struct FF_CHECKSUM; // Checksum block
 struct FF_ARRAY;    // Array template block
 struct FF_STRING;   // String block
-struct FF_RESOURCE; // Resource template block
 
 // =====================================================================
 // BASE DATA BLOCK
@@ -447,48 +445,14 @@ struct FF_EXPORT FF_STRING : DATA_BLOCK
 // =====================================================================
 // GENERIC RESOURCE WRAPPER
 // =====================================================================
-struct ResourceData
-{
-    uint16_t payloadRecovery = RECOVER_FF_STRING;
-    std::string resourceType;
-    std::string json;
+// A passive coordinate for polymorphic resources (ie Bundle.Entry.Resource)
+struct ResourceReference {
+    Offset offset = FF_NULL_OFFSET;
+    RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED;
+
+    ResourceReference() = default;
+    ResourceReference(Offset off, RECOVERY_TAG rec) : offset(off), recovery(rec) {}
 };
-
-struct FF_EXPORT FF_RESOURCE : DATA_BLOCK
-{
-    static constexpr char type[] = "FF_RESOURCE";
-    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_RESOURCE;
-    enum vtable_sizes
-    {
-        VALIDATION_S = TYPE_SIZE_UINT64,       // 8
-        RECOVERY_S = TYPE_SIZE_UINT16,         // 2
-        PAYLOAD_RECOVERY_S = TYPE_SIZE_UINT16, // 2
-        PAYLOAD_OFFSET_S = TYPE_SIZE_UINT64,   // 8
-    };
-    enum vtable_offsets
-    {
-        VALIDATION = 0,
-        RECOVERY = VALIDATION + VALIDATION_S,                   // 8
-        PAYLOAD_RECOVERY = RECOVERY + RECOVERY_S,               // 10
-        PAYLOAD_OFFSET = PAYLOAD_RECOVERY + PAYLOAD_RECOVERY_S, // 12
-        HEADER_SIZE = PAYLOAD_OFFSET + PAYLOAD_OFFSET_S,        // 20 bytes exactly
-    };
-
-    explicit FF_RESOURCE(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
-
-    FF_Result validate_full(const BYTE *const __base) const noexcept;
-    RECOVERY_TAG get_resource_type(const BYTE *const __base) const;
-    template <typename T_Block>
-    T_Block get_resource_as_type(const BYTE *const __base) const {
-        if (get_resource_type(__base) != T_Block::recovery)
-            return T_Block(FF_NULL_OFFSET, __size, __version);
-        return T_Block(payload_offset(__base), __size, __version); }
-    ResourceData read(const BYTE *const __base) const;
-    private:
-    Offset payload_offset(const BYTE *const __base) const;
-};
-
-void STORE_FF_RESOURCE(BYTE *const __base, Offset entry_off, Offset &write_head, const ResourceData &data);
 
 // =====================================================================
 // LOCK-FREE EMITTER SIGNATURES

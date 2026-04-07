@@ -120,35 +120,34 @@ std::vector<Node> Node::entries() const {
     Offset entries_start = m_node_offset + FF_ARRAY::HEADER_SIZE;
 
     for (uint32_t i = 0; i < count; ++i) {
+        // --- INLINE POLYMORPHIC TUPLE ARRAY (e.g., Patient.contained) ---
+        if (m_child_recovery == RECOVER_FF_RESOURCE && !m_array_entries_are_offsets) {
+            Offset item_ptr = entries_start + (i * step);
+            Offset actual_off = LOAD_U64(m_base + item_ptr);
+            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
+                (LOAD_U16(m_base + item_ptr + DATA_BLOCK::RECOVERY));
+            
+            if (actual_off == FF_NULL_OFFSET) {
+                out.push_back(Node());
+            } else {
+                out.push_back(Node(m_base, m_size, m_version, actual_off, actual_tag, FF_FIELD_BLOCK));
+            }
+            continue;
+        }
+        
+        // --- 2. STANDARD POINTER ARRAY ---
         if (m_array_entries_are_offsets) {
             Offset child_off = LOAD_U64(m_base + entries_start + (i * step));
-            
-            // FAST PATH: Early exit for sparse array null pointers
             if (child_off == FF_NULL_OFFSET) {
                 out.push_back(Node());
                 continue;
             }
-
-            RECOVERY_TAG actual_recovery = m_child_recovery;
+            RECOVERY_TAG actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + child_off + DATA_BLOCK::RECOVERY));
             FF_FieldKind child_kind = (m_child_recovery == FF_STRING::recovery) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
-            
-            // --- THE AUTO-UNWRAP ---
-            if (actual_recovery == RECOVER_FF_RESOURCE) {
-                child_off = LOAD_U64(m_base + child_off + FF_RESOURCE::PAYLOAD_OFFSET);
-                if (child_off == FF_NULL_OFFSET) {
-                    out.push_back(Node());
-                    continue;
-                }
-                
-                // Read the actual payload's tag
-                actual_recovery = static_cast<RECOVERY_TAG>(
-                    LOAD_U16(m_base + child_off + DATA_BLOCK::RECOVERY)
-                );
-            }
-            
             out.push_back(Node(m_base, m_size, m_version, child_off, actual_recovery, child_kind));
-        } else {
-            // FAST PATH: Inline arrays inherently exist, just slice the pre-allocated memory offset
+        } 
+        // --- 3. FAST PATH: INLINE STRUCT ARRAY ---
+        else {
             Offset item_off = entries_start + (i * step);
             out.push_back(Node(m_base, m_size, m_version, item_off, m_child_recovery, FF_FIELD_BLOCK));
         }
@@ -163,14 +162,12 @@ Node Node::operator[](FF_FieldKey key) const {
     if (!is_object()) return {};
 
     // --- 1. INHERITANCE-AWARE SCHEMA VALIDATION ---
-    // Because of the auto-unwrap at creation, m_recovery is guaranteed 
-    // to be the concrete payload type (e.g., RECOVER_FF_PATIENT).
     if (key.owner_recovery != FF_RECOVER_UNDEFINED &&
         key.owner_recovery != m_recovery) {
         
-        // Allow inherited base-class keys (Resource.id) to access valid resource payloads
+        // Allow inherited base-class keys (Resource.id) to access valid concrete resources
         if (!(key.owner_recovery == RECOVER_FF_RESOURCE && FF_IsResourceTag(m_recovery))) {
-            return {}; // Schema violation: Key doesn't match payload, and isn't a base key
+            return {};
         }
     }
 
@@ -202,10 +199,22 @@ Node Node::operator[](FF_FieldKey key) const {
                 m_node_offset, value_offset, key.kind
             );
 
-        // -- COMPLEX TYPES (Automatic Indirection) --
+        // -- INLINE POLYMORPHIC TUPLE --
+        case FF_FIELD_RESOURCE: {
+            Offset actual_off = LOAD_U64(m_base + value_offset);
+            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
+                (LOAD_U16(m_base + value_offset + DATA_BLOCK::RECOVERY));
+            
+            if (actual_off == FF_NULL_OFFSET) return {};
+            
+            return Node(m_base, m_size, m_version, actual_off, actual_tag, FF_FIELD_BLOCK);
+        }
+
+        // -- COMPLEX TYPES (Standard 8-Byte Pointers) --
         case FF_FIELD_BLOCK:
         case FF_FIELD_ARRAY:
         case FF_FIELD_STRING: {
+            // Standard pointer hop
             Offset child_offset = LOAD_U64(m_base + value_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
 
@@ -213,19 +222,6 @@ Node Node::operator[](FF_FieldKey key) const {
                 LOAD_U16(m_base + child_offset + DATA_BLOCK::RECOVERY)
             );
 
-            // -- THE AUTO-UNWRAP --
-            // If the pointer hit a lock-free VTable wrapper, hop instantly to the payload.
-            if (actual_tag == RECOVER_FF_RESOURCE) {
-                child_offset = LOAD_U64(m_base + child_offset + FF_RESOURCE::PAYLOAD_OFFSET);
-                if (child_offset == FF_NULL_OFFSET) return {};
-                
-                // Read the actual payload's tag
-                actual_tag = static_cast<RECOVERY_TAG>(
-                    LOAD_U16(m_base + child_offset + DATA_BLOCK::RECOVERY)
-                );
-            }
-
-            // Return the Node firmly anchored to the unwrapped, concrete payload
             return Node(
                 m_base, m_size, m_version, 
                 child_offset, actual_tag, key.kind, 
@@ -245,30 +241,35 @@ Node Node::operator[](size_t index) const {
     auto count = array.entry_count(m_base);
     if (index >= count) return {};
 
+    // Jump to the specific array slot based on the pre-calculated step size
     const BYTE* entry = array.entries(m_base) + index * array.entry_step(m_base);
 
+    // --- INLINE POLYMORPHIC TUPLE ARRAY (e.g., Patient.contained) ---
+    if (m_child_recovery == RECOVER_FF_RESOURCE && !m_array_entries_are_offsets) {
+        Offset actual_off = LOAD_U64(entry);
+        RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
+            (LOAD_U16(entry + DATA_BLOCK::RECOVERY));
+        
+        if (actual_off == FF_NULL_OFFSET) return {};
+        
+        return Node(m_base, m_size, m_version, actual_off, actual_tag, FF_FIELD_BLOCK);
+    }
+
+    // --- STANDARD POINTER ARRAY (e.g., Patient.name) ---
     if (m_array_entries_are_offsets) {
         Offset child_off = LOAD_U64(entry);
         if (child_off == FF_NULL_OFFSET) return {}; 
 
-        RECOVERY_TAG actual_recovery = m_child_recovery;
+        RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
+            LOAD_U16(m_base + child_off + DATA_BLOCK::RECOVERY)
+        );
+        
         FF_FieldKind child_kind = (m_child_recovery == FF_STRING::recovery) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
         
-        // --- THE AUTO-UNWRAP ---
-        if (actual_recovery == RECOVER_FF_RESOURCE) {
-            child_off = LOAD_U64(m_base + child_off + FF_RESOURCE::PAYLOAD_OFFSET);
-            if (child_off == FF_NULL_OFFSET) return {}; 
-            
-            // Read the actual payload's tag
-            actual_recovery = static_cast<RECOVERY_TAG>(
-                LOAD_U16(m_base + child_off + DATA_BLOCK::RECOVERY)
-            );
-        }
-        
-        return Node(m_base, m_size, m_version, child_off, actual_recovery, child_kind);
+        return Node(m_base, m_size, m_version, child_off, actual_tag, child_kind);
     } 
     
-    // FAST PATH: Inline arrays inherently exist
+    // --- FAST PATH: INLINE ARRAY ---
     return Node(m_base, m_size, m_version,
                 static_cast<Offset>(entry - m_base),
                 m_child_recovery, FF_FIELD_BLOCK);

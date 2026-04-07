@@ -130,6 +130,9 @@ public:
     
     // Spawns a mutable bridge for an array entry
     MutableEntry operator[](size_t index) const;
+
+    // Allow active arena handles to decay into passive DTO references
+    operator ResourceReference() const { return {m_offset, m_recovery}; }
 };
 class AdvancedBuilderAccess;
 
