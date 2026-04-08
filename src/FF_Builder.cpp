@@ -112,7 +112,8 @@ MutableEntry ObjectHandle::operator[](size_t index) const
         m_builder,
         m_offset,
         entry_vtable_offset,
-        FF_RECOVER_UNDEFINED
+        FF_RECOVER_UNDEFINED,
+        FF_FIELD_UNKNOWN
     );
 }
 
@@ -162,6 +163,19 @@ void Builder::end_mutation()
 {
     m_active_mutators.fetch_sub(1, std::memory_order_acq_rel);
 }
+
+#define GENERATE_SCALAR_AMENDER(S, T, M) void Builder::amend_scalar_##S(Offset o, size_t v, T l) { \
+    if (!try_begin_mutation()) throw std::runtime_error("FF: Lk"); \
+    struct MG { Builder *b; ~MG() { b->end_mutation(); } } g{this}; \
+    if (o + v + sizeof(T) > m_memory.capacity()) throw std::runtime_error("FF: OOB"); \
+    M(const_cast<BYTE*>(m_base) + o + v, l); }
+
+GENERATE_SCALAR_AMENDER(8,   uint8_t,  STORE_U8)
+GENERATE_SCALAR_AMENDER(32,  uint32_t, STORE_U32)
+GENERATE_SCALAR_AMENDER(64,  uint64_t, STORE_U64)
+GENERATE_SCALAR_AMENDER(f64, double,   STORE_F64)
+
+#undef GENERATE_SCALAR_AMENDER
 
 // =====================================================================
 // View Node & Amend Pointer
@@ -229,6 +243,26 @@ void Builder::amend_resource(Offset object_offset, size_t field_vtable_offset, O
     // Write both pieces natively
     STORE_U64(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset, new_target_offset);
     STORE_U16(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset + DATA_BLOCK::RECOVERY, new_tag);
+}
+
+void Builder::amend_variant(Offset object_offset, size_t field_vtable_offset, uint64_t raw_bits, RECOVERY_TAG new_tag)
+{
+    size_t capacity = m_memory.capacity();
+    
+    if (object_offset > capacity || field_vtable_offset > (capacity - object_offset) ||
+        (sizeof(uint64_t) + sizeof(RECOVERY_TAG)) > (capacity - object_offset - field_vtable_offset)) {
+        throw std::runtime_error("FastFHIR: Variant amendment out of bounds.");
+    }
+
+    // Check tag instead of bits to verify if unassigned
+    RECOVERY_TAG current_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + object_offset + field_vtable_offset + 8));
+    
+    if (current_tag != 0) {
+        throw std::runtime_error("FastFHIR: Variant amendment failed — field already assigned.");
+    }
+    
+    STORE_U64(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset, raw_bits);
+    STORE_U16(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset + 8, new_tag);
 }
 
 // =====================================================================

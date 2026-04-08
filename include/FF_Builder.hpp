@@ -42,10 +42,10 @@ class MutableEntry {
     Offset       m_parent_offset;
     size_t       m_vtable_offset;
     RECOVERY_TAG m_target_recovery;
-
+    FF_FieldKind m_kind;
 public:
-    MutableEntry(Builder* b, Offset p, size_t v, RECOVERY_TAG r)
-    : m_builder(b), m_parent_offset(p), m_vtable_offset(v), m_target_recovery(r) {}
+    MutableEntry(Builder* b, Offset p, size_t v, RECOVERY_TAG r, FF_FieldKind k)
+    : m_builder(b), m_parent_offset(p), m_vtable_offset(v), m_target_recovery(r), m_kind(k) {}
 
     // Elevates the resolved pointer into a mutable handle for traversal
     ObjectHandle as_handle() const;
@@ -73,9 +73,9 @@ public:
     MutableEntry operator[](size_t index) const;
     
     // In-place updates for inline scalars (bypasses the V-Table append)
-    template <typename T_Data>
-    requires std::is_arithmetic_v<T_Data>
-    void assign_inline(T_Data value);
+    template <typename T>
+    requires std::is_arithmetic_v<T>
+    MutableEntry& operator=(T val);
     
 private:
     void validate_assignment(const RECOVERY_TAG child_tag) const;
@@ -162,6 +162,10 @@ class Builder {
 
     bool try_begin_mutation();
     void end_mutation();
+    void amend_scalar_8(Offset obj_off, size_t v_off, uint8_t val);
+    void amend_scalar_32(Offset obj_off, size_t v_off, uint32_t val);
+    void amend_scalar_64(Offset obj_off, size_t v_off, uint64_t val);
+    void amend_scalar_f64(Offset obj_off, size_t v_off, double val);
 
 public:
     Builder(const Builder&) = delete;
@@ -243,6 +247,18 @@ public:
      */
     void amend_resource(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset, RECOVERY_TAG new_tag);
 
+    /**
+     * @brief Low-level mutable access to a V-Table variant for amending polymorphic entry data (ie FHIR [x] entries).
+     */
+    void amend_variant(Offset object_offset, size_t field_vtable_offset, uint64_t raw_bits, RECOVERY_TAG new_tag);
+    
+    /**
+     * @brief Low-level mutable access to a V-Table slot for amending fixed-schema primitives.
+     */
+    template <typename T>
+    requires std::is_arithmetic_v<T>
+    void amend_scalar(Offset object_offset, size_t field_vtable_offset, T val);
+    
     // --- Finalization & Checksums ---
 
     /** 
@@ -330,21 +346,23 @@ Offset MutableEntry::operator=(const T_Data& data) {
     return child_offset;
 }
 
-template <typename T_Data>
-requires std::is_arithmetic_v<T_Data>
-inline void MutableEntry::assign_inline(T_Data value) {
-    // 1. Read the state to prevent memory corruption
-    Node current_state = as_node();
-    
-    if (!current_state.is_empty() && !current_state.is_scalar()) {
-        throw std::runtime_error("FastFHIR: Cannot inline assign to a complex pointer slot.");
+template <typename T>
+requires std::is_arithmetic_v<T>
+MutableEntry& MutableEntry::operator=(T val) {
+    if (m_kind == FF_FIELD_VARIANT) {
+        // Choice types always use the 10-byte polymorphic routine
+        RECOVERY_TAG tag = FF_RECOVER_UNDEFINED;
+        if constexpr (std::is_same_v<T, bool>) tag = RECOVER_FF_BOOL;
+        else if constexpr (std::is_floating_point_v<T>) tag = RECOVER_FF_FLOAT64;
+        else if constexpr (sizeof(T) == 4) tag = std::is_signed_v<T> ? RECOVER_FF_INT32 : RECOVER_FF_UINT32;
+        else if constexpr (sizeof(T) == 8) tag = std::is_signed_v<T> ? RECOVER_FF_INT64 : RECOVER_FF_UINT64;
+        
+        m_builder->amend_variant(m_parent_offset, m_vtable_offset, static_cast<uint64_t>(val), tag);
+    } else {
+        // Fixed types use the size-aware scalar routine
+        m_builder->amend_scalar(m_parent_offset, m_vtable_offset, val);
     }
-
-    // 2. Write directly to the MutableEntry's known V-Table offset
-    uint8_t* ptr = m_builder->memory().base() + this->offset();
-    
-    // 3. Safe unaligned access (compiles to direct hardware STORE instructions)
-    std::memcpy(ptr, &value, sizeof(T_Data));
+    return *this;
 }
 
 inline Node ObjectHandle::as_node() const {
@@ -360,7 +378,25 @@ inline MutableEntry ObjectHandle::operator[](FF_FieldKey key) const {
     // Map the array field directly to the array container tag
     RECOVERY_TAG target_tag = (key.kind == FF_FIELD_ARRAY) ? RECOVER_FF_ARRAY : key.child_recovery;
     
-    return MutableEntry(m_builder, m_offset, key.field_offset, target_tag);
+    return MutableEntry(m_builder, m_offset, key.field_offset, target_tag, key.kind);
+}
+
+template <typename T>
+requires std::is_arithmetic_v<T>
+void Builder::amend_scalar(Offset object_offset, size_t field_vtable_offset, T val) {
+    if constexpr (sizeof(T) == 1) {
+        amend_scalar_8(object_offset, field_vtable_offset, static_cast<uint8_t>(val));
+    }
+    else if constexpr (sizeof(T) == 4) {
+        amend_scalar_32(object_offset, field_vtable_offset, static_cast<uint32_t>(val));
+    }
+    else if constexpr (sizeof(T) == 8) {
+        if constexpr (std::is_floating_point_v<T>) {
+            amend_scalar_f64(object_offset, field_vtable_offset, static_cast<double>(val));
+        } else {
+            amend_scalar_64(object_offset, field_vtable_offset, static_cast<uint64_t>(val));
+        }
+    }
 }
 
 } // namespace FastFHIR

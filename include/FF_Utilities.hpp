@@ -238,8 +238,7 @@ inline bool FF_IsChoicePresent(uint64_t choice_offset)
  * This is used for validation and to apply resource-specific logic during parsing and building.
  */
 inline constexpr bool FF_IsResourceTag(RECOVERY_TAG tag) {
-    // True for anything in the top level resource 0x0200 block (Patient, Observation, etc.)
-    return (tag >= 0x0200 && tag < 0x0300); 
+    return (tag & 0xFF00) == RECOVER_FF_RESOURCE_BLOCK; // 0x0300
 }
 
 /**
@@ -247,10 +246,15 @@ inline constexpr bool FF_IsResourceTag(RECOVERY_TAG tag) {
  */
 inline bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_offset, FF_FieldKind kind) {
     switch (kind) {
+
+        case FF_FIELD_RESOURCE:
+        case FF_FIELD_VARIANT:
+        if (LOAD_U16(base + field_absolute_offset + DATA_BLOCK::RECOVERY) 
+                == FF_RECOVER_UNDEFINED) return true;
+            
         case FF_FIELD_STRING:
         case FF_FIELD_ARRAY:
         case FF_FIELD_BLOCK:
-        case FF_FIELD_RESOURCE: 
             return LOAD_U64(base + field_absolute_offset) == FF_NULL_OFFSET;
             
         case FF_FIELD_CODE:

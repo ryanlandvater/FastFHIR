@@ -201,7 +201,10 @@ Node Node::operator[](FF_FieldKey key) const {
         
         // -- INLINE SCALARS (Zero Indirection) --
         case FF_FIELD_BOOL:
+        case FF_FIELD_INT32:
         case FF_FIELD_UINT32:
+        case FF_FIELD_INT64:
+        case FF_FIELD_UINT64:
         case FF_FIELD_FLOAT64:
         case FF_FIELD_CODE: 
             return Node::scalar(
@@ -209,7 +212,7 @@ Node Node::operator[](FF_FieldKey key) const {
                 m_node_offset, value_offset, key.kind
             );
 
-        // -- INLINE POLYMORPHIC TUPLE --
+        // -- INLINE POLYMORPHIC TUPLES --
         case FF_FIELD_RESOURCE: {
             Offset actual_off = LOAD_U64(m_base + value_offset);
             if (actual_off == FF_NULL_OFFSET) return {};
@@ -221,6 +224,33 @@ Node Node::operator[](FF_FieldKey key) const {
             ("Node::operator[]() Inline polymorphic tuple (RECOVERY_FF_RESOURCE) mismatch with actual type");
             
             return Node(m_base, m_size, m_version, actual_off, tuple_tag, FF_FIELD_BLOCK);
+        }
+        case FF_FIELD_VARIANT: {
+            RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + value_offset + 8));
+            
+            if ((tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) { 
+                FF_FieldKind dynamic_kind = FF_FIELD_UNKNOWN;
+                switch (tag) {
+                    case RECOVER_FF_BOOL: dynamic_kind = FF_FIELD_BOOL; break;
+                    case RECOVER_FF_FLOAT64: dynamic_kind = FF_FIELD_FLOAT64; break;
+                    case RECOVER_FF_INT32: dynamic_kind = FF_FIELD_INT32; break;
+                    case RECOVER_FF_UINT32: dynamic_kind = FF_FIELD_UINT32; break;
+                    case RECOVER_FF_INT64: dynamic_kind = FF_FIELD_INT64; break;
+                    case RECOVER_FF_UINT64: dynamic_kind = FF_FIELD_UINT64; break;
+                    default: break;
+                }
+                Node n = Node::scalar(m_base, m_size, m_version, m_node_offset, value_offset, dynamic_kind);
+                n.m_recovery = tag; 
+                return n;
+            }
+            
+            // Block/Resource: Standard Absolute Offset Hop
+            Offset child_off = LOAD_U64(m_base + value_offset);
+            if (child_off == FF_NULL_OFFSET) return {}; 
+            
+            FF_FieldKind dynamic_kind = (tag == RECOVER_FF_STRING) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
+            
+            return Node(m_base, m_size, m_version, child_off, tag, dynamic_kind);
         }
 
         // -- COMPLEX TYPES (Standard 8-Byte Pointers) --
@@ -322,21 +352,81 @@ std::string_view Node::as<std::string_view>() const {
     return {};
 }
 
+// =====================================================================
+// Node::as<T> Scalar Extractors (FF_Parser.cpp)
+// =====================================================================
+
 template <>
 bool Node::as<bool>() const {
-    if (!*this || m_kind != FF_FIELD_BOOL) return false;
+    if (!*this) return false;
+    
+    // FAST PATH: Inline Variant Choice [x]
+    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_BOOL) {
+        return LOAD_U8(m_base + m_global_scalar_offset) != 0;
+    }
+    
+    // STANDARD PATH: Fixed Schema Field
+    if (m_kind != FF_FIELD_BOOL) return false;
     return LOAD_U8(m_base + m_global_scalar_offset) != 0;
 }
 
 template <>
+int32_t Node::as<int32_t>() const {
+    if (!*this) return 0;
+    
+    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_INT32) {
+        return static_cast<int32_t>(LOAD_U32(m_base + m_global_scalar_offset));
+    }
+    
+    if (m_kind != FF_FIELD_INT32) return 0;
+    return static_cast<int32_t>(LOAD_U32(m_base + m_global_scalar_offset));
+}
+
+template <>
 uint32_t Node::as<uint32_t>() const {
-    if (!*this || m_kind != FF_FIELD_UINT32) return 0;
+    if (!*this) return 0;
+    
+    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_UINT32) {
+        return LOAD_U32(m_base + m_global_scalar_offset);
+    }
+    
+    if (m_kind != FF_FIELD_UINT32) return 0;
     return LOAD_U32(m_base + m_global_scalar_offset);
 }
 
 template <>
+int64_t Node::as<int64_t>() const {
+    if (!*this) return 0;
+    
+    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_INT64) {
+        return static_cast<int64_t>(LOAD_U64(m_base + m_global_scalar_offset));
+    }
+    
+    if (m_kind != FF_FIELD_INT64) return 0;
+    return static_cast<int64_t>(LOAD_U64(m_base + m_global_scalar_offset));
+}
+
+template <>
+uint64_t Node::as<uint64_t>() const {
+    if (!*this) return 0;
+    
+    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_UINT64) {
+        return LOAD_U64(m_base + m_global_scalar_offset);
+    }
+    
+    if (m_kind != FF_FIELD_UINT64) return 0;
+    return LOAD_U64(m_base + m_global_scalar_offset);
+}
+
+template <>
 double Node::as<double>() const {
-    if (!*this || m_kind != FF_FIELD_FLOAT64) return 0.0;
+    if (!*this) return 0.0;
+    
+    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_FLOAT64) {
+        return LOAD_F64(m_base + m_global_scalar_offset);
+    }
+    
+    if (m_kind != FF_FIELD_FLOAT64) return 0.0;
     return LOAD_F64(m_base + m_global_scalar_offset);
 }
 
@@ -426,6 +516,18 @@ static void escape_json_string(std::ostream& out, std::string_view str) {
     }
 }
 
+static std::string_view get_choice_suffix(RECOVERY_TAG tag) {
+    if (tag == RECOVER_FF_BOOL) return "Boolean";
+    if (tag == RECOVER_FF_FLOAT64) return "Decimal";
+    if (tag == RECOVER_FF_INT32) return "Integer";
+    if (tag == RECOVER_FF_UINT32) return "UnsignedInt";
+    if (tag == RECOVER_FF_INT64 || tag == RECOVER_FF_UINT64) return "Integer64";
+    if (tag == RECOVER_FF_STRING) return "String";
+    
+    // For complex types, pull the capitalized resource/data type name
+    std::string_view name = FastFHIR::reflected_resource_type(tag);
+    return name;
+}
 
 void Node::print_json(std::ostream& out) const {
     if (is_empty()) return;
@@ -435,10 +537,7 @@ void Node::print_json(std::ostream& out) const {
         auto f_list = fields();
         bool first = true;
 
-        // First print the standard Resource Type! It's not required but encouraged.
-        // FastFHIR assigns standard Resources to the 0x0200 recovery tag range.
-        // BackboneElements (0x0300) and DataTypes (0x0100) do not get a resourceType.
-        if (m_recovery >= 0x0200 && m_recovery < 0x0300) {
+        if (FF_IsResourceTag(m_recovery)) {
             out << "\"resourceType\":\"" << reflected_resource_type(m_recovery) << "\"";
             first = false;
         }
@@ -461,7 +560,9 @@ void Node::print_json(std::ostream& out) const {
             auto child = (*this)[key];
             
             if (!first) out << ",";
-            out << "\"" << f.name << "\":";
+            out << "\"" << f.name;
+            if (f.kind == FF_FIELD_VARIANT) out << get_choice_suffix(child.recovery());
+            out << "\":";
             child.print_json(out);
             first = false;
         }

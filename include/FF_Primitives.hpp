@@ -114,6 +114,7 @@ enum TYPE_SIZE : uint8_t
     TYPE_SIZE_FLOAT64 = 8,
     TYPE_SIZE_OFFSET = 8,
     TYPE_SIZE_RESOURCE = 10,
+    TYPE_SIZE_CHOICE = 10,
 };
 
 // =====================================================================
@@ -136,14 +137,18 @@ constexpr uint32_t FF_MAX_HASH_BYTES = 32;
 enum FF_FieldKind : uint16_t
 {
     FF_FIELD_UNKNOWN = 0,
-    FF_FIELD_STRING = 1,
-    FF_FIELD_ARRAY = 2,
-    FF_FIELD_BLOCK = 3,
-    FF_FIELD_CODE = 4,
-    FF_FIELD_BOOL = 5,
-    FF_FIELD_UINT32 = 6,
-    FF_FIELD_FLOAT64 = 7,
-    FF_FIELD_RESOURCE = 8,
+    FF_FIELD_STRING,
+    FF_FIELD_ARRAY,
+    FF_FIELD_BLOCK,
+    FF_FIELD_CODE,
+    FF_FIELD_BOOL,
+    FF_FIELD_INT32,
+    FF_FIELD_UINT32,
+    FF_FIELD_INT64,
+    FF_FIELD_UINT64,
+    FF_FIELD_FLOAT64,
+    FF_FIELD_VARIANT,
+    FF_FIELD_RESOURCE,
 };
 
 struct FF_FieldInfo
@@ -452,6 +457,23 @@ struct ResourceReference {
 
     ResourceReference() = default;
     ResourceReference(Offset off, RECOVERY_TAG rec) : offset(off), recovery(rec) {}
+};
+
+// Slim staging structure for polymorphic FHIR choice [x] fields
+struct ChoiceEntry {
+    RECOVERY_TAG tag = FF_RECOVER_UNDEFINED;
+    std::variant<
+        std::monostate,
+        bool,
+        int32_t,
+        uint32_t,
+        int64_t,
+        uint64_t,
+        double,
+        std::string_view
+    > value;
+
+    bool is_empty() const { return tag == FF_RECOVER_UNDEFINED; }
 };
 
 // =====================================================================
