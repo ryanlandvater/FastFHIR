@@ -349,7 +349,7 @@ Offset MutableEntry::operator=(const T_Data& data) {
 template <typename T>
 requires std::is_arithmetic_v<T>
 MutableEntry& MutableEntry::operator=(T val) {
-    if (m_kind == FF_FIELD_VARIANT) {
+    if (m_kind == FF_FIELD_CHOICE) {
         // Choice types always use the 10-byte polymorphic routine
         RECOVERY_TAG tag = FF_RECOVER_UNDEFINED;
         if constexpr (std::is_same_v<T, bool>) tag = RECOVER_FF_BOOL;

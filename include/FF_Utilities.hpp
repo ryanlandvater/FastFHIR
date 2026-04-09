@@ -248,7 +248,7 @@ inline bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_offset, FF_F
     switch (kind) {
 
         case FF_FIELD_RESOURCE:
-        case FF_FIELD_VARIANT:
+        case FF_FIELD_CHOICE:
         if (LOAD_U16(base + field_absolute_offset + DATA_BLOCK::RECOVERY) 
                 == FF_RECOVER_UNDEFINED) return true;
             

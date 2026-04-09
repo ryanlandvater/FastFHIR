@@ -159,9 +159,32 @@ public:
 
     /**
     * @brief Construct a node backed by an inline scalar value.
+    * @param kind The specific scalar type of the value (e.g., bool, int32, float64).
+     * @return Node representing the inline scalar value.
     */
     static Node scalar(const BYTE* base, Size size, uint32_t version,
                        Offset parent_offset, Offset scalar_offset, FF_FieldKind kind);
+    /**
+     * @brief Construct a node backed by an inline scalar value with a recovery tag.
+     * @param tag The recovery tag indicating the specific scalar type (e.g., RECOVER_FF_BOOL, RECOVER_FF_INT32).
+     * @return Node representing the inline scalar value.
+     */
+    static Node scalar(const BYTE* base, Size size, uint32_t version,
+                       Offset parent_offset, Offset scalar_offset, RECOVERY_TAG tag);
+
+    /**
+     * @brief Resolve a choice node to its concrete type based on the schema kind.
+     * 
+     * @param base Pointer to the base of the FastFHIR data.
+     * @param size Size of the FastFHIR data.
+     * @param version Version of the FastFHIR data.
+     * @param parent_offset Offset of the parent node.
+     * @param value_offset Offset of the value within the parent node.
+     * @param schema_kind The schema kind to resolve the choice against.
+     * @return Node representing the resolved choice.
+     */
+    static Node resolve_choice(const BYTE* base, Size size, uint32_t version, 
+                       Offset parent_offset, Offset value_offset, FF_FieldKind schema_kind);
 
     /**
      * @brief Check whether this node references a valid underlying value.

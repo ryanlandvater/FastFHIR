@@ -78,6 +78,9 @@ struct PyStream {
 // =====================================================================
 // Type-Safe Python to C++ Assignment Dispatcher
 // =====================================================================
+// =====================================================================
+// Type-Safe Python to C++ Assignment Dispatcher
+// =====================================================================
 void assign_py_obj(MutableEntry& entry, py::handle obj, ObjectHandle& parent_handle, const FF_FieldKey& key) {
     if (py::isinstance<ObjectHandle>(obj)) {
         entry = obj.cast<ObjectHandle>();
@@ -86,13 +89,13 @@ void assign_py_obj(MutableEntry& entry, py::handle obj, ObjectHandle& parent_han
         entry = obj.cast<std::string_view>();
     } 
     else if (py::isinstance<py::bool_>(obj)) {
-        entry.assign_inline<uint8_t>(obj.cast<bool>() ? 1 : 0);
+        entry = obj.cast<bool>();
     } 
     else if (py::isinstance<py::int_>(obj)) {
-        entry.assign_inline<uint32_t>(obj.cast<uint32_t>());
+        entry = obj.cast<int64_t>();
     } 
     else if (py::isinstance<py::float_>(obj)) {
-        entry.assign_inline<double>(obj.cast<double>());
+        entry = obj.cast<double>();
     } 
     else if (py::isinstance<py::list>(obj) || py::isinstance<py::dict>(obj)) {
         auto list = py::isinstance<py::list>(obj) ? obj.cast<py::list>() : py::list();
@@ -401,19 +404,36 @@ PYBIND11_MODULE(_core, m) {
             }
         })
         
-        // Final evaluation to extract native types from the bridge
         .def("value", [](const MutableEntry& self) -> py::object {
             Node child = self.as_node();
             if (child.is_empty()) return py::none();
 
             switch (child.kind()) {
                 case FF_FIELD_BOOL:     return py::bool_(child.as<bool>());
+                case FF_FIELD_INT32:    return py::int_(child.as<int32_t>());
                 case FF_FIELD_UINT32:   return py::int_(child.as<uint32_t>());
+                case FF_FIELD_INT64:    return py::int_(child.as<int64_t>());
+                case FF_FIELD_UINT64:   return py::int_(child.as<uint64_t>());
                 case FF_FIELD_FLOAT64:  return py::float_(child.as<double>());
-                case FF_FIELD_CODE:     // Natively resolved by Node's string_view specialization
+                case FF_FIELD_CODE:     
                 case FF_FIELD_STRING:   return py::str(child.as<std::string_view>());
                 
+                case FF_FIELD_CHOICE: {
+                    switch(child.recovery()) {
+                        case FF_FIELD_BOOL:     return py::bool_(child.as<bool>());
+                        case FF_FIELD_INT32:    return py::int_(child.as<int32_t>());
+                        case FF_FIELD_UINT32:   return py::int_(child.as<uint32_t>());
+                        case FF_FIELD_INT64:    return py::int_(child.as<int64_t>());
+                        case FF_FIELD_UINT64:   return py::int_(child.as<uint64_t>());
+                        case FF_FIELD_FLOAT64:  return py::float_(child.as<double>());
+                        case FF_FIELD_CODE:     
+                        case FF_FIELD_STRING:   return py::str(child.as<std::string_view>());
+                        default: break;
+                    }
+                }
+
                 case FF_FIELD_BLOCK:   
+                case FF_FIELD_RESOURCE:
                 case FF_FIELD_ARRAY: {
                     ObjectHandle elevated = self.as_handle();
                     if (elevated.offset() == FF_NULL_OFFSET) return py::none();

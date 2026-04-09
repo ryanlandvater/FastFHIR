@@ -157,7 +157,7 @@ def _field_kind_expr(f):
     if f['fhir_type'] == 'Resource': 
         return 'FF_FIELD_RESOURCE'
     if f.get('is_choice'):
-        return 'FF_FIELD_VARIANT'
+        return 'FF_FIELD_CHOICE'
     return 'FF_FIELD_UNKNOWN'
 
 def _child_recovery_expr(f, block_struct_name):
@@ -218,10 +218,18 @@ def generate_field_info_implementation(layout, block_struct_name):
         )
     cpp += '};\n'
     cpp += f'const FF_FieldInfo* {block_struct_name}::find_field(std::string_view name) const {{\n'
+    cpp += f'    const FF_FieldInfo* fallback_choice = nullptr;\n'
     cpp += f'    for (size_t i = 0; i < FIELD_COUNT; ++i) {{\n'
+    cpp += f'        // 1. Exact match ALWAYS wins (Protects against collisions)\n'
     cpp += f'        if (name == FIELDS[i].name) return &FIELDS[i];\n'
+    cpp += f'        \n'
+    cpp += f'        // 2. Cache a potential polymorphic prefix match\n'
+    cpp += f'        if (FIELDS[i].kind == FF_FIELD_CHOICE && name.starts_with(FIELDS[i].name)) {{\n'
+    cpp += f'            fallback_choice = &FIELDS[i];\n'
+    cpp += f'        }}\n'
     cpp += f'    }}\n'
-    cpp += f'    return nullptr;\n'
+    cpp += f'    // 3. Return the choice field only if no exact match claimed it\n'
+    cpp += f'    return fallback_choice;\n'
     cpp += f'}}\n'
     return cpp
 
@@ -263,23 +271,42 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "    const FF_FieldInfo* field = block.find_field(key);\n"
         "    if (!field) return {};\n\n"
         "    const Offset value_offset = block.__offset + field->field_offset;\n"
-        "    if (field->kind == FF_FIELD_STRING) {\n"
-        "        const Offset child_offset = LOAD_U64(base + value_offset);\n"
-        "        if (child_offset == FF_NULL_OFFSET) return {};\n"
-        "        return Node(base, block.__size, block.__version, child_offset, FF_STRING::recovery, FF_FIELD_STRING);\n"
+        "    \n"
+        "    switch (field->kind) {\n"
+        "        case FF_FIELD_UNKNOWN:\n"
+        "            return {};\n\n"
+        "        case FF_FIELD_STRING: {\n"
+        "            const Offset child_offset = LOAD_U64(base + value_offset);\n"
+        "            if (child_offset == FF_NULL_OFFSET) return {};\n"
+        "            return Node(base, block.__size, block.__version, child_offset, FF_STRING::recovery, FF_FIELD_STRING);\n"
+        "        }\n"
+        "        \n"
+        "        case FF_FIELD_ARRAY: {\n"
+        "            const Offset child_offset = LOAD_U64(base + value_offset);\n"
+        "            if (child_offset == FF_NULL_OFFSET) return {};\n"
+        "            return Node(base, block.__size, block.__version, child_offset, FF_ARRAY::recovery, FF_FIELD_ARRAY,\n"
+        "                        field->child_recovery, field->array_entries_are_offsets != 0);\n"
+        "        }\n"
+        "        \n"
+        "        case FF_FIELD_BLOCK: {\n"
+        "            const Offset child_offset = LOAD_U64(base + value_offset);\n"
+        "            if (child_offset == FF_NULL_OFFSET) return {};\n"
+        "            return Node(base, block.__size, block.__version, child_offset, field->child_recovery, FF_FIELD_BLOCK);\n"
+        "        }\n"
+        "        \n"
+        "        case FF_FIELD_RESOURCE: {\n"
+        "            const Offset child_offset = LOAD_U64(base + value_offset);\n"
+        "            if (child_offset == FF_NULL_OFFSET) return {};\n"
+        "            RECOVERY_TAG res_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + value_offset + 8));\n"
+        "            return Node(base, block.__size, block.__version, child_offset, res_tag, FF_FIELD_BLOCK);\n"
+        "        }\n"
+        "        \n"
+        "        case FF_FIELD_CHOICE: \n"
+        "            return Node::resolve_choice(base, block.__size, block.__version, block.__offset, value_offset, field->kind);\n"
+        "        \n"
+        "        default: \n"
+        "            return Node::scalar(base, block.__size, block.__version, block.__offset, value_offset, field->kind);\n"
         "    }\n"
-        "    if (field->kind == FF_FIELD_ARRAY) {\n"
-        "        const Offset child_offset = LOAD_U64(base + value_offset);\n"
-        "        if (child_offset == FF_NULL_OFFSET) return {};\n"
-        "        return Node(base, block.__size, block.__version, child_offset, FF_ARRAY::recovery, FF_FIELD_ARRAY,\n"
-        "                    field->child_recovery, field->array_entries_are_offsets != 0);\n"
-        "    }\n"
-        "    if (field->kind == FF_FIELD_BLOCK) {\n"
-        "        const Offset child_offset = LOAD_U64(base + value_offset);\n"
-        "        if (child_offset == FF_NULL_OFFSET) return {};\n"
-        "        return Node(base, block.__size, block.__version, child_offset, field->child_recovery, FF_FIELD_BLOCK);\n"
-        "    }\n"
-        "    return Node::scalar(base, block.__size, block.__version, block.__offset, value_offset, field->kind);\n"
         "}\n\n"
         "template <typename T_Block>\n"
         "std::vector<std::string_view> keys_for_block() {\n"

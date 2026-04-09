@@ -14,6 +14,7 @@
 #include "../include/FF_Parser.hpp"
 #include "../generated_src/FF_Dictionary.hpp"
 #include "../generated_src/FF_Reflection.hpp"
+#include <assert.h>
 
 namespace FastFHIR {
 
@@ -32,16 +33,56 @@ Node::Node(const BYTE* base, Size size, uint32_t version, Offset offset,
       m_kind(kind),
       m_array_entries_are_offsets(array_entries_are_offsets) {}
 
+inline RECOVERY_TAG Kind_to_Recovery(const FF_FieldKind kind)
+{
+    switch (kind) {
+        case FF_FIELD_BOOL:    return RECOVER_FF_BOOL;
+            case FF_FIELD_INT32:   return RECOVER_FF_INT32;
+            case FF_FIELD_UINT32:  return RECOVER_FF_UINT32;
+            case FF_FIELD_INT64:   return RECOVER_FF_INT64;
+            case FF_FIELD_UINT64:  return RECOVER_FF_UINT64;
+            case FF_FIELD_FLOAT64: return RECOVER_FF_FLOAT64;
+            case FF_FIELD_CODE:    return RECOVER_FF_STRING;
+            default:               return FF_RECOVER_UNDEFINED;
+        }
+}
 Node Node::scalar(const BYTE* base, Size size, uint32_t version,
                   Offset parent_offset, Offset scalar_offset, FF_FieldKind kind) {
-    Node node;
-    node.m_base = base;
-    node.m_size = size;
-    node.m_version = version;
-    node.m_node_offset = parent_offset;        
-    node.m_global_scalar_offset = scalar_offset;
-    node.m_kind = kind;
-    return node;
+    Node n (base, size, version, parent_offset, Kind_to_Recovery(kind), kind);
+    n.m_global_scalar_offset = scalar_offset;
+    return n;
+}
+inline FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag) {
+    switch (tag) {
+        case RECOVER_FF_BOOL:    return FF_FIELD_BOOL;
+        case RECOVER_FF_INT32:   return FF_FIELD_INT32;
+        case RECOVER_FF_UINT32:  return FF_FIELD_UINT32;
+        case RECOVER_FF_INT64:   return FF_FIELD_INT64;
+        case RECOVER_FF_UINT64:  return FF_FIELD_UINT64;
+        case RECOVER_FF_FLOAT64: return FF_FIELD_FLOAT64;
+        default:                 return FF_FIELD_UNKNOWN;
+    }
+}
+Node Node::scalar(const BYTE* base, Size size, uint32_t version,
+                  Offset parent_offset, Offset scalar_offset, RECOVERY_TAG tag) {
+    Node n(base, size, version, parent_offset, tag, Recovery_to_Kind(tag));
+    n.m_global_scalar_offset = scalar_offset;
+    return n;
+}
+Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version, 
+                             Offset parent_offset, Offset value_offset, FF_FieldKind schema_kind) {
+    assert(schema_kind == FF_FIELD_CHOICE && "resolve_choice called on non-choice V-Table slot");
+    RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + value_offset + DATA_BLOCK::RECOVERY));
+    
+    if ((tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) { 
+        return Node::scalar(base, size, version, parent_offset, value_offset, tag);
+    }
+    
+    Offset child_off = LOAD_U64(base + value_offset);
+    if (child_off == FF_NULL_OFFSET) return {}; 
+    
+    FF_FieldKind dynamic_kind = (tag == RECOVER_FF_STRING) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
+    return Node(base, size, version, child_off, tag, dynamic_kind);
 }
 
 bool Node::is_empty() const {
@@ -225,33 +266,8 @@ Node Node::operator[](FF_FieldKey key) const {
             
             return Node(m_base, m_size, m_version, actual_off, tuple_tag, FF_FIELD_BLOCK);
         }
-        case FF_FIELD_VARIANT: {
-            RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + value_offset + 8));
-            
-            if ((tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) { 
-                FF_FieldKind dynamic_kind = FF_FIELD_UNKNOWN;
-                switch (tag) {
-                    case RECOVER_FF_BOOL: dynamic_kind = FF_FIELD_BOOL; break;
-                    case RECOVER_FF_FLOAT64: dynamic_kind = FF_FIELD_FLOAT64; break;
-                    case RECOVER_FF_INT32: dynamic_kind = FF_FIELD_INT32; break;
-                    case RECOVER_FF_UINT32: dynamic_kind = FF_FIELD_UINT32; break;
-                    case RECOVER_FF_INT64: dynamic_kind = FF_FIELD_INT64; break;
-                    case RECOVER_FF_UINT64: dynamic_kind = FF_FIELD_UINT64; break;
-                    default: break;
-                }
-                Node n = Node::scalar(m_base, m_size, m_version, m_node_offset, value_offset, dynamic_kind);
-                n.m_recovery = tag; 
-                return n;
-            }
-            
-            // Block/Resource: Standard Absolute Offset Hop
-            Offset child_off = LOAD_U64(m_base + value_offset);
-            if (child_off == FF_NULL_OFFSET) return {}; 
-            
-            FF_FieldKind dynamic_kind = (tag == RECOVER_FF_STRING) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
-            
-            return Node(m_base, m_size, m_version, child_off, tag, dynamic_kind);
-        }
+        case FF_FIELD_CHOICE: 
+        return Node::resolve_choice(m_base, m_size, m_version, m_node_offset, value_offset, key.kind);
 
         // -- COMPLEX TYPES (Standard 8-Byte Pointers) --
         case FF_FIELD_BLOCK:
@@ -361,7 +377,7 @@ bool Node::as<bool>() const {
     if (!*this) return false;
     
     // FAST PATH: Inline Variant Choice [x]
-    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_BOOL) {
+    if (m_kind == FF_FIELD_CHOICE && m_recovery == RECOVER_FF_BOOL) {
         return LOAD_U8(m_base + m_global_scalar_offset) != 0;
     }
     
@@ -374,7 +390,7 @@ template <>
 int32_t Node::as<int32_t>() const {
     if (!*this) return 0;
     
-    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_INT32) {
+    if (m_kind == FF_FIELD_CHOICE && m_recovery == RECOVER_FF_INT32) {
         return static_cast<int32_t>(LOAD_U32(m_base + m_global_scalar_offset));
     }
     
@@ -386,7 +402,7 @@ template <>
 uint32_t Node::as<uint32_t>() const {
     if (!*this) return 0;
     
-    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_UINT32) {
+    if (m_kind == FF_FIELD_CHOICE && m_recovery == RECOVER_FF_UINT32) {
         return LOAD_U32(m_base + m_global_scalar_offset);
     }
     
@@ -398,7 +414,7 @@ template <>
 int64_t Node::as<int64_t>() const {
     if (!*this) return 0;
     
-    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_INT64) {
+    if (m_kind == FF_FIELD_CHOICE && m_recovery == RECOVER_FF_INT64) {
         return static_cast<int64_t>(LOAD_U64(m_base + m_global_scalar_offset));
     }
     
@@ -410,7 +426,7 @@ template <>
 uint64_t Node::as<uint64_t>() const {
     if (!*this) return 0;
     
-    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_UINT64) {
+    if (m_kind == FF_FIELD_CHOICE && m_recovery == RECOVER_FF_UINT64) {
         return LOAD_U64(m_base + m_global_scalar_offset);
     }
     
@@ -422,7 +438,7 @@ template <>
 double Node::as<double>() const {
     if (!*this) return 0.0;
     
-    if (m_kind == FF_FIELD_VARIANT && m_recovery == RECOVER_FF_FLOAT64) {
+    if (m_kind == FF_FIELD_CHOICE && m_recovery == RECOVER_FF_FLOAT64) {
         return LOAD_F64(m_base + m_global_scalar_offset);
     }
     
@@ -561,7 +577,7 @@ void Node::print_json(std::ostream& out) const {
             
             if (!first) out << ",";
             out << "\"" << f.name;
-            if (f.kind == FF_FIELD_VARIANT) out << get_choice_suffix(child.recovery());
+            if (f.kind == FF_FIELD_CHOICE) out << get_choice_suffix(child.recovery());
             out << "\":";
             child.print_json(out);
             first = false;

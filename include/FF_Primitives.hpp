@@ -147,8 +147,8 @@ enum FF_FieldKind : uint16_t
     FF_FIELD_INT64,
     FF_FIELD_UINT64,
     FF_FIELD_FLOAT64,
-    FF_FIELD_VARIANT,
     FF_FIELD_RESOURCE,
+    FF_FIELD_CHOICE,
 };
 
 struct FF_FieldInfo

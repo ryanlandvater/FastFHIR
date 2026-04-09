@@ -14,9 +14,9 @@ The engine will support two distinct stream states, separated to avoid architect
 
 Compaction will be handled at the stream level rather than per-block, ensuring the Parser makes a single architectural branch upon initialization.
 
-* The Header Flag: The global 10-byte FF_HEADER will be extended to include a FLAGS byte.
+* The Header Flag: The global 10-byte FF_HEADER will be extended to include FLAGS bytes array depending on the number of entries within the particular DATA_BLOCK.
 
-* State Check: Setting the FF_STREAM_COMPACTED bit (e.g., bit 0) will signal the Parser and all child Node objects to execute sparse-offset logic instead of absolute V-Table hops.
+* State Check: Setting the FF_STREAM_COMPACTED bit within the HEADER::VERSION (e.g., bit 0) will signal the Parser and all child Node objects to execute sparse-offset logic instead of absolute V-Table hops.
 
 * No Mixed Streams: A stream is either entirely mutable or entirely compacted.
 
@@ -44,10 +44,10 @@ To minimize the performance penalty of abandoning fixed offsets, the Parser will
 
 Compaction cannot be done in place due to the need to shift downstream memory. A specialized Compactor utility will handle the transformation.
 
-    Input: A finalized, Flat-mode FastFHIR memory buffer.
+* Input: A finalized, Flat-mode FastFHIR memory buffer.
 
-    Traversal: It performs a full recursive walk of the stream.
+* Traversal: It performs a full recursive walk of the stream.
 
-    Synthesis: For each block, it evaluates the existing V-Table, constructs the presence bitset for non-null/non-empty slots, and appends only the valid data lanes to a new buffer.
+* Synthesis: For each block, it evaluates the existing V-Table, constructs the presence bitset for non-null/non-empty slots, and appends only the valid data lanes to a new buffer.
 
-    Finalization: The Compactor writes the new FF_HEADER with the FF_STREAM_COMPACTED flag engaged.
+* Finalization: The Compactor writes the new FF_HEADER with the FF_STREAM_COMPACTED flag engaged.
