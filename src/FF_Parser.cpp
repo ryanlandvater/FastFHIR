@@ -37,13 +37,13 @@ inline RECOVERY_TAG Kind_to_Recovery(const FF_FieldKind kind)
 {
     switch (kind) {
         case FF_FIELD_BOOL:    return RECOVER_FF_BOOL;
-            case FF_FIELD_INT32:   return RECOVER_FF_INT32;
-            case FF_FIELD_UINT32:  return RECOVER_FF_UINT32;
-            case FF_FIELD_INT64:   return RECOVER_FF_INT64;
-            case FF_FIELD_UINT64:  return RECOVER_FF_UINT64;
-            case FF_FIELD_FLOAT64: return RECOVER_FF_FLOAT64;
-            case FF_FIELD_CODE:    return RECOVER_FF_STRING;
-            default:               return FF_RECOVER_UNDEFINED;
+        case FF_FIELD_INT32:   return RECOVER_FF_INT32;
+        case FF_FIELD_UINT32:  return RECOVER_FF_UINT32;
+        case FF_FIELD_INT64:   return RECOVER_FF_INT64;
+        case FF_FIELD_UINT64:  return RECOVER_FF_UINT64;
+        case FF_FIELD_FLOAT64: return RECOVER_FF_FLOAT64;
+        case FF_FIELD_CODE:    return RECOVER_FF_STRING;
+        default:               return FF_RECOVER_UNDEFINED;
         }
 }
 Node Node::scalar(const BYTE* base, Size size, uint32_t version,

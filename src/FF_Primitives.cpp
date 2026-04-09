@@ -215,8 +215,7 @@ uint32_t FF_ARRAY::entry_count(const BYTE* const __base) const
 const BYTE* FF_ARRAY::entries(const BYTE* const __base) const
 { return __base + __offset + HEADER_SIZE; }
 
-void STORE_FF_ARRAY_HEADER(BYTE* const __base, Offset& write_head, FF_ARRAY::EntryKind kind, uint16_t entry_step, uint32_t entry_count) {
-    // Validate that the step size doesn't overflow into the kind bits (max 16.38kb)
+void STORE_FF_ARRAY_HEADER(BYTE* const __base, Offset& write_head, FF_ARRAY::EntryKind kind, uint32_t entry_step, uint32_t entry_count) {    // Validate that the step size doesn't overflow into the kind bits (max 16.38kb)
     if (entry_step > FF_ARRAY::STEP_MASK) {
         throw std::runtime_error("FastFHIR: FF_ARRAY entry step size exceeds maximum 14-bit permitted value.");
     }
@@ -225,7 +224,7 @@ void STORE_FF_ARRAY_HEADER(BYTE* const __base, Offset& write_head, FF_ARRAY::Ent
     STORE_U64(__ptr + FF_ARRAY::VALIDATION, write_head);
     STORE_U16(__ptr + FF_ARRAY::RECOVERY, RECOVER_FF_ARRAY);
     // Bitwise pack the Kind (top 2 bits) and the Step (bottom 14 bits)
-    STORE_U16(__ptr + FF_ARRAY::KIND_AND_STEP, kind | entry_step);
+    STORE_U16(__ptr + FF_ARRAY::KIND_AND_STEP, static_cast<uint16_t>(kind) | static_cast<uint16_t>(entry_step));
     STORE_U32(__ptr + FF_ARRAY::ENTRY_COUNT, entry_count);
     write_head += FF_ARRAY::HEADER_SIZE;
 }

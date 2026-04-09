@@ -79,7 +79,7 @@ void MutableEntry::validate_assignment(RECOVERY_TAG child_tag) const
             throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range).");
         }
         // Strictly typed field: Ensure an exact match
-    } else if (child_tag != m_target_recovery)
+    } else if (m_target_recovery != FF_RECOVER_UNDEFINED && child_tag != m_target_recovery)
         throw std::invalid_argument("FastFHIR Schema Violation: MutableEntry attempted to assign an incompatible ObjectHandle type. Assigned types must match current types");
 }
 
