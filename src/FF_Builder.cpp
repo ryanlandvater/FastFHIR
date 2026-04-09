@@ -164,19 +164,6 @@ void Builder::end_mutation()
     m_active_mutators.fetch_sub(1, std::memory_order_acq_rel);
 }
 
-#define GENERATE_SCALAR_AMENDER(S, T, M) void Builder::amend_scalar_##S(Offset o, size_t v, T l) { \
-    if (!try_begin_mutation()) throw std::runtime_error("FF: Lk"); \
-    struct MG { Builder *b; ~MG() { b->end_mutation(); } } g{this}; \
-    if (o + v + sizeof(T) > m_memory.capacity()) throw std::runtime_error("FF: OOB"); \
-    M(const_cast<BYTE*>(m_base) + o + v, l); }
-
-GENERATE_SCALAR_AMENDER(8,   uint8_t,  STORE_U8)
-GENERATE_SCALAR_AMENDER(32,  uint32_t, STORE_U32)
-GENERATE_SCALAR_AMENDER(64,  uint64_t, STORE_U64)
-GENERATE_SCALAR_AMENDER(f64, double,   STORE_F64)
-
-#undef GENERATE_SCALAR_AMENDER
-
 // =====================================================================
 // View Node & Amend Pointer
 // =====================================================================

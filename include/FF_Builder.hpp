@@ -10,6 +10,7 @@
 #pragma once
 
 #include "FF_Parser.hpp"
+#include "FF_Utilities.hpp"
 #include <atomic>
 #include <stdexcept>
 #include <string_view>
@@ -56,6 +57,7 @@ public:
     // Option B: Concurrently append NEW data to the stream
     // and patch the pointer simultaneously!
     template <typename T_Data>
+    requires (!std::is_arithmetic_v<T_Data>) // No primatives allowed here — use the in-place scalar setters instead
     Offset operator=(const T_Data& data);
 
     // 1. Implicit Conversion
@@ -105,7 +107,7 @@ public:
      */
     ObjectHandle(Builder* builder, const Node& node)
         : m_builder(builder) {
-        if (node.is_empty()) {
+        if (!node) {
             m_offset = FF_NULL_OFFSET;
             m_recovery = FF_RECOVER_UNDEFINED;
         } else {
@@ -162,10 +164,6 @@ class Builder {
 
     bool try_begin_mutation();
     void end_mutation();
-    void amend_scalar_8(Offset obj_off, size_t v_off, uint8_t val);
-    void amend_scalar_32(Offset obj_off, size_t v_off, uint32_t val);
-    void amend_scalar_64(Offset obj_off, size_t v_off, uint64_t val);
-    void amend_scalar_f64(Offset obj_off, size_t v_off, double val);
 
 public:
     Builder(const Builder&) = delete;
@@ -333,6 +331,7 @@ inline MutableEntry MutableEntry::operator[](FF_FieldKey key) const { return as_
 inline MutableEntry MutableEntry::operator[](size_t index) const { return as_handle()[index]; }
 
 template <typename T_Data>
+requires (!std::is_arithmetic_v<T_Data>)
 Offset MutableEntry::operator=(const T_Data& data) {
     // 1. Offload strict schema validation to the translation unit
     validate_assignment(TypeTraits<T_Data>::recovery);
@@ -384,17 +383,32 @@ inline MutableEntry ObjectHandle::operator[](FF_FieldKey key) const {
 template <typename T>
 requires std::is_arithmetic_v<T>
 void Builder::amend_scalar(Offset object_offset, size_t field_vtable_offset, T val) {
+    if (!try_begin_mutation()) {
+        throw std::runtime_error("FastFHIR: Builder is finalizing; amend is no longer allowed.");
+    }
+
+    struct MutationGuard {
+        Builder* self;
+        ~MutationGuard() { self->end_mutation(); }
+    } guard{this};
+
+    if (object_offset + field_vtable_offset + sizeof(T) > m_memory.capacity()) {
+        throw std::runtime_error("FastFHIR: Scalar amendment out of bounds.");
+    }
+
+    BYTE* ptr = const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset;
+
     if constexpr (sizeof(T) == 1) {
-        amend_scalar_8(object_offset, field_vtable_offset, static_cast<uint8_t>(val));
+        STORE_U8(ptr, static_cast<uint8_t>(val));
     }
     else if constexpr (sizeof(T) == 4) {
-        amend_scalar_32(object_offset, field_vtable_offset, static_cast<uint32_t>(val));
+        STORE_U32(ptr, static_cast<uint32_t>(val));
     }
     else if constexpr (sizeof(T) == 8) {
         if constexpr (std::is_floating_point_v<T>) {
-            amend_scalar_f64(object_offset, field_vtable_offset, static_cast<double>(val));
+            STORE_F64(ptr, static_cast<double>(val));
         } else {
-            amend_scalar_64(object_offset, field_vtable_offset, static_cast<uint64_t>(val));
+            STORE_U64(ptr, static_cast<uint64_t>(val));
         }
     }
 }

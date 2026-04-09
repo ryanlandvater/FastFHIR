@@ -17,6 +17,7 @@
 
 #include "FF_Primitives.hpp"
 #include "FF_Memory.hpp"
+#include "FF_Utilities.hpp"
 
 namespace FastFHIR {
 template<typename T> struct TypeTraits;
@@ -256,15 +257,11 @@ public:
      * @tparam T_Data The generated FastFHIR Data struct (e.g., PatientData).
      * @throws std::invalid_argument if the node's recovery tag doesn't match the requested type.
      */
-    template <typename T_Data>
+    template<typename T_Data>
     T_Data as() const {
-        if (!*this || is_empty()) return T_Data{};
-
-        // Strict schema validation!
         if (m_recovery != TypeTraits<T_Data>::recovery) {
-            throw std::invalid_argument("FastFHIR Schema Violation: Cannot cast Node to requested type.");
+            throw std::runtime_error("Node::as() recovery tag mismatch");
         }
-
         return TypeTraits<T_Data>::read(m_base, m_node_offset, m_size, m_version);
     }
     
@@ -282,10 +279,52 @@ class ArrayNode : public Node {
 // =====================================================================
 // Explicit Node Specializations for Primitives
 // =====================================================================
-template <> std::string_view Node::as<std::string_view>() const;
-template <> bool Node::as<bool>() const;
-template <> uint32_t Node::as<uint32_t>() const;
-template <> double Node::as<double>() const;
+template <> 
+inline bool Node::as<bool>() const {
+    if (m_recovery != RECOVER_FF_BOOL) throw std::runtime_error("FastFHIR: Recovery mismatch (expected bool)");
+    return LOAD_U8(m_base + m_global_scalar_offset) != 0;
+}
 
+template <> 
+inline int32_t Node::as<int32_t>() const {
+    if (m_recovery != RECOVER_FF_INT32) throw std::runtime_error("FastFHIR: Recovery mismatch (expected int32_t)");
+    return static_cast<int32_t>(LOAD_U32(m_base + m_global_scalar_offset));
+}
 
+template <> 
+inline uint32_t Node::as<uint32_t>() const {
+    if (m_recovery != RECOVER_FF_UINT32) throw std::runtime_error("FastFHIR: Recovery mismatch (expected uint32_t)");
+    return LOAD_U32(m_base + m_global_scalar_offset);
+}
+
+template <> 
+inline int64_t Node::as<int64_t>() const {
+    if (m_recovery != RECOVER_FF_INT64) throw std::runtime_error("FastFHIR: Recovery mismatch (expected int64_t)");
+    return static_cast<int64_t>(LOAD_U64(m_base + m_global_scalar_offset));
+}
+
+template <> 
+inline uint64_t Node::as<uint64_t>() const {
+    if (m_recovery != RECOVER_FF_UINT64) throw std::runtime_error("FastFHIR: Recovery mismatch (expected uint64_t)");
+    return LOAD_U64(m_base + m_global_scalar_offset);
+}
+
+template <> 
+inline double Node::as<double>() const {
+    if (m_recovery != RECOVER_FF_FLOAT64) throw std::runtime_error("FastFHIR: Recovery mismatch (expected double)");
+    
+    // Safely bridge the 64-bit memory lane into a double without violating strict aliasing
+    uint64_t bits = LOAD_U64(m_base + m_global_scalar_offset);
+    double val;
+    std::memcpy(&val, &bits, sizeof(double));
+    return val;
+}
+
+template <> 
+inline std::string_view Node::as<std::string_view>() const {
+    if (m_recovery != RECOVER_FF_STRING) throw std::runtime_error("FastFHIR: Recovery mismatch (expected string)");
+    
+    // Bypass TypeTraits and use the core FF_STRING primitive directly
+    return FF_STRING(m_node_offset, m_size, m_version).read_view(m_base);
+}
 } // namespace FastFHIR

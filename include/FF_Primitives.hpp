@@ -410,7 +410,7 @@ struct FF_EXPORT FF_ARRAY : DATA_BLOCK
 
 void FF_EXPORT STORE_FF_ARRAY_HEADER(BYTE *const __base, Offset &write_head,
                                      FF_ARRAY::EntryKind kind,
-                                     uint16_t entry_step, uint32_t entry_count);
+                                     uint32_t entry_step, uint32_t entry_count);
 void FF_EXPORT STORE_FF_POINTER_ARRAY(BYTE *const __base, Offset &write_head,
                                       const std::vector<Offset> &offsets);
 
