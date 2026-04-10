@@ -18,6 +18,7 @@
 #include "FF_Primitives.hpp"
 #include "FF_Memory.hpp"
 #include "FF_Utilities.hpp"
+#include "FF_Dictionary.hpp"
 
 namespace FastFHIR {
 template<typename T> struct TypeTraits;
@@ -259,7 +260,7 @@ public:
      */
     template<typename T_Data>
     T_Data as() const {
-        if (m_recovery != TypeTraits<T_Data>::recovery) {
+        if (GetTypeFromTag(m_recovery) != GetTypeFromTag(T_Data::recovery)) {
             throw std::runtime_error("Node::as() recovery tag mismatch");
         }
         return TypeTraits<T_Data>::read(m_base, m_node_offset, m_size, m_version);
@@ -322,9 +323,28 @@ inline double Node::as<double>() const {
 
 template <> 
 inline std::string_view Node::as<std::string_view>() const {
-    if (m_recovery != RECOVER_FF_STRING) throw std::runtime_error("FastFHIR: Recovery mismatch (expected string)");
-    
-    // Bypass TypeTraits and use the core FF_STRING primitive directly
+    // --- Dictionary Code Resolution ---
+    if (m_recovery == RECOVER_FF_CODE) {
+        uint32_t raw_code = LOAD_U32(m_base + m_global_scalar_offset);
+        if (raw_code == FF_CODE_NULL) return "";
+        
+        // 1. Resolve via Global Dictionary
+        if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
+            return resolved;
+        }
+        
+        // 2. Resolve via Local Custom String
+        if (raw_code & FF_CUSTOM_STRING_FLAG) {
+            Offset relative_off = (raw_code & ~FF_CUSTOM_STRING_FLAG);
+            return FF_STRING(m_node_offset + relative_off, m_size, m_version).read_view(m_base);
+        }
+        return "";
+    }
+
+    // --- Standard String Block ---
+    else if (m_recovery != RECOVER_FF_STRING) {
+        throw std::runtime_error("FastFHIR: Node is not a string or code.");
+    }
     return FF_STRING(m_node_offset, m_size, m_version).read_view(m_base);
 }
 } // namespace FastFHIR

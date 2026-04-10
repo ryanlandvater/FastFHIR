@@ -151,6 +151,32 @@ enum FF_FieldKind : uint16_t
     FF_FIELD_CHOICE,
 };
 
+inline RECOVERY_TAG Kind_to_Recovery(const FF_FieldKind kind)
+{
+    switch (kind) {
+        case FF_FIELD_BOOL:    return RECOVER_FF_BOOL;
+        case FF_FIELD_INT32:   return RECOVER_FF_INT32;
+        case FF_FIELD_UINT32:  return RECOVER_FF_UINT32;
+        case FF_FIELD_INT64:   return RECOVER_FF_INT64;
+        case FF_FIELD_UINT64:  return RECOVER_FF_UINT64;
+        case FF_FIELD_FLOAT64: return RECOVER_FF_FLOAT64;
+        case FF_FIELD_CODE:    return RECOVER_FF_CODE;
+        default:               return FF_RECOVER_UNDEFINED;
+        }
+}
+inline FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag) {
+    switch (tag) {
+        case RECOVER_FF_BOOL:    return FF_FIELD_BOOL;
+        case RECOVER_FF_INT32:   return FF_FIELD_INT32;
+        case RECOVER_FF_UINT32:  return FF_FIELD_UINT32;
+        case RECOVER_FF_INT64:   return FF_FIELD_INT64;
+        case RECOVER_FF_UINT64:  return FF_FIELD_UINT64;
+        case RECOVER_FF_FLOAT64: return FF_FIELD_FLOAT64;
+        case RECOVER_FF_CODE:    return FF_FIELD_CODE;
+        default:                 return FF_FIELD_UNKNOWN;
+    }
+}
+
 struct FF_FieldInfo
 {
     const char *name = nullptr;
@@ -275,7 +301,7 @@ struct FF_EXPORT DATA_BLOCK
 
     operator bool() const { return __offset != FF_NULL_OFFSET; }
 
-    FF_Result validate_offset(const BYTE *const __base, const char *type_name, uint16_t recovery_tag) const noexcept;
+    FF_Result validate_offset(const BYTE *const __base, const char *type_name, RECOVERY_TAG recovery_tag) const noexcept;
 
 #ifdef __EMSCRIPTEN__
     void check_and_fetch_remote(const BYTE *const &__base);
@@ -368,7 +394,6 @@ BYTE *FF_EXPORT STORE_FF_CHECKSUM_METADATA(BYTE *const __base, Offset start_offs
 struct FF_EXPORT FF_ARRAY : DATA_BLOCK
 {
     static constexpr char type[] = "FF_ARRAY";
-    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_ARRAY;
 
     // Bitmasks for the packed 16-bit Kind & Step field at offset 10
     static constexpr uint16_t KIND_MASK = 0xC000; // Bits 15-14
@@ -410,9 +435,8 @@ struct FF_EXPORT FF_ARRAY : DATA_BLOCK
 
 void FF_EXPORT STORE_FF_ARRAY_HEADER(BYTE *const __base, Offset &write_head,
                                      FF_ARRAY::EntryKind kind,
-                                     uint32_t entry_step, uint32_t entry_count);
-void FF_EXPORT STORE_FF_POINTER_ARRAY(BYTE *const __base, Offset &write_head,
-                                      const std::vector<Offset> &offsets);
+                                     uint32_t entry_step, uint32_t entry_count, 
+                                     RECOVERY_TAG entry_recovery_tag);
 
 // =====================================================================
 // ZERO-COPY STRING BLOCK

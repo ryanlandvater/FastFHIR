@@ -59,6 +59,7 @@ public:
     template <typename T_Data>
     requires (!std::is_arithmetic_v<T_Data>) // No primatives allowed here — use the in-place scalar setters instead
     Offset operator=(const T_Data& data);
+    MutableEntry& operator=(const std::vector<Offset>& offsets);
 
     // 1. Implicit Conversion
     // 1. Implicitly decay to a read-only Node for getters
@@ -128,7 +129,7 @@ public:
     MutableEntry operator[](FF_FieldKey key) const;
     
     // Checks if the given object handle represents an FF_ARRAY
-    bool is_array() const { return m_recovery == RECOVER_FF_ARRAY; }
+    bool is_array() const { return IsArrayTag(m_recovery); }
     
     // Spawns a mutable bridge for an array entry
     MutableEntry operator[](size_t index) const;
@@ -228,6 +229,45 @@ public:
     template<typename T_Data>
     ObjectHandle append_obj(const T_Data& data) {
         return ObjectHandle(this, append(data), TypeTraits<T_Data>::recovery);
+    }
+
+    /**
+     * @brief Overload for strongly-typed Offset Arrays.
+     * Bypasses TypeTraits to dynamically inject the semantic array tag.
+     */
+    Offset append(const std::vector<Offset>& offsets, RECOVERY_TAG semantic_tag) {
+        if (!try_begin_mutation()) {
+            throw std::runtime_error("FastFHIR: Builder is finalizing; append is no longer allowed.");
+        }
+
+        struct MutationGuard {
+            Builder* self;
+            ~MutationGuard() { self->end_mutation(); }
+        } guard{this};
+
+        // 1. Calculate Size directly
+        uint32_t count = static_cast<uint32_t>(offsets.size());
+        Size data_size = FF_ARRAY::HEADER_SIZE + (count * 8); 
+        
+        // 2. Thread-safe claim of space
+        Offset offset = m_memory.claim_space(data_size);
+        
+        // 3. Thread-safe write of data with the injected tag
+        Offset write_head = offset;
+        STORE_FF_ARRAY_HEADER(m_base, write_head, FF_ARRAY::OFFSET, 8, count, semantic_tag);
+        for (Offset off : offsets) {
+            STORE_U64(m_base + write_head, off);
+            write_head += 8;
+        }
+        
+        return offset;
+    }
+
+    /**
+     * @brief Overload for appending offset arrays and returning a proxy handle.
+     */
+    ObjectHandle append_obj(const std::vector<Offset>& offsets, RECOVERY_TAG semantic_tag) {
+        return ObjectHandle(this, append(offsets, semantic_tag), semantic_tag);
     }
 
     /**
@@ -364,9 +404,21 @@ MutableEntry& MutableEntry::operator=(T val) {
     return *this;
 }
 
+inline MutableEntry& MutableEntry::operator=(const std::vector<Offset>& offsets) {
+        if (m_parent_offset == FF_NULL_OFFSET)
+            throw std::runtime_error("FastFHIR: Cannot assign to a NULL entry.");
+            
+        // 1. Thread-safe append of the array
+        Offset child_offset = m_builder->append(offsets, m_target_recovery);
+        
+        // 2. Thread-safe pointer patch
+        m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child_offset);
+        
+        return *this;
+    }
+
 inline Node ObjectHandle::as_node() const {
-    // Ensure the Parser knows to treat this as an array structure
-    FF_FieldKind node_kind = (m_recovery == RECOVER_FF_ARRAY) ? FF_FIELD_ARRAY : FF_FIELD_BLOCK;
+    FF_FieldKind node_kind = IsArrayTag(m_recovery) ? FF_FIELD_ARRAY : FF_FIELD_BLOCK;
     return m_builder->view_node(m_offset, m_recovery, node_kind);
 }
 
@@ -374,8 +426,9 @@ inline MutableEntry ObjectHandle::operator[](FF_FieldKey key) const {
     if (m_offset == FF_NULL_OFFSET)
         throw std::runtime_error("FastFHIR: Invalid ObjectHandle...");
                                  
-    // Map the array field directly to the array container tag
-    RECOVERY_TAG target_tag = (key.kind == FF_FIELD_ARRAY) ? RECOVER_FF_ARRAY : key.child_recovery;
+    // Map the array field directly to the concrete semantic tag
+    RECOVERY_TAG target_tag = (key.kind == FF_FIELD_ARRAY) ? 
+        static_cast<RECOVERY_TAG>(key.child_recovery | RECOVER_ARRAY_BIT) : key.child_recovery;
     
     return MutableEntry(m_builder, m_offset, key.field_offset, target_tag, key.kind);
 }

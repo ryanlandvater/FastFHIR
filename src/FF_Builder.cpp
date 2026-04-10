@@ -33,15 +33,15 @@ ObjectHandle MutableEntry::as_handle() const {
     auto base = m_builder->memory().base();
     
     // --- INLINE POLYMORPHIC TUPLE ---
-    if (m_target_recovery == RECOVER_FF_RESOURCE) {
+    if (m_kind == FF_FIELD_RESOURCE || m_kind == FF_FIELD_CHOICE || m_target_recovery == RECOVER_FF_RESOURCE) {
         Offset target = LOAD_U64(base + m_parent_offset + m_vtable_offset); 
-        RECOVERY_TAG tag = static_cast<RECOVERY_TAG>
-            (LOAD_U16(base + m_parent_offset + m_vtable_offset + DATA_BLOCK::RECOVERY));
-        
         if (target == FF_NULL_OFFSET) 
             return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
             
-        return ObjectHandle(m_builder, target, tag);
+        RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
+            (LOAD_U16(base + m_parent_offset + m_vtable_offset + DATA_BLOCK::RECOVERY));
+        
+        return ObjectHandle(m_builder, target, actual_tag);
     }
     
     // --- STANDARD 8-BYTE POINTER ---
@@ -106,14 +106,14 @@ MutableEntry ObjectHandle::operator[](size_t index) const
     size_t entry_vtable_offset = static_cast<size_t>(entries_ptr - (base + m_offset)) + (index * step);
 
     // Return the bridge to the slot.
-    // Type discovery happens lazily in as_handle(), and schema safety is
+    // Type discovery may happen lazily in as_handle(), and schema safety is
     // enforced at compile-time by the ffc.py generated code.
     return MutableEntry(
         m_builder,
         m_offset,
         entry_vtable_offset,
-        FF_RECOVER_UNDEFINED,
-        FF_FIELD_UNKNOWN
+        GetTypeFromTag(m_recovery),
+        Recovery_to_Kind(m_recovery)
     );
 }
 

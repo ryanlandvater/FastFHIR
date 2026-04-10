@@ -33,35 +33,11 @@ Node::Node(const BYTE* base, Size size, uint32_t version, Offset offset,
       m_kind(kind),
       m_array_entries_are_offsets(array_entries_are_offsets) {}
 
-inline RECOVERY_TAG Kind_to_Recovery(const FF_FieldKind kind)
-{
-    switch (kind) {
-        case FF_FIELD_BOOL:    return RECOVER_FF_BOOL;
-        case FF_FIELD_INT32:   return RECOVER_FF_INT32;
-        case FF_FIELD_UINT32:  return RECOVER_FF_UINT32;
-        case FF_FIELD_INT64:   return RECOVER_FF_INT64;
-        case FF_FIELD_UINT64:  return RECOVER_FF_UINT64;
-        case FF_FIELD_FLOAT64: return RECOVER_FF_FLOAT64;
-        case FF_FIELD_CODE:    return RECOVER_FF_STRING;
-        default:               return FF_RECOVER_UNDEFINED;
-        }
-}
 Node Node::scalar(const BYTE* base, Size size, uint32_t version,
                   Offset parent_offset, Offset scalar_offset, FF_FieldKind kind) {
     Node n (base, size, version, parent_offset, Kind_to_Recovery(kind), kind);
     n.m_global_scalar_offset = scalar_offset;
     return n;
-}
-inline FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag) {
-    switch (tag) {
-        case RECOVER_FF_BOOL:    return FF_FIELD_BOOL;
-        case RECOVER_FF_INT32:   return FF_FIELD_INT32;
-        case RECOVER_FF_UINT32:  return FF_FIELD_UINT32;
-        case RECOVER_FF_INT64:   return FF_FIELD_INT64;
-        case RECOVER_FF_UINT64:  return FF_FIELD_UINT64;
-        case RECOVER_FF_FLOAT64: return FF_FIELD_FLOAT64;
-        default:                 return FF_FIELD_UNKNOWN;
-    }
 }
 Node Node::scalar(const BYTE* base, Size size, uint32_t version,
                   Offset parent_offset, Offset scalar_offset, RECOVERY_TAG tag) {
@@ -81,7 +57,12 @@ Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version,
     Offset child_off = LOAD_U64(base + value_offset);
     if (child_off == FF_NULL_OFFSET) return {}; 
     
-    FF_FieldKind dynamic_kind = (tag == RECOVER_FF_STRING) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
+    FF_FieldKind dynamic_kind = FF_FIELD_BLOCK;
+    switch (tag) {
+        case RECOVER_FF_STRING: dynamic_kind = FF_FIELD_STRING; break;
+        case RECOVER_FF_CODE: dynamic_kind = FF_FIELD_CODE; break;
+        default: break;
+    }
     return Node(base, size, version, child_off, tag, dynamic_kind);
 }
 
@@ -194,7 +175,12 @@ std::vector<Node> Node::entries() const {
                 LOAD_U16(m_base + child_off + DATA_BLOCK::RECOVERY)
             );
             
-            FF_FieldKind child_kind = (m_child_recovery == FF_STRING::recovery) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
+            FF_FieldKind child_kind = FF_FIELD_BLOCK;
+            switch (m_child_recovery){
+            case RECOVER_FF_STRING: child_kind = FF_FIELD_STRING; break;
+            case RECOVER_FF_CODE: child_kind = FF_FIELD_CODE; break;
+            default: break;
+            }
             
             out.push_back(Node(m_base, m_size, m_version, child_off, actual_tag, child_kind));
             continue;

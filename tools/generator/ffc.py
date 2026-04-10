@@ -37,7 +37,7 @@ TYPE_MAP = {
     'unsignedInt':  {'cpp': 'uint32_t', 'data_type': 'uint32_t', 'null': 'FF_NULL_UINT32',  'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'},
     'positiveInt':  {'cpp': 'uint32_t', 'data_type': 'uint32_t', 'null': 'FF_NULL_UINT32',  'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'},
     'decimal':      {'cpp': 'double',   'data_type': 'double', 'null': 'FF_NULL_F64',       'size': 8, 'size_const': 'TYPE_SIZE_FLOAT64', 'macro': 'LOAD_F64'},
-    'code':         {'cpp': 'uint32_t', 'data_type': 'std::string', 'null': 'FF_CODE_NULL', 'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'}, 
+    'code':         {'cpp': 'uint32_t', 'data_type': 'std::string_view', 'null': '""',      'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'}, 
     'Resource':     {'cpp': 'ResourceReference', 'data_type': 'ResourceReference', 'null': '{}', 'size': 10, 'size_const': 'TYPE_SIZE_RESOURCE', 'macro': 'LOAD_RESOURCE'},
     'CHOICE':       {'cpp': 'ChoiceEntry', 'data_type': 'ChoiceEntry', 'null': '{}', 'size': 10, 'size_const': 'TYPE_SIZE_CHOICE', 'macro': 'LOAD_VARIANT'},
     'DEFAULT':      {'cpp': 'Offset',   'data_type': 'Offset', 'null': 'FF_NULL_OFFSET',    'size': 8, 'size_const': 'TYPE_SIZE_OFFSET',  'macro': 'LOAD_U64'}  
@@ -114,14 +114,16 @@ def _block_key_namespace(path):
 def _child_recovery_key_expr(f, block_struct_name):
     if f['fhir_type'] == 'Resource':
         return 'RECOVER_FF_RESOURCE'
-    if f['is_array']:
+    elif f['fhir_type'] == 'code':
+        return 'RECOVER_FF_CODE'
+    elif f['is_array']:
         if f['fhir_type'] in ('string', 'code'):
             return 'RECOVER_FF_STRING'
         child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
         return f'RECOVER_{child_struct}'
-    if f['fhir_type'] == 'string':
+    elif f['fhir_type'] == 'string':
         return 'RECOVER_FF_STRING'
-    if f['cpp_type'] == 'Offset':
+    elif f['cpp_type'] == 'Offset':
         child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
         return f'RECOVER_{child_struct}'
     return 'FF_RECOVER_UNDEFINED'
@@ -164,6 +166,8 @@ def _child_recovery_expr(f, block_struct_name):
     if f['fhir_type'] == 'Resource':
         return 'RECOVER_FF_RESOURCE'
     if f['is_array']:
+        if f['fhir_type'] == 'code':
+            return 'RECOVER_FF_CODE'
         if f['fhir_type'] in ('string', 'code'):
             return 'FF_STRING::recovery'
         child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
@@ -197,13 +201,16 @@ def generate_getter_implementations(layout, block_struct_name):
         if not _needs_getter(f):
             continue
         ret_type = _getter_return_type(f, block_struct_name)
+        if f['is_array']:
+            expected_tag = f"ToArrayTag({_child_recovery_expr(f, block_struct_name)})"
+        else: expected_tag = f"{ret_type}::recovery"
         cpp += f"{ret_type} {block_struct_name}::get_{f['cpp_name']}(const BYTE* const __base) const {{\n"
         cpp += f"#ifdef __EMSCRIPTEN__\n    const_cast<{block_struct_name}&>(*this).check_and_fetch_remote(__base);\n#endif\n"
         if f['first_version_idx'] > 0:
             cpp += f"    if (__version < FHIR_VERSION_{f['first_version_name']}) return {ret_type}(FF_NULL_OFFSET, __size, __version);\n"
         cpp += f"    auto child = {ret_type}(LOAD_U64(__base + __offset + {block_struct_name}::{f['name']}), __size, __version);\n"
         cpp += f"    if (!child) return child;\n"
-        cpp += f"    auto result = child.validate_offset(__base, {ret_type}::type, {ret_type}::recovery);\n"
+        cpp += f"    auto result = child.validate_offset(__base, {ret_type}::type, {expected_tag});\n"
         cpp += f"    if (result != FF_SUCCESS) throw std::runtime_error(\"Failed to retrieve {f['cpp_name']}: \" + result.message);\n"
         cpp += f"    return child;\n"
         cpp += f"}}\n"
@@ -284,7 +291,7 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "        case FF_FIELD_ARRAY: {\n"
         "            const Offset child_offset = LOAD_U64(base + value_offset);\n"
         "            if (child_offset == FF_NULL_OFFSET) return {};\n"
-        "            return Node(base, block.__size, block.__version, child_offset, FF_ARRAY::recovery, FF_FIELD_ARRAY,\n"
+        "            return Node(base, block.__size, block.__version, child_offset, ToArrayTag(field->child_recovery), FF_FIELD_ARRAY,\n"
         "                        field->child_recovery, field->array_entries_are_offsets != 0);\n"
         "        }\n"
         "        \n"
@@ -569,27 +576,32 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
 
         # --- Existing Array / Legacy Logic ---
         elif f['is_array']:
+            # --- PATTERN 1: ARRAY OF STRING/CODE OFFSETS ---
+            # Physically: 8-byte pointers (Offsets) to variable-length strings elsewhere.
             if f['fhir_type'] in ('string', 'code'):
                 code_enum = f.get('code_enum')
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
-                cpp += f"        auto blk_n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
-                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, blk_n);\n"
+                cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
+                # Uses OFFSET with 8-byte hops
+                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, __n, ToArrayTag({_child_recovery_expr(f, block_struct_name)}));\n"
                 cpp += f"        Offset blk_off_tbl = child_off;\n"
-                cpp += f"        child_off += static_cast<Offset>(blk_n) * TYPE_SIZE_OFFSET;\n"
-                cpp += f"        for (uint32_t blk_i = 0; blk_i < blk_n; ++blk_i) {{\n"
+                cpp += f"        child_off += static_cast<Offset>(__n) * TYPE_SIZE_OFFSET;\n"
+                cpp += f"        for (uint32_t blk_i = 0; blk_i < __n; ++blk_i) {{\n"
                 cpp += f"            STORE_U64(__base + blk_off_tbl + blk_i * TYPE_SIZE_OFFSET, child_off);\n"
                 if code_enum: cpp += f"            child_off += STORE_FF_STRING(__base, child_off, std::string({code_enum['serialize']}({data_name}.{f['cpp_name']}[blk_i])));\n"
                 else:         cpp += f"            child_off += STORE_FF_STRING(__base, child_off, {data_name}.{f['cpp_name']}[blk_i]);\n"
                 cpp += f"        }}\n"
                 cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             
+            # --- PATTERN 2: ARRAY OF POLYMORPHIC RESOURCE TUPLES ---
+            # Physically: 10-byte tuples (8-byte Offset + 2-byte Recovery Tag) stored inline.
             elif f['fhir_type'] == 'Resource':
-                # Primary vector holds passive ResourceReferences
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
-                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_RESOURCE, __n);\n"
+                # Uses INLINE_BLOCK with 10-byte hops
+                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_RESOURCE, __n, ToArrayTag({_child_recovery_expr(f, block_struct_name)}));\n"
                 cpp += f"        Offset __entries_start = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(__n) * TYPE_SIZE_RESOURCE;\n"
                 cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
@@ -598,23 +610,32 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"        }}\n"
                 cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             
+            # --- PATTERN 3: ARRAY OF COMPLEX STRUCTS ---
             else:
                 child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
                 store_fn = f"STORE_{child_struct}"
+                
+                # Branch 3a: Inline Data (Bundle.entry, Patient.name)
+                # Physically: Full structs stored back-to-back.
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
-                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, {child_struct}::HEADER_SIZE, __n);\n"
+                # Uses INLINE_BLOCK with full struct header-size hops
+                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, {child_struct}::HEADER_SIZE, __n, ToArrayTag({_child_recovery_expr(f, block_struct_name)}));\n"
                 cpp += f"        Offset __entries_start = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(__n) * {child_struct}::HEADER_SIZE;\n"
                 cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
                 cpp += f"            child_off = {store_fn}(__base, __entries_start + __i * {child_struct}::HEADER_SIZE, child_off, {data_name}.{f['cpp_name']}[__i]);\n"
                 cpp += f"        }}\n"
                 cpp += f"    }} "
+                
+                # Branch 3b: Collected Offsets (Used during concurrent worker-thread ingestion)
+                # Physically: 8-byte pointers.
                 cpp += f"    else if (!{data_name}.{f['cpp_name']}_offsets.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
                 cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}_offsets.size());\n"
-                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, __n);\n"
+                # Uses OFFSET with 8-byte hops
+                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, __n, ToArrayTag({_child_recovery_expr(f, block_struct_name)}));\n"
                 cpp += f"        Offset __entries_start = child_off;\n"
                 cpp += f"        child_off += static_cast<Offset>(__n) * TYPE_SIZE_OFFSET;\n"
                 cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
@@ -649,7 +670,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             
         elif f['fhir_type'] == 'code':
             code_enum = f.get('code_enum')
-            val_str = f"std::string({code_enum['serialize']}({data_name}.{f['cpp_name']}))" if code_enum else f"{data_name}.{f['cpp_name']}"
+            val_str = f"std::string({code_enum['serialize']}({data_name}.{f['cpp_name']}))" if code_enum else f"std::string({data_name}.{f['cpp_name']})"
             cpp += f"    {{\n"
             cpp += f"        std::string __code_str = {val_str};\n"
             cpp += f"        STORE_U32({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_CODE(__base, hdr_off, child_off, __code_str, __version));\n"
@@ -909,7 +930,7 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
     lines.append("    // Core Primitives (0x0001 range)")
     lines.append("    RECOVER_FF_HEADER                     = 0x0001,")
     lines.append("    RECOVER_FF_STRING                     = 0x0002,")
-    lines.append("    RECOVER_FF_ARRAY                      = 0x0003,")
+    lines.append("    RECOVER_FF_CODE                       = 0x0003,")
     lines.append("    RECOVER_FF_RESOURCE                   = 0x0004,")
     lines.append("    RECOVER_FF_CHECKSUM                   = 0x0005,")
     
@@ -953,6 +974,11 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
 
     lines.append("};")
     lines.append("")
+    lines.append("constexpr uint16_t RECOVER_ARRAY_BIT = 0x8000;")
+    lines.append("constexpr uint16_t RECOVER_TYPE_MASK = 0x7FFF;")
+    lines.append("inline constexpr bool IsArrayTag(RECOVERY_TAG tag) {return(tag & RECOVER_ARRAY_BIT)!= 0;}")
+    lines.append("inline constexpr RECOVERY_TAG GetTypeFromTag(RECOVERY_TAG tag) {return static_cast<RECOVERY_TAG>(tag & RECOVER_TYPE_MASK);}")
+    lines.append("inline constexpr RECOVERY_TAG ToArrayTag(RECOVERY_TAG base_tag) {return static_cast<RECOVERY_TAG>(base_tag | RECOVER_ARRAY_BIT);}")
 
     out_path = os.path.join(output_dir, "FF_Recovery.hpp")
     with open(out_path, "w") as f:
@@ -1375,7 +1401,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         f"                        offsets.push_back(builder.append_obj(val).offset());\n"
                         f"                    }}\n"
                         f"                }}\n"
-                        f"                wrapper[{field_key_enum}] = builder.append_obj(offsets);\n"
+                        f"                wrapper[{field_key_enum}] = offsets;\n"
                     )
                 
                 elif f["fhir_type"] == "Resource":
@@ -1407,7 +1433,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         f"                        offsets.push_back(builder.append_obj(child_data).offset());\n"
                         f"                    }}\n"
                         f"                }}\n"
-                        f"                wrapper[{field_key_enum}] = builder.append_obj(offsets);\n"
+                        f"                wrapper[{field_key_enum}] = offsets;\n"
                     )
                     
                 cpp += (
@@ -1453,7 +1479,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         f"\nFastFHIR::ObjectHandle dispatch_block(RECOVERY_TAG expected_tag, simdjson::ondemand::value& json_val, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {{\n"
         f"    simdjson::ondemand::object obj;\n"
         f"    if (json_val.get_object().get(obj) != simdjson::SUCCESS) return FastFHIR::ObjectHandle(&builder, FF_NULL_OFFSET);\n\n"
-        f"    switch (expected_tag) {{\n"
+        f"    switch (GetTypeFromTag(expected_tag)) {{\n"
     )
     
     for path, blk in master_blocks.items():
@@ -1645,20 +1671,12 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     hpp_head += "    static void store(BYTE* const base, Offset off, std::string_view d, uint32_t = FHIR_VERSION_R5) { STORE_FF_STRING(base, off, d); }\n"
     hpp_head += "};\n\n"
     hpp_head += "template<> struct TypeTraits<std::vector<Offset>> {\n"
-    hpp_head += "    static constexpr auto recovery = RECOVER_FF_ARRAY;\n"
-    hpp_head += "    static Size size(const std::vector<Offset>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_OFFSET); }\n"
-    hpp_head += "    static void store(BYTE* const base, Offset off, const std::vector<Offset>& d, uint32_t = FHIR_VERSION_R5) {\n"
-    hpp_head += "        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, static_cast<uint32_t>(d.size()));\n"
-    hpp_head += "        for (const auto& ptr : d) {\n"
-    hpp_head += "            STORE_U64(base + off, ptr); off += TYPE_SIZE_OFFSET;\n"
-    hpp_head += "        }\n"
-    hpp_head += "    }\n"
     hpp_head += "};\n\n"
     hpp_head += "template<> struct TypeTraits<std::vector<ResourceReference>> {\n"
-    hpp_head += "    static constexpr auto recovery = RECOVER_FF_ARRAY;\n"
+    hpp_head += "    static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_RESOURCE | RECOVER_ARRAY_BIT);\n"
     hpp_head += "    static Size size(const std::vector<ResourceReference>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_RESOURCE); }\n"
     hpp_head += "    static void store(BYTE* const base, Offset off, const std::vector<ResourceReference>& d, uint32_t = FHIR_VERSION_R5) {\n"
-    hpp_head += "        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_RESOURCE, static_cast<uint32_t>(d.size()));\n"
+    hpp_head += "        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_RESOURCE, static_cast<uint32_t>(d.size()), recovery);\n"
     hpp_head += "        for (const auto& ref : d) {\n"
     hpp_head += "            STORE_U64(base + off, ref.offset); STORE_U16(base + off + DATA_BLOCK::RECOVERY, ref.recovery); off += TYPE_SIZE_RESOURCE;\n"
     hpp_head += "        }\n"
@@ -1763,9 +1781,10 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
             arr_offsets = _array_entries_are_offsets_expr(f)
             
             # 2. Generate C++ Field Definition with all 6 arguments
+            owner_rec = f"ToArrayTag(RECOVER_{block_struct_name})" if f['is_array'] else f"RECOVER_{block_struct_name}"
             field_keys_hpp += (
                 f"    inline constexpr FF_FieldKey {short_name}"
-                f"{{RECOVER_{block_struct_name}, {_field_kind_expr(f)}, {f['offset']}, "
+                f"{{{owner_rec}, {_field_kind_expr(f)}, {f['offset']}, "
                 f"{child_rec}, {arr_offsets}, \"{f['cpp_name']}\"}};\n"
             )
             

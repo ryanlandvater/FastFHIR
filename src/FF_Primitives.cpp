@@ -22,7 +22,7 @@
 // =====================================================================
 // DATA_BLOCK BASE VALIDATION
 // =====================================================================
-FF_Result DATA_BLOCK::validate_offset(const BYTE *const __base, const char* type_name, uint16_t recovery_tag) const noexcept {
+FF_Result DATA_BLOCK::validate_offset(const BYTE *const __base, const char* type_name, RECOVERY_TAG recovery_tag) const noexcept {
     if (!*this) {
         return {FF_VALIDATION_FAILURE, std::string("Invalid ") + type_name + ". Offset is NULL."};
     }
@@ -37,11 +37,12 @@ FF_Result DATA_BLOCK::validate_offset(const BYTE *const __base, const char* type
     }
 #endif
 
-    if (LOAD_U16(__base + __offset + RECOVERY) != recovery_tag) {
-        return {FF_VALIDATION_FAILURE, std::string(type_name) + " failed recovery tag validation."};
+    RECOVERY_TAG actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(__base + __offset + RECOVERY));
+    if (actual_recovery != recovery_tag) {
+        return {FF_VALIDATION_FAILURE, std::string(type_name) + " recovery tag mismatch. Expected: " + std::to_string(recovery_tag) + ", Found: " + std::to_string(actual_recovery)};
     }
 
-    return {FF_SUCCESS, ""};
+    return FF_SUCCESS;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -182,18 +183,27 @@ BYTE* STORE_FF_CHECKSUM_METADATA(BYTE* const __base, Offset start_offset, FF_Che
 // ARRAY BLOCK IMPLEMENTATION
 // =====================================================================
 FF_Result FF_ARRAY::validate_full(const BYTE* const __base) const noexcept {
-    auto result = validate_offset(__base, type, recovery);
-    if (result != FF_SUCCESS) return result;
-    
-    // Fix 1: Use the masked entry_step method
+    if (!*this) return {FF_VALIDATION_FAILURE, "Invalid FF_ARRAY. Offset is NULL."};
+
+#ifndef __EMSCRIPTEN__
+    if (LOAD_U64(__base + __offset + VALIDATION) != __offset)
+        return {FF_VALIDATION_FAILURE, "FF_ARRAY failed absolute offset validation."};
+#endif
+
+    RECOVERY_TAG actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(__base + __offset + RECOVERY));
+    if (!IsArrayTag(actual_recovery)) {
+        return {FF_VALIDATION_FAILURE, "FF_ARRAY missing semantic array bit (0x8000)."};
+    }
+
     uint16_t step = entry_step(__base);
     switch (entry_kind(__base)) {
         case SCALAR:
         case OFFSET:
         case INLINE_BLOCK: break;
-        default: return {FF_VALIDATION_FAILURE, "FF_ARRAY contains undefined entry kind"};}
-    uint32_t count = LOAD_U32(__base + __offset + ENTRY_COUNT);
+        default: return {FF_VALIDATION_FAILURE, "FF_ARRAY contains undefined entry kind"};
+    }
     
+    uint32_t count = LOAD_U32(__base + __offset + ENTRY_COUNT);
     if (__offset + HEADER_SIZE + static_cast<uint64_t>(step) * count > __size) {
         return {FF_VALIDATION_FAILURE, "FF_ARRAY entries exceed file boundaries."};
     }
@@ -215,30 +225,18 @@ uint32_t FF_ARRAY::entry_count(const BYTE* const __base) const
 const BYTE* FF_ARRAY::entries(const BYTE* const __base) const
 { return __base + __offset + HEADER_SIZE; }
 
-void STORE_FF_ARRAY_HEADER(BYTE* const __base, Offset& write_head, FF_ARRAY::EntryKind kind, uint32_t entry_step, uint32_t entry_count) {    // Validate that the step size doesn't overflow into the kind bits (max 16.38kb)
+void STORE_FF_ARRAY_HEADER(BYTE* const __base, Offset& write_head, FF_ARRAY::EntryKind kind, uint32_t entry_step, uint32_t entry_count, RECOVERY_TAG entry_recovery_tag) {    // Validate that the step size doesn't overflow into the kind bits (max 16.38kb)
     if (entry_step > FF_ARRAY::STEP_MASK) {
         throw std::runtime_error("FastFHIR: FF_ARRAY entry step size exceeds maximum 14-bit permitted value.");
     }
     auto __ptr = __base + write_head;
     // Dynamic pointer validation maintained
     STORE_U64(__ptr + FF_ARRAY::VALIDATION, write_head);
-    STORE_U16(__ptr + FF_ARRAY::RECOVERY, RECOVER_FF_ARRAY);
+    STORE_U16(__ptr + FF_ARRAY::RECOVERY, RECOVER_ARRAY_BIT | entry_recovery_tag);
     // Bitwise pack the Kind (top 2 bits) and the Step (bottom 14 bits)
     STORE_U16(__ptr + FF_ARRAY::KIND_AND_STEP, static_cast<uint16_t>(kind) | static_cast<uint16_t>(entry_step));
     STORE_U32(__ptr + FF_ARRAY::ENTRY_COUNT, entry_count);
     write_head += FF_ARRAY::HEADER_SIZE;
-}
-
-void STORE_FF_POINTER_ARRAY(BYTE* const __base, Offset& write_head, const std::vector<Offset>& offsets) {
-    uint32_t entry_count = static_cast<uint32_t>(offsets.size());
-        
-        // Fix 3: Pass the 'kind' flag to the header write
-        STORE_FF_ARRAY_HEADER(__base, write_head, FF_ARRAY::OFFSET, sizeof(Offset), entry_count);
-        
-        for (const auto& off : offsets) {
-            STORE_U64(__base + write_head, off);
-            write_head += sizeof(Offset);
-        }
 }
 
 // =====================================================================
