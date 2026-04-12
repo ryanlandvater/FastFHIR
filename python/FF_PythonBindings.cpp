@@ -238,7 +238,7 @@ PYBIND11_MODULE(_core, m) {
     py::class_<PyMemory, std::shared_ptr<PyMemory>>(m, "Memory")
         .def_static("create", [](size_t capacity, const std::string& shm) {
             return std::make_shared<PyMemory>(capacity, shm); },
-            py::arg("shared_memory_name") = "", py::arg("capacity") = 4ULL * 1024 * 1024 * 1024)
+            py::arg("capacity") = 4ULL * 1024 * 1024 * 1024, py::arg("shared_memory_name") = "")
         .def_static("create_from_file", [](const std::string& path, size_t cap) {
             return std::make_shared<PyMemory>(path, cap); }, 
             py::arg("filepath"), py::arg("capacity") = 4ULL * 1024 * 1024 * 1024)
@@ -263,8 +263,7 @@ PYBIND11_MODULE(_core, m) {
         .def_property_readonly("recovery_tag", [](const PyStreamNode& s) { return s.handle.recovery(); })
         .def("is_array", [](const PyStreamNode& s) { return s.handle.is_array(); })
         .def("to_json", [](const PyStreamNode& s) {
-            return "{\"status\": \"testing_no_oss\"}";
-            // std::ostringstream oss; s.handle.as_node().print_json(oss); return oss.str();
+            std::ostringstream oss; s.handle.as_node().print_json(oss); return oss.str();
         })
         .def("__str__", [](const PyStreamNode& s) {
             std::ostringstream oss; s.handle.as_node().print_json(oss); return oss.str();

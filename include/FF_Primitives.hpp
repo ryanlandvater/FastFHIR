@@ -164,8 +164,11 @@ inline RECOVERY_TAG Kind_to_Recovery(const FF_FieldKind kind)
         default:               return FF_RECOVER_UNDEFINED;
         }
 }
-inline FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag) {
-    switch (tag) {
+inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag) {
+    RECOVERY_TAG base = GetTypeFromTag(tag); 
+    
+    switch (base) {
+        // --- Primitive Scalars ---
         case RECOVER_FF_BOOL:    return FF_FIELD_BOOL;
         case RECOVER_FF_INT32:   return FF_FIELD_INT32;
         case RECOVER_FF_UINT32:  return FF_FIELD_UINT32;
@@ -173,7 +176,15 @@ inline FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag) {
         case RECOVER_FF_UINT64:  return FF_FIELD_UINT64;
         case RECOVER_FF_FLOAT64: return FF_FIELD_FLOAT64;
         case RECOVER_FF_CODE:    return FF_FIELD_CODE;
-        default:                 return FF_FIELD_UNKNOWN;
+        
+        // --- Reference Types ---
+        case RECOVER_FF_STRING:  return FF_FIELD_STRING;
+        case RECOVER_FF_RESOURCE:return FF_FIELD_RESOURCE;
+        default:
+            // All generated structs (0x0200, 0x0300, 0x0400 ranges) are physical Blocks
+            if (base >= RECOVER_FF_DATA_TYPE_BLOCK) 
+                return FF_FIELD_BLOCK;
+            return FF_FIELD_UNKNOWN;
     }
 }
 

@@ -1569,6 +1569,9 @@ def emit_python_ast(master_blocks, block_key_defs, token_registry, output_dir="g
         f.write("    def __init__(self, current_path=None):\n")
         f.write("        self.path = current_path or tuple()\n")
         f.write("    def cast(self, target_class):\n")
+        f.write("        # If the user passes an instance (e.g., ff.Patient), use its class\n")
+        f.write("        if isinstance(target_class, ASTNode):\n")
+        f.write("            return type(target_class)(self.path)\n")
         f.write("        return target_class(self.path)\n\n")
 
         f.write("class ASTArrayNode(ASTNode):\n")
@@ -1606,7 +1609,11 @@ def emit_python_ast(master_blocks, block_key_defs, token_registry, output_dir="g
                 f.write(f"        tok = _core.Field({token_id}, \"{orig_name}\", \"{ns_name}\")\n")
                 
                 # Check if this field points to another known FHIR block
-                target_path = f_def.get('resolved_path', f"{path}.{orig_name}")
+                if f_def['fhir_type'] in master_blocks:
+                    target_path = f_def['fhir_type']
+                else:
+                    target_path = f_def.get('resolved_path', f"{path}.{orig_name}")
+                
                 is_array = f_def.get('is_array', False)
                 
                 target_class_name = "ASTNode"

@@ -418,7 +418,8 @@ inline MutableEntry& MutableEntry::operator=(const std::vector<Offset>& offsets)
     }
 
 inline Node ObjectHandle::as_node() const {
-    FF_FieldKind node_kind = IsArrayTag(m_recovery) ? FF_FIELD_ARRAY : FF_FIELD_BLOCK;
+    // Dynamically resolve the semantic kind instead of assuming FF_FIELD_BLOCK
+    FF_FieldKind node_kind = IsArrayTag(m_recovery) ? FF_FIELD_ARRAY : Recovery_to_Kind(m_recovery);
     return m_builder->view_node(m_offset, m_recovery, node_kind);
 }
 
@@ -429,6 +430,11 @@ inline MutableEntry ObjectHandle::operator[](FF_FieldKey key) const {
     // Map the array field directly to the concrete semantic tag
     RECOVERY_TAG target_tag = (key.kind == FF_FIELD_ARRAY) ? 
         static_cast<RECOVERY_TAG>(key.child_recovery | RECOVER_ARRAY_BIT) : key.child_recovery;
+    
+    // Ensure we aren't passing FF_RECOVER_UNDEFINED for a known primitive
+    if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN) {
+        target_tag = Kind_to_Recovery(key.kind); 
+    }
     
     return MutableEntry(m_builder, m_offset, key.field_offset, target_tag, key.kind);
 }

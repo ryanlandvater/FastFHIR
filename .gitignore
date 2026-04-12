@@ -7,3 +7,4 @@ fhir_specs/
 generated_src/
 FastFHIR.xcodeproj/xcuserdata
 FastFHIR.xcodeproj/project.xcworkspace/xcuserdata
+*.ff
