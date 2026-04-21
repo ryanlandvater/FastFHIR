@@ -242,9 +242,20 @@ inline constexpr bool FF_IsResourceTag(RECOVERY_TAG tag) {
 }
 
 /**
+ * @brief Utility to determine if a given RECOVERY_TAG corresponds to an inline scalar block.
+ * This is used for validation and to apply scalar-specific logic during parsing and building.
+ * 
+ * @param tag The RECOVERY_TAG to check.
+ * @return true if the tag corresponds to an inline scalar block.
+ */
+inline constexpr bool FF_IsScalarBlockTag(RECOVERY_TAG tag) {
+    return (tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK; // 0x0100
+}
+
+/**
  * @brief Zero-allocation raw memory peek to determine if a FastFHIR field is null/empty.
  */
-inline bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_offset, FF_FieldKind kind) {
+inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_offset, FF_FieldKind kind) {
     switch (kind) {
 
         case FF_FIELD_RESOURCE:
@@ -269,5 +280,38 @@ inline bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_offset, FF_F
             
         default:
             return true;
+    }
+}
+// =====================================================================
+// SCALAR RESOLVER (Decode & Encode)
+// =====================================================================
+namespace FastFHIR::Decode {
+    template <typename T>
+    inline T scalar(const BYTE* base, Offset absolute_offset, RECOVERY_TAG tag) {
+        if constexpr (std::is_same_v<T, bool>) {
+            return LOAD_U8(base + absolute_offset) != 0;
+        } else if constexpr (std::is_same_v<T, double>) {
+            return LOAD_F64(base + absolute_offset);
+        } else if constexpr (sizeof(T) == 4) {
+            return static_cast<T>(LOAD_U32(base + absolute_offset));
+        } else if constexpr (sizeof(T) == 8) {
+            return static_cast<T>(LOAD_U64(base + absolute_offset));
+        }
+        throw std::runtime_error("FastFHIR: Unsupported scalar decode target.");
+    }
+}
+namespace FastFHIR::Encode {
+    template <typename T>
+    requires std::is_arithmetic_v<T>
+    inline void scalar(BYTE* base, Offset absolute_offset, T val) {
+        if constexpr (std::is_same_v<T, bool>) {
+            STORE_U8(base + absolute_offset, val ? 1 : 0);
+        } else if constexpr (std::is_same_v<T, double>) {
+            STORE_F64(base + absolute_offset, val);
+        } else if constexpr (sizeof(T) == 4) {
+            STORE_U32(base + absolute_offset, static_cast<uint32_t>(val));
+        } else if constexpr (sizeof(T) == 8) {
+            STORE_U64(base + absolute_offset, static_cast<uint64_t>(val));
+        }
     }
 }

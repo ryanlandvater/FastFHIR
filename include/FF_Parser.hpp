@@ -22,7 +22,11 @@
 
 namespace FastFHIR {
 template<typename T> struct TypeTraits;
+namespace Reflective {
 class Node;
+struct Entry;
+}
+
 /**
  * @class Parser
  * @brief Entry point for reading a FastFHIR byte stream.
@@ -79,7 +83,7 @@ public:
     * @brief Get the root resource node.
     * @return Root node of the parsed FastFHIR stream.
      */
-    Node root() const;
+    Reflective::Node root() const;
 
     /**
      * @brief Stream the entire FastFHIR file back out as minified FHIR JSON.
@@ -122,6 +126,20 @@ public:
     ChecksumValidation checksum() const;
 };
 
+namespace Reflective {
+// Lightweight 32-byte POD slot view
+struct Entry {
+    const BYTE* base;
+    Offset absolute_offset; // parent_offset + vtable_offset pre-computed
+    
+    template <typename T>
+    requires std::is_arithmetic_v<T>
+    T as_scalar(RECOVERY_TAG expected_tag) const {
+        return Decode::scalar<T>(base, absolute_offset, expected_tag);
+    }
+    
+    Node as_node(Size size, uint32_t version, RECOVERY_TAG tag, FF_FieldKind kind) const;
+};
 /**
  * @class Node
  * @brief Lightweight view over a FastFHIR value.
@@ -135,8 +153,8 @@ public:
  * 
  */
 class Node {
-    friend class ObjectHandle;
-    const BYTE*   m_base = nullptr;
+protected:
+    const BYTE* m_base = nullptr;
     Size          m_size = 0;
     uint32_t      m_version = 0;
     Offset        m_node_offset = FF_NULL_OFFSET;
@@ -145,7 +163,6 @@ class Node {
     RECOVERY_TAG  m_child_recovery = FF_RECOVER_UNDEFINED;
     FF_FieldKind  m_kind = FF_FIELD_UNKNOWN;
     bool          m_array_entries_are_offsets = false;
-
 public:
     /** @brief Construct an empty/invalid node handle. */
     Node() = default;
@@ -242,28 +259,29 @@ public:
     /**
      * @brief Lookup an object child by precomputed field key descriptor.
      * @param key Field key descriptor produced from generated field metadata.
-     * @return Matching child node, or an empty node if incompatible/not found.
+     * @return Matching slot entry, or an empty entry if incompatible/not found.
      */
-    Node operator[](FF_FieldKey key) const;
+    Entry operator[](FF_FieldKey key) const;
 
     /**
      * @brief Lookup an array child by index.
      * @param index Zero-based entry index.
-     * @return Matching child node, or an empty node if out of bounds/not an array.
+     * @return Matching slot entry, or an empty entry if out of bounds/not an array.
      */
-    Node operator[](size_t index) const;
+    Entry operator[](size_t index) const;
     
     /**
      * @brief Eagerly parses this node into its concrete C++ POD structure.
      * @tparam T_Data The generated FastFHIR Data struct (e.g., PatientData).
      * @throws std::invalid_argument if the node's recovery tag doesn't match the requested type.
      */
-    template<typename T_Data>
-    T_Data as() const {
-        if (GetTypeFromTag(m_recovery) != GetTypeFromTag(T_Data::recovery)) {
+    template <typename T>
+    requires std::is_arithmetic_v<T>
+    T as() const {
+        if (GetTypeFromTag(m_recovery) != GetTypeFromTag(TypeTraits<T>::recovery)) {
             throw std::runtime_error("Node::as() recovery tag mismatch");
         }
-        return TypeTraits<T_Data>::read(m_base, m_node_offset, m_size, m_version);
+        return Decode::scalar<T>(m_base, m_global_scalar_offset, m_recovery);
     }
     
     /**
@@ -347,4 +365,5 @@ inline std::string_view Node::as<std::string_view>() const {
     }
     return FF_STRING(m_node_offset, m_size, m_version).read_view(m_base);
 }
+} // namespace Reflective
 } // namespace FastFHIR

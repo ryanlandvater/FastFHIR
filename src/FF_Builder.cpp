@@ -27,97 +27,6 @@
 
 namespace FastFHIR {
 // =====================================================================
-// Mutable Entry Implementation
-// =====================================================================
-ObjectHandle MutableEntry::as_handle() const {
-    auto base = m_builder->memory().base();
-    
-    // --- INLINE POLYMORPHIC TUPLE ---
-    if (m_kind == FF_FIELD_RESOURCE || m_kind == FF_FIELD_CHOICE || m_target_recovery == RECOVER_FF_RESOURCE) {
-        Offset target = LOAD_U64(base + m_parent_offset + m_vtable_offset); 
-        if (target == FF_NULL_OFFSET) 
-            return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
-            
-        RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
-            (LOAD_U16(base + m_parent_offset + m_vtable_offset + DATA_BLOCK::RECOVERY));
-        
-        return ObjectHandle(m_builder, target, actual_tag);
-    }
-    
-    // --- STANDARD 8-BYTE POINTER ---
-    Offset target = LOAD_U64(base + m_parent_offset + m_vtable_offset);
-    if (target == FF_NULL_OFFSET)
-        return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
-        
-    RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
-        (LOAD_U16(base + target + DATA_BLOCK::RECOVERY));
-    return ObjectHandle(m_builder, target, actual_tag);
-}
-
-MutableEntry& MutableEntry::operator=(const ObjectHandle& child) {
-    validate_assignment(child.recovery());
-    auto base = const_cast<BYTE*>(m_builder->memory().base());
-    
-    // --- INLINE POLYMORPHIC TUPLE ---
-    if (m_target_recovery == RECOVER_FF_RESOURCE) {
-        m_builder->amend_resource(m_parent_offset, m_vtable_offset, child.offset(), child.recovery());
-        return *this;
-    }
-    
-    // --- STANDARD 8-BYTE POINTER ---
-    m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child.offset());
-    return *this;
-}
-
-// Inlined in header MutableEntry::operator[](size_t index) const
-
-void MutableEntry::validate_assignment(RECOVERY_TAG child_tag) const
-{
-    if (m_target_recovery == RECOVER_FF_RESOURCE) {
-        // Polymorphic field: Ensure the child is actually a top-level Resource
-        if (!FF_IsResourceTag(child_tag)) {
-            throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range).");
-        }
-        // Strictly typed field: Ensure an exact match
-    } else if (m_target_recovery != FF_RECOVER_UNDEFINED && child_tag != m_target_recovery)
-        throw std::invalid_argument("FastFHIR Schema Violation: MutableEntry attempted to assign an incompatible ObjectHandle type. Assigned types must match current types");
-}
-
-// =====================================================================
-// Object Handle Implementation
-// =====================================================================
-
-MutableEntry ObjectHandle::operator[](size_t index) const
-{
-    // 1. High-level bounds checking
-    Node arr_node = as_node();
-    if (!arr_node.is_array())
-        throw std::runtime_error("FastFHIR: Memory block is not an array.");
-    if (index >= arr_node.size())
-        throw std::out_of_range("FastFHIR: Array index out of bounds.");
-
-    // 2. Low-level geometry calculation
-    FF_ARRAY array_block(m_offset, 0, 0);
-    auto base = m_builder->memory().base();
-    
-    uint16_t step = array_block.entry_step(base);
-    const BYTE* entries_ptr = array_block.entries(base);
-    
-    size_t entry_vtable_offset = static_cast<size_t>(entries_ptr - (base + m_offset)) + (index * step);
-
-    // Return the bridge to the slot.
-    // Type discovery may happen lazily in as_handle(), and schema safety is
-    // enforced at compile-time by the ffc.py generated code.
-    return MutableEntry(
-        m_builder,
-        m_offset,
-        entry_vtable_offset,
-        GetTypeFromTag(m_recovery),
-        Recovery_to_Kind(m_recovery)
-    );
-}
-
-// =====================================================================
 // Constructor / Destructor
 // =====================================================================
 
@@ -165,19 +74,19 @@ void Builder::end_mutation()
 }
 
 // =====================================================================
-// View Node & Amend Pointer
+// View Reflective::Node & Amend Pointer
 // =====================================================================
 
-Node Builder::view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind) const
+Reflective::Node Builder::view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind) const
 {
     // 1. Snapshot the atomic boundary once
     Size size = m_memory.size();
 
     if (offset == FF_NULL_OFFSET || offset >= size)
-        return Node();
+        return Reflective::Node();
 
-    // 2. Use the exact same boundary for the Node's validation
-    return Node(m_base, size, m_fhir_rev, offset, recovery, kind);
+    // 2. Use the exact same boundary for the Reflective::Node's validation
+    return Reflective::Node(m_base, size, m_fhir_rev, offset, recovery, kind);
 }
 
 void Builder::amend_pointer(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset)
@@ -338,4 +247,97 @@ Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &h
     // Return the lifetime-safe view to the memory
     return m_memory.view();
 }
+// =====================================================================
+// Mutable Entry Implementation
+// =====================================================================
+namespace Reflective {
+Entry MutableEntry::as_entry() const {
+    return {m_builder->memory().base(), m_parent_offset, m_vtable_offset, m_kind};
+}
+ObjectHandle MutableEntry::as_handle() const {
+    auto base_ptr = m_builder->memory().base();
+    
+    if (m_kind == FF_FIELD_RESOURCE || m_kind == FF_FIELD_CHOICE || m_target_recovery == RECOVER_FF_RESOURCE) {
+        Offset target = LOAD_U64(base_ptr + m_parent_offset + m_vtable_offset); 
+        if (target == FF_NULL_OFFSET) 
+            return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
+            
+        RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
+            (LOAD_U16(base_ptr + m_parent_offset + m_vtable_offset + DATA_BLOCK::RECOVERY));
+        
+        return ObjectHandle(m_builder, target, actual_tag);
+    }
+    
+    Offset target = LOAD_U64(base_ptr + m_parent_offset + m_vtable_offset);
+    if (target == FF_NULL_OFFSET)
+        return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
+        
+    RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
+        (LOAD_U16(base_ptr + target + DATA_BLOCK::RECOVERY));
+    return ObjectHandle(m_builder, target, actual_tag);
+}
+
+MutableEntry& MutableEntry::operator=(const ObjectHandle& child) {
+    validate_assignment(child.recovery());
+    auto base = const_cast<BYTE*>(m_builder->memory().base());
+    
+    // --- INLINE POLYMORPHIC TUPLE ---
+    if (target_recovery == RECOVER_FF_RESOURCE) {
+        m_builder->amend_resource(parent_offset, vtable_offset, child.offset(), child.recovery());
+        return *this;
+    }
+    
+    // --- STANDARD 8-BYTE POINTER ---
+    m_builder->amend_pointer(parent_offset, vtable_offset, child.offset());
+    return *this;
+}
+
+// Inlined in header MutableEntry::operator[](size_t index) const
+
+void MutableEntry::validate_assignment(RECOVERY_TAG child_tag) const
+{
+    if (target_recovery == RECOVER_FF_RESOURCE) {
+        // Polymorphic field: Ensure the child is actually a top-level Resource
+        if (!FF_IsResourceTag(child_tag)) {
+            throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range).");
+        }
+        // Strictly typed field: Ensure an exact match
+    } else if (target_recovery != FF_RECOVER_UNDEFINED && child_tag != target_recovery)
+        throw std::invalid_argument("FastFHIR Schema Violation: MutableEntry attempted to assign an incompatible ObjectHandle type. Assigned types must match current types");
+}
+
+// =====================================================================
+// Object Handle Implementation
+// =====================================================================
+
+MutableEntry ObjectHandle::operator[](size_t index) const
+{
+    // 1. High-level bounds checking
+    Reflective::Node arr_node = as_node();
+    if (!arr_node.is_array())
+        throw std::runtime_error("FastFHIR: Memory block is not an array.");
+    if (index >= arr_node.size())
+        throw std::out_of_range("FastFHIR: Array index out of bounds.");
+
+    // 2. Low-level geometry calculation
+    FF_ARRAY array_block(m_offset, 0, 0);
+    auto base = m_builder->memory().base();
+    
+    uint16_t step = array_block.entry_step(base);
+    const BYTE* entries_ptr = array_block.entries(base);
+    
+    size_t entry_vtable_offset = static_cast<size_t>(entries_ptr - (base + m_offset)) + (index * step);
+
+    // Return the bridge to the slot.
+    // Type discovery may happen lazily in as_handle(), and schema safety is
+    // enforced at compile-time by the ffc.py generated code.
+    return MutableEntry(
+        m_builder,
+        m_offset,
+        entry_vtable_offset,
+        GetTypeFromTag(m_recovery),
+        Recovery_to_Kind(m_recovery)
+    );
+}
+} // namespace Reflective
 } // namespace FastFHIR

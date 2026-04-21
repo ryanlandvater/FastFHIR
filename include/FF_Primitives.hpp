@@ -164,27 +164,40 @@ inline RECOVERY_TAG Kind_to_Recovery(const FF_FieldKind kind)
         default:               return FF_RECOVER_UNDEFINED;
         }
 }
+// Compile-time trait dispatch for C++ API
+template<RECOVERY_TAG T_Tag>
+struct RecoveryTraits {
+    static constexpr FF_FieldKind kind = (T_Tag >= 0x0200) ? FF_FIELD_BLOCK : FF_FIELD_UNKNOWN;
+};
+template<> struct RecoveryTraits<RECOVER_FF_BOOL> { static constexpr FF_FieldKind kind = FF_FIELD_BOOL; };
+template<> struct RecoveryTraits<RECOVER_FF_INT32> { static constexpr FF_FieldKind kind = FF_FIELD_INT32; };
+template<> struct RecoveryTraits<RECOVER_FF_UINT32> { static constexpr FF_FieldKind kind = FF_FIELD_UINT32; };
+template<> struct RecoveryTraits<RECOVER_FF_INT64> { static constexpr FF_FieldKind kind = FF_FIELD_INT64; };
+template<> struct RecoveryTraits<RECOVER_FF_UINT64> { static constexpr FF_FieldKind kind = FF_FIELD_UINT64; };
+template<> struct RecoveryTraits<RECOVER_FF_FLOAT64> { static constexpr FF_FieldKind kind = FF_FIELD_FLOAT64; };
+template<> struct RecoveryTraits<RECOVER_FF_CODE> { static constexpr FF_FieldKind kind = FF_FIELD_CODE; };
+template<> struct RecoveryTraits<RECOVER_FF_STRING> { static constexpr FF_FieldKind kind = FF_FIELD_STRING; };
+template<> struct RecoveryTraits<RECOVER_FF_RESOURCE> { static constexpr FF_FieldKind kind = FF_FIELD_RESOURCE; };
+
+// Exhaustive runtime mapping for dynamic bindings (Python/JSON)
 inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag) {
     RECOVERY_TAG base = GetTypeFromTag(tag); 
-    
+    if ((base & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) {
+        switch (base) {
+            case RECOVER_FF_BOOL:    return FF_FIELD_BOOL;
+            case RECOVER_FF_INT32:   return FF_FIELD_INT32;
+            case RECOVER_FF_UINT32:  return FF_FIELD_UINT32;
+            case RECOVER_FF_INT64:   return FF_FIELD_INT64;
+            case RECOVER_FF_UINT64:  return FF_FIELD_UINT64;
+            case RECOVER_FF_FLOAT64: return FF_FIELD_FLOAT64;
+            case RECOVER_FF_CODE:    return FF_FIELD_CODE;
+            default:                 return FF_FIELD_UNKNOWN;
+        }
+    }
     switch (base) {
-        // --- Primitive Scalars ---
-        case RECOVER_FF_BOOL:    return FF_FIELD_BOOL;
-        case RECOVER_FF_INT32:   return FF_FIELD_INT32;
-        case RECOVER_FF_UINT32:  return FF_FIELD_UINT32;
-        case RECOVER_FF_INT64:   return FF_FIELD_INT64;
-        case RECOVER_FF_UINT64:  return FF_FIELD_UINT64;
-        case RECOVER_FF_FLOAT64: return FF_FIELD_FLOAT64;
-        case RECOVER_FF_CODE:    return FF_FIELD_CODE;
-        
-        // --- Reference Types ---
         case RECOVER_FF_STRING:  return FF_FIELD_STRING;
         case RECOVER_FF_RESOURCE:return FF_FIELD_RESOURCE;
-        default:
-            // All generated structs (0x0200, 0x0300, 0x0400 ranges) are physical Blocks
-            if (base >= RECOVER_FF_DATA_TYPE_BLOCK) 
-                return FF_FIELD_BLOCK;
-            return FF_FIELD_UNKNOWN;
+        default:                 return (base >= RECOVER_FF_DATA_TYPE_BLOCK) ? FF_FIELD_BLOCK : FF_FIELD_UNKNOWN;
     }
 }
 

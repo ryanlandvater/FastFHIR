@@ -17,7 +17,195 @@
 #include <assert.h>
 
 namespace FastFHIR {
+// =====================================================================
+// Parser implementation
+// =====================================================================
+Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast<const BYTE*>(buffer)), m_size(size) {
+    if (size < FF_HEADER::HEADER_SIZE) {
+        throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
+    }
+    FF_HEADER header(size);
+    auto validation_result = header.validate_full(m_base);
+    if (validation_result != FF_SUCCESS) {
+        throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with error " + validation_result.message);
+    }
+    m_version = header.get_fhir_rev(m_base);
+    m_root_offset = header.get_root(m_base);
+    m_root_recovery = header.get_root_type(m_base);
+}
 
+Parser::Parser(const Memory& memory) : m_memory(memory), m_base(memory.base()), m_size(memory.size()) {
+    if (m_size < FF_HEADER::HEADER_SIZE) {
+        throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
+    }
+    FF_HEADER header(m_size);
+    auto validation_result = header.validate_full(m_base);
+    if (validation_result != FF_SUCCESS) {
+        throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with code " + validation_result.message);
+    }
+    m_version = header.get_fhir_rev(m_base);
+    m_root_offset = header.get_root(m_base);
+    m_root_recovery = header.get_root_type(m_base);
+}
+
+uint32_t Parser::version()   const { return m_version; }
+uint16_t Parser::root_type() const { return m_root_recovery; }
+
+Parser::ChecksumValidation Parser::checksum() const {
+    FF_HEADER header(m_size);
+    FF_CHECKSUM cs = header.get_checksum(m_base);
+
+    if (!cs || cs.__offset + FF_CHECKSUM::HEADER_SIZE > m_size)
+        return {};
+
+    return {
+        m_base,
+        static_cast<size_t>(cs.__offset),
+        cs.get_algorithm(m_base),
+        cs.get_hash_view(m_base)
+    };
+}
+
+Node Parser::root() const {
+    return Node(m_base, m_size, m_version,
+                m_root_offset, m_root_recovery, FF_FIELD_BLOCK);
+}
+
+} // namespace FastFHIR
+
+
+// =====================================================================
+// JSON Serialization
+// =====================================================================
+
+#include <ostream>
+namespace FastFHIR {
+
+
+// High-speed string escaper for clinical narratives and markdown
+static void escape_json_string(std::ostream& out, std::string_view str) {
+    for (char c : str) {
+        switch (c) {
+            case '"':  out << "\\\""; break;
+            case '\\': out << "\\\\"; break;
+            case '\b': out << "\\b";  break;
+            case '\f': out << "\\f";  break;
+            case '\n': out << "\\n";  break;
+            case '\r': out << "\\r";  break;
+            case '\t': out << "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    // Optional: Hex encode other control characters if needed
+                } else {
+                    out << c;
+                }
+        }
+    }
+}
+
+static std::string_view get_choice_suffix(RECOVERY_TAG tag) {
+    if (tag == RECOVER_FF_BOOL) return "Boolean";
+    if (tag == RECOVER_FF_FLOAT64) return "Decimal";
+    if (tag == RECOVER_FF_INT32) return "Integer";
+    if (tag == RECOVER_FF_UINT32) return "UnsignedInt";
+    if (tag == RECOVER_FF_INT64 || tag == RECOVER_FF_UINT64) return "Integer64";
+    if (tag == RECOVER_FF_STRING) return "String";
+    
+    // For complex types, pull the capitalized resource/data type name
+    std::string_view name = FastFHIR::reflected_resource_type(tag);
+    return name;
+}
+
+void Node::print_json(std::ostream& out) const {
+    if (is_empty()) return;
+
+    if (is_object()) {
+        out << "{";
+        auto f_list = fields();
+        bool first = true;
+
+        if (FF_IsResourceTag(m_recovery)) {
+            out << "\"resourceType\":\"" << reflected_resource_type(m_recovery) << "\"";
+            first = false;
+        }
+
+        for (size_t i = 0; i < f_list.size(); ++i) {
+            const auto& f = f_list[i];
+
+            // 1. FAST PATH: Raw memory peek. Skip completely field if empty!
+            if (FF_IsFieldEmpty(m_base, m_node_offset + f.field_offset, f.kind)) {
+                continue;
+            }
+
+            // 2. Construct the O(1) field key blueprint
+            FF_FieldKey key = FF_FieldKey::from_cstr(
+                m_recovery, f.kind, f.field_offset, 
+                f.child_recovery, f.array_entries_are_offsets, f.name
+            );
+
+            // 3. Pure pointer-math lookup (Zero loops)
+            auto child_entry = (*this)[key];
+            
+            if (!first) out << ",";
+            out << "\"" << f.name;
+            
+            // Utilize Entry's native target_recovery metadata
+            if (f.kind == FF_FIELD_CHOICE) out << get_choice_suffix(child_entry.target_recovery);
+            out << "\":";
+            
+            // Defer Node instantiation until absolutely required
+            child_entry.as_node().print_json(out);
+            first = false;
+        }
+        out << "}";
+    }
+    else if (is_array()) {
+        out << "[";
+        auto arr = entries();
+        bool first = true;
+        for (size_t i = 0; i < arr.size(); ++i) {
+            if (!arr[i].is_empty()) {
+                if (!first) out << ",";
+                arr[i].print_json(out);
+                first = false;
+            }
+        }
+        out << "]";
+    } 
+    // Scalar / Leaf Node
+    else {
+        switch (m_kind) {
+        case FF_FIELD_STRING:
+        case FF_FIELD_CODE:
+            out << "\"";
+            escape_json_string(out, as<std::string_view>());
+            out << "\"";
+            break;
+        case FF_FIELD_BOOL:
+            out << (as<bool>() ? "true" : "false");
+            break;
+        case FF_FIELD_UINT32:
+            out << as<uint32_t>();
+            break;
+        case FF_FIELD_FLOAT64:
+            out << as<double>();
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+void Parser::print_json(std::ostream& out) const {
+    auto r = root();
+    if (r) {
+        r.print_json(out);
+    } else {
+        out << "{\"error\":\"Invalid FastFHIR Root Node\"}";
+    }
+}
+
+namespace Reflective {
 // =====================================================================
 // Node constructors
 // =====================================================================
@@ -195,38 +383,36 @@ std::vector<Node> Node::entries() const {
 // =====================================================================
 // Node child lookup
 // =====================================================================
-Node Node::operator[](FF_FieldKey key) const {
-    if (!is_object()) return {};
+Entry constexpr NULL_ENTRY = {nullptr, FF_NULL_OFFSET, 0, FF_RECOVER_UNDEFINED, FF_FIELD_UNKNOWN};
+Entry Node::operator[](FF_FieldKey key) const {
+    if (!is_object()) return {nullptr, FF_NULL_OFFSET, 0, FF_RECOVER_UNDEFINED, FF_FIELD_UNKNOWN};
 
-    // --- 1. INHERITANCE-AWARE SCHEMA VALIDATION ---
-    if (key.owner_recovery != FF_RECOVER_UNDEFINED &&
-        key.owner_recovery != m_recovery) {
-        
-        // Allow inherited base-class keys (Resource.id) to access valid concrete resources
+    // 1. Validation
+    if (key.owner_recovery != FF_RECOVER_UNDEFINED && key.owner_recovery != m_recovery) {
         if (!(key.owner_recovery == RECOVER_FF_RESOURCE && FF_IsResourceTag(m_recovery))) {
-            return {};
+            return NULL_ENTRY;
         }
-    }
-
-    // --- 2. DYNAMIC LOOKUP ---
-    if (key.kind == FF_FIELD_UNKNOWN) {
-        const std::string_view key_name = key.view();
-        if (!key_name.empty()) 
-            return reflected_child_node(m_base, m_size, m_version, m_node_offset, m_recovery, key_name);
-        return {};
     }
 
     const Offset value_offset = m_node_offset + key.field_offset;
 
-    // --- 3. FAST PATH: EMPTY SLOT ---
+    // 2. Fast Path: Empty slot
     if (FF_IsFieldEmpty(m_base, value_offset, key.kind)) {
-        return {};
+        return NULL_ENTRY;
     }
 
-    // --- 4. AUTOMATIC INDIRECTION & NODE CONSTRUCTION ---
-    switch (key.kind) {
-        
-        // -- INLINE SCALARS (Zero Indirection) --
+    // 3. Return lightweight coordinate entry.
+    RECOVERY_TAG target_tag = (key.kind == FF_FIELD_ARRAY) ? ToArrayTag(key.child_recovery) : key.child_recovery;
+    if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN) {
+        target_tag = Kind_to_Recovery(key.kind); 
+    }
+
+    return {m_base, m_node_offset, key.field_offset, target_tag, key.kind};
+}
+Node Entry::as_node(Size size, uint32_t version, RECOVERY_TAG expected_tag, FF_FieldKind schema_kind) const {
+    if (base == nullptr || absolute_offset == FF_NULL_OFFSET) return {};
+
+    switch (schema_kind) {
         case FF_FIELD_BOOL:
         case FF_FIELD_INT32:
         case FF_FIELD_UINT32:
@@ -234,276 +420,26 @@ Node Node::operator[](FF_FieldKey key) const {
         case FF_FIELD_UINT64:
         case FF_FIELD_FLOAT64:
         case FF_FIELD_CODE: 
-            return Node::scalar(
-                m_base, m_size, m_version, 
-                m_node_offset, value_offset, key.kind
-            );
+            return Node::scalar(base, size, version, absolute_offset, absolute_offset, expected_tag);
 
-        // -- INLINE POLYMORPHIC TUPLES --
-        case FF_FIELD_RESOURCE: {
-            Offset actual_off = LOAD_U64(m_base + value_offset);
-            if (actual_off == FF_NULL_OFFSET) return {};
-            
-            RECOVERY_TAG tuple_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + value_offset + DATA_BLOCK::RECOVERY));
-            RECOVERY_TAG block_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + actual_off + DATA_BLOCK::RECOVERY));
-            
-            if (tuple_tag != block_tag) throw std::runtime_error
-            ("Node::operator[]() Inline polymorphic tuple (RECOVERY_FF_RESOURCE) mismatch with actual type");
-            
-            return Node(m_base, m_size, m_version, actual_off, tuple_tag, FF_FIELD_BLOCK);
-        }
         case FF_FIELD_CHOICE: 
-        return Node::resolve_choice(m_base, m_size, m_version, m_node_offset, value_offset, key.kind);
+            return Node::resolve_choice(base, size, version, absolute_offset, absolute_offset, schema_kind);
 
-        // -- COMPLEX TYPES (Standard 8-Byte Pointers) --
-        case FF_FIELD_BLOCK:
-        case FF_FIELD_ARRAY:
-        case FF_FIELD_STRING: {
-            // Standard pointer hop
-            Offset child_offset = LOAD_U64(m_base + value_offset);
+        case FF_FIELD_RESOURCE: {
+            Offset actual_off = LOAD_U64(base + absolute_offset);
+            if (actual_off == FF_NULL_OFFSET) return {};
+            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + absolute_offset + DATA_BLOCK::RECOVERY));
+            return Node(base, size, version, actual_off, actual_tag, FF_FIELD_BLOCK);
+        }
+
+        default: {
+            // Standard pointer hop for Blocks, Arrays, and Strings
+            Offset child_offset = LOAD_U64(base + absolute_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
-
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
-                LOAD_U16(m_base + child_offset + DATA_BLOCK::RECOVERY)
-            );
-
-            return Node(
-                m_base, m_size, m_version, 
-                child_offset, actual_tag, key.kind, 
-                key.child_recovery, key.array_entries_are_offsets
-            );
-        }
-
-        default:
-            return {};
-    }
-}
-
-Node Node::operator[](size_t index) const {
-    if (!is_array()) return {};
-
-    FF_ARRAY array(m_node_offset, m_size, m_version);
-    auto count = array.entry_count(m_base);
-    if (index >= count) return {};
-
-    // Jump to the specific array slot based on the pre-calculated step size
-    const BYTE* entry = array.entries(m_base) + index * array.entry_step(m_base);
-
-    // --- INLINE POLYMORPHIC TUPLE ARRAY ---
-    if (m_child_recovery == RECOVER_FF_RESOURCE && !m_array_entries_are_offsets) {
-        Offset actual_off = LOAD_U64(entry);
-        if (actual_off == FF_NULL_OFFSET) return {};
-        
-        RECOVERY_TAG tuple_tag = static_cast<RECOVERY_TAG>(LOAD_U16(entry + DATA_BLOCK::RECOVERY));
-        RECOVERY_TAG block_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + actual_off + DATA_BLOCK::RECOVERY));
-        
-        if (tuple_tag != block_tag) return {}; 
-        
-        return Node(m_base, m_size, m_version, actual_off, tuple_tag, FF_FIELD_BLOCK);
-    }
-
-    // --- STANDARD POINTER ARRAY (e.g., Patient.name) ---
-    if (m_array_entries_are_offsets) {
-        Offset child_off = LOAD_U64(entry);
-        if (child_off == FF_NULL_OFFSET) return {}; 
-
-        RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
-            LOAD_U16(m_base + child_off + DATA_BLOCK::RECOVERY)
-        );
-        
-        FF_FieldKind child_kind = (m_child_recovery == FF_STRING::recovery) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
-        
-        return Node(m_base, m_size, m_version, child_off, actual_tag, child_kind);
-    } 
-    
-    // --- FAST PATH: INLINE ARRAY ---
-    return Node(m_base, m_size, m_version,
-                static_cast<Offset>(entry - m_base),
-                m_child_recovery, FF_FIELD_BLOCK);
-}
-
-// =====================================================================
-// Parser implementation
-// =====================================================================
-Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast<const BYTE*>(buffer)), m_size(size) {
-    if (size < FF_HEADER::HEADER_SIZE) {
-        throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
-    }
-    FF_HEADER header(size);
-    auto validation_result = header.validate_full(m_base);
-    if (validation_result != FF_SUCCESS) {
-        throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with error " + validation_result.message);
-    }
-    m_version = header.get_fhir_rev(m_base);
-    m_root_offset = header.get_root(m_base);
-    m_root_recovery = header.get_root_type(m_base);
-}
-
-Parser::Parser(const Memory& memory) : m_memory(memory), m_base(memory.base()), m_size(memory.size()) {
-    if (m_size < FF_HEADER::HEADER_SIZE) {
-        throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
-    }
-    FF_HEADER header(m_size);
-    auto validation_result = header.validate_full(m_base);
-    if (validation_result != FF_SUCCESS) {
-        throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with code " + validation_result.message);
-    }
-    m_version = header.get_fhir_rev(m_base);
-    m_root_offset = header.get_root(m_base);
-    m_root_recovery = header.get_root_type(m_base);
-}
-
-uint32_t Parser::version()   const { return m_version; }
-uint16_t Parser::root_type() const { return m_root_recovery; }
-
-Parser::ChecksumValidation Parser::checksum() const {
-    FF_HEADER header(m_size);
-    FF_CHECKSUM cs = header.get_checksum(m_base);
-
-    if (!cs || cs.__offset + FF_CHECKSUM::HEADER_SIZE > m_size)
-        return {};
-
-    return {
-        m_base,
-        static_cast<size_t>(cs.__offset),
-        cs.get_algorithm(m_base),
-        cs.get_hash_view(m_base)
-    };
-}
-
-Node Parser::root() const {
-    return Node(m_base, m_size, m_version,
-                m_root_offset, m_root_recovery, FF_FIELD_BLOCK);
-}
-
-} // namespace FastFHIR
-
-
-// =====================================================================
-// JSON Serialization
-// =====================================================================
-
-#include <ostream>
-namespace FastFHIR {
-
-
-// High-speed string escaper for clinical narratives and markdown
-static void escape_json_string(std::ostream& out, std::string_view str) {
-    for (char c : str) {
-        switch (c) {
-            case '"':  out << "\\\""; break;
-            case '\\': out << "\\\\"; break;
-            case '\b': out << "\\b";  break;
-            case '\f': out << "\\f";  break;
-            case '\n': out << "\\n";  break;
-            case '\r': out << "\\r";  break;
-            case '\t': out << "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    // Optional: Hex encode other control characters if needed
-                } else {
-                    out << c;
-                }
+            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + child_offset + DATA_BLOCK::RECOVERY));
+            return Node(base, size, version, child_offset, actual_tag, schema_kind);
         }
     }
 }
-
-static std::string_view get_choice_suffix(RECOVERY_TAG tag) {
-    if (tag == RECOVER_FF_BOOL) return "Boolean";
-    if (tag == RECOVER_FF_FLOAT64) return "Decimal";
-    if (tag == RECOVER_FF_INT32) return "Integer";
-    if (tag == RECOVER_FF_UINT32) return "UnsignedInt";
-    if (tag == RECOVER_FF_INT64 || tag == RECOVER_FF_UINT64) return "Integer64";
-    if (tag == RECOVER_FF_STRING) return "String";
-    
-    // For complex types, pull the capitalized resource/data type name
-    std::string_view name = FastFHIR::reflected_resource_type(tag);
-    return name;
-}
-
-void Node::print_json(std::ostream& out) const {
-    if (is_empty()) return;
-
-    if (is_object()) {
-        out << "{";
-        auto f_list = fields();
-        bool first = true;
-
-        if (FF_IsResourceTag(m_recovery)) {
-            out << "\"resourceType\":\"" << reflected_resource_type(m_recovery) << "\"";
-            first = false;
-        }
-
-        for (size_t i = 0; i < f_list.size(); ++i) {
-            const auto& f = f_list[i];
-
-            // 1. FAST PATH: Raw memory peek. Skip completely field if empty!
-            if (FF_IsFieldEmpty(m_base, m_node_offset + f.field_offset, f.kind)) {
-                continue;
-            }
-
-            // 2. Construct the O(1) field key blueprint
-            FF_FieldKey key = FF_FieldKey::from_cstr(
-                m_recovery, f.kind, f.field_offset, 
-                f.child_recovery, f.array_entries_are_offsets, f.name
-            );
-
-            // 3. Pure pointer-math lookup (Zero loops)
-            auto child = (*this)[key];
-            
-            if (!first) out << ",";
-            out << "\"" << f.name;
-            if (f.kind == FF_FIELD_CHOICE) out << get_choice_suffix(child.recovery());
-            out << "\":";
-            child.print_json(out);
-            first = false;
-        }
-        out << "}";
-    }
-    else if (is_array()) {
-        out << "[";
-        auto arr = entries();
-        bool first = true;
-        for (size_t i = 0; i < arr.size(); ++i) {
-            if (!arr[i].is_empty()) {
-                if (!first) out << ",";
-                arr[i].print_json(out);
-                first = false;
-            }
-        }
-        out << "]";
-    } 
-    // Scalar / Leaf Node
-    else {
-        switch (m_kind) {
-        case FF_FIELD_STRING:
-        case FF_FIELD_CODE:
-            out << "\"";
-            escape_json_string(out, as<std::string_view>());
-            out << "\"";
-            break;
-        case FF_FIELD_BOOL:
-            out << (as<bool>() ? "true" : "false");
-            break;
-        case FF_FIELD_UINT32:
-            out << as<uint32_t>();
-            break;
-        case FF_FIELD_FLOAT64:
-            out << as<double>();
-            break;
-        default:
-            break;
-        }
-    }
-}
-
-void Parser::print_json(std::ostream& out) const {
-    auto r = root();
-    if (r) {
-        r.print_json(out);
-    } else {
-        out << "{\"error\":\"Invalid FastFHIR Root Node\"}";
-    }
-}
-
+} // namespace Reflective
 } // namespace FastFHIR
