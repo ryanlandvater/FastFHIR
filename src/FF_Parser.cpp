@@ -66,8 +66,8 @@ Parser::ChecksumValidation Parser::checksum() const {
     };
 }
 
-Node Parser::root() const {
-    return Node(m_base, m_size, m_version,
+Reflective::Node Parser::root() const {
+    return Reflective::Node(m_base, m_size, m_version,
                 m_root_offset, m_root_recovery, FF_FIELD_BLOCK);
 }
 
@@ -116,7 +116,7 @@ static std::string_view get_choice_suffix(RECOVERY_TAG tag) {
     return name;
 }
 
-void Node::print_json(std::ostream& out) const {
+void Reflective::Node::print_json(std::ostream& out) const {
     if (is_empty()) return;
 
     if (is_object()) {
@@ -154,7 +154,7 @@ void Node::print_json(std::ostream& out) const {
             out << "\":";
             
             // Defer Node instantiation until absolutely required
-            child_entry.as_node().print_json(out);
+            child_entry.as_node(m_size, m_version, child_entry.target_recovery, child_entry.kind).print_json(out);
             first = false;
         }
         out << "}";
@@ -383,7 +383,7 @@ std::vector<Node> Node::entries() const {
 // =====================================================================
 // Node child lookup
 // =====================================================================
-Entry constexpr NULL_ENTRY = {nullptr, FF_NULL_OFFSET, 0, FF_RECOVER_UNDEFINED, FF_FIELD_UNKNOWN};
+const Entry NULL_ENTRY = {nullptr, FF_NULL_OFFSET, 0, FF_RECOVER_UNDEFINED, FF_FIELD_UNKNOWN};
 Entry Node::operator[](FF_FieldKey key) const {
     if (!is_object()) return {nullptr, FF_NULL_OFFSET, 0, FF_RECOVER_UNDEFINED, FF_FIELD_UNKNOWN};
 
@@ -410,7 +410,9 @@ Entry Node::operator[](FF_FieldKey key) const {
     return {m_base, m_node_offset, key.field_offset, target_tag, key.kind};
 }
 Node Entry::as_node(Size size, uint32_t version, RECOVERY_TAG expected_tag, FF_FieldKind schema_kind) const {
-    if (base == nullptr || absolute_offset == FF_NULL_OFFSET) return {};
+    if (base == nullptr || absolute_offset() == FF_NULL_OFFSET) return {};
+
+    const Offset slot_offset = absolute_offset();
 
     switch (schema_kind) {
         case FF_FIELD_BOOL:
@@ -420,21 +422,21 @@ Node Entry::as_node(Size size, uint32_t version, RECOVERY_TAG expected_tag, FF_F
         case FF_FIELD_UINT64:
         case FF_FIELD_FLOAT64:
         case FF_FIELD_CODE: 
-            return Node::scalar(base, size, version, absolute_offset, absolute_offset, expected_tag);
+            return Node::scalar(base, size, version, slot_offset, slot_offset, expected_tag);
 
         case FF_FIELD_CHOICE: 
-            return Node::resolve_choice(base, size, version, absolute_offset, absolute_offset, schema_kind);
+            return Node::resolve_choice(base, size, version, slot_offset, slot_offset, schema_kind);
 
         case FF_FIELD_RESOURCE: {
-            Offset actual_off = LOAD_U64(base + absolute_offset);
+            Offset actual_off = LOAD_U64(base + slot_offset);
             if (actual_off == FF_NULL_OFFSET) return {};
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + absolute_offset + DATA_BLOCK::RECOVERY));
+            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + slot_offset + DATA_BLOCK::RECOVERY));
             return Node(base, size, version, actual_off, actual_tag, FF_FIELD_BLOCK);
         }
 
         default: {
             // Standard pointer hop for Blocks, Arrays, and Strings
-            Offset child_offset = LOAD_U64(base + absolute_offset);
+            Offset child_offset = LOAD_U64(base + slot_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + child_offset + DATA_BLOCK::RECOVERY));
             return Node(base, size, version, child_offset, actual_tag, schema_kind);

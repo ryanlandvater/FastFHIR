@@ -1,5 +1,7 @@
 # FastFHIR Compaction Architecture Summary
 
+Maintenance reminder: if this task changes system architecture (compaction model, parser branching, block geometry, or stream flags), also update .github/prompts/architecture.md in the same change.
+
 This document outlines the agreed-upon architecture for the "Compacted" stream state, designed to eliminate sparse V-Table overhead for terminal storage and datalake export.
 
 1. Core Paradigm: Mutable vs. Terminal

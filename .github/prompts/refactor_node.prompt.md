@@ -1,5 +1,7 @@
 # FastFHIR Core Refactor Requirements: Unified Hierarchy, Scalar Optimization & Static Dispatch
 
+Maintenance reminder: if this task changes system architecture (core hierarchy, traversal model, field routing contracts, or generator/runtime boundaries), also update .github/prompts/architecture.md in the same change.
+
 This document outlines the technical requirements for refactoring the FastFHIR core architecture. It transitions the system from ad-hoc proxies to a unified inheritance hierarchy, eliminates redundant metadata allocations, and introduces compile-time trait dispatch for the C++ API.
 
 ### 1. Architectural Objectives

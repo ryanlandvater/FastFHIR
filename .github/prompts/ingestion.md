@@ -1,5 +1,7 @@
 # FastFHIR Hybrid-Ingestion Architecture
 
+Maintenance reminder: if this task changes system architecture (ingestion pipeline design, scheduling model, task contracts, or compaction interaction), also update .github/prompts/architecture.md in the same change.
+
 ## 1. Core Paradigm: Locality vs. Throughput
 The ingestion pipeline transitions from deep, single-threaded recursion to a "Hybrid-Deferred" model. This maximizes CPU-to-Memory bandwidth by balancing L1/L2 cache locality for small elements with multi-core throughput for heavy sub-trees.
 

@@ -86,22 +86,22 @@ struct PyStream {
 // without altering the lightweight C++ AST architecture.
 struct PyStreamNode {
     std::shared_ptr<Builder> builder;
-    ObjectHandle handle;
+    Reflective::ObjectHandle handle;
 
-    PyStreamNode(std::shared_ptr<Builder> b, ObjectHandle h) : builder(std::move(b)), handle(h) {}
+    PyStreamNode(std::shared_ptr<Builder> b, Reflective::ObjectHandle h) : builder(std::move(b)), handle(h) {}
 };
 
 struct PyMutableEntry {
     std::shared_ptr<Builder> builder;
-    MutableEntry entry;
+    Reflective::MutableEntry entry;
 
-    PyMutableEntry(std::shared_ptr<Builder> b, MutableEntry e) : builder(std::move(b)), entry(e) {}
+    PyMutableEntry(std::shared_ptr<Builder> b, Reflective::MutableEntry e) : builder(std::move(b)), entry(e) {}
 };
 
 // =====================================================================
 // Type-Safe Python to C++ Assignment Dispatcher
 // =====================================================================
-void assign_py_obj(MutableEntry& entry, py::handle obj, ObjectHandle& parent_handle, const FF_FieldKey& key) {
+void assign_py_obj(Reflective::MutableEntry& entry, py::handle obj, Reflective::ObjectHandle& parent_handle, const FF_FieldKey& key) {
     if (py::isinstance<PyStreamNode>(obj)) {
         entry = obj.cast<PyStreamNode>().handle;
         return;
@@ -161,7 +161,7 @@ void assign_py_obj(MutableEntry& entry, py::handle obj, ObjectHandle& parent_han
 PyMutableEntry resolve_ast_path(const PyStreamNode& root, py::tuple path) {
     if (path.empty()) throw py::value_error("FastFHIR: Cannot traverse an empty AST path.");
 
-    auto get_next_leaf = [](ObjectHandle parent, py::handle item) -> MutableEntry {
+    auto get_next_leaf = [](Reflective::ObjectHandle parent, py::handle item) -> Reflective::MutableEntry {
         if (py::isinstance<py::int_>(item)) {
             return parent[item.cast<size_t>()];
         } else if (py::isinstance<PythonFieldProxy>(item)) {
@@ -174,7 +174,7 @@ PyMutableEntry resolve_ast_path(const PyStreamNode& root, py::tuple path) {
         throw py::type_error("FastFHIR: AST path elements must be Field objects or integers.");
     };
 
-    ObjectHandle current_parent = root.handle;
+    Reflective::ObjectHandle current_parent = root.handle;
     for (size_t i = 0; i < path.size() - 1; ++i) {
         current_parent = get_next_leaf(current_parent, path[i]).as_handle();
     }
@@ -299,10 +299,10 @@ PYBIND11_MODULE(_core, m) {
                 auto field = last_step.cast<PythonFieldProxy>();
                 const auto& key = *FastFHIR::FieldKeys::Registry[field.registry_index];
                 py::tuple p_path = path[py::slice(0, path.size() - 1, 1)];
-                ObjectHandle p_handle = p_path.empty() ? self.handle : resolve_ast_path(self, p_path).entry.as_handle();
+                Reflective::ObjectHandle p_handle = p_path.empty() ? self.handle : resolve_ast_path(self, p_path).entry.as_handle();
                 assign_py_obj(leaf.entry, value, p_handle, key);
             } else {
-                ObjectHandle dummy = self.handle; 
+                Reflective::ObjectHandle dummy = self.handle; 
                 FF_FieldKey dummy_k;
                 assign_py_obj(leaf.entry, value, dummy, dummy_k);
             }
@@ -326,7 +326,7 @@ PYBIND11_MODULE(_core, m) {
             return s.entry.as_node().size(); 
         })
         .def("__getitem__", [](const PyMutableEntry& self, size_t index) {
-            ObjectHandle elevated = self.entry.as_handle();
+            Reflective::ObjectHandle elevated = self.entry.as_handle();
             if (index >= elevated.as_node().size()) throw py::index_error();
             return PyMutableEntry(self.builder, self.entry[index]);
         })
@@ -351,16 +351,16 @@ PYBIND11_MODULE(_core, m) {
                 auto f = last.cast<PythonFieldProxy>();
                 const auto& key = *FieldKeys::Registry[f.registry_index];
                 py::tuple p_path = path[py::slice(0, path.size() - 1, 1)];
-                ObjectHandle p_handle = p_path.empty() ? elevated.handle : resolve_ast_path(elevated, p_path).entry.as_handle();
+                Reflective::ObjectHandle p_handle = p_path.empty() ? elevated.handle : resolve_ast_path(elevated, p_path).entry.as_handle();
                 assign_py_obj(leaf.entry, value, p_handle, key);
             } else {
-                ObjectHandle dummy = elevated.handle; 
+                Reflective::ObjectHandle dummy = elevated.handle; 
                 FF_FieldKey dummy_k;
                 assign_py_obj(leaf.entry, value, dummy, dummy_k);
             }
         })
         .def("value", [](const PyMutableEntry& self) -> py::object {
-            Node child = self.entry.as_node();
+            Reflective::Node child = self.entry.as_node();
             if (child.is_empty()) return py::none();
 
             switch (child.kind()) {
@@ -376,7 +376,7 @@ PYBIND11_MODULE(_core, m) {
                 case FF_FIELD_BLOCK:   
                 case FF_FIELD_RESOURCE:
                 case FF_FIELD_ARRAY: {
-                    ObjectHandle elevated = self.entry.as_handle();
+                    Reflective::ObjectHandle elevated = self.entry.as_handle();
                     if (elevated.offset() == FF_NULL_OFFSET) return py::none();
                     return py::cast(PyStreamNode(self.builder, elevated));
                 }
@@ -393,7 +393,7 @@ PYBIND11_MODULE(_core, m) {
         .def("__enter__", [](PyStream& self) -> PyStream& { return self; })
         .def("__exit__", [](PyStream& self, py::object, py::object, py::object) { self.close(); })
         .def_property("root", 
-            [](PyStream& self) { return PyStreamNode(self.m_builder, ObjectHandle(&self.get(), self.get().query().root())); }, 
+            [](PyStream& self) { return PyStreamNode(self.m_builder, Reflective::ObjectHandle(&self.get(), self.get().query().root())); }, 
             [](PyStream& self, const PyStreamNode& handle) { self.get().set_root(handle.handle); }
         )
         .def("query", [](const PyStream& self) { return self.get().query(); })
@@ -421,7 +421,7 @@ PYBIND11_MODULE(_core, m) {
     py::class_<Ingest::Ingestor>(m, "Ingestor")
         .def(py::init<size_t, unsigned int>(), py::arg("logger_capacity") = 64 * 1024 * 1024, py::arg("concurrency") = 0)
         .def("ingest", [](Ingest::Ingestor& self, PyStream& stream, Ingest::SourceType type, std::string_view payload) {
-            ObjectHandle root(&stream.get(), FF_NULL_OFFSET);
+            Reflective::ObjectHandle root(&stream.get(), FF_NULL_OFFSET);
             size_t count = 0;
             Ingest::IngestRequest req{stream.get(), type, payload};
             FF_Result res = self.ingest(req, root, count);

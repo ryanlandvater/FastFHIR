@@ -129,13 +129,29 @@ public:
 namespace Reflective {
 // Lightweight 32-byte POD slot view
 struct Entry {
-    const BYTE* base;
-    Offset absolute_offset; // parent_offset + vtable_offset pre-computed
+    const BYTE* base = nullptr;
+    Offset parent_offset = FF_NULL_OFFSET;
+    size_t vtable_offset = 0;
+    RECOVERY_TAG target_recovery = FF_RECOVER_UNDEFINED;
+    FF_FieldKind kind = FF_FIELD_UNKNOWN;
+
+    Entry() = default;
+    Entry(const BYTE* b, Offset parent, size_t vtable, RECOVERY_TAG recovery, FF_FieldKind field_kind)
+        : base(b), parent_offset(parent), vtable_offset(vtable), target_recovery(recovery), kind(field_kind) {}
+
+    Offset absolute_offset() const {
+        if (parent_offset == FF_NULL_OFFSET) return FF_NULL_OFFSET;
+        return parent_offset + static_cast<Offset>(vtable_offset);
+    }
+
+    explicit operator bool() const {
+        return base != nullptr && parent_offset != FF_NULL_OFFSET;
+    }
     
     template <typename T>
     requires std::is_arithmetic_v<T>
     T as_scalar(RECOVERY_TAG expected_tag) const {
-        return Decode::scalar<T>(base, absolute_offset, expected_tag);
+        return Decode::scalar<T>(base, absolute_offset(), expected_tag);
     }
     
     Node as_node(Size size, uint32_t version, RECOVERY_TAG tag, FF_FieldKind kind) const;
@@ -276,12 +292,53 @@ public:
      * @throws std::invalid_argument if the node's recovery tag doesn't match the requested type.
      */
     template <typename T>
-    requires std::is_arithmetic_v<T>
     T as() const {
-        if (GetTypeFromTag(m_recovery) != GetTypeFromTag(TypeTraits<T>::recovery)) {
-            throw std::runtime_error("Node::as() recovery tag mismatch");
+        if constexpr (std::is_same_v<T, std::string_view>) {
+            if (m_recovery == RECOVER_FF_CODE) {
+                uint32_t raw_code = LOAD_U32(m_base + m_global_scalar_offset);
+                if (raw_code == FF_CODE_NULL) return "";
+
+                if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
+                    return resolved;
+                }
+
+                if (raw_code & FF_CUSTOM_STRING_FLAG) {
+                    Offset relative_off = (raw_code & ~FF_CUSTOM_STRING_FLAG);
+                    return FF_STRING(m_node_offset + relative_off, m_size, m_version).read_view(m_base);
+                }
+                return "";
+            }
+
+            if (m_recovery != RECOVER_FF_STRING) {
+                throw std::runtime_error("FastFHIR: Node is not a string or code.");
+            }
+            return FF_STRING(m_node_offset, m_size, m_version).read_view(m_base);
+        } else if constexpr (
+            std::is_same_v<T, bool> ||
+            std::is_same_v<T, int32_t> ||
+            std::is_same_v<T, uint32_t> ||
+            std::is_same_v<T, int64_t> ||
+            std::is_same_v<T, uint64_t> ||
+            std::is_same_v<T, double>
+        ) {
+            RECOVERY_TAG expected = FF_RECOVER_UNDEFINED;
+            if constexpr (std::is_same_v<T, bool>) expected = RECOVER_FF_BOOL;
+            else if constexpr (std::is_same_v<T, int32_t>) expected = RECOVER_FF_INT32;
+            else if constexpr (std::is_same_v<T, uint32_t>) expected = RECOVER_FF_UINT32;
+            else if constexpr (std::is_same_v<T, int64_t>) expected = RECOVER_FF_INT64;
+            else if constexpr (std::is_same_v<T, uint64_t>) expected = RECOVER_FF_UINT64;
+            else if constexpr (std::is_same_v<T, double>) expected = RECOVER_FF_FLOAT64;
+
+            if (m_recovery != expected) {
+                throw std::runtime_error("Node::as() recovery tag mismatch");
+            }
+            return Decode::scalar<T>(m_base, m_global_scalar_offset, m_recovery);
+        } else {
+            if (m_recovery != TypeTraits<T>::recovery) {
+                throw std::runtime_error("Node::as() recovery tag mismatch");
+            }
+            return TypeTraits<T>::read(m_base, m_node_offset, m_size, m_version);
         }
-        return Decode::scalar<T>(m_base, m_global_scalar_offset, m_recovery);
     }
     
     /**
@@ -294,76 +351,5 @@ public:
 class ArrayNode : public Node {
     
 };
-
-// =====================================================================
-// Explicit Node Specializations for Primitives
-// =====================================================================
-template <> 
-inline bool Node::as<bool>() const {
-    if (m_recovery != RECOVER_FF_BOOL) throw std::runtime_error("FastFHIR: Recovery mismatch (expected bool)");
-    return LOAD_U8(m_base + m_global_scalar_offset) != 0;
-}
-
-template <> 
-inline int32_t Node::as<int32_t>() const {
-    if (m_recovery != RECOVER_FF_INT32) throw std::runtime_error("FastFHIR: Recovery mismatch (expected int32_t)");
-    return static_cast<int32_t>(LOAD_U32(m_base + m_global_scalar_offset));
-}
-
-template <> 
-inline uint32_t Node::as<uint32_t>() const {
-    if (m_recovery != RECOVER_FF_UINT32) throw std::runtime_error("FastFHIR: Recovery mismatch (expected uint32_t)");
-    return LOAD_U32(m_base + m_global_scalar_offset);
-}
-
-template <> 
-inline int64_t Node::as<int64_t>() const {
-    if (m_recovery != RECOVER_FF_INT64) throw std::runtime_error("FastFHIR: Recovery mismatch (expected int64_t)");
-    return static_cast<int64_t>(LOAD_U64(m_base + m_global_scalar_offset));
-}
-
-template <> 
-inline uint64_t Node::as<uint64_t>() const {
-    if (m_recovery != RECOVER_FF_UINT64) throw std::runtime_error("FastFHIR: Recovery mismatch (expected uint64_t)");
-    return LOAD_U64(m_base + m_global_scalar_offset);
-}
-
-template <> 
-inline double Node::as<double>() const {
-    if (m_recovery != RECOVER_FF_FLOAT64) throw std::runtime_error("FastFHIR: Recovery mismatch (expected double)");
-    
-    // Safely bridge the 64-bit memory lane into a double without violating strict aliasing
-    uint64_t bits = LOAD_U64(m_base + m_global_scalar_offset);
-    double val;
-    std::memcpy(&val, &bits, sizeof(double));
-    return val;
-}
-
-template <> 
-inline std::string_view Node::as<std::string_view>() const {
-    // --- Dictionary Code Resolution ---
-    if (m_recovery == RECOVER_FF_CODE) {
-        uint32_t raw_code = LOAD_U32(m_base + m_global_scalar_offset);
-        if (raw_code == FF_CODE_NULL) return "";
-        
-        // 1. Resolve via Global Dictionary
-        if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
-            return resolved;
-        }
-        
-        // 2. Resolve via Local Custom String
-        if (raw_code & FF_CUSTOM_STRING_FLAG) {
-            Offset relative_off = (raw_code & ~FF_CUSTOM_STRING_FLAG);
-            return FF_STRING(m_node_offset + relative_off, m_size, m_version).read_view(m_base);
-        }
-        return "";
-    }
-
-    // --- Standard String Block ---
-    else if (m_recovery != RECOVER_FF_STRING) {
-        throw std::runtime_error("FastFHIR: Node is not a string or code.");
-    }
-    return FF_STRING(m_node_offset, m_size, m_version).read_view(m_base);
-}
 } // namespace Reflective
 } // namespace FastFHIR

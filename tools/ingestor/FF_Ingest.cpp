@@ -160,7 +160,7 @@ int main(int argc, char* argv[]) {
             .json_string = payload
         };
 
-        ObjectHandle root_handle(&builder, FF_NULL_OFFSET);
+        Reflective::ObjectHandle root_handle(&builder, FF_NULL_OFFSET);
         size_t parsed_count = 0;
         
         FF_Result result = ingestor.ingest(request, root_handle, parsed_count);

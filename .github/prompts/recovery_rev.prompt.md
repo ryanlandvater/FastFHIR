@@ -1,5 +1,7 @@
 ### FastFHIR Architectural Change: Semantic Recovery Tag Implementation (Bit-Masking)
 
+Maintenance reminder: if this task changes system architecture (recovery-tag semantics, traversal invariants, dispatch behavior, or generator contract), also update .github/prompts/architecture.md in the same change.
+
 #### 1. Core Definition Updates (FF_Primitives.hpp)
 Modify the RECOVERY_TAG system to transition from a Structural ID (identifying only memory layout) to a Semantic Descriptor (identifying layout and content simultaneously).
 - Define FF_ARRAY_BIT as 0x8000 (uint16_t). This high bit serves as an orthogonal modifier indicating the block follows the FF_ARRAY V-Table layout.

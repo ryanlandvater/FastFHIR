@@ -164,7 +164,7 @@ void Builder::amend_variant(Offset object_offset, size_t field_vtable_offset, ui
 // =====================================================================
 // Finalization & Checksums
 // =====================================================================
-void Builder::set_root(const ObjectHandle &handle)
+void Builder::set_root(const Reflective::ObjectHandle &handle)
 {
     if (handle.offset() != FF_NULL_OFFSET && handle.recovery() == FF_RECOVER_UNDEFINED) {
         throw std::invalid_argument("FastFHIR: Cannot set a root resource with an UNDEFINED recovery tag.");
@@ -252,23 +252,23 @@ Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &h
 // =====================================================================
 namespace Reflective {
 Entry MutableEntry::as_entry() const {
-    return {m_builder->memory().base(), m_parent_offset, m_vtable_offset, m_kind};
+    return *this;
 }
 ObjectHandle MutableEntry::as_handle() const {
     auto base_ptr = m_builder->memory().base();
     
-    if (m_kind == FF_FIELD_RESOURCE || m_kind == FF_FIELD_CHOICE || m_target_recovery == RECOVER_FF_RESOURCE) {
-        Offset target = LOAD_U64(base_ptr + m_parent_offset + m_vtable_offset); 
+    if (kind == FF_FIELD_RESOURCE || kind == FF_FIELD_CHOICE || target_recovery == RECOVER_FF_RESOURCE) {
+        Offset target = LOAD_U64(base_ptr + parent_offset + vtable_offset); 
         if (target == FF_NULL_OFFSET) 
             return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
             
         RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
-            (LOAD_U16(base_ptr + m_parent_offset + m_vtable_offset + DATA_BLOCK::RECOVERY));
+            (LOAD_U16(base_ptr + parent_offset + vtable_offset + DATA_BLOCK::RECOVERY));
         
         return ObjectHandle(m_builder, target, actual_tag);
     }
     
-    Offset target = LOAD_U64(base_ptr + m_parent_offset + m_vtable_offset);
+    Offset target = LOAD_U64(base_ptr + parent_offset + vtable_offset);
     if (target == FF_NULL_OFFSET)
         return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
         
@@ -279,7 +279,6 @@ ObjectHandle MutableEntry::as_handle() const {
 
 MutableEntry& MutableEntry::operator=(const ObjectHandle& child) {
     validate_assignment(child.recovery());
-    auto base = const_cast<BYTE*>(m_builder->memory().base());
     
     // --- INLINE POLYMORPHIC TUPLE ---
     if (target_recovery == RECOVER_FF_RESOURCE) {
@@ -320,20 +319,20 @@ MutableEntry ObjectHandle::operator[](size_t index) const
         throw std::out_of_range("FastFHIR: Array index out of bounds.");
 
     // 2. Low-level geometry calculation
-    FF_ARRAY array_block(m_offset, 0, 0);
+    FF_ARRAY array_block(m_node_offset, 0, 0);
     auto base = m_builder->memory().base();
     
     uint16_t step = array_block.entry_step(base);
     const BYTE* entries_ptr = array_block.entries(base);
     
-    size_t entry_vtable_offset = static_cast<size_t>(entries_ptr - (base + m_offset)) + (index * step);
+    size_t entry_vtable_offset = static_cast<size_t>(entries_ptr - (base + m_node_offset)) + (index * step);
 
     // Return the bridge to the slot.
     // Type discovery may happen lazily in as_handle(), and schema safety is
     // enforced at compile-time by the ffc.py generated code.
     return MutableEntry(
         m_builder,
-        m_offset,
+        m_node_offset,
         entry_vtable_offset,
         GetTypeFromTag(m_recovery),
         Recovery_to_Kind(m_recovery)

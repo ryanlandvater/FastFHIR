@@ -55,7 +55,7 @@ public:
      * @param request Ingestion parameters including source type and payload.
      * @return Result code and message indicating success or failure details.
      */
-    FF_Result ingest(const IngestRequest& request, ObjectHandle& out_root, size_t& out_parsed_count);
+    FF_Result ingest(const IngestRequest& request, Reflective::ObjectHandle& out_root, size_t& out_parsed_count);
 
     /**
      * @brief Parses a payload and inserts the resulting complex object at a specific Field token.
@@ -63,7 +63,7 @@ public:
      * @param key The field token from FastFHIR::FieldKeys for the field within the parent_object being amended.
      * @param payload The raw string to parse.
      */
-    FF_Result insert_at_field(ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload, SourceType fmt = SourceType::FHIR_JSON);
+    FF_Result insert_at_field(Reflective::ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload, SourceType fmt = SourceType::FHIR_JSON);
 
     /**
      * @brief Resets the engine state for a new file and returns all accumulated logs.
@@ -80,8 +80,8 @@ public:
     const ConcurrentLogger& get_logger() const { return m_logger; }
 
 private:
-    FF_Result ingest_fhir_json(const IngestRequest& request, ObjectHandle& out_root, size_t& out_parsed_count);
-    FF_Result insert_at_field_json(ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload);
+    FF_Result ingest_fhir_json(const IngestRequest& request, Reflective::ObjectHandle& out_root, size_t& out_parsed_count);
+    FF_Result insert_at_field_json(Reflective::ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload);
 };
 
 } // namespace FastFHIR::Ingest

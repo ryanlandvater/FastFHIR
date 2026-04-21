@@ -223,7 +223,10 @@ def generate_lazy_view_struct(layout, block_struct_name):
         if f['first_version_idx'] > 0:
             hpp += f"        if constexpr (VERSION < FHIR_VERSION_{f['first_version_name']}) {{\n"
             if ret_type in ['FF_ARRAY', 'std::string_view', 'ResourceReference', 'Reflective::Node'] or ret_type in ['uint8_t', 'uint32_t', 'double', 'bool']:
-                hpp += f"            return {ret_type}{{}};\n"
+                if ret_type == 'FF_ARRAY':
+                    hpp += f"            return FF_ARRAY(FF_NULL_OFFSET, 0, VERSION);\n"
+                else:
+                    hpp += f"            return {ret_type}{{}};\n"
             else:
                 hpp += f"            return {ret_type}<VERSION>{{base, FF_NULL_OFFSET}};\n"
             hpp += f"        }}\n"
@@ -240,7 +243,7 @@ def generate_lazy_view_struct(layout, block_struct_name):
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
             hpp += f"        return FF_ARRAY(child_off, 0, VERSION);\n"
         elif f.get('is_choice'):
-            hpp += f"        return Reflective::Entry{{base, offset + {vtable_off}}}.as_node(0, VERSION, FF_RECOVER_UNDEFINED, FF_FIELD_CHOICE);\n"
+            hpp += f"        return FastFHIR::Reflective::Entry{{base, offset + {vtable_off}}}.as_node(0, VERSION, FF_RECOVER_UNDEFINED, FF_FIELD_CHOICE);\n"
         elif f['fhir_type'] == 'Resource':
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
             hpp += f"        return ResourceReference{{child_off, static_cast<RECOVERY_TAG>(LOAD_U16(base + offset + {vtable_off} + DATA_BLOCK::RECOVERY))}};\n"
@@ -316,7 +319,7 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "    if (!field) return {};\n\n"
         "    const Offset value_offset = block.__offset + field->field_offset;\n"
         "    if (FF_IsFieldEmpty(base, value_offset, field->kind)) return {};\n\n"
-        "    Reflective::Entry entry{base, value_offset};\n"
+        "    Reflective::Entry entry{base, block.__offset, field->field_offset, field->child_recovery, field->kind};\n"
         "    return entry.as_node(block.__size, block.__version, field->child_recovery, field->kind);\n"
         "}\n\n"
         "template <typename T_Block>\n"
@@ -403,12 +406,12 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}}}\n"
             
         elif f['is_array']:
-            cpp += f"{indent}Offset arr_off = LOAD_U64(__base + {vtable_off});\n"
-            cpp += f"{indent}if (arr_off != FF_NULL_OFFSET) {{\n"
-            cpp += f"{indent}    FF_ARRAY arr(arr_off, __size, __version);\n"
-            cpp += f"{indent}    auto STEP = arr.entry_step(__base);\n"
-            cpp += f"{indent}    auto ENTRIES = arr.entry_count(__base);\n"
-            cpp += f"{indent}    auto blk_item_ptr = arr.entries(__base);\n"
+            cpp += f"{indent}Offset arr_off_{f['cpp_name']} = LOAD_U64(__base + {vtable_off});\n"
+            cpp += f"{indent}if (arr_off_{f['cpp_name']} != FF_NULL_OFFSET) {{\n"
+            cpp += f"{indent}    FF_ARRAY arr_{f['cpp_name']}(arr_off_{f['cpp_name']}, __size, __version);\n"
+            cpp += f"{indent}    auto STEP = arr_{f['cpp_name']}.entry_step(__base);\n"
+            cpp += f"{indent}    auto ENTRIES = arr_{f['cpp_name']}.entry_count(__base);\n"
+            cpp += f"{indent}    auto blk_item_ptr = arr_{f['cpp_name']}.entries(__base);\n"
             cpp += f"{indent}    for (uint32_t i = 0; i < ENTRIES; ++i, blk_item_ptr += STEP) {{\n"
             
             if f['fhir_type'] in ('string', 'code'):
@@ -433,21 +436,21 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}    }}\n{indent}}}\n"
             
         elif f['fhir_type'] == 'Resource':
-            cpp += f"{indent}Offset res_off = LOAD_U64(__base + {vtable_off});\n"
-            cpp += f"{indent}if (res_off != FF_NULL_OFFSET) {{\n"
-            cpp += f"{indent}    RECOVERY_TAG res_tag = static_cast<RECOVERY_TAG>(LOAD_U16(__base + {vtable_off} + DATA_BLOCK::RECOVERY));\n"
-            cpp += f"{indent}    data.{f['cpp_name']} = ResourceReference(res_off, res_tag);\n"
+            cpp += f"{indent}Offset res_off_{f['cpp_name']} = LOAD_U64(__base + {vtable_off});\n"
+            cpp += f"{indent}if (res_off_{f['cpp_name']} != FF_NULL_OFFSET) {{\n"
+            cpp += f"{indent}    RECOVERY_TAG res_tag_{f['cpp_name']} = static_cast<RECOVERY_TAG>(LOAD_U16(__base + {vtable_off} + DATA_BLOCK::RECOVERY));\n"
+            cpp += f"{indent}    data.{f['cpp_name']} = ResourceReference(res_off_{f['cpp_name']}, res_tag_{f['cpp_name']});\n"
             cpp += f"{indent}}}\n"
 
         elif f['fhir_type'] == 'string':
-            cpp += f"{indent}Offset str_off = LOAD_U64(__base + {vtable_off});\n"
-            cpp += f"{indent}if (str_off != FF_NULL_OFFSET) data.{f['cpp_name']} = FF_STRING(str_off, __size, __version).read_view(__base);\n"
+            cpp += f"{indent}Offset str_off_{f['cpp_name']} = LOAD_U64(__base + {vtable_off});\n"
+            cpp += f"{indent}if (str_off_{f['cpp_name']} != FF_NULL_OFFSET) data.{f['cpp_name']} = FF_STRING(str_off_{f['cpp_name']}, __size, __version).read_view(__base);\n"
             
         elif f['cpp_type'] == 'Offset':
             data_type = _resolve_data_type_name(f['fhir_type'], f['orig_name'], block_struct_name, f.get('resolved_path'))
             child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
-            cpp += f"{indent}Offset blk_off = LOAD_U64(__base + {vtable_off});\n"
-            cpp += f"{indent}if (blk_off != FF_NULL_OFFSET) data.{f['cpp_name']} = std::make_unique<{data_type}>({child_struct}::deserialize(__base, blk_off, __size, __version));\n"
+            cpp += f"{indent}Offset blk_off_{f['cpp_name']} = LOAD_U64(__base + {vtable_off});\n"
+            cpp += f"{indent}if (blk_off_{f['cpp_name']} != FF_NULL_OFFSET) data.{f['cpp_name']} = std::make_unique<{data_type}>({child_struct}::deserialize(__base, blk_off_{f['cpp_name']}, __size, __version));\n"
             
         elif f['fhir_type'] == 'code':
             code_enum = f.get('code_enum')
@@ -742,8 +745,10 @@ def generate_cxx_for_blocks(master_blocks, versions):
     hpp, cpp = "", ""
     block_data_names = sorted({path.replace('.', '') + "Data" for path in master_blocks})
     block_struct_names = sorted({"FF_" + path.replace('.', '_').upper() for path in master_blocks})
+    block_view_names = sorted({s_name.replace("FF_", "") + "View" for s_name in block_struct_names})
     for d_name in block_data_names: hpp += f"struct {d_name};\n"
     for s_name in block_struct_names: hpp += f"struct {s_name};\n"
+    for v_name in block_view_names: hpp += f"template <uint32_t VERSION> struct {v_name};\n"
     if block_data_names or block_struct_names: hpp += "\n"
 
     def get_deps(layout):
@@ -1158,7 +1163,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                             f"                        if (item.get_object().get(res_obj) == simdjson::SUCCESS) {{\n"
                             f"                            std::string_view child_type;\n"
                             f"                            if (res_obj[\"resourceType\"].get_string().get(child_type) == simdjson::SUCCESS) {{\n"
-                            f"                                FastFHIR::ObjectHandle child = dispatch_resource(child_type, res_obj, *builder, logger);\n"
+                            f"                                FastFHIR::Reflective::ObjectHandle child = dispatch_resource(child_type, res_obj, *builder, logger);\n"
                             f"                                if (child.offset() != FF_NULL_OFFSET) {{\n"
                             f"                                    data.{cpp_name}.push_back(ResourceReference(child.offset(), child.recovery()));\n"
                             f"                                }}\n"
@@ -1200,7 +1205,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         f"                if (field.value().get_object().get(res_obj) == simdjson::SUCCESS) {{\n"
                         f"                    std::string_view child_type;\n"
                         f"                    if (res_obj[\"resourceType\"].get_string().get(child_type) == simdjson::SUCCESS) {{\n"
-                        f"                        FastFHIR::ObjectHandle child = dispatch_resource(child_type, res_obj, *builder, logger);\n"
+                        f"                        FastFHIR::Reflective::ObjectHandle child = dispatch_resource(child_type, res_obj, *builder, logger);\n"
                         f"                        if (child.offset() != FF_NULL_OFFSET) {{\n"
                         f"                            data.{cpp_name} = ResourceReference(child.offset(), child.recovery());\n"
                         f"                        }}\n"
@@ -1293,10 +1298,10 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         patch_fn_name = f"patch_{path.replace('.', '_')}_from_json"
         owner_ns = _block_key_namespace(path)
 
-        hpp += f"void {patch_fn_name}(simdjson::ondemand::object& obj, FastFHIR::MutableEntry& wrapper, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+        hpp += f"void {patch_fn_name}(simdjson::ondemand::object& obj, FastFHIR::Reflective::MutableEntry& wrapper, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
         
         cpp += (
-            f"void {patch_fn_name}(simdjson::ondemand::object& obj, FastFHIR::MutableEntry& wrapper, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {{\n"
+            f"void {patch_fn_name}(simdjson::ondemand::object& obj, FastFHIR::Reflective::MutableEntry& wrapper, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {{\n"
             f"    for (auto field : obj) {{\n"
             f"        std::string_view key = field.unescaped_key().value_unsafe();\n"
         )
@@ -1330,7 +1335,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         f"            if (field.value().get_object().get(res_obj) == simdjson::SUCCESS) {{\n"
                         f"                std::string_view child_type;\n"
                         f"                if (res_obj[\"resourceType\"].get_string().get(child_type) == simdjson::SUCCESS) {{\n"
-                        f"                    FastFHIR::ObjectHandle child = dispatch_resource(child_type, res_obj, builder, logger);\n"
+                        f"                    FastFHIR::Reflective::ObjectHandle child = dispatch_resource(child_type, res_obj, builder, logger);\n"
                         f"                    if (child.offset() != FF_NULL_OFFSET) {{\n"
                         f"                        wrapper[{field_key_enum}] = child;\n"
                         f"                    }}\n"
@@ -1379,7 +1384,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         f"                    if (item.get_object().get(res_obj) == simdjson::SUCCESS) {{\n"
                         f"                        std::string_view child_type;\n"
                         f"                        if (res_obj[\"resourceType\"].get_string().get(child_type) == simdjson::SUCCESS) {{\n"
-                        f"                            FastFHIR::ObjectHandle child = dispatch_resource(child_type, res_obj, builder, logger);\n"
+                        f"                            FastFHIR::Reflective::ObjectHandle child = dispatch_resource(child_type, res_obj, builder, logger);\n"
                         f"                            if (child.offset() != FF_NULL_OFFSET) {{\n"
                         f"                                refs.push_back(ResourceReference(child.offset(), child.recovery()));\n"
                         f"                            }}\n"
@@ -1420,10 +1425,10 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         )
 
     # --- 3. AUTO-GENERATED DISPATCHERS ---
-    hpp += "\n    FastFHIR::ObjectHandle dispatch_resource(std::string_view resource_type, simdjson::ondemand::object obj, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+    hpp += "\n    FastFHIR::Reflective::ObjectHandle dispatch_resource(std::string_view resource_type, simdjson::ondemand::object obj, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
     
     cpp += (
-        f"\nFastFHIR::ObjectHandle dispatch_resource(std::string_view resource_type, simdjson::ondemand::object obj, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {{\n"
+        f"\nFastFHIR::Reflective::ObjectHandle dispatch_resource(std::string_view resource_type, simdjson::ondemand::object obj, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {{\n"
     )
     
     is_first_dispatch = True
@@ -1436,16 +1441,16 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         
     cpp += (
         f"    if (logger) logger->log(\"[Warning] FastFHIR Ingestion: Unknown root resource type encountered.\");\n"
-        f"    return FastFHIR::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
+        f"    return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
         f"}}\n\n"
     )
 
-    hpp += "    FastFHIR::ObjectHandle dispatch_block(RECOVERY_TAG expected_tag, simdjson::ondemand::value& json_val, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+    hpp += "    FastFHIR::Reflective::ObjectHandle dispatch_block(RECOVERY_TAG expected_tag, simdjson::ondemand::value& json_val, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
     
     cpp += (
-        f"\nFastFHIR::ObjectHandle dispatch_block(RECOVERY_TAG expected_tag, simdjson::ondemand::value& json_val, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {{\n"
+        f"\nFastFHIR::Reflective::ObjectHandle dispatch_block(RECOVERY_TAG expected_tag, simdjson::ondemand::value& json_val, FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {{\n"
         f"    simdjson::ondemand::object obj;\n"
-        f"    if (json_val.get_object().get(obj) != simdjson::SUCCESS) return FastFHIR::ObjectHandle(&builder, FF_NULL_OFFSET);\n\n"
+        f"    if (json_val.get_object().get(obj) != simdjson::SUCCESS) return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n\n"
         f"    switch (GetTypeFromTag(expected_tag)) {{\n"
     )
     
@@ -1455,7 +1460,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         cpp += f"        case {tag_name}: return builder.append_obj({fn_name}(obj, logger, nullptr, &builder));\n"
         
     cpp += (
-        f"        default: return FastFHIR::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
+        f"        default: return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
         f"    }}\n"
         f"}}\n\n"
     )

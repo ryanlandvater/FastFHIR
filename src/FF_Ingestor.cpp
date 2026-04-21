@@ -16,7 +16,7 @@
 
 namespace FastFHIR::Ingest {
 
-FF_Result Ingestor::ingest(const IngestRequest& request, ObjectHandle& out_root, size_t& out_parsed_count)
+FF_Result Ingestor::ingest(const IngestRequest& request, Reflective::ObjectHandle& out_root, size_t& out_parsed_count)
 {
     switch (request.source_type) {
         case SourceType::FHIR_JSON:
@@ -30,7 +30,7 @@ FF_Result Ingestor::ingest(const IngestRequest& request, ObjectHandle& out_root,
     }
 }
 
-FF_Result Ingestor::insert_at_field(ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload, SourceType fmt)
+FF_Result Ingestor::insert_at_field(Reflective::ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload, SourceType fmt)
 {
     switch (fmt) {
         case SourceType::FHIR_JSON:
@@ -44,7 +44,7 @@ FF_Result Ingestor::insert_at_field(ObjectHandle& parent_object, const FF_FieldK
     }
 } 
 
-FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle& out_root, size_t& out_parsed_count) {
+FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::ObjectHandle& out_root, size_t& out_parsed_count) {
     if (is_faulted()) return FF_Result{FF_FAILURE, "Engine is faulted. Reset() before ingesting new data."};
 
     try {
@@ -105,14 +105,14 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle&
         // 3. WRITE THE PREALLOCATED BUNDLE TOP-DOWN
         // =====================================================================
         // This safely writes the strings, the header, and the perfectly packed array block to mmap.
-        ObjectHandle root_handle = m_builder.append_obj(pre_bundle);
+        Reflective::ObjectHandle root_handle = m_builder.append_obj(pre_bundle);
         Offset bundle_offset = root_handle.offset();
 
         // =====================================================================
         // 4. LOCATE THE PREALLOCATED ARRAY BLOCK FOR PATCHING
         // =====================================================================
         // Safely retrieve the proxy using the generated reflection key
-        ObjectHandle entry_array = root_handle[Fields::BUNDLE::ENTRY];
+        Reflective::ObjectHandle entry_array = root_handle[Fields::BUNDLE::ENTRY];
 
         // =====================================================================
         // 5. CONCURRENT ARRAY PATCHING
@@ -135,7 +135,7 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle&
                         simdjson::ondemand::object local_obj = local_doc.get_object();
                         
                         // 1. Get the handle to the absolute memory offset of this specific array slot
-                        MutableEntry entry_wrapper = entry_array[task_idx];
+                        Reflective::MutableEntry entry_wrapper = entry_array[task_idx];
 
                         // 2. Pass the JSON tape and the wrapper handle directly to the auto-generated patcher
                         Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
@@ -184,7 +184,7 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, ObjectHandle&
 // =====================================================================
 // FIELD-LEVEL JSON ENGINE
 // =====================================================================
-FF_Result Ingestor::insert_at_field_json(ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload) {
+FF_Result Ingestor::insert_at_field_json(Reflective::ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload) {
     if (is_faulted()) return FF_Result{FF_FAILURE, "Engine is faulted. Reset() before ingesting new data."};
 
     // 1. Prevent scalar waste (Bounds check eliminated by using FF_FieldKey directly)
@@ -201,7 +201,7 @@ FF_Result Ingestor::insert_at_field_json(ObjectHandle& parent_object, const FF_F
 
         // 2. Dispatch to the generated memory allocator based on the EXPECTED child tag
         // We use the new get_builder() accessor to pass the memory arena context
-        ObjectHandle child_handle = dispatch_block(key.child_recovery, json_val, *parent_object.get_builder(), &m_logger);
+        Reflective::ObjectHandle child_handle = dispatch_block(key.child_recovery, json_val, *parent_object.get_builder(), &m_logger);
         
         if (child_handle.offset() == FF_NULL_OFFSET)
             return FF_Result{FF_FAILURE, "Failed to parse child JSON payload into FastFHIR::Memory arena."};

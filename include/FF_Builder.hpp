@@ -17,6 +17,14 @@
 #include <functional>
 
 namespace FastFHIR {
+class AdvancedBuilderAccess;
+namespace Reflective {
+class Node;
+struct Entry;
+class MutableEntry;
+class ObjectHandle;
+}
+
 // =====================================================================
 // BUILDER
 // =====================================================================
@@ -105,9 +113,7 @@ public:
      * @brief Appends data to the stream and returns a thread-safe handle for [] assignments.
      */
     template<typename T_Data>
-    ObjectHandle append_obj(const T_Data& data) {
-        return ObjectHandle(this, append(data), TypeTraits<T_Data>::recovery);
-    }
+    Reflective::ObjectHandle append_obj(const T_Data& data);
 
     /**
      * @brief Overload for strongly-typed Offset Arrays.
@@ -144,14 +150,12 @@ public:
     /**
      * @brief Overload for appending offset arrays and returning a proxy handle.
      */
-    ObjectHandle append_obj(const std::vector<Offset>& offsets, RECOVERY_TAG semantic_tag) {
-        return ObjectHandle(this, append(offsets, semantic_tag), semantic_tag);
-    }
+    Reflective::ObjectHandle append_obj(const std::vector<Offset>& offsets, RECOVERY_TAG semantic_tag);
 
     /**
      * @brief Instantiates a read-only Node directly from a known offset mid-stream.
      */
-    Node view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind = FF_FIELD_BLOCK) const;
+    Reflective::Node view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind = FF_FIELD_BLOCK) const;
 
     /**
      * @brief Low-level mutable access to a V-Table pointer for amending data.
@@ -181,7 +185,7 @@ public:
      * @brief Sets the root resource pointer and recovery tag in the header. 
      * [NOTE] This function must be called before finalize().
      */
-    void set_root(const ObjectHandle& handle);
+    void set_root(const Reflective::ObjectHandle& handle);
     
     using HashCallback = std::function<std::vector<BYTE>(const unsigned char* byte_start, Size bytes_to_hash)>;
     /**
@@ -245,33 +249,36 @@ namespace Reflective {
  * @brief Ephemeral proxy object returned by ObjectHandle::operator[].
  * Allows assigning either an existing Offset or dynamically appending new data.
  */
-class MutableEntry {
-    Builder* const m_builder;
-    const Offset   m_absolute_offset;
+class MutableEntry : public Entry {
+    Builder* m_builder;
 public:
-    MutableEntry(Builder* b, Offset absolute_off)
-    : m_builder(b), m_absolute_offset(absolute_off) {}
-    
-    // Explicit spawning to read-only views
+    MutableEntry(Builder* b, Offset p, size_t v, RECOVERY_TAG r, FF_FieldKind k)
+    : Entry(b ? b->memory().base() : nullptr, p, v, r, k), m_builder(b) {}
+
+    Entry as_entry() const;
     ObjectHandle as_handle() const;
-    
+
     MutableEntry& operator=(const ObjectHandle& child);
-    
+
     template <typename T_Data>
     requires (!std::is_arithmetic_v<T_Data>)
-    Offset operator=(const T_Data& data) {
-        Offset child_offset = m_builder->append(data);
-        m_builder->UNSAFE_write_offset_at(m_absolute_offset, child_offset);
-        return child_offset;
-    }
-    
+    Offset operator=(const T_Data& data);
+
     template <typename T>
     requires std::is_arithmetic_v<T>
-    MutableEntry& operator=(T val) {
-        // Uses the centralized Decode/Encode logic rather than Builder::amend_scalar
-        FastFHIR::Encode::scalar(m_builder->memory().base(), m_absolute_offset, val);
-        return *this;
-    }
+    MutableEntry& operator=(T val);
+
+    MutableEntry& operator=(const std::vector<Offset>& offsets);
+
+    operator Reflective::Node() const;
+    operator ObjectHandle() const;
+    Node as_node() const;
+    Offset offset() const;
+    MutableEntry operator[](FF_FieldKey key) const;
+    MutableEntry operator[](size_t index) const;
+
+private:
+    void validate_assignment(RECOVERY_TAG child_tag) const;
 };
 
 // =====================================================================
@@ -282,33 +289,36 @@ public:
  * Replaces the unsafe global operator[] on the Builder itself.
  */
 
-class ObjectHandle {
+class ObjectHandle : public Node {
     Builder* m_builder;
-    Offset       m_offset;
-    RECOVERY_TAG m_recovery;
     
 public:
     ObjectHandle(Builder* builder, Offset offset, RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED)
-    : m_builder(builder), m_offset(offset), m_recovery(recovery) {
+    : Node(), m_builder(builder) {
         if (offset != FF_NULL_OFFSET && recovery == FF_RECOVER_UNDEFINED)
             throw std::invalid_argument("FastFHIR: Cannot instantiate an ObjectHandle with valid offset but UNDEFINED recovery tag.");
+
+        if (offset != FF_NULL_OFFSET && builder != nullptr) {
+            FF_FieldKind node_kind = IsArrayTag(recovery) ? FF_FIELD_ARRAY : Recovery_to_Kind(recovery);
+            *static_cast<Node*>(this) = builder->view_node(offset, recovery, node_kind);
+        }
     }
     
     Builder* get_builder() const { return m_builder; }
-    Offset offset() const { return m_offset; }
+    Offset offset() const { return m_node_offset; }
     RECOVERY_TAG recovery() const { return m_recovery; }
     
     // Spawns a fresh, safely bounds-checked snapshot using the latest builder arena size
-    Node ObjectHandle::as_node() const {
-        if (m_offset == FF_NULL_OFFSET) return {};
+    Node as_node() const {
+        if (m_node_offset == FF_NULL_OFFSET) return {};
         FF_FieldKind node_kind = IsArrayTag(m_recovery) ? FF_FIELD_ARRAY : Recovery_to_Kind(m_recovery);
-        return m_builder->view_node(m_offset, m_recovery, node_kind);
+        return m_builder->view_node(m_node_offset, m_recovery, node_kind);
     }
     
     MutableEntry operator[](FF_FieldKey key) const;
     MutableEntry operator[](size_t index) const;
 
-    operator ResourceReference() const { return {m_offset, m_recovery}; }
+    operator ResourceReference() const { return {m_node_offset, m_recovery}; }
 };
 
 // =====================================================================
@@ -332,7 +342,7 @@ Offset MutableEntry::operator=(const T_Data& data) {
     Offset child_offset = m_builder->append(data);
     
     // 3. Thread-safe pointer patch on the parent V-Table using direct offsets
-    m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child_offset);
+    m_builder->amend_pointer(parent_offset, vtable_offset, child_offset);
     
     return child_offset;
 }
@@ -340,7 +350,7 @@ Offset MutableEntry::operator=(const T_Data& data) {
 template <typename T>
 requires std::is_arithmetic_v<T>
 MutableEntry& MutableEntry::operator=(T val) {
-    if (m_kind == FF_FIELD_CHOICE) {
+    if (kind == FF_FIELD_CHOICE) {
         // Choice types always use the 10-byte polymorphic routine
         RECOVERY_TAG tag = FF_RECOVER_UNDEFINED;
         if constexpr (std::is_same_v<T, bool>) tag = RECOVER_FF_BOOL;
@@ -348,29 +358,29 @@ MutableEntry& MutableEntry::operator=(T val) {
         else if constexpr (sizeof(T) == 4) tag = std::is_signed_v<T> ? RECOVER_FF_INT32 : RECOVER_FF_UINT32;
         else if constexpr (sizeof(T) == 8) tag = std::is_signed_v<T> ? RECOVER_FF_INT64 : RECOVER_FF_UINT64;
         
-        m_builder->amend_variant(m_parent_offset, m_vtable_offset, static_cast<uint64_t>(val), tag);
+        m_builder->amend_variant(parent_offset, vtable_offset, static_cast<uint64_t>(val), tag);
     } else {
         // Fixed types use the size-aware scalar routine
-        m_builder->amend_scalar(m_parent_offset, m_vtable_offset, val);
+        m_builder->amend_scalar(parent_offset, vtable_offset, val);
     }
     return *this;
 }
 
 inline MutableEntry& MutableEntry::operator=(const std::vector<Offset>& offsets) {
-        if (m_parent_offset == FF_NULL_OFFSET)
+        if (parent_offset == FF_NULL_OFFSET)
             throw std::runtime_error("FastFHIR: Cannot assign to a NULL entry.");
             
         // 1. Thread-safe append of the array
-        Offset child_offset = m_builder->append(offsets, m_target_recovery);
+        Offset child_offset = m_builder->append(offsets, target_recovery);
         
         // 2. Thread-safe pointer patch
-        m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child_offset);
+        m_builder->amend_pointer(parent_offset, vtable_offset, child_offset);
         
         return *this;
     }
 
 inline MutableEntry ObjectHandle::operator[](FF_FieldKey key) const {
-    if (m_offset == FF_NULL_OFFSET)
+    if (m_node_offset == FF_NULL_OFFSET)
         throw std::runtime_error("FastFHIR: Invalid ObjectHandle...");
     
     RECOVERY_TAG target_tag = (key.kind == FF_FIELD_ARRAY) ? 
@@ -380,7 +390,18 @@ inline MutableEntry ObjectHandle::operator[](FF_FieldKey key) const {
         target_tag = Kind_to_Recovery(key.kind); 
     }
     
-    return MutableEntry(m_builder, m_offset, key.field_offset, target_tag, key.kind);
+    return MutableEntry(m_builder, m_node_offset, key.field_offset, target_tag, key.kind);
+}
+
+} // namespace Reflective
+
+template <typename T_Data>
+Reflective::ObjectHandle Builder::append_obj(const T_Data& data) {
+    return Reflective::ObjectHandle(this, append(data), TypeTraits<T_Data>::recovery);
+}
+
+inline Reflective::ObjectHandle Builder::append_obj(const std::vector<Offset>& offsets, RECOVERY_TAG semantic_tag) {
+    return Reflective::ObjectHandle(this, append(offsets, semantic_tag), semantic_tag);
 }
 
 template <typename T>
@@ -415,5 +436,4 @@ void Builder::amend_scalar(Offset object_offset, size_t field_vtable_offset, T v
         }
     }
 }
-} // namespace Reflective
 } // namespace FastFHIR

@@ -52,6 +52,11 @@ file(GLOB FASTFHIR_CORE_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
 )
 
+# Hand-written public headers (added to targets for IDE/Xcode visibility).
+file(GLOB FASTFHIR_CORE_HEADERS CONFIGURE_DEPENDS
+    ${FASTFHIR_INCLUDE_DIR}/*.hpp
+)
+
 # Exclude the Ingestor from the pure serialization package
 list(REMOVE_ITEM FASTFHIR_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/FF_Ingestor.cpp")
 
@@ -82,6 +87,11 @@ file(GLOB FASTFHIR_GENERATED_SOURCES CONFIGURE_DEPENDS
     ${FASTFHIR_GENERATED_DIR}/*.cpp
 )
 
+# Generated headers (added to targets for IDE/Xcode visibility).
+file(GLOB FASTFHIR_GENERATED_HEADERS CONFIGURE_DEPENDS
+    ${FASTFHIR_GENERATED_DIR}/*.hpp
+)
+
 # Exclude the IngestMappings.cpp from the core library.
 list(REMOVE_ITEM FASTFHIR_GENERATED_SOURCES "${FASTFHIR_GENERATED_DIR}/FF_IngestMappings.cpp")
 
@@ -99,6 +109,12 @@ add_library(fastfhir_obj
         ${FASTFHIR_GENERATED_SOURCES}
         ${FASTFHIR_GENERATED_HEADERS}   # Added for IDE visibility
 )
+
+# Organize files in IDEs (especially Xcode) for easier navigation.
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Sources/Core" FILES ${FASTFHIR_CORE_SOURCES})
+source_group(TREE "${FASTFHIR_GENERATED_DIR}" PREFIX "Sources/Generated" FILES ${FASTFHIR_GENERATED_SOURCES})
+source_group(TREE "${FASTFHIR_INCLUDE_DIR}" PREFIX "Headers/Public" FILES ${FASTFHIR_CORE_HEADERS})
+source_group(TREE "${FASTFHIR_GENERATED_DIR}" PREFIX "Headers/Generated" FILES ${FASTFHIR_GENERATED_HEADERS})
 
 target_include_directories(fastfhir_obj 
     PUBLIC 
