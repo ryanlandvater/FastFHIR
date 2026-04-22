@@ -131,12 +131,12 @@ namespace Reflective {
 struct Entry {
     const BYTE* base = nullptr;
     Offset parent_offset = FF_NULL_OFFSET;
-    size_t vtable_offset = 0;
+    uint32_t vtable_offset = 0;
     RECOVERY_TAG target_recovery = FF_RECOVER_UNDEFINED;
     FF_FieldKind kind = FF_FIELD_UNKNOWN;
 
     Entry() = default;
-    Entry(const BYTE* b, Offset parent, size_t vtable, RECOVERY_TAG recovery, FF_FieldKind field_kind)
+    Entry(const BYTE* b, Offset parent, uint32_t vtable, RECOVERY_TAG recovery, FF_FieldKind field_kind)
         : base(b), parent_offset(parent), vtable_offset(vtable), target_recovery(recovery), kind(field_kind) {}
 
     Offset absolute_offset() const {
@@ -153,7 +153,13 @@ struct Entry {
     T as_scalar(RECOVERY_TAG expected_tag) const {
         return Decode::scalar<T>(base, absolute_offset(), expected_tag);
     }
-    
+
+    // Serialize an inline scalar (bool, int, uint, float, code) directly to JSON.
+    // Only valid when kind is a scalar kind; undefined for blocks/arrays/strings.
+    void print_scalar_json(std::ostream& out, uint32_t version) const;
+
+    // Produce a Node over a DATA_BLOCK field (block, array, string, choice, resource).
+    // Must NOT be called for scalar kinds — use print_scalar_json() instead.
     Node as_node(Size size, uint32_t version, RECOVERY_TAG tag, FF_FieldKind kind) const;
 };
 /**
@@ -171,14 +177,13 @@ struct Entry {
 class Node {
 protected:
     const BYTE* m_base = nullptr;
-    Size          m_size = 0;
-    uint32_t      m_version = 0;
-    Offset        m_node_offset = FF_NULL_OFFSET;
-    Offset        m_global_scalar_offset = FF_NULL_OFFSET;
-    RECOVERY_TAG  m_recovery = FF_RECOVER_UNDEFINED;
-    RECOVERY_TAG  m_child_recovery = FF_RECOVER_UNDEFINED;
-    FF_FieldKind  m_kind = FF_FIELD_UNKNOWN;
-    bool          m_array_entries_are_offsets = false;
+    Offset m_node_offset = FF_NULL_OFFSET;
+    Size m_size = 0;
+    uint32_t m_version = 0;
+    RECOVERY_TAG m_recovery = FF_RECOVER_UNDEFINED;
+    RECOVERY_TAG m_child_recovery = FF_RECOVER_UNDEFINED;
+    FF_FieldKind m_kind = FF_FIELD_UNKNOWN;
+    bool m_array_entries_are_offsets = false;
 public:
     /** @brief Construct an empty/invalid node handle. */
     Node() = default;
@@ -191,21 +196,6 @@ public:
 
     /** @brief Check whether this node contains a value */
     bool is_empty() const;
-
-    /**
-    * @brief Construct a node backed by an inline scalar value.
-    * @param kind The specific scalar type of the value (e.g., bool, int32, float64).
-     * @return Node representing the inline scalar value.
-    */
-    static Node scalar(const BYTE* base, Size size, uint32_t version,
-                       Offset parent_offset, Offset scalar_offset, FF_FieldKind kind);
-    /**
-     * @brief Construct a node backed by an inline scalar value with a recovery tag.
-     * @param tag The recovery tag indicating the specific scalar type (e.g., RECOVER_FF_BOOL, RECOVER_FF_INT32).
-     * @return Node representing the inline scalar value.
-     */
-    static Node scalar(const BYTE* base, Size size, uint32_t version,
-                       Offset parent_offset, Offset scalar_offset, RECOVERY_TAG tag);
 
     /**
      * @brief Resolve a choice node to its concrete type based on the schema kind.
@@ -295,7 +285,7 @@ public:
     T as() const {
         if constexpr (std::is_same_v<T, std::string_view>) {
             if (m_recovery == RECOVER_FF_CODE) {
-                uint32_t raw_code = LOAD_U32(m_base + m_global_scalar_offset);
+                uint32_t raw_code = LOAD_U32(m_base + m_node_offset);
                 if (raw_code == FF_CODE_NULL) return "";
 
                 if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
@@ -332,7 +322,7 @@ public:
             if (m_recovery != expected) {
                 throw std::runtime_error("Node::as() recovery tag mismatch");
             }
-            return Decode::scalar<T>(m_base, m_global_scalar_offset, m_recovery);
+            return Decode::scalar<T>(m_base, m_node_offset, m_recovery);
         } else {
             if (m_recovery != TypeTraits<T>::recovery) {
                 throw std::runtime_error("Node::as() recovery tag mismatch");

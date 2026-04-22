@@ -99,6 +99,29 @@ struct PyMutableEntry {
 };
 
 // =====================================================================
+// Shared Rendering Helpers
+// =====================================================================
+static std::string render_node_json(const Reflective::Node& node) {
+    std::ostringstream oss;
+    node.print_json(oss);
+    return oss.str();
+}
+
+static std::string render_handle_json(const Reflective::ObjectHandle& handle) {
+    return render_node_json(handle.as_node());
+}
+
+static std::string render_entry_json(const Reflective::MutableEntry& entry) {
+    return render_node_json(entry.as_node());
+}
+
+static std::string render_parser_json(const Parser& parser) {
+    std::ostringstream oss;
+    parser.print_json(oss);
+    return oss.str();
+}
+
+// =====================================================================
 // Type-Safe Python to C++ Assignment Dispatcher
 // =====================================================================
 void assign_py_obj(Reflective::MutableEntry& entry, py::handle obj, Reflective::ObjectHandle& parent_handle, const FF_FieldKey& key) {
@@ -262,19 +285,13 @@ PYBIND11_MODULE(_core, m) {
         .def_property_readonly("offset", [](const PyStreamNode& s) { return s.handle.offset(); })
         .def_property_readonly("recovery_tag", [](const PyStreamNode& s) { return s.handle.recovery(); })
         .def("is_array", [](const PyStreamNode& s) { return s.handle.is_array(); })
-        .def("to_json", [](const PyStreamNode& s) {
-            std::ostringstream oss; s.handle.as_node().print_json(oss); return oss.str();
-        })
-        .def("__str__", [](const PyStreamNode& s) {
-            std::ostringstream oss; s.handle.as_node().print_json(oss); return oss.str();
-        })
-        .def("__repr__", [](const PyStreamNode& s) {
-            std::ostringstream oss; s.handle.as_node().print_json(oss); return oss.str();
-        })
+        .def("to_json", [](const PyStreamNode& s) { return render_handle_json(s.handle); })
+        .def("__str__", [](const PyStreamNode& s) { return render_handle_json(s.handle); })
+        .def("__repr__", [](const PyStreamNode& s) { return render_handle_json(s.handle); })
         .def("__bool__", [](const PyStreamNode& s) { return s.handle.offset() != FF_NULL_OFFSET; })
         .def("__len__", [](const PyStreamNode& s) -> size_t {
             if (!s.handle.is_array()) return 0;
-            return s.handle.as_node().size();
+            return s.handle.size();
         })
         .def("__getitem__", [](const PyStreamNode& self, const std::string& key) -> py::object {
             throw py::key_error("FastFHIR Python API requires generated Field objects.");
@@ -310,24 +327,17 @@ PYBIND11_MODULE(_core, m) {
 
     py::class_<PyMutableEntry>(m, "MutableEntry")
         .def("offset", [](const PyMutableEntry& s) { return s.entry.offset(); })
-        .def("to_json", [](const PyMutableEntry& s) {
-            std::ostringstream oss; s.entry.as_node().print_json(oss); return oss.str();
-        })
-        .def("__str__", [](const PyMutableEntry& s) {
-            std::ostringstream oss; s.entry.as_node().print_json(oss); return oss.str();
-        })
-        .def("__repr__", [](const PyMutableEntry& s) {
-            std::ostringstream oss; s.entry.as_node().print_json(oss); return oss.str();
-        })
+        .def("to_json", [](const PyMutableEntry& s) { return render_entry_json(s.entry); })
+        .def("__str__", [](const PyMutableEntry& s) { return render_entry_json(s.entry); })
+        .def("__repr__", [](const PyMutableEntry& s) { return render_entry_json(s.entry); })
         .def("__bool__", [](const PyMutableEntry& s) { return !s.entry.as_node().is_empty(); })
-        .def_property_readonly("is_array", [](const PyMutableEntry& s) { return s.entry.as_node().kind() == FF_FIELD_ARRAY; })
+        .def_property_readonly("is_array", [](const PyMutableEntry& s) { return s.entry.is_array(); })
         .def("__len__", [](const PyMutableEntry& s) -> size_t {
-            if (s.entry.as_node().kind() != FF_FIELD_ARRAY) return 0;
-            return s.entry.as_node().size(); 
+            if (!s.entry.is_array()) return 0;
+            return s.entry.size();
         })
         .def("__getitem__", [](const PyMutableEntry& self, size_t index) {
-            Reflective::ObjectHandle elevated = self.entry.as_handle();
-            if (index >= elevated.as_node().size()) throw py::index_error();
+            if (index >= self.entry.size()) throw py::index_error();
             return PyMutableEntry(self.builder, self.entry[index]);
         })
         .def("__getitem__", [](const PyMutableEntry& self, const PythonFieldProxy& field) {
@@ -393,16 +403,16 @@ PYBIND11_MODULE(_core, m) {
         .def("__enter__", [](PyStream& self) -> PyStream& { return self; })
         .def("__exit__", [](PyStream& self, py::object, py::object, py::object) { self.close(); })
         .def_property("root", 
-            [](PyStream& self) { return PyStreamNode(self.m_builder, Reflective::ObjectHandle(&self.get(), self.get().query().root())); }, 
+            [](PyStream& self) { return PyStreamNode(self.m_builder, self.get().root_handle()); }, 
             [](PyStream& self, const PyStreamNode& handle) { self.get().set_root(handle.handle); }
         )
         .def("query", [](const PyStream& self) { return self.get().query(); })
         .def_property_readonly("version", [](const PyStream& self) { return self.get().query().version(); })
         .def_property_readonly("root_type", [](const PyStream& self) { return self.get().query().root_type(); })
         .def_property_readonly("checksum", [](const PyStream& self) { return self.get().query().checksum(); })
-        .def("to_json", [](const PyStream& self) { std::ostringstream oss; self.get().query().print_json(oss); return oss.str(); })
-        .def("__str__", [](const PyStream& self) { std::ostringstream oss; self.get().query().print_json(oss); return oss.str(); })
-        .def("__repr__", [](const PyStream& self) { std::ostringstream oss; self.get().query().print_json(oss); return oss.str(); })
+        .def("to_json", [](const PyStream& self) { return render_parser_json(self.get().query()); })
+        .def("__str__", [](const PyStream& self) { return render_parser_json(self.get().query()); })
+        .def("__repr__", [](const PyStream& self) { return render_parser_json(self.get().query()); })
         .def("finalize", [](PyStream& self, FF_Checksum_Algorithm algo, py::object py_hasher) {
             Builder::HashCallback cpp_hasher = nullptr;
             if (!py_hasher.is_none()) {

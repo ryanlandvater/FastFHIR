@@ -186,6 +186,12 @@ public:
      * [NOTE] This function must be called before finalize().
      */
     void set_root(const Reflective::ObjectHandle& handle);
+
+    /**
+     * @brief Get the current mutable root handle, if one is set.
+     * @return A valid ObjectHandle when root metadata is populated, otherwise a null handle.
+     */
+    Reflective::ObjectHandle root_handle() const;
     
     using HashCallback = std::function<std::vector<BYTE>(const unsigned char* byte_start, Size bytes_to_hash)>;
     /**
@@ -248,14 +254,25 @@ namespace Reflective {
 /**
  * @brief Ephemeral proxy object returned by ObjectHandle::operator[].
  * Allows assigning either an existing Offset or dynamically appending new data.
+ * Thin coordinate handle: stores builder context + Entry coordinates without inheritance.
  */
-class MutableEntry : public Entry {
-    Builder* m_builder;
+class MutableEntry {
+    Builder* m_builder = nullptr;
+    const BYTE* m_base = nullptr;
+    Offset m_parent_offset = FF_NULL_OFFSET;
+    uint32_t m_vtable_offset = 0;
+    RECOVERY_TAG m_recovery = FF_RECOVER_UNDEFINED;
+    FF_FieldKind m_kind = FF_FIELD_UNKNOWN;
+    
 public:
-    MutableEntry(Builder* b, Offset p, size_t v, RECOVERY_TAG r, FF_FieldKind k)
-    : Entry(b ? b->memory().base() : nullptr, p, v, r, k), m_builder(b) {}
+    MutableEntry() = default;
+    MutableEntry(Builder* b, Offset p, uint32_t v, RECOVERY_TAG r, FF_FieldKind k)
+    : m_builder(b), m_base(b ? b->memory().base() : nullptr), 
+      m_parent_offset(p), m_vtable_offset(v), m_recovery(r), m_kind(k) {}
 
+    // Materialize Entry view from stored coordinates
     Entry as_entry() const;
+    
     ObjectHandle as_handle() const;
 
     MutableEntry& operator=(const ObjectHandle& child);
@@ -270,10 +287,32 @@ public:
 
     MutableEntry& operator=(const std::vector<Offset>& offsets);
 
+    // Direct access for Entry-like queries
+    explicit operator bool() const {
+        return m_base != nullptr && m_parent_offset != FF_NULL_OFFSET;
+    }
+
+    // Builder and coordinate accessors
+    Builder* get_builder() const { return m_builder; }
+    Offset offset() const {
+        return (m_parent_offset == FF_NULL_OFFSET) ? FF_NULL_OFFSET : (m_parent_offset + static_cast<Offset>(m_vtable_offset));
+    }
+
+    // Lazy materialization forwarding (delegates to as_handle() then as_node())
     operator Reflective::Node() const;
     operator ObjectHandle() const;
     Node as_node() const;
-    Offset offset() const;
+    
+    // Query methods (implemented inline after ObjectHandle definition)
+    bool is_array() const;
+    bool is_object() const;
+    bool is_string() const;
+    bool is_scalar() const;
+    size_t size() const;
+    std::vector<FF_FieldInfo> fields() const;
+    std::vector<std::string_view> keys() const;
+    
+    // Field/index access
     MutableEntry operator[](FF_FieldKey key) const;
     MutableEntry operator[](size_t index) const;
 
@@ -289,46 +328,64 @@ private:
  * Replaces the unsafe global operator[] on the Builder itself.
  */
 
-class ObjectHandle : public Node {
-    Builder* m_builder;
+class ObjectHandle {
+    Builder* m_builder = nullptr;
+    Offset m_offset = FF_NULL_OFFSET;
+    RECOVERY_TAG m_recovery = FF_RECOVER_UNDEFINED;
     
 public:
+    ObjectHandle() = default;  // Default-constructible to null handle
+    
     ObjectHandle(Builder* builder, Offset offset, RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED)
-    : Node(), m_builder(builder) {
+    : m_builder(builder), m_offset(offset), m_recovery(recovery) {
         if (offset != FF_NULL_OFFSET && recovery == FF_RECOVER_UNDEFINED)
             throw std::invalid_argument("FastFHIR: Cannot instantiate an ObjectHandle with valid offset but UNDEFINED recovery tag.");
-
-        if (offset != FF_NULL_OFFSET && builder != nullptr) {
-            FF_FieldKind node_kind = IsArrayTag(recovery) ? FF_FIELD_ARRAY : Recovery_to_Kind(recovery);
-            *static_cast<Node*>(this) = builder->view_node(offset, recovery, node_kind);
-        }
     }
     
     Builder* get_builder() const { return m_builder; }
-    Offset offset() const { return m_node_offset; }
+    Offset offset() const { return m_offset; }
     RECOVERY_TAG recovery() const { return m_recovery; }
+    explicit operator bool() const { return m_builder != nullptr && m_offset != FF_NULL_OFFSET; }
     
     // Spawns a fresh, safely bounds-checked snapshot using the latest builder arena size
     Node as_node() const {
-        if (m_node_offset == FF_NULL_OFFSET) return {};
+        if (m_builder == nullptr || m_offset == FF_NULL_OFFSET) return {};
         FF_FieldKind node_kind = IsArrayTag(m_recovery) ? FF_FIELD_ARRAY : Recovery_to_Kind(m_recovery);
-        return m_builder->view_node(m_node_offset, m_recovery, node_kind);
+        return m_builder->view_node(m_offset, m_recovery, node_kind);
     }
+
+    bool is_array() const { return as_node().is_array(); }
+    bool is_object() const { return as_node().is_object(); }
+    bool is_string() const { return as_node().is_string(); }
+    bool is_scalar() const { return as_node().is_scalar(); }
+    size_t size() const { return as_node().size(); }
+    std::vector<FF_FieldInfo> fields() const { return as_node().fields(); }
+    std::vector<std::string_view> keys() const { return as_node().keys(); }
     
     MutableEntry operator[](FF_FieldKey key) const;
     MutableEntry operator[](size_t index) const;
 
-    operator ResourceReference() const { return {m_node_offset, m_recovery}; }
+    operator ResourceReference() const { return {m_offset, m_recovery}; }
 };
 
 // =====================================================================
 // INLINE TEMPLATE IMPLEMENTATIONS
 // =====================================================================
-// 1. Implicit Conversion
+// 1. Implicit Conversion & Query Method Forwarding
 inline MutableEntry::operator Reflective::Node() const { return as_node(); }
 inline MutableEntry::operator ObjectHandle() const { return as_handle(); }
 inline Node MutableEntry::as_node() const { return as_handle().as_node(); }
-inline Offset MutableEntry::offset() const { return as_handle().offset(); }
+
+// 2. Query Methods (delegates to as_handle() for lazy materialization through Node)
+inline bool MutableEntry::is_array() const { return as_handle().is_array(); }
+inline bool MutableEntry::is_object() const { return as_handle().is_object(); }
+inline bool MutableEntry::is_string() const { return as_handle().is_string(); }
+inline bool MutableEntry::is_scalar() const { return as_handle().is_scalar(); }
+inline size_t MutableEntry::size() const { return as_handle().size(); }
+inline std::vector<FF_FieldInfo> MutableEntry::fields() const { return as_handle().fields(); }
+inline std::vector<std::string_view> MutableEntry::keys() const { return as_handle().keys(); }
+
+// 3. Field/Index Access
 inline MutableEntry MutableEntry::operator[](FF_FieldKey key) const { return as_handle()[key]; }
 inline MutableEntry MutableEntry::operator[](size_t index) const { return as_handle()[index]; }
 
@@ -342,7 +399,7 @@ Offset MutableEntry::operator=(const T_Data& data) {
     Offset child_offset = m_builder->append(data);
     
     // 3. Thread-safe pointer patch on the parent V-Table using direct offsets
-    m_builder->amend_pointer(parent_offset, vtable_offset, child_offset);
+    m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child_offset);
     
     return child_offset;
 }
@@ -350,7 +407,7 @@ Offset MutableEntry::operator=(const T_Data& data) {
 template <typename T>
 requires std::is_arithmetic_v<T>
 MutableEntry& MutableEntry::operator=(T val) {
-    if (kind == FF_FIELD_CHOICE) {
+    if (m_kind == FF_FIELD_CHOICE) {
         // Choice types always use the 10-byte polymorphic routine
         RECOVERY_TAG tag = FF_RECOVER_UNDEFINED;
         if constexpr (std::is_same_v<T, bool>) tag = RECOVER_FF_BOOL;
@@ -358,39 +415,39 @@ MutableEntry& MutableEntry::operator=(T val) {
         else if constexpr (sizeof(T) == 4) tag = std::is_signed_v<T> ? RECOVER_FF_INT32 : RECOVER_FF_UINT32;
         else if constexpr (sizeof(T) == 8) tag = std::is_signed_v<T> ? RECOVER_FF_INT64 : RECOVER_FF_UINT64;
         
-        m_builder->amend_variant(parent_offset, vtable_offset, static_cast<uint64_t>(val), tag);
+        m_builder->amend_variant(m_parent_offset, m_vtable_offset, static_cast<uint64_t>(val), tag);
     } else {
         // Fixed types use the size-aware scalar routine
-        m_builder->amend_scalar(parent_offset, vtable_offset, val);
+        m_builder->amend_scalar(m_parent_offset, m_vtable_offset, val);
     }
     return *this;
 }
 
 inline MutableEntry& MutableEntry::operator=(const std::vector<Offset>& offsets) {
-        if (parent_offset == FF_NULL_OFFSET)
+        if (m_parent_offset == FF_NULL_OFFSET)
             throw std::runtime_error("FastFHIR: Cannot assign to a NULL entry.");
             
         // 1. Thread-safe append of the array
-        Offset child_offset = m_builder->append(offsets, target_recovery);
+        Offset child_offset = m_builder->append(offsets, m_recovery);
         
         // 2. Thread-safe pointer patch
-        m_builder->amend_pointer(parent_offset, vtable_offset, child_offset);
+        m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child_offset);
         
         return *this;
     }
 
 inline MutableEntry ObjectHandle::operator[](FF_FieldKey key) const {
-    if (m_node_offset == FF_NULL_OFFSET)
+    if (m_offset == FF_NULL_OFFSET)
         throw std::runtime_error("FastFHIR: Invalid ObjectHandle...");
     
     RECOVERY_TAG target_tag = (key.kind == FF_FIELD_ARRAY) ? 
         ToArrayTag(key.child_recovery) : key.child_recovery;
     
     if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN) {
-        target_tag = Kind_to_Recovery(key.kind); 
+        target_tag = Kind_to_Recovery(key.kind);
     }
     
-    return MutableEntry(m_builder, m_node_offset, key.field_offset, target_tag, key.kind);
+    return MutableEntry(m_builder, m_offset, key.field_offset, target_tag, key.kind);
 }
 
 } // namespace Reflective
@@ -402,6 +459,12 @@ Reflective::ObjectHandle Builder::append_obj(const T_Data& data) {
 
 inline Reflective::ObjectHandle Builder::append_obj(const std::vector<Offset>& offsets, RECOVERY_TAG semantic_tag) {
     return Reflective::ObjectHandle(this, append(offsets, semantic_tag), semantic_tag);
+}
+
+inline Reflective::ObjectHandle Builder::root_handle() const {
+    if (m_root_offset == FF_NULL_OFFSET || m_root_recovery == FF_RECOVER_UNDEFINED)
+        return Reflective::ObjectHandle();
+    return Reflective::ObjectHandle(const_cast<Builder*>(this), m_root_offset, m_root_recovery);
 }
 
 template <typename T>

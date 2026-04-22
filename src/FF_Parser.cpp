@@ -153,8 +153,24 @@ void Reflective::Node::print_json(std::ostream& out) const {
             if (f.kind == FF_FIELD_CHOICE) out << get_choice_suffix(child_entry.target_recovery);
             out << "\":";
             
-            // Defer Node instantiation until absolutely required
-            child_entry.as_node(m_size, m_version, child_entry.target_recovery, child_entry.kind).print_json(out);
+            // Scalars are inline values, not DATA_BLOCKs — serialize directly from Entry.
+            // Everything else is a DATA_BLOCK and goes through Node.
+            switch (f.kind)
+            {
+            case FF_FIELD_BOOL:
+            case FF_FIELD_INT32:
+            case FF_FIELD_UINT32:
+            case FF_FIELD_INT64:
+            case FF_FIELD_UINT64:
+            case FF_FIELD_FLOAT64:
+            case FF_FIELD_CODE:
+                child_entry.print_scalar_json(out, m_version);
+                break;
+            
+            default:
+                child_entry.as_node(m_size, m_version, child_entry.target_recovery, child_entry.kind).print_json(out);
+                break;
+            }
             first = false;
         }
         out << "}";
@@ -171,28 +187,76 @@ void Reflective::Node::print_json(std::ostream& out) const {
             }
         }
         out << "]";
-    } 
-    // Scalar / Leaf Node
-    else {
+    }
+    // Scalar leaf: only reachable for choice[x] nodes resolved to an inline scalar value.
+    else if (is_scalar()) {
         switch (m_kind) {
-        case FF_FIELD_STRING:
+        case FF_FIELD_BOOL:    out << (as<bool>() ? "true" : "false"); break;
+        case FF_FIELD_INT32:   out << as<int32_t>(); break;
+        case FF_FIELD_UINT32:  out << as<uint32_t>(); break;
+        case FF_FIELD_INT64:   out << as<int64_t>(); break;
+        case FF_FIELD_UINT64:  out << as<uint64_t>(); break;
+        case FF_FIELD_FLOAT64: out << as<double>(); break;
         case FF_FIELD_CODE:
             out << "\"";
             escape_json_string(out, as<std::string_view>());
             out << "\"";
             break;
+        default: out << "null"; break;
+        }
+    }
+    else if (is_string()) {
+        out << "\"";
+        escape_json_string(out, as<std::string_view>());
+        out << "\"";
+    }
+}
+
+void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) const {
+    const Offset slot = absolute_offset();
+    if (slot == FF_NULL_OFFSET) { out << "null"; return; }
+
+    switch (kind) {
         case FF_FIELD_BOOL:
-            out << (as<bool>() ? "true" : "false");
+            out << (Decode::scalar<bool>(base, slot, RECOVER_FF_BOOL) ? "true" : "false");
+            break;
+        case FF_FIELD_INT32:
+            out << Decode::scalar<int32_t>(base, slot, RECOVER_FF_INT32);
             break;
         case FF_FIELD_UINT32:
-            out << as<uint32_t>();
+            out << Decode::scalar<uint32_t>(base, slot, RECOVER_FF_UINT32);
+            break;
+        case FF_FIELD_INT64:
+            out << Decode::scalar<int64_t>(base, slot, RECOVER_FF_INT64);
+            break;
+        case FF_FIELD_UINT64:
+            out << Decode::scalar<uint64_t>(base, slot, RECOVER_FF_UINT64);
             break;
         case FF_FIELD_FLOAT64:
-            out << as<double>();
+            out << Decode::scalar<double>(base, slot, RECOVER_FF_FLOAT64);
             break;
-        default:
+        case FF_FIELD_CODE: {
+            uint32_t raw = LOAD_U32(base + slot);
+            if (raw == FF_CODE_NULL) { out << "null"; break; }
+            if (raw & FF_CUSTOM_STRING_FLAG) {
+                Offset str_off = parent_offset + static_cast<Offset>(raw & ~FF_CUSTOM_STRING_FLAG);
+                out << '"';
+                escape_json_string(out, FF_STRING(str_off, 0, version).read_view(base));
+                out << '"';
+            } else {
+                if (const char* resolved = FF_ResolveCode(raw, version)) {
+                    out << '"';
+                    escape_json_string(out, resolved);
+                    out << '"';
+                } else {
+                    out << "null";
+                }
+            }
             break;
         }
+        default:
+            out << "null";
+            break;
     }
 }
 
@@ -221,25 +285,15 @@ Node::Node(const BYTE* base, Size size, uint32_t version, Offset offset,
       m_kind(kind),
       m_array_entries_are_offsets(array_entries_are_offsets) {}
 
-Node Node::scalar(const BYTE* base, Size size, uint32_t version,
-                  Offset parent_offset, Offset scalar_offset, FF_FieldKind kind) {
-    Node n (base, size, version, parent_offset, Kind_to_Recovery(kind), kind);
-    n.m_global_scalar_offset = scalar_offset;
-    return n;
-}
-Node Node::scalar(const BYTE* base, Size size, uint32_t version,
-                  Offset parent_offset, Offset scalar_offset, RECOVERY_TAG tag) {
-    Node n(base, size, version, parent_offset, tag, Recovery_to_Kind(tag));
-    n.m_global_scalar_offset = scalar_offset;
-    return n;
-}
 Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version, 
                              Offset parent_offset, Offset value_offset, FF_FieldKind schema_kind) {
     assert(schema_kind == FF_FIELD_CHOICE && "resolve_choice called on non-choice V-Table slot");
     RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + value_offset + DATA_BLOCK::RECOVERY));
     
     if ((tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) { 
-        return Node::scalar(base, size, version, parent_offset, value_offset, tag);
+        Node n(base, size, version, parent_offset, tag, Recovery_to_Kind(tag));
+        n.m_node_offset = value_offset;
+        return n;
     }
     
     Offset child_off = LOAD_U64(base + value_offset);
@@ -258,12 +312,19 @@ bool Node::is_empty() const {
     if (!*this) return true;
     
     if (is_array()) return size() == 0;
-    
-    if (is_string() || kind() == FF_FIELD_CODE) 
+
+    // Strings are empty when their decoded view is empty.
+    if (is_string())
         return as<std::string_view>().empty();
+
+    // Codes are empty only when the raw slot is the explicit FF_CODE_NULL sentinel.
+    // Do not treat unresolved dictionary codes as empty, otherwise print_json can emit
+    // invalid key/value pairs like "type":,
+    if (kind() == FF_FIELD_CODE)
+        return FF_IsFieldEmpty(m_base, m_node_offset, FF_FIELD_CODE);
     
     if (is_scalar())
-        return FF_IsFieldEmpty(m_base, m_global_scalar_offset, m_kind);
+        return FF_IsFieldEmpty(m_base, m_node_offset, m_kind);
     
     if (is_object()) { 
         auto f_list = fields(); 
@@ -283,13 +344,13 @@ bool Node::is_empty() const {
 // =====================================================================
 Node::operator bool() const {
     return m_base != nullptr
-        && (m_node_offset != FF_NULL_OFFSET || m_global_scalar_offset != FF_NULL_OFFSET);
+    && m_node_offset != FF_NULL_OFFSET;
 }
 
 bool Node::is_array()  const { return m_kind == FF_FIELD_ARRAY; }
 bool Node::is_object() const { return m_kind == FF_FIELD_BLOCK; }
 bool Node::is_string() const { return m_kind == FF_FIELD_STRING; }
-bool Node::is_scalar() const { return m_global_scalar_offset != FF_NULL_OFFSET; }
+bool Node::is_scalar() const { return m_kind == FF_FIELD_BOOL || m_kind == FF_FIELD_INT32 || m_kind == FF_FIELD_UINT32 || m_kind == FF_FIELD_INT64 || m_kind == FF_FIELD_UINT64 || m_kind == FF_FIELD_FLOAT64 || m_kind == FF_FIELD_CODE; }
 
 FF_FieldKind Node::kind()     const { return m_kind; }
 RECOVERY_TAG Node::recovery() const { return m_recovery; }
@@ -404,7 +465,7 @@ Entry Node::operator[](FF_FieldKey key) const {
     // 3. Return lightweight coordinate entry.
     RECOVERY_TAG target_tag = (key.kind == FF_FIELD_ARRAY) ? ToArrayTag(key.child_recovery) : key.child_recovery;
     if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN) {
-        target_tag = Kind_to_Recovery(key.kind); 
+        target_tag = Kind_to_Recovery(key.kind);
     }
 
     return {m_base, m_node_offset, key.field_offset, target_tag, key.kind};
@@ -421,8 +482,10 @@ Node Entry::as_node(Size size, uint32_t version, RECOVERY_TAG expected_tag, FF_F
         case FF_FIELD_INT64:
         case FF_FIELD_UINT64:
         case FF_FIELD_FLOAT64:
-        case FF_FIELD_CODE: 
-            return Node::scalar(base, size, version, slot_offset, slot_offset, expected_tag);
+        case FF_FIELD_CODE:
+            // Scalars are not DATA_BLOCKs. Use Entry::print_scalar_json() instead.
+            assert(false && "Entry::as_node() called on a scalar kind");
+            return {};
 
         case FF_FIELD_CHOICE: 
             return Node::resolve_choice(base, size, version, slot_offset, slot_offset, schema_kind);

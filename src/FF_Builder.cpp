@@ -252,23 +252,26 @@ Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &h
 // =====================================================================
 namespace Reflective {
 Entry MutableEntry::as_entry() const {
-    return *this;
+    return Entry(m_base, m_parent_offset, m_vtable_offset, m_recovery, m_kind);
 }
+
 ObjectHandle MutableEntry::as_handle() const {
+    if (!m_builder) return ObjectHandle();
+    
     auto base_ptr = m_builder->memory().base();
     
-    if (kind == FF_FIELD_RESOURCE || kind == FF_FIELD_CHOICE || target_recovery == RECOVER_FF_RESOURCE) {
-        Offset target = LOAD_U64(base_ptr + parent_offset + vtable_offset); 
+    if (m_kind == FF_FIELD_RESOURCE || m_kind == FF_FIELD_CHOICE || m_recovery == RECOVER_FF_RESOURCE) {
+        Offset target = LOAD_U64(base_ptr + m_parent_offset + m_vtable_offset); 
         if (target == FF_NULL_OFFSET) 
             return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
             
         RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
-            (LOAD_U16(base_ptr + parent_offset + vtable_offset + DATA_BLOCK::RECOVERY));
+            (LOAD_U16(base_ptr + m_parent_offset + m_vtable_offset + DATA_BLOCK::RECOVERY));
         
         return ObjectHandle(m_builder, target, actual_tag);
     }
     
-    Offset target = LOAD_U64(base_ptr + parent_offset + vtable_offset);
+    Offset target = LOAD_U64(base_ptr + m_parent_offset + m_vtable_offset);
     if (target == FF_NULL_OFFSET)
         return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
         
@@ -281,13 +284,13 @@ MutableEntry& MutableEntry::operator=(const ObjectHandle& child) {
     validate_assignment(child.recovery());
     
     // --- INLINE POLYMORPHIC TUPLE ---
-    if (target_recovery == RECOVER_FF_RESOURCE) {
-        m_builder->amend_resource(parent_offset, vtable_offset, child.offset(), child.recovery());
+    if (m_recovery == RECOVER_FF_RESOURCE) {
+        m_builder->amend_resource(m_parent_offset, m_vtable_offset, child.offset(), child.recovery());
         return *this;
     }
     
     // --- STANDARD 8-BYTE POINTER ---
-    m_builder->amend_pointer(parent_offset, vtable_offset, child.offset());
+    m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child.offset());
     return *this;
 }
 
@@ -295,13 +298,13 @@ MutableEntry& MutableEntry::operator=(const ObjectHandle& child) {
 
 void MutableEntry::validate_assignment(RECOVERY_TAG child_tag) const
 {
-    if (target_recovery == RECOVER_FF_RESOURCE) {
+    if (m_recovery == RECOVER_FF_RESOURCE) {
         // Polymorphic field: Ensure the child is actually a top-level Resource
         if (!FF_IsResourceTag(child_tag)) {
             throw std::invalid_argument("FastFHIR Schema Violation: Expected a top-level Resource (0x0200 range).");
         }
         // Strictly typed field: Ensure an exact match
-    } else if (target_recovery != FF_RECOVER_UNDEFINED && child_tag != target_recovery)
+    } else if (m_recovery != FF_RECOVER_UNDEFINED && child_tag != m_recovery)
         throw std::invalid_argument("FastFHIR Schema Violation: MutableEntry attempted to assign an incompatible ObjectHandle type. Assigned types must match current types");
 }
 
@@ -319,20 +322,20 @@ MutableEntry ObjectHandle::operator[](size_t index) const
         throw std::out_of_range("FastFHIR: Array index out of bounds.");
 
     // 2. Low-level geometry calculation
-    FF_ARRAY array_block(m_node_offset, 0, 0);
+    FF_ARRAY array_block(m_offset, 0, 0);
     auto base = m_builder->memory().base();
     
     uint16_t step = array_block.entry_step(base);
     const BYTE* entries_ptr = array_block.entries(base);
     
-    size_t entry_vtable_offset = static_cast<size_t>(entries_ptr - (base + m_node_offset)) + (index * step);
+    uint32_t entry_vtable_offset = static_cast<uint32_t>(static_cast<size_t>(entries_ptr - (base + m_offset)) + (index * step));
 
     // Return the bridge to the slot.
     // Type discovery may happen lazily in as_handle(), and schema safety is
     // enforced at compile-time by the ffc.py generated code.
     return MutableEntry(
         m_builder,
-        m_node_offset,
+        m_offset,
         entry_vtable_offset,
         GetTypeFromTag(m_recovery),
         Recovery_to_Kind(m_recovery)

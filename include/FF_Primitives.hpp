@@ -154,6 +154,7 @@ enum FF_FieldKind : uint16_t
 inline RECOVERY_TAG Kind_to_Recovery(const FF_FieldKind kind)
 {
     switch (kind) {
+        case FF_FIELD_STRING:  return RECOVER_FF_STRING;
         case FF_FIELD_BOOL:    return RECOVER_FF_BOOL;
         case FF_FIELD_INT32:   return RECOVER_FF_INT32;
         case FF_FIELD_UINT32:  return RECOVER_FF_UINT32;
@@ -195,6 +196,7 @@ inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag) {
         }
     }
     switch (base) {
+        case RECOVER_FF_CODE:    return FF_FIELD_CODE;
         case RECOVER_FF_STRING:  return FF_FIELD_STRING;
         case RECOVER_FF_RESOURCE:return FF_FIELD_RESOURCE;
         default:                 return (base >= RECOVER_FF_DATA_TYPE_BLOCK) ? FF_FIELD_BLOCK : FF_FIELD_UNKNOWN;

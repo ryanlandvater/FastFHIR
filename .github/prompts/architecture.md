@@ -255,12 +255,32 @@ The lock-free serialization engine. Non-copyable and non-movable.
 **`ObjectHandle`** is a proxy returned by `append_obj`. It holds the `Builder*` and the written `Offset`. Its `operator[]` returns a `MutableEntry` for setting string/block fields by key after the initial write.
 
 Reflective hierarchy notes:
-- `Reflective::Entry` is the shared slot-coordinate base (`base`, `parent_offset`, `vtable_offset`, `target_recovery`, `kind`) for field traversal.
-- `Reflective::MutableEntry` derives from `Entry` and adds mutation semantics via a `Builder*`.
-- `Reflective::ObjectHandle` derives from `Reflective::Node` and adds builder-bound mutation/traversal entry points.
+- `Reflective::Entry` is the shared slot-coordinate base (`base`, `parent_offset`, `vtable_offset`, `target_recovery`, `kind`) for field traversal (~32B).
+- `Reflective::MutableEntry` no longer inherits from `Entry`; it is a standalone thin handle storing 6 fields (`Builder*`, `base`, `parent_offset`, `vtable_offset`, `recovery`, `kind`), enabling lazy materialization and reducing embedded footprint.
+- `Reflective::ObjectHandle` is a thin builder-bound handle (`Builder*`, `Offset`, `RECOVERY_TAG`) and no longer stores an embedded `Node` snapshot; read operations materialize a fresh `Node` on demand via `as_node()`.
 - Public headers intentionally avoid top-level aliases like `FastFHIR::ObjectHandle` / `FastFHIR::MutableEntry` / `FastFHIR::Node`; callers should use `FastFHIR::Reflective::*` explicitly.
+- **Lens-lightweighting pass (Phases 1–3):** 
+  - **Phase 1:** Entry::vtable_offset narrowed to 32-bit storage; Node no longer carries a separate scalar-offset member; scalar decode paths reuse m_node_offset.
+  - **Phase 2:** ObjectHandle refactored from Node subclass to thin 3-field handle (was ~64B, now ~24B).
+  - **Phase 3:** MutableEntry refactored from Entry subclass to thin 6-field coordinate holder; forwarding methods delegate to as_handle() for lazy Node materialization.
 
 **Mutation safety:** `try_begin_mutation()` / `end_mutation()` use an `atomic<uint64_t>` reference counter and an `atomic<bool> m_finalizing` flag to prevent appends after `finalize()` is called.
+
+**Code Reuse via Delegation (Phase 4):** All read operations use a unified delegation chain to eliminate code duplication:
+```
+MutableEntry::is_array() ──→ as_handle().is_array()
+ObjectHandle::is_array() ──→ as_node().is_array()
+Node::is_array() ────────→ Direct bit-check on m_base
+
+MutableEntry[key] ────────→ as_handle()[key]
+ObjectHandle[key] ────────→ Direct coordinate lookup
+MutableEntry[index] ──────→ as_handle()[index]
+ObjectHandle[index] ──────→ Direct array geometry calculation
+```
+This pattern applies to all query methods (`size()`, `fields()`, `keys()`, `is_object()`, etc.), ensuring:
+- No redundant traversal logic across types
+- Lazy Node materialization only when needed
+- Minimal per-instance overhead
 
 ### `FastFHIR::Parser` and `Reflective::Node` (`include/FF_Parser.hpp`)
 
