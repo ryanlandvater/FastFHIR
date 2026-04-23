@@ -18,6 +18,7 @@ Ingestor    = _core.Ingestor
 Checksum    = _core.Checksum
 SourceType  = _core.SourceType
 FhirVersion = _core.FhirVersion
+ResourceType = _core.ResourceType
 
 # ---------------------------------------------------------
 # Default Hasher Injections (Zero-Copy)

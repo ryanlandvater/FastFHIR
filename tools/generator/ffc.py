@@ -1606,16 +1606,33 @@ def emit_python_ast(master_blocks, block_key_defs, token_registry, output_dir="g
     with open(init_path, "w") as f:
         f.write('"""Auto-generated FastFHIR AST Namespace"""\n\n')
         f.write("from .base import ASTNode, ASTArrayNode\n\n")
-        
-        for block_name in master_blocks.keys():
-            # Only alias top-level resources (ignore nested structs like Patient.contact)
-            if '.' not in block_name:
-                module_name = block_name.lower()
-                class_name = f"{block_name.upper()}_PATH"
-                
-                # Instantiate root nodes for clean syntax (e.g. Bundle.ENTRY instead of Bundle().ENTRY)
-                f.write(f"from .{module_name} import {class_name}\n")
-                f.write(f"{block_name} = {class_name}()\n")
+
+        def _alias_name(path):
+            # Convert block paths like "Bundle.entry" -> "BundleEntry"
+            # and "Encounter.statusHistory" -> "EncounterStatusHistory".
+            parts = [p for p in path.split('.') if p]
+            return ''.join(part[:1].upper() + part[1:] for part in parts)
+
+        seen_aliases = set()
+        exported = ["ASTNode", "ASTArrayNode"]
+        for block_name in sorted(master_blocks.keys()):
+            module_name = block_name.replace('.', '_').lower()
+            class_name = f"{block_name.replace('.', '_').upper()}_PATH"
+            alias = _alias_name(block_name)
+
+            if alias in seen_aliases:
+                continue
+
+            # Instantiate path roots for clean syntax (e.g. Bundle.ENTRY or BundleEntry.RESOURCE).
+            f.write(f"from .{module_name} import {class_name}\n")
+            f.write(f"{alias} = {class_name}()\n")
+            seen_aliases.add(alias)
+            exported.append(alias)
+
+        f.write("\n__all__ = [\n")
+        for name in exported:
+            f.write(f"    \"{name}\",\n")
+        f.write("]\n")
 
 # =====================================================================
 # 7. MASTER BUILD ORCHESTRATOR

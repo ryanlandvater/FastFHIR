@@ -252,7 +252,6 @@ private:
 
     std::string m_name;
     size_t m_capacity = 0;
-    size_t m_total_size = 0;
 
     uint8_t* m_base = nullptr;
     std::atomic_ref<uint64_t> m_head;

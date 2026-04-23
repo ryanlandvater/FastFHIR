@@ -231,7 +231,6 @@ Memory Memory::createFromFile(const std::filesystem::path& filepath, size_t capa
 FF_Memory_t::FF_Memory_t(uint8_t* base, size_t capacity, void* fh, void* osh, int fd, const std::string& name) :
     m_name(name),
     m_capacity(capacity),
-    m_total_size(capacity + FF_HEADER::HEADER_SIZE),
     m_base(base),
     m_head(*reinterpret_cast<uint64_t*>(base + FF_HEADER::STREAM_SIZE)),
     m_file_handle(fh),
@@ -245,7 +244,7 @@ FF_Memory_t::~FF_Memory_t() {
     if (m_os_handle) CloseHandle(static_cast<HANDLE>(m_os_handle));
     if (m_file_handle) CloseHandle(static_cast<HANDLE>(m_file_handle));
 #else
-    if (m_base && m_base != MAP_FAILED) munmap(m_base, m_total_size);
+    if (m_base && m_base != MAP_FAILED) munmap(m_base, m_capacity);
     if (m_os_fd != -1) close(m_os_fd);
     
     // shm_unlink is deliberately omitted here.
