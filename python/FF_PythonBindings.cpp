@@ -96,6 +96,9 @@ struct PyMutableEntry {
     Reflective::MutableEntry entry;
 
     PyMutableEntry(std::shared_ptr<Builder> b, Reflective::MutableEntry e) : builder(std::move(b)), entry(e) {}
+
+    FF_FieldKind kind() const { return entry.m_kind; }
+    RECOVERY_TAG recovery() const { return entry.m_recovery; }
 };
 
 // =====================================================================
@@ -370,27 +373,54 @@ PYBIND11_MODULE(_core, m) {
             }
         })
         .def("value", [](const PyMutableEntry& self) -> py::object {
-            Reflective::Node child = self.entry.as_node();
-            if (child.is_empty()) return py::none();
+            // For scalar kinds, use as_entry() to avoid the pointer-hop in as_handle()
+            // which would read garbage recovery tags from inline scalar storage.
+            const FF_FieldKind kind = self.kind();
+            const Reflective::Entry entry = self.entry.as_entry();
+            if (!entry) return py::none();
 
-            switch (child.kind()) {
-                case FF_FIELD_BOOL:     return py::bool_(child.as<bool>());
-                case FF_FIELD_INT32:    return py::int_(child.as<int32_t>());
-                case FF_FIELD_UINT32:   return py::int_(child.as<uint32_t>());
-                case FF_FIELD_INT64:    return py::int_(child.as<int64_t>());
-                case FF_FIELD_UINT64:   return py::int_(child.as<uint64_t>());
-                case FF_FIELD_FLOAT64:  return py::float_(child.as<double>());
-                case FF_FIELD_CODE:     
-                case FF_FIELD_STRING:   return py::str(child.as<std::string_view>());
-                
-                case FF_FIELD_BLOCK:   
+            const auto* builder = self.entry.get_builder();
+            const Size arena_size = builder ? builder->memory().size() : 0;
+            const uint32_t version = builder ? static_cast<uint32_t>(builder->FhirVersion()) : 0;
+
+            switch (kind) {
+                case FF_FIELD_BOOL:
+                    return py::bool_(entry.as_scalar<bool>(RECOVER_FF_BOOL));
+                case FF_FIELD_INT32:
+                    return py::int_(entry.as_scalar<int32_t>(RECOVER_FF_INT32));
+                case FF_FIELD_UINT32:
+                    return py::int_(entry.as_scalar<uint32_t>(RECOVER_FF_UINT32));
+                case FF_FIELD_INT64:
+                    return py::int_(entry.as_scalar<int64_t>(RECOVER_FF_INT64));
+                case FF_FIELD_UINT64:
+                    return py::int_(entry.as_scalar<uint64_t>(RECOVER_FF_UINT64));
+                case FF_FIELD_FLOAT64:
+                    return py::float_(entry.as_scalar<double>(RECOVER_FF_FLOAT64));
+                case FF_FIELD_CODE: {
+                    // CODE is a 32-bit inline value resolved via the code table or a
+                    // custom string offset. Use print_scalar_json() as the single
+                    // authoritative decoder, then strip the surrounding JSON quotes.
+                    std::ostringstream oss;
+                    entry.print_scalar_json(oss, version);
+                    std::string s = oss.str();
+                    if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
+                        s = s.substr(1, s.size() - 2);
+                    if (s == "null") return py::none();
+                    return py::str(s);
+                }
+                case FF_FIELD_STRING: {
+                    Reflective::Node n = entry.as_node(arena_size, version, self.recovery(), kind);
+                    if (n.is_empty()) return py::none();
+                    return py::str(n.as<std::string_view>());
+                }
+                case FF_FIELD_BLOCK:
                 case FF_FIELD_RESOURCE:
                 case FF_FIELD_ARRAY: {
                     Reflective::ObjectHandle elevated = self.entry.as_handle();
                     if (elevated.offset() == FF_NULL_OFFSET) return py::none();
                     return py::cast(PyStreamNode(self.builder, elevated));
                 }
-                default: 
+                default:
                     return py::none();
             }
         });

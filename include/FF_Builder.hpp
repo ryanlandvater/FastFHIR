@@ -16,6 +16,8 @@
 #include <string_view>
 #include <functional>
 
+struct PyMutableEntry;
+
 namespace FastFHIR {
 class AdvancedBuilderAccess;
 namespace Reflective {
@@ -317,6 +319,7 @@ public:
     MutableEntry operator[](size_t index) const;
 
 private:
+    friend struct ::PyMutableEntry;
     void validate_assignment(RECOVERY_TAG child_tag) const;
 };
 
@@ -440,8 +443,9 @@ inline MutableEntry ObjectHandle::operator[](FF_FieldKey key) const {
     if (m_offset == FF_NULL_OFFSET)
         throw std::runtime_error("FastFHIR: Invalid ObjectHandle...");
     
-    RECOVERY_TAG target_tag = (key.kind == FF_FIELD_ARRAY) ? 
-        ToArrayTag(key.child_recovery) : key.child_recovery;
+    // Entry::kind already encodes whether this is an array; target_recovery holds the
+    // clean element type directly — no ToArrayTag encoding needed or wanted here.
+    RECOVERY_TAG target_tag = key.child_recovery;
     
     if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN) {
         target_tag = Kind_to_Recovery(key.kind);

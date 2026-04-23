@@ -420,18 +420,23 @@ std::vector<Node> Node::entries() const {
                 continue;
             }
 
+            // Schema provides the concrete element type. Validate it against the
+            // DATA_BLOCK header in debug builds; use the schema type directly in release.
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
                 LOAD_U16(m_base + child_off + DATA_BLOCK::RECOVERY)
             );
-            
+            assert((m_child_recovery == FF_RECOVER_UNDEFINED || actual_tag == m_child_recovery)
+                   && "Node::entries() pointer-array element tag mismatch with schema child_recovery");
+
             FF_FieldKind child_kind = FF_FIELD_BLOCK;
-            switch (m_child_recovery){
+            switch (m_child_recovery) {
             case RECOVER_FF_STRING: child_kind = FF_FIELD_STRING; break;
-            case RECOVER_FF_CODE: child_kind = FF_FIELD_CODE; break;
+            case RECOVER_FF_CODE:   child_kind = FF_FIELD_CODE;   break;
             default: break;
             }
-            
-            out.push_back(Node(m_base, m_size, m_version, child_off, actual_tag, child_kind));
+
+            RECOVERY_TAG use_tag = (m_child_recovery != FF_RECOVER_UNDEFINED) ? m_child_recovery : actual_tag;
+            out.push_back(Node(m_base, m_size, m_version, child_off, use_tag, child_kind));
             continue;
         }
         
@@ -463,7 +468,9 @@ Entry Node::operator[](FF_FieldKey key) const {
     }
 
     // 3. Return lightweight coordinate entry.
-    RECOVERY_TAG target_tag = (key.kind == FF_FIELD_ARRAY) ? ToArrayTag(key.child_recovery) : key.child_recovery;
+    // Entry::kind already encodes whether this is an array; target_recovery holds the
+    // clean element type directly — no ToArrayTag encoding needed or wanted here.
+    RECOVERY_TAG target_tag = key.child_recovery;
     if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN) {
         target_tag = Kind_to_Recovery(key.kind);
     }
@@ -497,8 +504,19 @@ Node Entry::as_node(Size size, uint32_t version, RECOVERY_TAG expected_tag, FF_F
             return Node(base, size, version, actual_off, actual_tag, FF_FIELD_BLOCK);
         }
 
+        case FF_FIELD_ARRAY: {
+            Offset child_offset = LOAD_U64(base + slot_offset);
+            if (child_offset == FF_NULL_OFFSET) return {};
+            // m_recovery is unused on array Nodes (fields() returns {} for non-objects).
+            // expected_tag already encodes the element type exactly — no memory read needed.
+            FF_ARRAY arr_hdr(child_offset, size, version);
+            bool entries_are_offsets = arr_hdr.entries_are_pointers(base);
+            return Node(base, size, version, child_offset, expected_tag, schema_kind,
+                        expected_tag, entries_are_offsets);
+        }
+
         default: {
-            // Standard pointer hop for Blocks, Arrays, and Strings
+            // Standard pointer hop for Blocks and Strings
             Offset child_offset = LOAD_U64(base + slot_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + child_offset + DATA_BLOCK::RECOVERY));
