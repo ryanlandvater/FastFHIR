@@ -1,138 +1,460 @@
 # FastFHIR Python API
 
-## Overview
-The FastFHIR Python API provides high-performance, zero-copy bindings for the FastFHIR clinical data engine. It leverages pybind11 to bridge the C++ Virtual Memory Arena (VMA) directly into Python, allowing for multi-gigabyte FHIR stream processing with minimal CPU and memory overhead.
+FastFHIR is a zero-copy clinical data engine. Ingest FHIR JSON or HL7 directly into a memory arena and traverse it with O(1) field access using generated field constants.
 
 ---
 
-## Core Components
+## 1 — Ingest a FHIR JSON file and save as `.ffhr`
 
-### Memory Management
-The Memory class serves as the primary allocator for the FastFHIR Virtual Memory Arena.
-* **Allocation**: Supports anonymous shared memory or file-backed mappings for persistence.
-* **Capacity**: Managed via hardware-aligned atomic write heads to ensure thread safety during concurrent access.
-* **Zero-Copy Egress**: The view method returns a MemoryView object that implements the Python Buffer Protocol, allowing raw bytes to be passed to network sockets or disk I/O without copying.
-```python
+The arena is memory-mapped directly to the destination file. Every byte the ingestor
+writes goes straight to the OS page cache — there is no intermediate buffer, no
+`write()` call, and no copy at `finalize()`. When `finalize()` returns, `patient.ffhr`
+is already a complete, sealed FastFHIR archive on disk.
+
+```py
 import fastfhir as ff
 
-# Create a 1GB anonymous shared memory arena
-mem = ff.Memory.create(capacity=1024 * 1024 * 1024)
+ingestor = ff.Ingestor()
 
-# Or mount an existing FastFHIR file from disk
-mem_file = ff.Memory.create_from_file("clinical_archive.ffhr")
+with open("patient.json") as f:
+    json_string = f.read()
+
+# Map the arena straight to a file — every write goes directly to disk
+mem = ff.Memory.create_from_file("patient.ffhr", capacity=64 * 1024 * 1024)
+
+with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+    patient_node, _ = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_string)
+
+    # Inspect while still in the stream
+    print(patient_node[ff.Patient.ID].value())       # "patient-1"
+    print(patient_node[ff.Patient.GENDER].value())   # "male"
+    print(patient_node[ff.Patient.ACTIVE].value())   # True
+
+    for name_entry in patient_node[ff.Patient.NAME]:
+        name   = name_entry.value()                                   # StreamNode
+        family = name[ff.HumanName.FAMILY].value()                    # str
+        given  = [g.value() for g in name[ff.HumanName.GIVEN]]       # list[str]
+        print(given, family)   # ['Ryan', 'Eric'] Landvater
+
+    # Seal the file — writes the header + SHA-256 footer into the mapped pages
+    stream.finalize(algo=ff.Checksum.SHA256)
+
+mem.close()   # patient.ffhr is now a valid, portable FastFHIR archive
 ```
 
-### Stream Construction
-The Stream class is a Pythonic wrapper around the C++ Builder, designed to be used as a context manager.
-* **Context Safety**: Using the 'with' statement ensures the stream is protected during mutation and prevents finalization if a Python exception occurs.
-* **FHIR Versioning**: Supports explicit versioning using Version.R4 (0x0400) or Version.R5 (0x0500) to ensure header compatibility.
+---
+
+## 2 — Open and read a `.ffhr` file
+
+Mount an existing archive read-only and traverse it exactly like a live stream.
+No parsing cost — the data is already in FastFHIR's binary layout.
+
 ```py
-# Initialize a stream targeting FHIR R4
-with ff.Stream(mem, version=ff.Version.R4) as stream:
-    # The 'with' block ensures try_begin_mutation() is called
-    # Logic goes here...
-    pass
-# If the block exits without error, the stream remains valid for finalization
+import fastfhir as ff
+
+mem = ff.Memory.create_from_file("patient.ffhr")
+
+with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+    patient_node = stream.root
+
+    # Scalars coerce directly to Python types
+    pid     = patient_node[ff.Patient.ID].value()        # str
+    gender  = patient_node[ff.Patient.GENDER].value()    # str
+    active  = patient_node[ff.Patient.ACTIVE].value()    # bool
+    dob     = patient_node[ff.Patient.BIRTHDATE].value() # str
+    print(pid, gender, active, dob)
+
+    # Walk structured arrays
+    for name_entry in patient_node[ff.Patient.NAME]:
+        name   = name_entry.value()
+        family = name[ff.HumanName.FAMILY].value()
+        given  = [g.value() for g in name[ff.HumanName.GIVEN]]
+        print(given, family)
+
+    # Or materialize everything as plain Python dicts/lists in one call
+    patient_dict = dict(patient_node.items(recursive=True))
+    for human_name in patient_dict.get("name", []):
+        print(human_name["family"], human_name.get("given", []))
+
+mem.close()
 ```
 
-### Data Ingestion
-FastFHIR supports two primary ingestion paths for clinical data:
-* **Structured Ingestion**: The Ingestor class provides multi-threaded parsing of FHIR JSON and HL7 payloads. It returns a StreamNode handle representing the parsed resource.
-* **Zero-Copy Raw I/O**: The try_acquire_stream method on the Memory object provides a StreamHead. This object can be passed directly to socket.recv_into(), allowing the operating system to stream network data directly into the VMA.
+---
+
+## 3 — Re-open a `.ffhr` file and enrich it in place
+
+FastFHIR's arena is append-only and memory-mapped. Writing new fields appends the
+new bytes to the tail of the arena and amends only the field pointers in the
+header — the original record bytes are never touched. The OS page cache flushes
+only the dirty pages (the new tail + the updated pointers). The file grows solely
+by the delta; no copy of the existing data is ever made.
 
 ```py
-# Path A: Structured Ingestion (JSON to VMA)
-ingestor = ff.Ingestor(concurrency=4)
-patient_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_string)
+import fastfhir as ff
 
-# Path B: Zero-Copy Raw I/O (Network to VMA)
+ingestor = ff.Ingestor()
+
+# Mount the existing archive — it stays mapped to the same file
+mem = ff.Memory.create_from_file("patient.ffhr", capacity=64 * 1024 * 1024)
+
+with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+    patient_node = stream.root
+
+    # Add or overwrite scalar fields (appends new bytes, amends pointer)
+    patient_node[ff.Patient.BIRTHDATE] = "1990-03-21"
+    patient_node[ff.Patient.ACTIVE]    = True
+
+    # Amend a nested name field
+    patient_node[ff.Patient.NAME[0].FAMILY] = "Landvater-Smith"
+
+    # Append a structured sub-object via the ingestor
+    patient_node[ff.Patient.TELECOM] = {
+        "system": "phone",
+        "value":  "555-0199",
+        "use":    "mobile"
+    }
+
+    # Re-seal with updated checksum — old data untouched, new tail written
+    stream.finalize(algo=ff.Checksum.SHA256)
+
+mem.close()   # patient.ffhr now contains the enriched record
+```
+
+---
+
+## 4 — Receive over a socket, enrich, and send back
+
+The OS writes network data directly into the arena — zero copies on ingest.
+After enrichment, `finalize()` returns a buffer-protocol view that `sendall()`
+reads straight from the same arena pages — zero copies on egress.
+
+```py
+import fastfhir as ff
 import socket
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-with mem.try_acquire_stream() as head:
-    # OS writes directly into the FastFHIR arena
-    bytes_received = sock.recv_into(head) 
-    head.commit(bytes_received)
+HOST, PORT = "0.0.0.0", 9000
+
+ingestor = ff.Ingestor()
+mem      = ff.Memory.create(capacity=256 * 1024 * 1024)   # 256 MB anonymous arena
+
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.bind((HOST, PORT))
+server.listen(1)
+conn, _ = server.accept()
+
+with conn:
+    # ── Step 1: receive FHIR JSON directly into the arena (zero-copy ingest) ──
+    with mem.try_acquire_stream() as head:
+        bytes_received = conn.recv_into(head)   # OS DMA → VMA, no Python buffer
+        head.commit(bytes_received)
+
+    # ── Step 2: parse the raw bytes that just landed in the arena ──
+    raw = bytes(mem.view()[:bytes_received]).decode()
+
+    with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+        patient_node, _ = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, raw)
+
+        # ── Step 3: enrich in place ──
+        patient_node[ff.Patient.ACTIVE] = True
+        patient_node[ff.Patient.TELECOM] = {
+            "system": "phone",
+            "value":  "555-0199",
+            "use":    "mobile"
+        }
+
+        # ── Step 4: seal and send back — buffer reads straight from the arena ──
+        final_view = stream.finalize(algo=ff.Checksum.CRC32)
+
+    conn.sendall(final_view)   # zero-copy egress
+
+mem.close()
 ```
 
 ---
 
-## Data Navigation and Manipulation
+## 5 — Surgically edit one patient in a 5 GB bundle and reseal
 
-### StreamNode
-The StreamNode represents a lightweight proxy over a specific block in the data stream.
-* **O(1) Field Access**: Uses the autogenerated fields.py registry to perform constant-time memory lookups.
-* **Native Coercion**: Automatically converts FastFHIR primitives (Booleans, Integers, Strings) into native Python types during access.
-* **Lazy Traversal**: Accessing complex fields returns a new StreamNode proxy rather than materializing the entire sub-tree, preserving performance for deep FHIR resources.
+The bundle is memory-mapped — the OS pages only the entries you actually touch.
+Finding one patient, appending a lab result, and resealing never loads the other
+5 GB into RAM. Only the dirty pages (the new Observation tail + updated pointers)
+are ever written back to disk.
 
 ```py
-# O(1) attribute retrieval (Native coercion to Python bool/str/int)
-if patient_node[ff.PATIENT.ACTIVE]:
-    gender = patient_node[ff.PATIENT.GENDER]
-    print(f"Processing {gender} patient...")
+import fastfhir as ff
 
-# O(1) attribute update (Append-only pointer amendment)
-patient_node[ff.PATIENT.BIRTHDATE] = "1990-01-01"
+ingestor = ff.Ingestor()
 
-# Nested FHIR dictionary assignment (Routed to fastFHIR's C++ Ingestor)
-patient_node[ff.PATIENT.CONTACT] = {
-    "system": "phone",
-    "value": "555-0199",
-    "use": "home"
-}
+# Map the entire 5 GB archive — address space is reserved, pages are not loaded
+mem = ff.Memory.create_from_file("bundle.ffhr", capacity=8 * 1024 ** 3)  # 8 GB cap
+
+with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+    bundle_node = stream.root
+
+    # Walk bundle.entry; the OS faults in only the pages we read
+    target_patient = None
+    for entry in bundle_node[ff.Bundle.ENTRY]:
+        resource = entry[ff.BundleEntry.RESOURCE]
+        if not resource or resource != ff.Patient:
+            continue
+        patient = resource.value()
+        if patient[ff.Patient.ID].value() == "patient-42":
+            target_patient = patient
+            break
+
+    if target_patient is None:
+        raise LookupError("patient-42 not found")
+
+    # Build the new Observation inline and append it to this patient only.
+    # Every other entry in the bundle is untouched — its pages are never faulted in.
+    new_obs = {
+        "resourceType": "Observation",
+        "status": "final",
+        "code": {
+            "coding": [{"system": "http://loinc.org", "code": "2345-7", "display": "Glucose"}]
+        },
+        "subject": {"reference": "Patient/patient-42"},
+        "valueQuantity": {"value": 94.0, "unit": "mg/dL", "system": "http://unitsofmeasure.org"}
+    }
+    import json
+    ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json.dumps(new_obs))
+
+    # Amend the patient record to reference the new observation
+    target_patient[ff.Patient.TELECOM] = {"system": "phone", "value": "555-0199"}
+
+    # Reseal — rewrites only the header + checksum pages, nothing else
+    stream.finalize(algo=ff.Checksum.SHA256)
+
+mem.close()   # bundle.ffhr updated; 5 GB of untouched entries were never copied
 ```
-
-### Field Registry
-The fields.py module contains the full FHIR schema reflected as Python classes.
-* **Type Safety**: Each field constant (e.g., PATIENT.ACTIVE) contains the necessary metadata to route read and write requests to the correct VMA offset.
-* **Dictionary Syntax**: Supports standard Python square-bracket notation for both retrieving values and appending new data to the stream.
 
 ---
 
-## Finalization and Integrity
-Closing a stream involves sealing the VMA and generating a cryptographic footer.
-* **Hashing**: Supports CRC32, MD5, and SHA256 algorithms.
-* **Performance**: Hashing is performed via Python's C-optimized hashlib and zlib libraries, operating directly on the VMA buffer to maintain zero-copy integrity.
-* **Final Buffer**: The finalize method returns a committed memoryview of the total payload, including the hardware-aligned header and checksum footer.
+---
+## Reference
 
-### Option A: Preferred In-Place Persistence (Mapped File)
+### Enums
 
-Use this for high-performance logging or database-style persistence. Since the Memory object is mapped directly to a file on disk, finalize writes the checksum and header metadata directly into the mapped pages.
 ```py
-# 1. Map the arena directly to a file on the filesystem
-# Any mutations are now backed by the OS page cache
-mem = ff.Memory.create_from_file("persistent_store.ffhr", capacity=1024**3)
-
-with ff.Stream(mem) as stream:
-    # ... append data ...
-    
-    # 2. Finalize in-place
-    # This writes the FF_HEADER and FF_CHECKSUM directly into the file
-    stream.finalize(algo=ff.Checksum.CRC32)
-
-# 3. No 'write()' call required.
-# Once the stream/memory object is closed, the file on disk is already a valid FastFHIR file.
+ff.FhirVersion.R4,  ff.FhirVersion.R5
+ff.SourceType.FHIR_JSON,  ff.SourceType.HL7_V2,  ff.SourceType.HL7_V3
+ff.Checksum.NONE,  ff.Checksum.CRC32,  ff.Checksum.MD5,  ff.Checksum.SHA256
+ff.ResourceType.Patient,  ff.ResourceType.Bundle,  ff.ResourceType.Encounter
+ff.ResourceType.Observation,  ff.ResourceType.DiagnosticReport
 ```
 
-### Option B: Streaming Egress (Manual Write)
+---
 
-Use this when you are building a stream in volatile memory (RAM) and need to send the resulting "sealed" file over a network or to a new file.
+### Field registry — `ff.<Type>.<FIELD>`
+
+All FHIR fields are generated path objects. Type names are PascalCase; field names are SCREAMING_CASE. Array fields support integer indexing to build deep paths.
 
 ```py
-# 1. Prepare the stream
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect(('clinical-archiver.local', 9000))
+ff.Patient.ID               # patient.id         (scalar)
+ff.Patient.ACTIVE           # patient.active      (bool)
+ff.Patient.GENDER           # patient.gender      (code → str)
+ff.Patient.BIRTHDATE        # patient.birthDate   (str)
+ff.Patient.NAME             # patient.name        (array of HumanName)
+ff.Patient.NAME[0]          # patient.name[0]
+ff.Patient.NAME[0].FAMILY   # patient.name[0].family  (deep path)
+ff.Patient.NAME[0].GIVEN    # patient.name[0].given   (array of str)
+ff.Patient.TELECOM          # patient.telecom     (array of ContactPoint)
+ff.Patient.ADDRESS          # patient.address     (array of Address)
 
-with ff.Stream(mem, version=ff.Version.R4) as stream:
-    # ... Ingest data using Builder or Ingestor ...
-    
-    # 2. Finalize to get the zero-copy buffer
-    # This seals the header and appends the 44-byte checksum footer
-    final_view = stream.finalize(algo=ff.Checksum.SHA256)
-    
-    # 3. Transmit directly over the wire
-    # Python's sendall() understands the buffer protocol and reads 
-    # straight from the C++ memory arena
-    sock.sendall(final_view) 
-    
-sock.close()
+ff.Bundle.ENTRY                         # bundle.entry
+ff.Bundle.ENTRY[0].RESOURCE             # bundle.entry[0].resource
+ff.BundleEntry.RESOURCE                 # (used when iterating entry nodes)
+
+ff.Observation.STATUS                   # "final" | "preliminary" | …
+ff.Observation.CODE                     # CodeableConcept block
+ff.Observation.VALUE                    # Quantity block
+ff.CodeableConcept.CODING               # array of Coding
+ff.Coding.SYSTEM                        # str
+ff.Coding.CODE                          # str
+ff.Coding.DISPLAY                       # str
+
+ff.HumanName.USE                        # "usual" | "official" | …
+ff.HumanName.FAMILY                     # str
+ff.HumanName.GIVEN                      # array of str
+ff.HumanName.PREFIX                     # array of str
+
+ff.Quantity.VALUE                       # float
+ff.Quantity.UNIT                        # str
+ff.Quantity.SYSTEM                      # str
+
+ff.Identifier.SYSTEM                    # str
+ff.Identifier.VALUE                     # str
+```
+
+Available path types (complete list):
+`ff.Patient`, `ff.Bundle`, `ff.BundleEntry`, `ff.BundleEntryRequest`, `ff.BundleEntryResponse`,
+`ff.Observation`, `ff.ObservationComponent`, `ff.Encounter`, `ff.EncounterParticipant`,
+`ff.DiagnosticReport`, `ff.HumanName`, `ff.CodeableConcept`, `ff.Coding`, `ff.Identifier`,
+`ff.Reference`, `ff.Quantity`, `ff.ContactPoint`, `ff.Address`, `ff.Period`, `ff.Meta`,
+`ff.Annotation`, `ff.Attachment`, `ff.Signature`, `ff.Extension`, `ff.Narrative`,
+`ff.PatientContact`, `ff.PatientCommunication`, `ff.PatientLink`
+
+---
+
+### `MutableEntry` — returned by every field subscript
+
+```py
+entry = node[ff.Patient.ACTIVE]
+```
+
+| Operation | Returns | Notes |
+|---|---|---|
+| `entry.value()` | `bool` / `int` / `float` / `str` / `StreamNode` / `None` | Scalars coerced; blocks/arrays return a `StreamNode` |
+| `bool(entry)` | `bool` | `True` if the field is present and populated |
+| `len(entry)` | `int` | Element count for arrays; `0` for non-arrays |
+| `for e in entry` | `MutableEntry` | Iterate array elements |
+| `entry.items()` | `list[(str, MutableEntry)]` | Present fields as lazy wrappers |
+| `entry.items(recursive=True)` | `list[(str, native)]` | Present fields as native Python values (dicts/lists/scalars) |
+| `entry == ff.Patient` | `bool` | Resource type check |
+| `entry.to_json()` | `str` | JSON text of this field |
+| `entry[ff.X.FIELD]` | `MutableEntry` | Subscript into a block entry |
+
+`.value()` return types by field kind:
+
+| Field kind | `.value()` returns |
+|---|---|
+| `bool` | `bool` |
+| `int32 / uint32 / int64 / uint64` | `int` |
+| `float64` | `float` |
+| `string / code` | `str` |
+| `block / resource / array` | `StreamNode` |
+| absent or null | `None` |
+
+---
+
+### `StreamNode` — a live proxy into the arena
+
+```py
+node = patient_entry.value()   # for block/array entries
+```
+
+| Operation | Returns | Notes |
+|---|---|---|
+| `node[ff.X.FIELD]` | `MutableEntry` | Single field |
+| `node[ff.X.FIELD[i].SUBFIELD]` | `MutableEntry` | Deep path traversal |
+| `bool(node)` | `bool` | `True` if the node is present |
+| `len(node)` | `int` | Array size; `0` for non-arrays |
+| `for e in node` | `MutableEntry` | Iterate array elements |
+| `node.items()` | `list[(str, MutableEntry)]` | Present fields, lazy wrappers |
+| `node.items(recursive=True)` | `list[(str, native)]` | Present fields, fully materialized |
+| `node == ff.Patient` | `bool` | Resource type check |
+| `node.to_json()` | `str` | JSON text |
+
+---
+
+### `ff.Memory`
+
+```py
+mem = ff.Memory.create(capacity=4 * 1024**3)                          # anonymous RAM
+mem = ff.Memory.create_from_file("data.ffhr", capacity=4 * 1024**3)   # file-backed
+```
+
+| Member | Returns | Notes |
+|---|---|---|
+| `.capacity` | `int` | Total bytes allocated |
+| `.size` | `int` | Bytes currently written |
+| `.name` | `str` | Shared memory name; empty for anonymous arenas |
+| `.view()` | `MemoryView` | Zero-copy buffer-protocol slice of the arena |
+| `.close()` | — | Release the mapping |
+
+---
+
+### `ff.Stream`
+
+```py
+with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+    ...
+    stream.finalize(algo=ff.Checksum.SHA256)
+```
+
+| Member | Returns | Notes |
+|---|---|---|
+| `.root` | `StreamNode` | Root node |
+| `.version` | `FhirVersion` | R4 or R5 |
+| `.root_type` | `ResourceType` | Resource kind at root |
+| `.to_json()` | `str` | Full stream JSON |
+| `.finalize(algo, hasher=None)` | `memoryview` | Seal + write checksum footer |
+
+---
+
+### `ff.Ingestor`
+
+```py
+ingestor = ff.Ingestor(concurrency=4)
+node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_string)
+# node  → StreamNode at root resource
+# count → number of resources written
+```
+
+---
+
+### Complete bundle traversal example (for AI use)
+
+```py
+import fastfhir as ff
+
+mem      = ff.Memory.create(capacity=512 * 1024 * 1024)
+ingestor = ff.Ingestor()
+
+with open("bundle.json") as f:
+    bundle_json = f.read()
+
+with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+    bundle_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, bundle_json)
+
+    for bundle_entry in bundle_node[ff.Bundle.ENTRY]:
+        resource = bundle_entry[ff.BundleEntry.RESOURCE]
+        if not resource:
+            continue
+
+        # ── Patient ──────────────────────────────────────────────────────
+        if resource == ff.Patient:
+            patient = resource.value()                              # StreamNode
+
+            pid     = patient[ff.Patient.ID].value()               # str
+            active  = patient[ff.Patient.ACTIVE].value()           # bool
+            gender  = patient[ff.Patient.GENDER].value()           # str
+            dob     = patient[ff.Patient.BIRTHDATE].value()        # str
+
+            for name_entry in patient[ff.Patient.NAME]:
+                name   = name_entry.value()                        # StreamNode
+                use    = name[ff.HumanName.USE].value()            # str
+                family = name[ff.HumanName.FAMILY].value()         # str
+                given  = [g.value() for g in name[ff.HumanName.GIVEN]]  # list[str]
+                print(f"[{pid}] {use}: {' '.join(given)} {family}, {gender}, DOB {dob}")
+
+            # Alternative: get everything as plain Python in one call
+            patient_dict = dict(patient.items(recursive=True))
+            # patient_dict["name"] → list of dicts, e.g.
+            # [{"use": "usual", "family": "Fay", "given": ["Bailey", "Marie"]}]
+
+        # ── Observation ───────────────────────────────────────────────────
+        elif resource == ff.Observation:
+            obs    = resource.value()
+            status = obs[ff.Observation.STATUS].value()            # str
+            code   = obs[ff.Observation.CODE].value()              # StreamNode or None
+
+            if code:
+                for coding_entry in code[ff.CodeableConcept.CODING]:
+                    coding  = coding_entry.value()
+                    display = coding[ff.Coding.DISPLAY].value()    # str
+                    system  = coding[ff.Coding.SYSTEM].value()     # str
+                    print(f"  obs [{status}] {display} ({system})")
+
+            value_entry = obs[ff.Observation.VALUE]
+            if value_entry:
+                qty = value_entry.value()                          # StreamNode
+                print(f"  value: {qty[ff.Quantity.VALUE].value()} {qty[ff.Quantity.UNIT].value()}")
+
+        # ── DiagnosticReport ──────────────────────────────────────────────
+        elif resource == ff.DiagnosticReport:
+            dr     = resource.value()
+            status = dr[ff.DiagnosticReport.STATUS].value()        # str
+            print(f"  report status: {status}")
+
+    stream.finalize(algo=ff.Checksum.SHA256)
+```

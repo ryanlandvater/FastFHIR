@@ -576,9 +576,11 @@ PYBIND11_MODULE(_core, m) {
                 }
             } else {
                 if (recursive) {
-                    py::dict values = materialize_handle_value(self.builder, self.handle).cast<py::dict>();
-                    for (auto item : values) {
-                        items.append(py::make_tuple(item.first, item.second));
+                    py::object values = materialize_handle_value(self.builder, self.handle);
+                    if (py::isinstance<py::dict>(values)) {
+                        for (auto item : values.cast<py::dict>()) {
+                            items.append(py::make_tuple(item.first, item.second));
+                        }
                     }
                 } else {
                     items = collect_filled_object_items(self.builder, self.handle);
@@ -653,7 +655,7 @@ PYBIND11_MODULE(_core, m) {
                 return py::iter(collect_filled_object_values(self.builder, node_handle));
             }
         })
-        .def("items", [](const PyMutableEntry& self, bool recursive) {
+        .def("items", [](const PyMutableEntry& self, bool recursive = true) {
             // Dict-like items() for nodes; for arrays, iterate as (index, item) pairs
             py::list items;
             if (self.entry.is_array()) {
@@ -664,9 +666,11 @@ PYBIND11_MODULE(_core, m) {
             } else {
                 Reflective::ObjectHandle node_handle = self.entry.as_handle();
                 if (recursive) {
-                    py::dict values = materialize_handle_value(self.builder, node_handle).cast<py::dict>();
-                    for (auto item : values) {
-                        items.append(py::make_tuple(item.first, item.second));
+                    py::object values = materialize_handle_value(self.builder, node_handle);
+                    if (py::isinstance<py::dict>(values)) {
+                        for (auto item : values.cast<py::dict>()) {
+                            items.append(py::make_tuple(item.first, item.second));
+                        }
                     }
                 } else {
                     items = collect_filled_object_items(self.builder, node_handle);
