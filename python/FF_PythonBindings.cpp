@@ -41,6 +41,8 @@ struct PyMemory {
         m_core = std::make_shared<Memory>(Memory::createFromFile(filepath, capacity));
     }
 
+    ~PyMemory() { close(); }
+
     void close() {
         m_closed = true;
         m_core.reset();
@@ -523,7 +525,7 @@ PYBIND11_MODULE(_core, m) {
             auto sh = mem.get().try_acquire_stream();
             if (!sh) throw std::runtime_error("Stream lock currently held by another socket/thread.");
             return std::move(*sh);
-        })
+        }, py::keep_alive<0, 1>())
         .def("close", &PyMemory::close)
         .def("__enter__", [](PyMemory& self) -> PyMemory& { return self; })
         .def("__exit__", [](PyMemory& self, py::object, py::object, py::object) { self.close(); })
