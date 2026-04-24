@@ -466,9 +466,13 @@ inline Reflective::ObjectHandle Builder::append_obj(const std::vector<Offset>& o
 }
 
 inline Reflective::ObjectHandle Builder::root_handle() const {
-    if (m_root_offset == FF_NULL_OFFSET || m_root_recovery == FF_RECOVER_UNDEFINED)
-        return Reflective::ObjectHandle();
-    return Reflective::ObjectHandle(const_cast<Builder*>(this), m_root_offset, m_root_recovery);
+    if (m_root_offset != FF_NULL_OFFSET && m_root_recovery != FF_RECOVER_UNDEFINED) {
+        return Reflective::ObjectHandle(const_cast<Builder*>(this), m_root_offset, m_root_recovery);
+    }
+
+    throw std::runtime_error(
+        "FastFHIR: Root is not set on this Builder. Calling application must set root explicitly "
+        "before reading or finalizing the stream.");
 }
 
 template <typename T>

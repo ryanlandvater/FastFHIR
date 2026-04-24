@@ -219,6 +219,10 @@ public:
          * * @details Advances the VMA write-head post-read using release semantics. This
          * ensures that the newly DMA'd payload is immediately and safely visible across
          * all CPU cores and reader threads.
+         *
+         * The stream lock remains held after each call so a single acquired StreamHead
+         * can commit multiple chunks contiguously. The lock is released only when the
+         * StreamHead is destroyed or otherwise released.
          * * @param bytes_written The exact number of bytes successfully transferred from the NIC.
          * @throws std::runtime_error if the committed bytes exceed the arena's maximum capacity.
          * @throws std::logic_error if the lock is invalid.

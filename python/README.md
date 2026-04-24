@@ -13,6 +13,7 @@ is already a complete, sealed FastFHIR archive on disk.
 
 ```py
 import fastfhir as ff
+from fastfhir.fields import Patient, HumanName
 
 ingestor = ff.Ingestor()
 
@@ -22,18 +23,18 @@ with open("patient.json") as f:
 # Map the arena straight to a file — every write goes directly to disk
 mem = ff.Memory.create_from_file("patient.ffhr", capacity=64 * 1024 * 1024)
 
-with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+with ff.Stream(mem, ff.FhirVersion.R5) as stream:
     patient_node, _ = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_string)
 
     # Inspect while still in the stream
-    print(patient_node[ff.Patient.ID].value())       # "patient-1"
-    print(patient_node[ff.Patient.GENDER].value())   # "male"
-    print(patient_node[ff.Patient.ACTIVE].value())   # True
+    print(patient_node[Patient.ID].value())       # "patient-1"
+    print(patient_node[Patient.GENDER].value())   # "male"
+    print(patient_node[Patient.ACTIVE].value())   # True
 
-    for name_entry in patient_node[ff.Patient.NAME]:
+    for name_entry in patient_node[Patient.NAME]:
         name   = name_entry.value()                                   # StreamNode
-        family = name[ff.HumanName.FAMILY].value()                    # str
-        given  = [g.value() for g in name[ff.HumanName.GIVEN]]       # list[str]
+        family = name[HumanName.FAMILY].value()                    # str
+        given  = [g.value() for g in name[HumanName.GIVEN]]       # list[str]
         print(given, family)   # ['Ryan', 'Eric'] Landvater
 
     # Seal the file — writes the header + SHA-256 footer into the mapped pages
@@ -46,33 +47,37 @@ mem.close()   # patient.ffhr is now a valid, portable FastFHIR archive
 
 ## 2 — Open and read a `.ffhr` file
 
-Mount an existing archive read-only and traverse it exactly like a live stream.
-No parsing cost — the data is already in FastFHIR's binary layout.
+Mount an existing archive read-only. In the current build, recover the archive
+with `to_json()` and re-ingest to get a traversable node handle.
 
 ```py
 import fastfhir as ff
+import json
+from fastfhir.fields import Patient, HumanName
 
-mem = ff.Memory.create_from_file("patient.ffhr")
+ingestor = ff.Ingestor()
+mem = ff.Memory.create_from_file("patient.ffhr", capacity=64 * 1024 * 1024)
 
-with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
-    patient_node = stream.root
+with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+    json_str = stream.to_json()
+    patient_node, _ = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_str)
 
     # Scalars coerce directly to Python types
-    pid     = patient_node[ff.Patient.ID].value()        # str
-    gender  = patient_node[ff.Patient.GENDER].value()    # str
-    active  = patient_node[ff.Patient.ACTIVE].value()    # bool
-    dob     = patient_node[ff.Patient.BIRTHDATE].value() # str
+    pid     = patient_node[Patient.ID].value()        # str
+    gender  = patient_node[Patient.GENDER].value()    # str
+    active  = patient_node[Patient.ACTIVE].value()    # bool
+    dob     = patient_node[Patient.BIRTHDATE].value() # str | None
     print(pid, gender, active, dob)
 
     # Walk structured arrays
-    for name_entry in patient_node[ff.Patient.NAME]:
+    for name_entry in patient_node[Patient.NAME]:
         name   = name_entry.value()
-        family = name[ff.HumanName.FAMILY].value()
-        given  = [g.value() for g in name[ff.HumanName.GIVEN]]
+        family = name[HumanName.FAMILY].value()
+        given  = [g.value() for g in name[HumanName.GIVEN]]
         print(given, family)
 
-    # Or materialize everything as plain Python dicts/lists in one call
-    patient_dict = dict(patient_node.items(recursive=True))
+    # Materialize as plain Python dict/list
+    patient_dict = json.loads(patient_node.to_json())
     for human_name in patient_dict.get("name", []):
         print(human_name["family"], human_name.get("given", []))
 
@@ -91,24 +96,22 @@ by the delta; no copy of the existing data is ever made.
 
 ```py
 import fastfhir as ff
-
-ingestor = ff.Ingestor()
+from fastfhir.fields import Patient
 
 # Mount the existing archive — it stays mapped to the same file
 mem = ff.Memory.create_from_file("patient.ffhr", capacity=64 * 1024 * 1024)
 
-with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+with ff.Stream(mem, ff.FhirVersion.R4) as stream:
+    # Intentionally pass R4 to demonstrate existing-archive fallback:
+    # builder degrades to the stream header version for in-place enrichment.
     patient_node = stream.root
 
     # Add or overwrite scalar fields (appends new bytes, amends pointer)
-    patient_node[ff.Patient.BIRTHDATE] = "1990-03-21"
-    patient_node[ff.Patient.ACTIVE]    = True
-
-    # Amend a nested name field
-    patient_node[ff.Patient.NAME[0].FAMILY] = "Landvater-Smith"
+    patient_node[Patient.BIRTHDATE] = "1990-03-21"
+    patient_node[Patient.ACTIVE]    = True
 
     # Append a structured sub-object via the ingestor
-    patient_node[ff.Patient.TELECOM] = {
+    patient_node[Patient.TELECOM] = {
         "system": "phone",
         "value":  "555-0199",
         "use":    "mobile"
@@ -131,6 +134,7 @@ reads straight from the same arena pages — zero copies on egress.
 ```py
 import fastfhir as ff
 import socket
+from fastfhir.fields import Patient
 
 HOST, PORT = "0.0.0.0", 9000
 
@@ -146,23 +150,27 @@ with conn:
     # ── Step 1: receive FHIR JSON directly into the arena (zero-copy ingest) ──
     with mem.try_acquire_stream() as head:
         bytes_received = conn.recv_into(head)   # OS DMA → VMA, no Python buffer
+        inbound_payload = bytes(memoryview(head)[:bytes_received])
         head.commit(bytes_received)
 
-    # ── Step 2: parse the raw bytes that just landed in the arena ──
-    raw = bytes(mem.view()[:bytes_received]).decode()
+    # ── Step 2: parse payload into a mutable stream node ──
+    # recv_into/commit already wrote into the arena in-place.
+    # Keep a copy of your transport payload for ingestion framing.
+    raw = inbound_payload.decode()
 
-    with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
         patient_node, _ = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, raw)
 
         # ── Step 3: enrich in place ──
-        patient_node[ff.Patient.ACTIVE] = True
-        patient_node[ff.Patient.TELECOM] = {
+        patient_node[Patient.ACTIVE] = True
+        patient_node[Patient.TELECOM] = {
             "system": "phone",
             "value":  "555-0199",
             "use":    "mobile"
         }
 
         # ── Step 4: seal and send back — buffer reads straight from the arena ──
+        stream.root = patient_node
         final_view = stream.finalize(algo=ff.Checksum.CRC32)
 
     conn.sendall(final_view)   # zero-copy egress
@@ -181,24 +189,31 @@ are ever written back to disk.
 
 ```py
 import fastfhir as ff
+import json
+from fastfhir.fields import Bundle, BundleEntry, Patient
+
+RT = ff._core.ResourceType
 
 ingestor = ff.Ingestor()
 
 # Map the entire 5 GB archive — address space is reserved, pages are not loaded
 mem = ff.Memory.create_from_file("bundle.ffhr", capacity=8 * 1024 ** 3)  # 8 GB cap
 
-with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
-    bundle_node = stream.root
+with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+    json_str = stream.to_json()
+    bundle_node, _ = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_str)
 
     # Walk bundle.entry; the OS faults in only the pages we read
     target_patient = None
-    for entry in bundle_node[ff.Bundle.ENTRY]:
-        resource = entry[ff.BundleEntry.RESOURCE]
-        if not resource or resource != ff.Patient:
+    for entry in bundle_node[Bundle.ENTRY]:
+        resource = entry[BundleEntry.RESOURCE]
+        if not resource:
             continue
-        patient = resource.value()
-        if patient[ff.Patient.ID].value() == "patient-42":
-            target_patient = patient
+        node_val = resource.value()
+        if not node_val or node_val.recovery_tag != RT.Patient:
+            continue
+        if node_val[Patient.ID].value() == "patient-42":
+            target_patient = node_val
             break
 
     if target_patient is None:
@@ -215,13 +230,13 @@ with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
         "subject": {"reference": "Patient/patient-42"},
         "valueQuantity": {"value": 94.0, "unit": "mg/dL", "system": "http://unitsofmeasure.org"}
     }
-    import json
     ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json.dumps(new_obs))
 
     # Amend the patient record to reference the new observation
-    target_patient[ff.Patient.TELECOM] = {"system": "phone", "value": "555-0199"}
+    target_patient[Patient.TELECOM] = {"system": "phone", "value": "555-0199"}
 
     # Reseal — rewrites only the header + checksum pages, nothing else
+    stream.root = bundle_node
     stream.finalize(algo=ff.Checksum.SHA256)
 
 mem.close()   # bundle.ffhr updated; 5 GB of untouched entries were never copied
@@ -341,7 +356,7 @@ node = patient_entry.value()   # for block/array entries
 | `for e in node` | `MutableEntry` | Iterate array elements |
 | `node.items()` | `list[(str, MutableEntry)]` | Present fields, lazy wrappers |
 | `node.items(recursive=True)` | `list[(str, native)]` | Present fields, fully materialized |
-| `node == ff.Patient` | `bool` | Resource type check |
+| `node.recovery_tag == ff._core.ResourceType.Patient` | `bool` | Resource type check |
 | `node.to_json()` | `str` | JSON text |
 
 ---
@@ -366,7 +381,7 @@ mem = ff.Memory.create_from_file("data.ffhr", capacity=4 * 1024**3)   # file-bac
 ### `ff.Stream`
 
 ```py
-with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+with ff.Stream(mem, ff.FhirVersion.R5) as stream:
     ...
     stream.finalize(algo=ff.Checksum.SHA256)
 ```
@@ -396,6 +411,10 @@ node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_string)
 
 ```py
 import fastfhir as ff
+import json
+from fastfhir.fields import Bundle, BundleEntry, Patient, HumanName, Observation, CodeableConcept, Coding, Quantity
+
+RT = ff._core.ResourceType
 
 mem      = ff.Memory.create(capacity=512 * 1024 * 1024)
 ingestor = ff.Ingestor()
@@ -403,55 +422,58 @@ ingestor = ff.Ingestor()
 with open("bundle.json") as f:
     bundle_json = f.read()
 
-with ff.Stream(mem, fhir_version=ff.FhirVersion.R5) as stream:
+with ff.Stream(mem, ff.FhirVersion.R5) as stream:
     bundle_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, bundle_json)
 
-    for bundle_entry in bundle_node[ff.Bundle.ENTRY]:
-        resource = bundle_entry[ff.BundleEntry.RESOURCE]
+    for bundle_entry in bundle_node[Bundle.ENTRY]:
+        resource = bundle_entry[BundleEntry.RESOURCE]
         if not resource:
+            continue
+        node_val = resource.value()
+        if not node_val:
             continue
 
         # ── Patient ──────────────────────────────────────────────────────
-        if resource == ff.Patient:
-            patient = resource.value()                              # StreamNode
+        if node_val.recovery_tag == RT.Patient:
+            patient = node_val                                      # StreamNode
 
-            pid     = patient[ff.Patient.ID].value()               # str
-            active  = patient[ff.Patient.ACTIVE].value()           # bool
-            gender  = patient[ff.Patient.GENDER].value()           # str
-            dob     = patient[ff.Patient.BIRTHDATE].value()        # str
+            pid     = patient[Patient.ID].value()                  # str
+            active  = patient[Patient.ACTIVE].value()              # bool
+            gender  = patient[Patient.GENDER].value()              # str
+            dob     = patient[Patient.BIRTHDATE].value()           # str
 
-            for name_entry in patient[ff.Patient.NAME]:
+            for name_entry in patient[Patient.NAME]:
                 name   = name_entry.value()                        # StreamNode
-                use    = name[ff.HumanName.USE].value()            # str
-                family = name[ff.HumanName.FAMILY].value()         # str
-                given  = [g.value() for g in name[ff.HumanName.GIVEN]]  # list[str]
+                use    = name[HumanName.USE].value()               # str
+                family = name[HumanName.FAMILY].value()            # str
+                given  = [g.value() for g in name[HumanName.GIVEN]]  # list[str]
                 print(f"[{pid}] {use}: {' '.join(given)} {family}, {gender}, DOB {dob}")
 
-            # Alternative: get everything as plain Python in one call
-            patient_dict = dict(patient.items(recursive=True))
+            # Alternative: get everything as plain Python
+            patient_dict = json.loads(patient.to_json())
             # patient_dict["name"] → list of dicts, e.g.
             # [{"use": "usual", "family": "Fay", "given": ["Bailey", "Marie"]}]
 
         # ── Observation ───────────────────────────────────────────────────
-        elif resource == ff.Observation:
-            obs    = resource.value()
-            status = obs[ff.Observation.STATUS].value()            # str
-            code   = obs[ff.Observation.CODE].value()              # StreamNode or None
+        elif node_val.recovery_tag == RT.Observation:
+            obs    = node_val
+            status = obs[Observation.STATUS].value()               # str
+            code   = obs[Observation.CODE].value()                 # StreamNode or None
 
             if code:
-                for coding_entry in code[ff.CodeableConcept.CODING]:
+                for coding_entry in code[CodeableConcept.CODING]:
                     coding  = coding_entry.value()
-                    display = coding[ff.Coding.DISPLAY].value()    # str
-                    system  = coding[ff.Coding.SYSTEM].value()     # str
+                    display = coding[Coding.DISPLAY].value()       # str
+                    system  = coding[Coding.SYSTEM].value()        # str
                     print(f"  obs [{status}] {display} ({system})")
 
-            value_entry = obs[ff.Observation.VALUE]
+            value_entry = obs[Observation.VALUE]
             if value_entry:
                 qty = value_entry.value()                          # StreamNode
-                print(f"  value: {qty[ff.Quantity.VALUE].value()} {qty[ff.Quantity.UNIT].value()}")
+                print(f"  value: {qty[Quantity.VALUE].value()} {qty[Quantity.UNIT].value()}")
 
         # ── DiagnosticReport ──────────────────────────────────────────────
-        elif resource == ff.DiagnosticReport:
+        elif node_val.recovery_tag == RT.DiagnosticReport:
             dr     = resource.value()
             status = dr[ff.DiagnosticReport.STATUS].value()        # str
             print(f"  report status: {status}")

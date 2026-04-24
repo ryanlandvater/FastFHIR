@@ -50,20 +50,19 @@ void Memory::StreamHead::commit(size_t bytes_written) {
     if (!m_memory) throw std::logic_error("Invalid StreamHead access");
     
     uint64_t current = m_memory->m_head.load(std::memory_order_relaxed);
+    if ((current & Memory::STREAM_LOCK_BIT) == 0) {
+        throw std::logic_error("Stream commit attempted without holding stream lock");
+    }
     uint64_t actual_offset = current & OFFSET_MASK;
     
     if (actual_offset + bytes_written > m_memory->m_capacity) {
         throw std::runtime_error("Stream commit exceeds VMA capacity");
     }
     
-    // Calculate new offset and STRIP the lock bit
-    uint64_t new_state = actual_offset + bytes_written;
-    
+    // Keep the stream lock bit set while streaming. This allows multiple
+    // commit() calls on the same acquired StreamHead without reacquiring.
+    uint64_t new_state = (actual_offset + bytes_written) | Memory::STREAM_LOCK_BIT;
     m_memory->m_head.store(new_state, std::memory_order_release);
-    m_memory->m_head.notify_all(); // Wake up sleeping Builders
-    
-    // Prevent the destructor from double-releasing
-    m_memory = nullptr;
 }
 
 // ============================================================================

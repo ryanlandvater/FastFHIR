@@ -21,6 +21,7 @@
 #include "FF_Dictionary.hpp"
 
 namespace FastFHIR {
+class Builder;
 template<typename T> struct TypeTraits;
 namespace Reflective {
 class Node;
@@ -35,6 +36,7 @@ struct Entry;
  * accessors for header metadata, checksum metadata, and the root node.
  */
 class Parser {
+    friend class Builder;
     const Memory m_memory;
     const BYTE*     m_base = nullptr;
     Size            m_size = 0;

@@ -44,6 +44,22 @@ m_active_mutators(0)
     if (!m_memory) {
         throw std::invalid_argument("FastFHIR: Cannot initialize Builder with a null FF_Memory handle.");
     }
+
+    // If the provided memory already contains a valid FastFHIR archive, hydrate
+    // root metadata from the stream header so callers can immediately access
+    // stream.root without an explicit set_root() call.
+    // Parser throws on new/empty memory (header validation fails) — treat that as a fresh stream.
+    try {
+        Parser p(m_memory);
+        if (p.m_root_offset   != FF_NULL_OFFSET &&
+            p.m_root_recovery != FF_RECOVER_UNDEFINED) {
+            m_root_offset   = p.m_root_offset;
+            m_root_recovery = p.m_root_recovery;
+            m_fhir_rev      = static_cast<FHIR_VERSION>(p.m_version);
+        }
+    } catch (const std::exception&) {
+        // No valid FastFHIR stream detected — this is a new stream, leave root unset.
+    }
 }
 
 Builder::~Builder() = default; // m_memory handles its own OS cleanup
@@ -206,9 +222,9 @@ Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &h
 
     // Finalization sanity check: Ensure a root resource was set and is within bounds
     if (m_root_offset == FF_NULL_OFFSET || m_root_offset >= m_memory.capacity())
-        throw std::runtime_error("FastFHIR: Cannot finalize without a valid in-range root resource.");
+        throw std::runtime_error("FastFHIR: Cannot finalize because root is unset/invalid. Calling application must set root explicitly.");
     else if (m_root_recovery == FF_RECOVER_UNDEFINED)
-        throw std::runtime_error("FastFHIR: Cannot finalize stream. Root resource recovery tag is UNDEFINED.");
+        throw std::runtime_error("FastFHIR: Cannot finalize stream. Root recovery tag is UNDEFINED. Calling application must set root explicitly.");
 
     // Reserve space for the checksum at the end of the stream and write the header metadata
     m_checksum_offset = m_memory.claim_space(FF_CHECKSUM::HEADER_SIZE);
