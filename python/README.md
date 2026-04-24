@@ -47,20 +47,20 @@ mem.close()   # patient.ffhr is now a valid, portable FastFHIR archive
 
 ## 2 — Open and read a `.ffhr` file
 
-Mount an existing archive read-only. In the current build, recover the archive
-with `to_json()` and re-ingest to get a traversable node handle.
+Mount an existing archive and traverse directly via `stream.root`.
+Do not recover context with `to_json()` followed by re-ingest.
 
 ```py
 import fastfhir as ff
 import json
 from fastfhir.fields import Patient, HumanName
 
-ingestor = ff.Ingestor()
 mem = ff.Memory.create_from_file("patient.ffhr", capacity=64 * 1024 * 1024)
 
 with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-    json_str = stream.to_json()
-    patient_node, _ = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_str)
+    patient_node = stream.root
+    if not patient_node:
+        raise RuntimeError("stream.root is null; archive root must be set before read.")
 
     # Scalars coerce directly to Python types
     pid     = patient_node[Patient.ID].value()        # str

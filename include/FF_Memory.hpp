@@ -12,6 +12,7 @@
 #include <optional>
 #include <filesystem>
 #include <stdexcept>
+#include <cstring>
 
 namespace FastFHIR {
 
@@ -25,8 +26,11 @@ class FF_Memory_t;
  */
 class Memory {
 public:
-    constexpr static uint64_t STREAM_LOCK_BIT = 1ULL << 63;
-    constexpr static uint64_t OFFSET_MASK = ~STREAM_LOCK_BIT;
+    constexpr static uint64_t   STREAM_LOCK_BIT = 1ULL << 63;
+    constexpr static uint64_t   OFFSET_MASK = ~STREAM_LOCK_BIT;
+    constexpr static size_t     STREAM_HEADER_SIZE = 38;
+    constexpr static size_t     STREAM_CURSOR_OFFSET = 8;
+    constexpr static size_t     STREAM_PAYLOAD_OFFSET = 16;
 
     class View;
     class StreamHead;
@@ -91,6 +95,14 @@ public:
      * @brief Returns the SHM segment name, the file path, or an empty string if anonymous.
      */
     std::string name() const;
+
+    /**
+     * @brief Resets the committed stream boundary.
+     * @param committed_size New committed size in bytes. Use 0 before streaming a raw
+     * serialized FastFHIR archive into the arena so the first byte lands at offset 0.
+     * @throws std::runtime_error if the requested size exceeds arena capacity.
+     */
+    void reset(size_t committed_size = 0) const;
 
     /**
      * @brief Returns the current boundary of globally visible, committed data.
@@ -161,6 +173,8 @@ public:
      */
     class StreamHead {
         FF_Memory_t* m_memory;
+        mutable uint8_t m_staged_header[Memory::STREAM_HEADER_SIZE];
+        size_t m_staging_offset = ~size_t{0};
 
         friend class FF_Memory_t;
         friend class Memory;
@@ -168,7 +182,7 @@ public:
         /**
          * @brief Internal constructor utilized by `FF_Memory::try_acquire_stream()`.
          */
-        explicit StreamHead(FF_Memory_t* memory) : m_memory(memory) {}
+        explicit StreamHead(FF_Memory_t* memory);
         
         /**
          * @brief Unlocks the stream head, allowing other threads to acquire it.
@@ -213,6 +227,9 @@ public:
          * @return Size in bytes available.
          */
         size_t size() const { return available_space(); }
+
+            /** @brief Explicitly releases the exclusive stream lock. Safe to call multiple times. */
+            void close() { release(); }
         
         /**
          * @brief Publishes written data to the arena and advances the write head.
@@ -252,13 +269,14 @@ private:
     
     uint64_t claim_space(size_t bytes);
     std::optional<Memory::StreamHead> try_acquire_stream();
+    void reset(size_t committed_size);
     void release_stream_lock() noexcept;
 
     std::string m_name;
     size_t m_capacity = 0;
 
     uint8_t* m_base = nullptr;
-    std::atomic_ref<uint64_t> m_head;
+    uint64_t* m_head_ptr = nullptr;
 
     void* m_file_handle = nullptr;
     void* m_os_handle = nullptr;
@@ -274,14 +292,15 @@ inline std::optional<Memory::StreamHead> Memory::try_acquire_stream() const { re
 inline uint8_t* Memory::base() const { return m_core->m_base; }
 inline size_t Memory::capacity() const { return m_core->m_capacity; }
 inline std::string Memory::name() const { return m_core->m_name; }
+inline void Memory::reset(size_t committed_size) const { m_core->reset(committed_size); }
 inline uint64_t Memory::size() const {
-    return m_core->m_head.load(std::memory_order_acquire) & OFFSET_MASK;
+    return std::atomic_ref<uint64_t>(*m_core->m_head_ptr).load(std::memory_order_acquire) & OFFSET_MASK;
 }
 inline const char* Memory::View::data() const noexcept {
     return reinterpret_cast<const char*>(m_vma_ref->m_base);
 }
 inline size_t Memory::View::size() const noexcept {
-    return m_vma_ref->m_head.load(std::memory_order_acquire) & OFFSET_MASK;
+    return std::atomic_ref<uint64_t>(*m_vma_ref->m_head_ptr).load(std::memory_order_acquire) & OFFSET_MASK;
 }
 inline Memory::View::operator std::string_view() const noexcept {
     return std::string_view(reinterpret_cast<const char*>(m_vma_ref->m_base), size());
@@ -290,27 +309,53 @@ inline bool Memory::View::empty() const noexcept {
     return size() == 0;
 }
 
-inline Memory::StreamHead::StreamHead(StreamHead&& other) noexcept : m_memory(other.m_memory) {
+inline Memory::StreamHead::StreamHead(FF_Memory_t* memory)
+    : m_memory(memory),
+      m_staging_offset((std::atomic_ref<uint64_t>(*memory->m_head_ptr).load(std::memory_order_relaxed) & OFFSET_MASK) == 0
+                           ? 0
+                           : ~size_t{0}) {
+    std::memset(m_staged_header, 0, STREAM_HEADER_SIZE);
+}
+inline Memory::StreamHead::StreamHead(StreamHead&& other) noexcept
+    : m_memory(other.m_memory),
+      m_staging_offset(other.m_staging_offset) {
+    std::memcpy(m_staged_header, other.m_staged_header, STREAM_HEADER_SIZE);
     other.m_memory = nullptr;
+    other.m_staging_offset = ~size_t{0};
 }
 inline Memory::StreamHead& Memory::StreamHead::operator=(StreamHead&& other) noexcept {
     if (this != &other) {
-        release(); 
+        release();
         m_memory = other.m_memory;
+        m_staging_offset = other.m_staging_offset;
+        std::memcpy(m_staged_header, other.m_staged_header, STREAM_HEADER_SIZE);
         other.m_memory = nullptr;
+        other.m_staging_offset = ~size_t{0};
     }
     return *this;
 }
 inline uint8_t* Memory::StreamHead::write_ptr() const {
     if (!m_memory) throw std::logic_error("Invalid StreamHead access");
-    return m_memory->m_base + (m_memory->m_head.load(std::memory_order_relaxed) & OFFSET_MASK);
+    if (m_staging_offset < STREAM_HEADER_SIZE) {
+        return m_staged_header + m_staging_offset;
+    }
+    return m_memory->m_base + (std::atomic_ref<uint64_t>(*m_memory->m_head_ptr).load(std::memory_order_relaxed) & OFFSET_MASK);
 }
 inline size_t Memory::StreamHead::available_space() const {
     if (!m_memory) return 0;
-    return m_memory->m_capacity - (m_memory->m_head.load(std::memory_order_relaxed) & OFFSET_MASK);
+    if (m_staging_offset < STREAM_HEADER_SIZE) {
+        return STREAM_HEADER_SIZE - m_staging_offset;
+    }
+    return m_memory->m_capacity - (std::atomic_ref<uint64_t>(*m_memory->m_head_ptr).load(std::memory_order_relaxed) & OFFSET_MASK);
 }
 inline void Memory::StreamHead::release() {
     if (m_memory) {
+        if (m_staging_offset == STREAM_HEADER_SIZE) {
+            std::memcpy(m_memory->m_base, m_staged_header, STREAM_CURSOR_OFFSET);
+            std::memcpy(m_memory->m_base + STREAM_PAYLOAD_OFFSET,
+                        m_staged_header + STREAM_PAYLOAD_OFFSET,
+                        STREAM_HEADER_SIZE - STREAM_PAYLOAD_OFFSET);
+        }
         m_memory->release_stream_lock();
         m_memory = nullptr;
     }

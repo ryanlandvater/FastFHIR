@@ -510,9 +510,10 @@ PYBIND11_MODULE(_core, m) {
                 py::format_descriptor<uint8_t>::format(), 1, { s.available_space() }, { sizeof(uint8_t) }, false);
         })
         .def("commit", &Memory::StreamHead::commit, py::arg("bytes_written"))
+        .def("close", &Memory::StreamHead::close)
         .def_property_readonly("available_space", &Memory::StreamHead::available_space)
         .def("__enter__", [](Memory::StreamHead& self) -> Memory::StreamHead& { return self; })
-        .def("__exit__", [](Memory::StreamHead& self, py::object, py::object, py::object) {});
+        .def("__exit__", [](Memory::StreamHead& self, py::object, py::object, py::object) { self.close(); });
 
     py::class_<PyMemory, std::shared_ptr<PyMemory>>(m, "Memory")
         .def_static("create", [](size_t capacity, const std::string& shm) {
@@ -526,6 +527,8 @@ PYBIND11_MODULE(_core, m) {
             if (!sh) throw std::runtime_error("Stream lock currently held by another socket/thread.");
             return std::move(*sh);
         }, py::keep_alive<0, 1>())
+        .def("reset", [](PyMemory& mem, size_t committed_size) { mem.get().reset(committed_size); },
+            py::arg("committed_size") = 0)
         .def("close", &PyMemory::close)
         .def("__enter__", [](PyMemory& self) -> PyMemory& { return self; })
         .def("__exit__", [](PyMemory& self, py::object, py::object, py::object) { self.close(); })

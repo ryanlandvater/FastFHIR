@@ -9,6 +9,10 @@
 - [x] Builder hydrates from parser metadata on existing archives.
 - [x] Builder version degrades to archive header version for in-place enrichment.
 - [x] Recovery gates added with explicit `**RECOVERY_GATE**` and `**RECOVERY_REQUIRED**` markers.
+- [x] Restored shared stream cursor semantics using mapped-header atomic state (`STREAM_SIZE` field at bytes 8-15).
+- [x] Implemented staged-header import in `Memory::StreamHead` so raw archive ingest can start at offset 0 without clobbering the live lock/cursor field.
+- [x] Added API hardening checks: header-layout `static_assert`s and `reset()` lock-guard while a `StreamHead` is active.
+- [ ] Rebuild/reinstall and rerun notebook streaming flow after resolving unrelated generated/build-tree blockers.
 - [ ] Add concrete archive recovery routine implementation.
 - [ ] Route all recovery-gate failures through one shared recovery API.
 - [ ] Remove JSON round-trip guidance from Python README examples once rebuilt binaries confirm direct in-place flow.
@@ -65,3 +69,6 @@
 ## Notes
 - Current policy intent: Builder degrades to archive header version for existing streams.
 - Full rewrite mode (future): explicit path that permits controlled re-emit to a target version.
+- Import-mode API behavior: when stream size is `0` at acquisition, `StreamHead` stages the first header block (`38` bytes), then continues direct writes to arena memory.
+- Release behavior: staged bytes are restored for non-cursor header regions; cursor/lock bytes are finalized atomically by lock release.
+- Current risk status: edited Memory files are clean; full CMake build currently fails due to unrelated pre-existing/generated issues outside `FF_Memory` changes.

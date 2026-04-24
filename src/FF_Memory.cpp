@@ -42,27 +42,64 @@
 
 namespace FastFHIR {
 
+// Verify FF_Memory's layout constants stay in sync with FF_HEADER
+static_assert(Memory::STREAM_HEADER_SIZE    == FF_HEADER::HEADER_SIZE,
+              "STREAM_HEADER_SIZE out of sync with FF_HEADER::HEADER_SIZE");
+static_assert(Memory::STREAM_CURSOR_OFFSET  == FF_HEADER::STREAM_SIZE,
+              "STREAM_CURSOR_OFFSET out of sync with FF_HEADER::STREAM_SIZE");
+static_assert(Memory::STREAM_PAYLOAD_OFFSET == FF_HEADER::ROOT_OFFSET,
+              "STREAM_PAYLOAD_OFFSET out of sync with FF_HEADER::ROOT_OFFSET");
+
+namespace {
+
+bool looks_like_fastfhir_header(const uint8_t* base_ptr) {
+    return std::memcmp(base_ptr, "FFHR", 4) == 0;
+}
+
+void warn_about_faulted_fastfhir_stream(const char* api_name) {
+    std::cerr << "Warning: " << api_name
+              << " detected an invalid or incomplete FastFHIR stream.\n"
+              << "Initializing a new stream over the existing memory.\n";
+}
+
+}
+
 // ============================================================================
 // StreamHead Implementation
 // ============================================================================
 
 void Memory::StreamHead::commit(size_t bytes_written) {
     if (!m_memory) throw std::logic_error("Invalid StreamHead access");
-    
-    uint64_t current = m_memory->m_head.load(std::memory_order_relaxed);
+
+    if (m_staging_offset < Memory::STREAM_HEADER_SIZE) {
+        if (bytes_written > Memory::STREAM_HEADER_SIZE - m_staging_offset) {
+            throw std::runtime_error("Staging commit overflow");
+        }
+
+        m_staging_offset += bytes_written;
+        if (m_staging_offset == Memory::STREAM_HEADER_SIZE) {
+            std::atomic_ref<uint64_t> head(*m_memory->m_head_ptr);
+            head.store(Memory::STREAM_HEADER_SIZE | Memory::STREAM_LOCK_BIT,
+                       std::memory_order_release);
+        }
+        return;
+    }
+
+    std::atomic_ref<uint64_t> head(*m_memory->m_head_ptr);
+    uint64_t current = head.load(std::memory_order_relaxed);
     if ((current & Memory::STREAM_LOCK_BIT) == 0) {
         throw std::logic_error("Stream commit attempted without holding stream lock");
     }
     uint64_t actual_offset = current & OFFSET_MASK;
-    
+
     if (actual_offset + bytes_written > m_memory->m_capacity) {
         throw std::runtime_error("Stream commit exceeds VMA capacity");
     }
-    
+
     // Keep the stream lock bit set while streaming. This allows multiple
     // commit() calls on the same acquired StreamHead without reacquiring.
     uint64_t new_state = (actual_offset + bytes_written) | Memory::STREAM_LOCK_BIT;
-    m_memory->m_head.store(new_state, std::memory_order_release);
+    head.store(new_state, std::memory_order_release);
 }
 
 // ============================================================================
@@ -122,18 +159,26 @@ Memory Memory::create(size_t capacity, std::string shm_name) {
     }
 #endif
 
-    // Create the FF_Memory handle with the initialized core
+    // --- Parser Validation & Fault Recovery ---
+    FF_HEADER header(capacity);
+    if (is_new || header.validate_full(base_ptr) != FF_SUCCESS) {
+        // Faulted or brand new: initialize a provisional header region, but do not
+        // emit a valid finalized FastFHIR header. This lets Builder distinguish
+        // fresh writable memory from a completed archive.
+        if (!is_new && looks_like_fastfhir_header(base_ptr)) {
+            // TODO: If header magic/version/offsets are plausible, attempt bounded
+            // recovery before zeroing the provisional header region.
+            warn_about_faulted_fastfhir_stream("FF_Memory::create");
+        }
+        
+        std::memset(base_ptr, 0, FF_HEADER::HEADER_SIZE);
+    }
+
+    // Create the FF_Memory handle with the initialized core.
     auto allocator = Memory
     (std::shared_ptr<FF_Memory_t>
      (new FF_Memory_t(base_ptr, capacity, nullptr, os_handle, os_fd, shm_name)
     ));
-
-    // --- Parser Validation & Fault Recovery ---
-    auto* header = reinterpret_cast<FF_HEADER*>(base_ptr);
-    if (is_new || header->validate_full(base_ptr) != FF_SUCCESS) {
-        // Faulted or brand new: Initialize with NULL_OFFSETS and push atomic head to 38.
-        STORE_FF_HEADER(base_ptr, 4, FF_HEADER::HEADER_SIZE, 0, FF_RECOVER_UNDEFINED, 0);
-    }
 
     return allocator;
 }
@@ -208,16 +253,23 @@ Memory Memory::createFromFile(const std::filesystem::path& filepath, size_t capa
     }
 #endif
 
-    // Create the FF_Memory handle with the initialized core
+    // --- Parser Validation & Fault Recovery ---
+    FF_HEADER header(capacity);
+    if (is_new || header.validate_full(base_ptr) != FF_SUCCESS) {
+        if (!is_new && looks_like_fastfhir_header(base_ptr)) {
+            // TODO: If header magic/version/offsets are plausible, attempt bounded
+            // recovery before zeroing the provisional header region.
+            warn_about_faulted_fastfhir_stream("FF_Memory::createFromFile");
+        }
+
+        std::memset(base_ptr, 0, FF_HEADER::HEADER_SIZE);
+    }
+
+    // Create the FF_Memory handle with the initialized core.
     auto allocator = Memory
     (std::shared_ptr<FF_Memory_t>(
         new FF_Memory_t(base_ptr, capacity, file_handle, os_handle, os_fd, path_str)
     ));
-
-    // --- Parser Validation & Fault Recovery ---
-    auto* header = reinterpret_cast<FF_HEADER*>(base_ptr);
-    if (is_new || header->validate_full(base_ptr) != FF_SUCCESS)
-        STORE_FF_HEADER(base_ptr, 4, FF_HEADER::HEADER_SIZE, 0, FF_RECOVER_UNDEFINED, 0);
 
     return allocator;
 }
@@ -231,7 +283,7 @@ FF_Memory_t::FF_Memory_t(uint8_t* base, size_t capacity, void* fh, void* osh, in
     m_name(name),
     m_capacity(capacity),
     m_base(base),
-    m_head(*reinterpret_cast<uint64_t*>(base + FF_HEADER::STREAM_SIZE)),
+    m_head_ptr(reinterpret_cast<uint64_t*>(base + FF_HEADER::STREAM_SIZE)),
     m_file_handle(fh),
     m_os_handle(osh),
     m_os_fd(fd) {}
@@ -257,25 +309,26 @@ FF_Memory_t::~FF_Memory_t() {
 // ============================================================================
 
 uint64_t FF_Memory_t::claim_space(size_t bytes) {
-    uint64_t current = m_head.load(std::memory_order_acquire);
-    
+    std::atomic_ref<uint64_t> head(*m_head_ptr);
+    uint64_t current = head.load(std::memory_order_acquire);
+
     while (true) {
         // 1. If locked, park the thread at the OS level
         if (current & Memory::STREAM_LOCK_BIT) {
-            m_head.wait(current, std::memory_order_acquire);
-            current = m_head.load(std::memory_order_acquire);
+            head.wait(current, std::memory_order_acquire);
+            current = head.load(std::memory_order_acquire);
             continue;
         }
-        
+
         // 2. Check capacity bounds safely without the lock bit
         if ((current & Memory::OFFSET_MASK) + bytes > m_capacity) {
             throw std::runtime_error("FastFHIR VMA Capacity Exceeded");
         }
-        
+
         // 3. Attempt strong swap to claim space
-        if (m_head.compare_exchange_strong(current, current + bytes,
-                                           std::memory_order_relaxed,
-                                           std::memory_order_acquire)) {
+        if (head.compare_exchange_strong(current, current + bytes,
+                                         std::memory_order_relaxed,
+                                         std::memory_order_acquire)) {
             // Success! Return the base offset where writing should start.
             return current & Memory::OFFSET_MASK;
         }
@@ -283,25 +336,41 @@ uint64_t FF_Memory_t::claim_space(size_t bytes) {
 }
 
 std::optional<Memory::StreamHead> FF_Memory_t::try_acquire_stream() {
-    uint64_t current = m_head.load(std::memory_order_relaxed);
-    
+    std::atomic_ref<uint64_t> head(*m_head_ptr);
+    uint64_t current = head.load(std::memory_order_relaxed);
+
     while (true) {
         // If the lock bit is already 1, another socket is streaming
         if (current & Memory::STREAM_LOCK_BIT) return std::nullopt;
-        
+
         // Try to flip the 63rd bit to 1
-        if (m_head.compare_exchange_weak(current, current | Memory::STREAM_LOCK_BIT,
-                                         std::memory_order_acquire)) {
+        if (head.compare_exchange_weak(current, current | Memory::STREAM_LOCK_BIT,
+                                       std::memory_order_acquire)) {
             return Memory::StreamHead(this);
         }
     }
 }
 
+void FF_Memory_t::reset(size_t committed_size) {
+    if (committed_size > m_capacity) {
+        throw std::runtime_error("FastFHIR: reset size exceeds VMA capacity");
+    }
+
+    std::atomic_ref<uint64_t> head(*m_head_ptr);
+    uint64_t current = head.load(std::memory_order_acquire);
+    if (current & Memory::STREAM_LOCK_BIT) {
+        throw std::logic_error("FastFHIR: cannot reset while a StreamHead is active");
+    }
+    head.store(committed_size, std::memory_order_release);
+    head.notify_all();
+}
+
 void FF_Memory_t::release_stream_lock() noexcept {
     // Called if StreamHead is destroyed without calling commit() (e.g., socket closed prematurely)
     // Strip the lock bit atomically using fetch_and, then wake waiting threads
-    m_head.fetch_and(Memory::OFFSET_MASK, std::memory_order_release);
-    m_head.notify_all();
+    std::atomic_ref<uint64_t> head(*m_head_ptr);
+    head.fetch_and(Memory::OFFSET_MASK, std::memory_order_release);
+    head.notify_all();
 }
 
 } // namespace FastFHIR

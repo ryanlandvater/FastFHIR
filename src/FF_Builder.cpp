@@ -45,10 +45,11 @@ m_active_mutators(0)
         throw std::invalid_argument("FastFHIR: Cannot initialize Builder with a null FF_Memory handle.");
     }
 
-    // If the provided memory already contains a valid FastFHIR archive, hydrate
-    // root metadata from the stream header so callers can immediately access
-    // stream.root without an explicit set_root() call.
-    // Parser throws on new/empty memory (header validation fails) — treat that as a fresh stream.
+    // If the provided memory already contains a valid finalized FastFHIR archive,
+    // hydrate root metadata from the stream header so callers can immediately
+    // access stream.root without an explicit set_root() call.
+    // Parser throws on fresh/provisional memory (header validation fails) —
+    // treat that as a new writable stream.
     try {
         Parser p(m_memory);
         if (p.m_root_offset   != FF_NULL_OFFSET &&
@@ -59,6 +60,12 @@ m_active_mutators(0)
         }
     } catch (const std::exception&) {
         // No valid FastFHIR stream detected — this is a new stream, leave root unset.
+    }
+
+    // Fresh writable streams start with committed size 0. Reserve the serialized
+    // FF_HEADER region up front so appended objects begin after the header.
+    if (m_memory.size() == 0) {
+        m_memory.claim_space(FF_HEADER::HEADER_SIZE);
     }
 }
 

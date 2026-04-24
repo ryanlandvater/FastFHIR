@@ -1,0 +1,397 @@
+"""
+test_readme.py  —  Validates all five code examples from python/README.md.
+
+Run from the test/ directory with the fastfhir venv active:
+    python test_readme.py
+
+Notes:
+    This script uses direct in-place stream access for mutations and verification.
+"""
+
+import gc
+import http.client
+import http.server
+import json
+import os
+import sys
+import tempfile
+import threading
+import traceback
+import glob
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+try:
+    import fastfhir as ff
+except ModuleNotFoundError as exc:
+    raise RuntimeError(
+        "fastfhir is not importable in this environment. Ensure FastFHIR is installed first."
+    ) from exc
+
+# In the installed build ff.Patient / ff.Bundle are ResourceType enum values
+# used for "resource == ff.Patient" comparisons; the proper working pattern for
+# comparing resource types is:  resource.value().recovery_tag == RT.Patient
+# where RT = ff._core.ResourceType.
+RT = ff._core.ResourceType   # ResourceType enum (Patient, Bundle, Observation, ...)
+
+# The field-path singletons that carry .ID / .NAME / etc. live in fastfhir.fields.
+from fastfhir.fields import Patient, HumanName, ContactPoint
+
+# ── fixtures ─────────────────────────────────────────────────────────────────
+PATIENT_JSON_CANDIDATES = [
+    os.path.join(HERE, "patient.json"),
+    os.path.normpath(os.path.join(HERE, "..", "..", "..", "FastFHIR_Python", "test", "patient.json")),
+]
+PATIENT_JSON = next((p for p in PATIENT_JSON_CANDIDATES if os.path.exists(p)), None)
+if PATIENT_JSON is None:
+    raise RuntimeError(
+        "patient.json fixture not found. Checked: " + ", ".join(PATIENT_JSON_CANDIDATES)
+    )
+PATIENT_FFHR = os.path.join(HERE, "patient.ffhr")
+ARTIFACT_GLOBS = [
+    os.path.join(HERE, "*.ffhr"),
+]
+
+PASS = "\033[32mPASS\033[0m"
+FAIL = "\033[31mFAIL\033[0m"
+
+results = {}
+
+def cleanup_artifacts():
+    for pattern in ARTIFACT_GLOBS:
+        for path in glob.glob(pattern):
+            if os.path.isfile(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+def run(name, fn):
+    print(f"\n{'='*60}")
+    print(f"  {name}")
+    print(f"{'='*60}")
+    try:
+        fn()
+        results[name] = True
+        print(f"\n  → {PASS}")
+    except Exception:
+        results[name] = False
+        traceback.print_exc()
+        print(f"\n  → {FAIL}")
+    finally:
+        gc.collect()
+
+cleanup_artifacts()
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Example 1 — Ingest patient.json and save as patient.ffhr
+# ═════════════════════════════════════════════════════════════════════════════
+def test_1():
+    ingestor = ff.Ingestor()
+    with open(PATIENT_JSON) as f:
+        json_string = f.read()
+
+    mem = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+        patient_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_string)
+        print(f"  ingest count : {count}")
+
+        pid    = patient_node[Patient.ID].value()
+        gender = patient_node[Patient.GENDER].value()
+        active = patient_node[Patient.ACTIVE].value()
+        print(f"  id     : {pid!r}")
+        print(f"  gender : {gender!r}")
+        print(f"  active : {active!r}")
+        assert pid == "patient-1", f"expected 'patient-1', got {pid!r}"
+        assert gender == "male",   f"expected 'male', got {gender!r}"
+        assert active is True,     f"expected True, got {active!r}"
+
+        family = None
+        last_given = []
+        for name_entry in patient_node[Patient.NAME]:
+            name   = name_entry.value()
+            family = name[HumanName.FAMILY].value()
+            last_given = [g.value() for g in name[HumanName.GIVEN]]
+            print(f"  name   : {last_given} {family}")
+        assert family == "Landvater",   f"expected 'Landvater', got {family!r}"
+        assert "Ryan" in last_given,    f"'Ryan' not in {last_given!r}"
+
+        stream.root = patient_node
+        stream.finalize(ff.Checksum.SHA256)
+
+    mem.close()
+    assert os.path.exists(PATIENT_FFHR), "patient.ffhr not created"
+    sz = os.path.getsize(PATIENT_FFHR)
+    print(f"  file size : {sz:,} bytes")
+    assert sz > 0, "patient.ffhr is empty"
+
+run("Example 1 — Ingest patient.json → save patient.ffhr", test_1)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Example 2 — Open and read patient.ffhr
+#
+#   Traverse directly from stream.root.
+#   No JSON round-trip and no re-ingest.
+# ═════════════════════════════════════════════════════════════════════════════
+def test_2():
+    mem = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+        patient_node = stream.root
+        if not patient_node:
+            raise RuntimeError('stream.root is null; archive root must be set before read.')
+
+        pid    = patient_node[Patient.ID].value()
+        gender = patient_node[Patient.GENDER].value()
+        active = patient_node[Patient.ACTIVE].value()
+        dob    = patient_node[Patient.BIRTHDATE].value()   # None — not in source
+        print(f"  id     : {pid!r}")
+        print(f"  gender : {gender!r}")
+        print(f"  active : {active!r}")
+        print(f"  dob    : {dob!r}")
+        assert pid == "patient-1", f"expected 'patient-1', got {pid!r}"
+        assert gender == "male",   f"expected 'male', got {gender!r}"
+        assert active is True,     f"expected True, got {active!r}"
+
+        for name_entry in patient_node[Patient.NAME]:
+            name   = name_entry.value()
+            family = name[HumanName.FAMILY].value()
+            given  = [g.value() for g in name[HumanName.GIVEN]]
+            print(f"  name   : {given} {family}")
+
+        # Materialize entire record as plain Python dict
+        # (installed items() returns (key, MutableEntry) pairs without recursive;
+        #  use to_json() + json.loads for a fully materialized plain-Python dict)
+        patient_dict = json.loads(patient_node.to_json())
+        print(f"  dict keys : {sorted(patient_dict.keys())}")
+        for human_name in patient_dict.get("name", []):
+            print(f"  dict name : {human_name.get('family')} {human_name.get('given', [])}")
+        assert patient_dict.get("gender") == "male", "dict gender mismatch"
+
+    mem.close()
+
+run("Example 2 — Open and read patient.ffhr", test_2)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Example 3 — Re-open patient.ffhr and enrich in place
+# ═════════════════════════════════════════════════════════════════════════════
+def test_3():
+    ingestor = ff.Ingestor()
+    mem = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(mem, ff.FhirVersion.R4) as stream:
+        patient_node = stream.root
+        if not patient_node:
+            raise RuntimeError('stream.root is null; cannot mutate without explicit root.')
+
+        # Add new scalar fields (not present in the source JSON)
+        patient_node[Patient.BIRTHDATE] = "1990-03-21"
+        patient_node[Patient.ACTIVE]    = True
+
+        # Append a new structured sub-object
+        patient_node[Patient.TELECOM] = {
+            "system": "phone",
+            "value":  "802-555-0199",
+            "use":    "mobile"
+        }
+
+        stream.root = patient_node
+        stream.finalize(ff.Checksum.SHA256)
+    mem.close()
+
+    # Verify the enrichment persisted
+    mem2 = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(mem2, ff.FhirVersion.R4) as stream2:
+        patient_node2 = stream2.root
+        dob    = patient_node2[Patient.BIRTHDATE].value()
+        active = patient_node2[Patient.ACTIVE].value()
+        print(f"  birthDate after enrich : {dob!r}")
+        print(f"  active after enrich    : {active!r}")
+        assert dob == "1990-03-21", f"expected '1990-03-21', got {dob!r}"
+        assert active is True, "expected True after enrich"
+    mem2.close()
+
+run("Example 3 — Re-open patient.ffhr and enrich in place", test_3)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Example 4 — Static HTTP file server GET/PUT with patient.ffhr
+# ═════════════════════════════════════════════════════════════════════════════
+def test_4():
+    with tempfile.TemporaryDirectory(prefix="ff_http_") as srv_dir:
+        clean_ffhr = os.path.join(srv_dir, "patient.ffhr")
+        uploaded_path = os.path.join(srv_dir, "patient.uploaded.ffhr")
+
+        # Seed a clean local patient.ffhr for static GET/PUT using the same flow as notebook Segment E.1.
+        with open(PATIENT_JSON) as f:
+            json_src = f.read()
+
+        mem_srv = ff.Memory.create_from_file(clean_ffhr, capacity=8 * 1024 * 1024)
+        with ff.Stream(mem_srv, ff.FhirVersion.R5) as stream_srv:
+            srv_node, _ = ff.Ingestor().ingest(stream_srv, ff.SourceType.FHIR_JSON, json_src)
+            stream_srv.root = srv_node
+            stream_srv.finalize(ff.Checksum.SHA256)
+        mem_srv.close()
+
+        seed_size = os.path.getsize(clean_ffhr)
+        assert seed_size > 0, "seed patient.ffhr is empty"
+
+        class StaticBundleHandler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=srv_dir, **kwargs)
+
+            def do_PUT(self):
+                if self.path != "/patient.uploaded.ffhr":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                length = int(self.headers.get("Content-Length", "0"))
+                with open(uploaded_path, "wb") as f:
+                    remaining = length
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        remaining -= len(chunk)
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                return
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), StaticBundleHandler)
+        port = server.server_address[1]
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        mem_http = None
+
+        try:
+            # Step 1: GET and stream directly into FastFHIR memory (Segment E.2 behavior).
+            conn_get = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            conn_get.request("GET", "/patient.ffhr")
+            res_get = conn_get.getresponse()
+            assert res_get.status == 200, f"GET /patient.ffhr failed: {res_get.status}"
+
+            mem_http = ff.Memory.create(capacity=16 * 1024 * 1024)
+            total = 0
+            with mem_http.try_acquire_stream() as head:
+                while True:
+                    dst = memoryview(head).cast("B")
+                    if len(dst) == 0:
+                        raise RuntimeError("Downloaded payload exceeds arena capacity.")
+
+                    n = res_get.readinto(dst)
+                    if not n:
+                        break
+
+                    head.commit(n)
+                    total += n
+
+            conn_get.close()
+            print(f"  GET streamed bytes : {total:,} bytes")
+
+            # Step 2: assert the stream lock was released after context exit.
+            probe = mem_http.try_acquire_stream()
+            assert probe is not None, "stream lock still held after GET streaming context"
+            if hasattr(probe, "__exit__"):
+                probe.__exit__(None, None, None)
+
+            # Step 3: enrich in-memory archive and finalize (Segment E.3 behavior).
+            with ff.Stream(mem_http, ff.FhirVersion.R5) as stream:
+                patient_node = stream.root
+                if not patient_node:
+                    raise RuntimeError('stream.root is null; cannot mutate without explicit root.')
+
+                patient_node[Patient.TELECOM] = {
+                    "system": "phone",
+                    "value": "802-555-4242",
+                    "use": "mobile"
+                }
+
+                stream.root = patient_node
+                outbound_ffhr = bytes(stream.finalize(ff.Checksum.SHA256))
+
+            # Step 4: PUT enriched payload back to server.
+            conn_put = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            conn_put.request(
+                "PUT",
+                "/patient.uploaded.ffhr",
+                body=outbound_ffhr,
+                headers={"Content-Type": "application/octet-stream"}
+            )
+            res_put = conn_put.getresponse()
+            assert res_put.status == 200, f"PUT /patient.uploaded.ffhr failed: {res_put.status}"
+            res_put.read()
+            conn_put.close()
+            put_size = os.path.getsize(uploaded_path)
+            print(f"  PUT bytes : {put_size:,} bytes")
+
+            # Step 5: crash-safe verify via byte scan (matches notebook Segment E.4).
+            assert os.path.exists(uploaded_path), "server did not receive uploaded .ffhr"
+            assert put_size > 0, "uploaded .ffhr is empty"
+
+            with open(uploaded_path, "rb") as f:
+                uploaded_bytes = f.read()
+            found_enriched = b"802-555-4242" in uploaded_bytes
+            print(f"  enriched found (byte-scan) : {found_enriched}")
+            assert found_enriched, "enrichment not found after PUT byte scan"
+        finally:
+            if mem_http is not None:
+                mem_http.close()
+            server.shutdown()
+            server.server_close()
+
+run("Example 4 — Static HTTP GET/PUT with patient.ffhr", test_4)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Example 5 — Re-open the same patient.ffhr and reseal another surgical edit
+# ═════════════════════════════════════════════════════════════════════════════
+def test_5():
+    # Step 1: re-open the same archive from Example 1.
+    mem = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+        patient_node = stream.root
+        if not patient_node:
+            raise RuntimeError('stream.root is null; cannot mutate without explicit root.')
+
+        # Apply another surgical mutation without JSON round-trip and without
+        # reassigning pointer fields that were already populated in prior tests.
+        patient_node[Patient.DECEASED] = False
+
+        stream.root = patient_node
+        stream.finalize(ff.Checksum.SHA256)
+    mem.close()
+
+    # Step 2: verify the second mutation persisted.
+    mem2 = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(mem2, ff.FhirVersion.R5) as stream2:
+        verify_node = stream2.root
+        if not verify_node:
+            raise RuntimeError('stream.root is null; archive root must be set before verify.')
+
+        deceased = verify_node[Patient.DECEASED].value()
+    mem2.close()
+
+    assert deceased is False, "deceased not updated in Example 5"
+    print(f"  patient.ffhr final size : {os.path.getsize(PATIENT_FFHR):,} bytes")
+
+run("Example 5 — Reuse patient.ffhr for another surgical edit", test_5)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Summary
+# ═════════════════════════════════════════════════════════════════════════════
+print(f"\n{'='*60}")
+print("  RESULTS")
+print(f"{'='*60}")
+passed = sum(v for v in results.values())
+total  = len(results)
+for name, ok in results.items():
+    status = PASS if ok else FAIL
+    print(f"  [{status}] {name}")
+print(f"\n  {passed}/{total} passed")
+print(f"{'='*60}\n")
+
+if passed < total:
+    cleanup_artifacts()
+    sys.exit(1)
+
+cleanup_artifacts()

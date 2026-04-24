@@ -63,3 +63,40 @@ class Stream(_core.Stream):
             
         # Call the underlying C++ method
         return super().finalize(algo, hasher)
+
+
+def stream_readinto_to_memory(source, memory: Memory) -> int:
+    """
+    Stream bytes from a file-like source into FastFHIR memory using readinto().
+
+    This helper owns the StreamHead lifecycle so callers cannot accidentally keep
+    the stream lock alive beyond the transfer scope.
+
+    Args:
+        source: Any object implementing `readinto(buffer) -> int`.
+        memory: Target FastFHIR memory arena.
+
+    Returns:
+        Total bytes streamed into memory.
+
+    Raises:
+        RuntimeError: If capacity is exceeded or source does not support readinto.
+    """
+    if not hasattr(source, "readinto"):
+        raise RuntimeError("source must implement readinto(buffer)")
+
+    total = 0
+    with memory.try_acquire_stream() as head:
+        while True:
+            dst = memoryview(head).cast("B")
+            if len(dst) == 0:
+                raise RuntimeError("Downloaded payload exceeds arena capacity.")
+
+            n = source.readinto(dst)
+            if not n:
+                break
+
+            head.commit(n)
+            total += n
+
+    return total
