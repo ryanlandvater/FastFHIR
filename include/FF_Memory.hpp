@@ -115,6 +115,15 @@ public:
      * @brief Returns a lifetime-safe, non-owning string_view wrapper of the committed arena.
      */
     View view() const { return View(m_core); }
+
+    /**
+     * @brief Truncates the backing file to @p size bytes.
+     * @details No-op for anonymous and shared-memory arenas. After `finalize()` the
+     * write head is parked at the sealed payload size; passing `Memory::size()` here
+     * reclaims the unused disk space that was pre-allocated by `createFromFile`.
+     * @param size Target file size in bytes. Must be ≤ capacity().
+     */
+    void truncate_file(size_t size) const;
     
     /**
      * @class FF_Memory::View
@@ -271,6 +280,7 @@ private:
     std::optional<Memory::StreamHead> try_acquire_stream();
     void reset(size_t committed_size);
     void release_stream_lock() noexcept;
+    void truncate_file(size_t size);
 
     std::string m_name;
     size_t m_capacity = 0;
@@ -293,6 +303,7 @@ inline uint8_t* Memory::base() const { return m_core->m_base; }
 inline size_t Memory::capacity() const { return m_core->m_capacity; }
 inline std::string Memory::name() const { return m_core->m_name; }
 inline void Memory::reset(size_t committed_size) const { m_core->reset(committed_size); }
+inline void Memory::truncate_file(size_t size) const { m_core->truncate_file(size); }
 inline uint64_t Memory::size() const {
     return std::atomic_ref<uint64_t>(*m_core->m_head_ptr).load(std::memory_order_acquire) & OFFSET_MASK;
 }

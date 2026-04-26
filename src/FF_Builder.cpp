@@ -268,7 +268,9 @@ Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &h
     }
 
     // Return the lifetime-safe view to the memory
-    return m_memory.view();
+    auto view = m_memory.view();
+    m_memory.truncate_file(view.size());
+    return view;
 }
 // =====================================================================
 // Mutable Entry Implementation

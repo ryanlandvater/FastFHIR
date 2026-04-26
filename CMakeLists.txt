@@ -30,11 +30,19 @@ option(FASTFHIR_BUILD_INGESTOR "Build the FastFHIR Ingestor (requires simdjson)"
 # Toggle for building Python bindings using pybind11
 option(FASTFHIR_BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 
+# Toggle for building the C++ test suite
+option(FASTFHIR_BUILD_TESTS "Build the FastFHIR C++ test suite (requires FASTFHIR_BUILD_INGESTOR)" OFF)
+
 # =====================================================================
 # Dependency Enforcement
 # =====================================================================
 if(FASTFHIR_BUILD_PYTHON_BINDINGS AND NOT FASTFHIR_BUILD_INGESTOR)
     message(STATUS "FastFHIR: Python bindings require the Ingestor module. Automatically enabling FASTFHIR_BUILD_INGESTOR.")
+    set(FASTFHIR_BUILD_INGESTOR ON CACHE BOOL "Build the FastFHIR Ingestor (requires simdjson)" FORCE)
+endif()
+
+if(FASTFHIR_BUILD_TESTS AND NOT FASTFHIR_BUILD_INGESTOR)
+    message(STATUS "FastFHIR: Tests require the Ingestor module. Automatically enabling FASTFHIR_BUILD_INGESTOR.")
     set(FASTFHIR_BUILD_INGESTOR ON CACHE BOOL "Build the FastFHIR Ingestor (requires simdjson)" FORCE)
 endif()
 
@@ -258,6 +266,55 @@ if(FASTFHIR_BUILD_INGESTOR)
                 simdjson::simdjson
                 OpenSSL::Crypto
         )
+
+endif()
+
+# ---------------------------------------------------------------------
+# Test Suite
+# ---------------------------------------------------------------------
+if(FASTFHIR_BUILD_TESTS)
+    include(CTest)
+    enable_testing()
+
+    # Resolve standalone Asio for cross-platform socket testing in test_readme.cpp.
+    find_path(ASIO_INCLUDE_DIR asio.hpp)
+    if(NOT ASIO_INCLUDE_DIR)
+        message(STATUS "FastFHIR: Local standalone Asio not found. Fetching via FetchContent...")
+        include(FetchContent)
+        FetchContent_Declare(asio
+            GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
+            GIT_TAG asio-1-30-2
+        )
+        FetchContent_MakeAvailable(asio)
+        set(ASIO_INCLUDE_DIR "${asio_SOURCE_DIR}/asio/include")
+    endif()
+
+    add_executable(ff_test_readme tests/cpp/test_readme.cpp)
+    target_include_directories(ff_test_readme
+        PRIVATE
+            ${FASTFHIR_INCLUDE_DIR}
+            ${FASTFHIR_GENERATED_DIR}
+            ${ASIO_INCLUDE_DIR}
+    )
+    target_compile_definitions(ff_test_readme PRIVATE ASIO_STANDALONE)
+
+    if(WIN32)
+        target_compile_definitions(ff_test_readme PRIVATE _WIN32_WINNT=0x0601 WIN32_LEAN_AND_MEAN NOMINMAX)
+    endif()
+
+    target_link_libraries(ff_test_readme
+        PRIVATE
+            $<TARGET_OBJECTS:fastfhir_obj>
+            $<TARGET_OBJECTS:fastfhir_ingest_obj>
+            simdjson::simdjson
+            OpenSSL::Crypto
+    )
+
+    if(WIN32)
+        target_link_libraries(ff_test_readme PRIVATE ws2_32)
+    endif()
+
+    add_test(NAME readme_cpp COMMAND ff_test_readme)
 endif()
 
 # ---------------------------------------------------------------------

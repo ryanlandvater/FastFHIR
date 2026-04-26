@@ -58,10 +58,13 @@ public:
     FF_Result ingest(const IngestRequest& request, Reflective::ObjectHandle& out_root, size_t& out_parsed_count);
 
     /**
-     * @brief Parses a payload and inserts the resulting complex object at a specific Field token.
+     * @brief Parses a payload and inserts the resulting object at a specific field.
      * @param parent_object The mutable handle to the specific resource being amended.
-     * @param key The field token from FastFHIR::FieldKeys for the field within the parent_object being amended.
+     * @param key The field token for the field within parent_object being amended.
      * @param payload The raw string to parse.
+     * @note Runtime supports FF_FIELD_BLOCK targets and FF_FIELD_ARRAY targets whose entries
+     *       are inline blocks (`array_entries_are_offsets == 0`). Offset-array insertion is
+     *       rejected with FF_FAILURE until implemented.
      */
     FF_Result insert_at_field(Reflective::ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload, SourceType fmt = SourceType::FHIR_JSON);
 

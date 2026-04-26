@@ -292,6 +292,10 @@ namespace FastFHIR::Decode {
             return LOAD_U8(base + absolute_offset) != 0;
         } else if constexpr (std::is_same_v<T, double>) {
             return LOAD_F64(base + absolute_offset);
+        } else if constexpr (sizeof(T) == 1) {
+            return static_cast<T>(LOAD_U8(base + absolute_offset));
+        } else if constexpr (sizeof(T) == 2) {
+            return static_cast<T>(LOAD_U16(base + absolute_offset));
         } else if constexpr (sizeof(T) == 4) {
             return static_cast<T>(LOAD_U32(base + absolute_offset));
         } else if constexpr (sizeof(T) == 8) {

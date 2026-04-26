@@ -373,4 +373,18 @@ void FF_Memory_t::release_stream_lock() noexcept {
     head.notify_all();
 }
 
+void FF_Memory_t::truncate_file(size_t size) {
+#ifdef _WIN32
+    if (!m_file_handle) return;
+    HANDLE hFile = static_cast<HANDLE>(m_file_handle);
+    LARGE_INTEGER li;
+    li.QuadPart = static_cast<LONGLONG>(size);
+    SetFilePointerEx(hFile, li, NULL, FILE_BEGIN);
+    SetEndOfFile(hFile);
+#else
+    if (m_os_fd == -1) return;
+    ftruncate(m_os_fd, static_cast<off_t>(size));
+#endif
+}
+
 } // namespace FastFHIR
