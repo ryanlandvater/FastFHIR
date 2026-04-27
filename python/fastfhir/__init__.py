@@ -44,13 +44,17 @@ class Stream(_core.Stream):
     def __init__(self, memory: Memory, version: FhirVersion = FhirVersion.R5):
         super().__init__(memory, version)
 
-    def finalize(self, algo: Checksum = Checksum.NONE, hasher: Optional[Callable[[memoryview], bytes]] = None) -> memoryview:
+    def finalize(self, algo: Checksum = Checksum.NONE, hasher: Optional[Callable[[memoryview], bytes]] = None) -> MemoryView:
         """
         Seals the stream and writes the footer.
-        
+
+        Returns a FastFHIR MemoryView object that exports the Python buffer protocol.
+        Use `.size` for byte length, or wrap with `memoryview(...)` if you need native
+        Python buffer helpers like `len()`, slicing metadata, or casting.
+
         Args:
             algo: The cryptographic algorithm to use.
-            hasher: A custom callback. If None and algo is SHA256, 
+            hasher: A custom callback. If None and algo is SHA256,
                     the standard hashlib.sha256 is used automatically.
         """
         if hasher is None:
@@ -63,6 +67,34 @@ class Stream(_core.Stream):
             
         # Call the underlying C++ method
         return super().finalize(algo, hasher)
+
+    def compact(self, destination: 'Memory', algo: Checksum = Checksum.NONE, hasher: Optional[Callable[[memoryview], bytes]] = None) -> MemoryView:
+        """
+        Compact a finalized stream into a dense-layout archive.
+
+        The destination Memory is reset and overwritten with the compacted stream.
+        The source stream and its backing Memory are not modified.
+
+        Returns a FastFHIR MemoryView object that exports the Python buffer protocol.
+        Use `.size` for byte length, or wrap with `memoryview(...)` if you need native
+        Python buffer helpers like `len()`, slicing metadata, or casting.
+
+        Args:
+            destination: Target Memory arena to write the compact archive into.
+            algo: The cryptographic algorithm to use for the checksum seal.
+            hasher: A custom callback. If None and algo is SHA256/MD5/CRC32,
+                    the standard library implementation is used automatically.
+        Returns:
+            A zero-copy sealed compact archive view.
+        """
+        if hasher is None:
+            if algo == Checksum.SHA256:
+                hasher = _default_sha256_hasher
+            elif algo == Checksum.MD5:
+                hasher = _default_md5_hasher
+            elif algo == Checksum.CRC32:
+                hasher = _default_crc32_hasher
+        return super().compact(destination, algo, hasher)
 
 
 def stream_readinto_to_memory(source, memory: Memory) -> int:

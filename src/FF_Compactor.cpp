@@ -353,7 +353,8 @@ static void process_pending_write(ArchiveContext& context, const PendingWrite& p
     }
 }
 
-Memory::View Compactor::archive(const Parser& source, const Memory& destination) {
+Memory::View Compactor::archive(const Parser& source, const Memory& destination,
+                                FF_Checksum_Algorithm algo, const HashCallback& hasher) {
     if (!destination) {
         throw std::runtime_error("FastFHIR Compactor Error: destination memory is null.");
     }
@@ -398,7 +399,14 @@ Memory::View Compactor::archive(const Parser& source, const Memory& destination)
         checksum_off,
         FF_STREAM_LAYOUT_COMPACT
     );
-    STORE_FF_CHECKSUM_METADATA(base, checksum_off, FF_CHECKSUM_NONE);
+    BYTE* hash_dst = STORE_FF_CHECKSUM_METADATA(base, checksum_off, algo);
+
+    if (hasher != nullptr && algo != FF_CHECKSUM_NONE) {
+        Size bytes_to_hash = checksum_off + FF_CHECKSUM::HASH_DATA;
+        std::vector<BYTE> hash_value = hasher(base, bytes_to_hash);
+        size_t copy_len = std::min(hash_value.size(), static_cast<size_t>(FF_MAX_HASH_BYTES));
+        std::memcpy(hash_dst, hash_value.data(), copy_len);
+    }
 
     return dst.view();
 }

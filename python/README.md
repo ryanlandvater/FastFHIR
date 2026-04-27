@@ -244,6 +244,42 @@ mem.close()   # bundle.ffhr updated; 5 GB of untouched entries were never copied
 
 ---
 
+## 6 — Compact a finalized stream
+
+Once a stream is sealed, `stream.compact()` re-encodes the root object in dense
+presence-bitmap layout. The compacted archive is written into a separate Memory
+arena — the source stream and its file are never modified.
+
+The compact layout eliminates the sparse V-table: each field occupies only the
+bytes its type requires and only if it is present. This reduces wire size and
+improves sequential read performance for narrow queries.
+
+```py
+import fastfhir as ff
+
+# Source: any previously finalized .ffhr file.
+src_mem     = ff.Memory.create_from_file("patient.ffhr",         capacity=64 * 1024 * 1024)
+dest_mem    = ff.Memory.create_from_file("patient.compact.ffhr", capacity=64 * 1024 * 1024)
+
+with ff.Stream(src_mem, ff.FhirVersion.R5) as stream:
+    # compact() resets dest_mem, writes the dense archive, and seals it.
+    # The source stream and its backing arena are untouched.
+    compact_view = stream.compact(dest_mem, algo=ff.Checksum.SHA256)
+    print(f"original : {src_mem.size:,} bytes")
+    print(f"compact  : {compact_view.size:,} bytes")
+
+src_mem.close()
+dest_mem.close()   # patient.compact.ffhr is a sealed compact FastFHIR archive
+```
+
+A compact archive can be verified byte-scan or by forwarding `compact_view`
+(a buffer-protocol object) directly over a socket or to `open(..., 'wb').write(...)`.
+
+Note: `ff.Stream` cannot be constructed on a compact archive for mutation —
+compact streams are read-only archival representations.
+
+---
+
 ---
 ## Reference
 
@@ -392,7 +428,8 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
 | `.version` | `FhirVersion` | R4 or R5 |
 | `.root_type` | `ResourceType` | Resource kind at root |
 | `.to_json()` | `str` | Full stream JSON |
-| `.finalize(algo, hasher=None)` | `memoryview` | Seal + write checksum footer |
+| `.finalize(algo, hasher=None)` | `MemoryView` | Seal + write checksum footer; buffer exporter with `.size` |
+| `.compact(destination, algo=NONE, hasher=None)` | `MemoryView` | Compact sealed stream into `destination` Memory; buffer exporter with `.size` |
 
 ---
 

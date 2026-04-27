@@ -7,7 +7,9 @@
 #include "FF_Memory.hpp"
 #include "FF_Builder.hpp"
 #include "FF_Parser.hpp"
+#include "FF_Compactor.hpp"
 #include "FF_Ingestor.hpp"
+#include "FastFHIR.hpp"
 #include "FF_Primitives.hpp"
 #include "FF_Utilities.hpp" 
 
@@ -749,7 +751,18 @@ PYBIND11_MODULE(_core, m) {
                 };
             }
             return self.get().finalize(algo, cpp_hasher); 
-        });
+        })
+        .def("compact", [](PyStream& self, PyMemory& destination, FF_Checksum_Algorithm algo, py::object py_hasher) {
+            Compactor::HashCallback cpp_hasher = nullptr;
+            if (!py_hasher.is_none()) {
+                cpp_hasher = [py_hasher](const unsigned char* data, Size size) -> std::vector<BYTE> {
+                    py::memoryview view = py::memoryview::from_memory(data, size);
+                    std::string_view str_view = py_hasher(view).cast<py::bytes>();
+                    return std::vector<BYTE>(str_view.begin(), str_view.end());
+                };
+            }
+            return Compactor::archive(self.get().query(), destination.get(), algo, cpp_hasher);
+        }, py::arg("destination"), py::arg("algo") = FF_CHECKSUM_NONE, py::arg("hasher") = py::none());
 
     // =====================================================================
     // 5. Ingestor

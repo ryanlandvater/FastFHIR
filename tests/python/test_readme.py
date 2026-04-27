@@ -35,7 +35,7 @@ except ModuleNotFoundError as exc:
 RT = ff._core.ResourceType   # ResourceType enum (Patient, Bundle, Observation, ...)
 
 # The field-path singletons that carry .ID / .NAME / etc. live in fastfhir.fields.
-from fastfhir.fields import Patient, HumanName, ContactPoint
+from fastfhir.fields import Patient, HumanName, ContactPoint, Bundle, BundleEntry, Observation, ObservationComponent
 
 # ── fixtures ─────────────────────────────────────────────────────────────────
 PATIENT_JSON_CANDIDATES = [
@@ -47,7 +47,11 @@ if PATIENT_JSON is None:
     raise RuntimeError(
         "patient.json fixture not found. Checked: " + ", ".join(PATIENT_JSON_CANDIDATES)
     )
-PATIENT_FFHR = os.path.join(HERE, "patient.ffhr")
+PATIENT_FFHR              = os.path.join(HERE, "patient.ffhr")
+BUNDLE_FFHR               = os.path.join(HERE, "bundle.ffhr")
+PATIENT_COMPACT_FFHR      = os.path.join(HERE, "patient.compact.ffhr")
+BUNDLE_COMPLEX_FFHR       = os.path.join(HERE, "bundle.complex.ffhr")
+BUNDLE_COMPLEX_COMPACT_FFHR = os.path.join(HERE, "bundle.complex.compact.ffhr")
 ARTIFACT_GLOBS = [
     os.path.join(HERE, "*.ffhr"),
 ]
@@ -82,6 +86,103 @@ def run(name, fn):
         gc.collect()
 
 cleanup_artifacts()
+
+# Inline fixture used by the Getting Started test and the bundle tests.
+GETTING_STARTED_JSON = json.dumps({
+    "resourceType": "Patient",
+    "id": "patient-1",
+    "active": False,
+    "gender": "male",
+    "name": [{"family": "Smith", "given": ["John"]}]
+})
+
+BUNDLE_JSON = json.dumps({
+    "resourceType": "Bundle",
+    "id": "test-bundle",
+    "type": "collection",
+    "entry": [
+        {"fullUrl": "Patient/patient-1", "resource": {
+            "resourceType": "Patient", "id": "patient-1", "active": True,
+            "name": [{"use": "usual", "family": "Landvater", "given": ["Ryan", "Eric"]}],
+            "gender": "male"}},
+        {"fullUrl": "Patient/patient-2", "resource": {
+            "resourceType": "Patient", "id": "patient-2", "active": False,
+            "name": [{"use": "usual", "family": "Smith", "given": ["John"]}],
+            "gender": "female"}}
+    ]
+})
+
+BUNDLE_COMPLEX_JSON = json.dumps({
+    "resourceType": "Bundle",
+    "id": "complex-bundle",
+    "type": "collection",
+    "entry": [
+        {"fullUrl": "Patient/patient-1", "resource": {
+            "resourceType": "Patient", "id": "patient-1", "active": True,
+            "name": [{"use": "usual", "family": "Landvater", "given": ["Ryan", "Eric"]}],
+            "gender": "male"}},
+        {"fullUrl": "Observation/obs-1", "resource": {
+            "resourceType": "Observation", "id": "obs-1", "status": "final",
+            "code": {"coding": [{"system": "http://loinc.org", "code": "8867-4", "display": "Heart rate"}]},
+            "subject": {"reference": "Patient/patient-1"},
+            "valueString": "final-value",
+            "component": [{
+                "code": {"coding": [{"system": "http://loinc.org", "code": "8480-6",
+                                     "display": "Systolic blood pressure"}]},
+                "valueString": "nested-choice"
+            }]}}
+    ]
+})
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Getting Started — Step 2 → Step 3 → Step 1
+# ═════════════════════════════════════════════════════════════════════════════
+def test_getting_started():
+    # Step 2: Create file-backed Memory.
+    mem = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
+
+    # Step 3: Ingest inline JSON, enrich with typed fields, and seal.
+    ingestor = ff.Ingestor()
+    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+        patient_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, GETTING_STARTED_JSON)
+        assert count > 0, "getting-started ingest parsed 0 resources"
+        assert patient_node, "getting-started patient handle is null"
+
+        patient_node[Patient.ACTIVE]    = True
+        patient_node[Patient.BIRTHDATE] = "1990-03-21"
+
+        stream.root = patient_node
+        view = stream.finalize(ff.Checksum.SHA256)
+        assert view is not None and view.size > 0, "getting-started finalize returned empty view"
+    mem.close()
+
+    # Step 1: Re-open and verify the sealed archive.
+    mem2 = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(mem2, ff.FhirVersion.R5) as stream2:
+        node = stream2.root
+        assert node, "getting-started root is null after seal"
+
+        pid    = node[Patient.ID].value()
+        active = node[Patient.ACTIVE].value()
+        gender = node[Patient.GENDER].value()
+        dob    = node[Patient.BIRTHDATE].value()
+        print(f"  id={pid!r}  gender={gender!r}  active={active!r}  dob={dob!r}")
+
+        assert pid == "patient-1",    f"expected 'patient-1', got {pid!r}"
+        assert active is True,         f"expected True, got {active!r}"
+        assert gender == "male",       f"expected 'male', got {gender!r}"
+        assert dob == "1990-03-21",    f"expected '1990-03-21', got {dob!r}"
+
+        for name_entry in node[Patient.NAME]:
+            n      = name_entry.value()
+            family = n[HumanName.FAMILY].value()
+            given  = [g.value() for g in n[HumanName.GIVEN]]
+            print(f"  name: {given} {family}")
+            assert family == "Smith",  f"expected 'Smith', got {family!r}"
+            assert "John" in given,    f"'John' not in {given!r}"
+    mem2.close()
+
+run("Getting Started — Step 2 → Step 3 → Step 1", test_getting_started)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Example 1 — Ingest patient.json and save as patient.ffhr
@@ -375,6 +476,242 @@ def test_5():
     print(f"  patient.ffhr final size : {os.path.getsize(PATIENT_FFHR):,} bytes")
 
 run("Example 5 — Reuse patient.ffhr for another surgical edit", test_5)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Example 6 — Surgically edit one patient in a bundle and reseal
+# ═════════════════════════════════════════════════════════════════════════════
+def test_6():
+    # Step A: ingest bundle with two patients.
+    ingestor = ff.Ingestor()
+    mem = ff.Memory.create_from_file(BUNDLE_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+        bundle_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, BUNDLE_JSON)
+        assert count >= 2, f"expected at least 2 resources, got {count}"
+        print(f"  bundle ingested : {count} resources")
+        stream.root = bundle_node
+        stream.finalize(ff.Checksum.SHA256)
+    mem.close()
+
+    # Step B: re-open and find patient-1.
+    ingestor2 = ff.Ingestor()
+    mem2 = ff.Memory.create_from_file(BUNDLE_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(mem2, ff.FhirVersion.R5) as stream2:
+        bundle_node2 = stream2.root
+        assert bundle_node2, "bundle root is null after seal"
+
+        target_patient = None
+        for entry in bundle_node2[Bundle.ENTRY]:
+            resource = entry[BundleEntry.RESOURCE]
+            if not resource:
+                continue
+            node_val = resource.value()
+            if not node_val or node_val.recovery_tag != RT.Patient:
+                continue
+            if node_val[Patient.ID].value() == "patient-1":
+                target_patient = node_val
+                break
+
+        assert target_patient is not None, "patient-1 not found in bundle"
+        print("  found patient-1")
+
+        # Step C: surgically enrich patient-1 only.
+        target_patient[Patient.TELECOM] = {"system": "phone", "value": "555-0199", "use": "mobile"}
+
+        # Step D: reseal.
+        stream2.root = bundle_node2
+        stream2.finalize(ff.Checksum.SHA256)
+    mem2.close()
+
+    # Step E: verify patient-1 enriched, patient-2 untouched.
+    mem3 = ff.Memory.create_from_file(BUNDLE_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(mem3, ff.FhirVersion.R5) as stream3:
+        bundle_node3 = stream3.root
+        assert bundle_node3
+
+        found_enriched = False
+        for entry in bundle_node3[Bundle.ENTRY]:
+            resource = entry[BundleEntry.RESOURCE]
+            if not resource:
+                continue
+            node_val = resource.value()
+            if not node_val or node_val.recovery_tag != RT.Patient:
+                continue
+            pid = node_val[Patient.ID].value()
+            if pid == "patient-1":
+                assert bool(node_val[Patient.TELECOM]), "patient-1 telecom empty after surgical edit"
+                telecom_json = node_val[Patient.TELECOM].to_json()
+                assert "555-0199" in telecom_json, f"telecom value not in JSON: {telecom_json}"
+                print(f"  patient-1 telecom : 555-0199 (verified via JSON)")
+                found_enriched = True
+            elif pid == "patient-2":
+                assert not bool(node_val[Patient.TELECOM]), "patient-2 telecom should still be empty"
+                print("  patient-2 untouched (telecom empty as expected)")
+
+        assert found_enriched, "patient-1 not found in re-sealed bundle"
+    mem3.close()
+
+run("Example 6 — Surgically edit one patient in a bundle and reseal", test_6)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Example 7 — Lock-free concurrent generation (thread-safety smoke test)
+# ═════════════════════════════════════════════════════════════════════════════
+def test_7():
+    import threading
+    N = 8
+    mem = ff.Memory.create(capacity=256 * 1024 * 1024)
+    node_results = [None] * N
+    errors       = []
+    lock         = threading.Lock()
+
+    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+        def worker(i):
+            try:
+                obs_json = json.dumps({
+                    "resourceType": "Observation",
+                    "id": f"obs-{i}",
+                    "status": "preliminary",
+                    "code": {"coding": [{"system": "http://loinc.org", "code": "8867-4"}]}
+                })
+                local_ingestor = ff.Ingestor()
+                node, _ = local_ingestor.ingest(stream, ff.SourceType.FHIR_JSON, obs_json)
+                with lock:
+                    node_results[i] = node
+            except Exception as e:
+                with lock:
+                    errors.append((i, str(e)))
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(N)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"thread errors: {errors}"
+        assert all(r is not None for r in node_results), "not all threads produced a handle"
+
+        stream.root = node_results[0]
+        stream.finalize(ff.Checksum.SHA256)
+    mem.close()
+
+    print(f"  {N} threads completed lock-free writes")
+    print(f"  all {N} StreamNode handles valid")
+
+run("Example 7 — Lock-free concurrent generation", test_7)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Example 8 — Post-finalize archival compaction
+# ═════════════════════════════════════════════════════════════════════════════
+def test_8():
+    # Source: sealed patient.ffhr produced by test_1 / test_3.
+    src_mem     = ff.Memory.create_from_file(PATIENT_FFHR,         capacity=64 * 1024 * 1024)
+    compact_mem = ff.Memory.create_from_file(PATIENT_COMPACT_FFHR, capacity=64 * 1024 * 1024)
+
+    with ff.Stream(src_mem, ff.FhirVersion.R5) as src_stream:
+        compact_view = src_stream.compact(compact_mem, ff.Checksum.SHA256)
+
+    src_size = src_mem.size
+    src_mem.close()
+
+    assert compact_view is not None and compact_view.size > 0, "compact archive view is empty"
+    print(f"  original patient bytes : {src_size:,}")
+    print(f"  compact archive bytes  : {compact_view.size:,}")
+
+    compact_bytes = bytes(compact_view)
+    assert b"patient-1" in compact_bytes,  "patient-1 not found in compact archive"
+    assert b"Landvater" in compact_bytes,  "Landvater not found in compact archive"
+    assert b"male"      in compact_bytes,  "gender not found in compact archive"
+    compact_mem.close()
+
+run("Example 8 — Post-finalize archival compaction", test_8)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Example 9 — Standard array-tagged field key coverage
+# ═════════════════════════════════════════════════════════════════════════════
+def test_9():
+    # Patient — verify array-tagged NAME key and element traversal.
+    src_mem = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(src_mem, ff.FhirVersion.R5) as stream:
+        patient_root = stream.root
+        assert patient_root, "standard patient root is null"
+
+        name_entry = patient_root[Patient.NAME]
+        assert bool(name_entry), "PATIENT::NAME key failed on standard stream"
+
+        found_family = False
+        for name in patient_root[Patient.NAME]:
+            n      = name.value()
+            family = n[HumanName.FAMILY].value()
+            given  = [g.value() for g in n[HumanName.GIVEN]]
+            assert family == "Landvater", f"expected 'Landvater', got {family!r}"
+            assert "Ryan" in given,       f"'Ryan' not in {given!r}"
+            found_family = True
+            break
+        assert found_family, "patient name array should not be empty"
+    src_mem.close()
+
+    # Bundle — verify array-tagged ENTRY key and resource field.
+    bundle_mem = ff.Memory.create_from_file(BUNDLE_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(bundle_mem, ff.FhirVersion.R5) as bundle_stream:
+        bundle_root = bundle_stream.root
+        assert bundle_root, "standard bundle root is null"
+
+        entry_count = sum(1 for _ in bundle_root[Bundle.ENTRY])
+        assert entry_count >= 2, f"expected at least 2 bundle entries, got {entry_count}"
+
+        for entry in bundle_root[Bundle.ENTRY]:
+            resource = entry[BundleEntry.RESOURCE]
+            assert bool(resource), "resource field missing from first bundle entry"
+            break
+    bundle_mem.close()
+
+    print("  standard array-tagged keys verified for patient.name and bundle.entry")
+
+run("Example 9 — Standard array-tagged field key coverage", test_9)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Example 10 — Compact nested choice/resource (Bundle + Observation)
+# ═════════════════════════════════════════════════════════════════════════════
+def test_10():
+    ingestor = ff.Ingestor()
+    mem = ff.Memory.create_from_file(BUNDLE_COMPLEX_FFHR, capacity=64 * 1024 * 1024)
+    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+        bundle_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, BUNDLE_COMPLEX_JSON)
+        assert bundle_node, "complex bundle handle is null"
+
+        # Verify source observation value[x] and nested component value[x].
+        found_obs_source = False
+        for entry in bundle_node[Bundle.ENTRY]:
+            resource = entry[BundleEntry.RESOURCE]
+            if not resource:
+                continue
+            node_val = resource.value()
+            if not node_val or node_val.recovery_tag != RT.Observation:
+                continue
+            found_obs_source = True
+            obs_json_str = node_val.to_json()
+            assert "final-value" in obs_json_str, f"source observation value[x] mismatch"
+            assert "nested-choice" in obs_json_str, f"source component value[x] mismatch"
+        assert found_obs_source, "source complex bundle observation not found"
+
+        stream.root = bundle_node
+        source_view = stream.finalize(ff.Checksum.SHA256)
+        assert source_view.size > 0, "complex bundle finalize returned empty view"
+
+        # Compact the sealed source into a separate arena.
+        compact_mem = ff.Memory.create_from_file(BUNDLE_COMPLEX_COMPACT_FFHR, capacity=64 * 1024 * 1024)
+        compact_view = stream.compact(compact_mem, ff.Checksum.SHA256)
+        assert compact_view.size > 0, "complex compact archive view is empty"
+
+        compact_bytes = bytes(compact_view)
+        assert b"final-value"    in compact_bytes, "compact observation value[x] not found"
+        assert b"nested-choice"  in compact_bytes, "compact component value[x] not found"
+
+        print(f"  complex source bytes  : {source_view.size:,}")
+        print(f"  complex compact bytes : {compact_view.size:,}")
+        compact_mem.close()
+    mem.close()
+
+run("Example 10 — Compact nested choice/resource (Bundle + Observation)", test_10)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Summary
