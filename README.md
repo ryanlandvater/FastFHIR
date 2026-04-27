@@ -13,6 +13,36 @@ Healthcare interoperability has historically relied on formats that are inherent
 
 A Python binding is available — see [`The Python Readme`](python/README.md) for Python API examples.
 
+---
+
+## Table of Contents
+
+- [Why FastFHIR?](#why-fastfhir)
+- [Getting Started](#getting-started)
+  - [Step 1 — Parse raw bytes](#step-1--parse-raw-bytes)
+  - [Step 2 — Create a Memory arena](#step-2--create-a-memory-arena)
+  - [Step 3 — Build a FastFHIR record from FHIR JSON](#step-3--build-a-fastfhir-record-from-fhir-json)
+- [API Examples](#api-examples)
+  - [1 — Ingest a FHIR JSON file and save as `.ffhr`](#1--ingest-a-fhir-json-file-and-save-as-ffhr)
+  - [2 — Open and read a `.ffhr` file](#2--open-and-read-a-ffhr-file)
+  - [3 — Re-open a `.ffhr` file and enrich it in place](#3--re-open-a-ffhr-file-and-enrich-it-in-place)
+  - [4 — Receive over a socket, enrich, and send back](#4--receive-over-a-socket-enrich-and-send-back)
+  - [5 — Surgically edit one patient in a 5 GB bundle and reseal](#5--surgically-edit-one-patient-in-a-5-gb-bundle-and-reseal)
+  - [6 — Lock-Free Concurrent Generation](#6--lock-free-concurrent-generation)
+  - [7 — Compact Archives](#7--compact-archives)
+- [Reference](#reference)
+  - [Typed Resource Keys](#typed-resource-keys--fastfhirfieldsresourcefield)
+  - [Checksum Algorithms](#checksum-algorithms)
+  - [FHIR Versions](#fhir-versions)
+- [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Build](#build)
+  - [Generator Architecture](#generator-architecture)
+  - [Design Notes](#design-notes)
+- [License](#license)
+
+---
+
 ## Why FastFHIR?
 
 ### 1. Extreme Performance
@@ -488,6 +518,81 @@ for (int i = 0; i < 32; ++i) {
 
 for (auto& t : pool) t.join();
 ```
+
+---
+
+## 7 — Compact Archives
+
+A standard FastFHIR stream uses a **fixed-offset layout**: every field slot is written at
+a deterministic absolute offset regardless of whether the field is present. This makes
+random access trivially O(1), but absent fields still occupy slot bytes in the stream.
+
+`Compactor::archive()` performs a **post-finalize archival transform** that rewrites a
+sealed stream into a **compact layout**: a presence bitmask followed by densely-packed
+slots only for fields that are actually set. The resulting stream is a new file — the
+original is not modified — and is **read-only** (decompact by rebuilding from the original
+standard stream before mutation).
+
+> **Use compact archives when a stream is finalized, unlikely to be mutated, and will
+> be stored or transmitted at scale.** Compact archives are fully traversable via
+> `Parser` using the identical typed-key API as standard streams — no code changes needed
+> on the read side.
+
+### Stream Format Comparison
+
+| Layout | Field storage | Absent fields | Traversal |
+|--------|--------------|---------------|-----------|
+| Standard | Fixed absolute offsets per field | Null sentinel per slot | O(1) direct jump |
+| Compact | Presence bitmask + densely-packed slots | **0 bytes** | O(1) via bitmask scan |
+
+### Size Savings
+
+Savings scale with field sparsity — the more absent fields, the greater the reduction.
+Empirical results from the test suite (real FHIR resources, no artificial padding):
+
+| Resource | Standard | Compact | Reduction |
+|----------|----------|---------|-----------|
+| `Patient` (id, gender, active, name/given/family) | 1 041 B | 356 B | **−66 %** |
+| `Bundle` (`Patient` + `Observation` with components) | 1 799 B | 1 067 B | **−41 %** |
+
+Reductions are larger for sparse resources (most FHIR resources have many optional fields
+left unset) and smaller for dense records where most fields are populated.
+
+### Usage
+
+```cpp
+#include <FastFHIR.hpp>
+#include <FF_FieldKeys.hpp>
+#include <FF_Compactor.hpp>
+
+// 1. Build and finalize a standard stream as normal.
+auto src_mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
+// ... build, ingest, finalize into src_mem ...
+
+// 2. Archive to a new compact file — original stream is unchanged.
+auto compact_mem = FastFHIR::Memory::createFromFile("patient.compact.ffhr",
+                                                     64 * 1024 * 1024);
+FastFHIR::Parser src(src_mem);
+auto compact_view = FastFHIR::Compactor::archive(src, compact_mem);
+
+// 3. Read the compact archive — identical typed-key API, zero copies.
+FastFHIR::Parser compact(compact_mem);
+auto root = compact.root();
+
+std::string_view id     = root[FastFHIR::Fields::PATIENT::ID];          // "patient-1"
+std::string_view gender = root[FastFHIR::Fields::PATIENT::GENDER];      // "male"
+bool             active = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>(); // true
+
+for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
+    std::string_view family = name_node[FastFHIR::Fields::HUMANNAME::FAMILY];
+    for (auto& g : name_node[FastFHIR::Fields::HUMANNAME::GIVEN].entries())
+        std::cout << g.as<std::string_view>() << " ";
+    std::cout << family << "\n";
+}
+```
+
+> **Note:** Compact archives are immutable. To append or modify fields, open the original
+> standard stream, enrich it, re-finalize, and re-compact.
 
 ---
 

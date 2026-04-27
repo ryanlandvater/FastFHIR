@@ -142,6 +142,9 @@ static void socket_recv_exact_to_memory(asio::ip::tcp::socket& in_sock, Memory& 
 static const fs::path TEST_DIR     = fs::path(__FILE__).parent_path();
 static const fs::path PATIENT_FFHR = TEST_DIR / "patient.ffhr";
 static const fs::path BUNDLE_FFHR  = TEST_DIR / "bundle.ffhr";
+static const fs::path PATIENT_COMPACT_FFHR = TEST_DIR / "patient.compact.ffhr";
+static const fs::path BUNDLE_COMPLEX_FFHR = TEST_DIR / "bundle.complex.ffhr";
+static const fs::path BUNDLE_COMPLEX_COMPACT_FFHR = TEST_DIR / "bundle.complex.compact.ffhr";
 
 static fs::path find_patient_json() {
     const std::vector<fs::path> candidates = {
@@ -157,7 +160,8 @@ static fs::path find_patient_json() {
 }
 
 static void cleanup_artifacts() {
-    for (auto& p : {PATIENT_FFHR, BUNDLE_FFHR}) {
+    for (auto& p : {PATIENT_FFHR, BUNDLE_FFHR, PATIENT_COMPACT_FFHR,
+                    BUNDLE_COMPLEX_FFHR, BUNDLE_COMPLEX_COMPACT_FFHR}) {
         std::error_code ec;
         fs::remove(p, ec);
     }
@@ -215,6 +219,57 @@ static constexpr std::string_view BUNDLE_JSON = R"({
       }
     }
   ]
+})";
+
+static constexpr std::string_view BUNDLE_COMPLEX_JSON = R"({
+    "resourceType": "Bundle",
+    "id": "complex-bundle",
+    "type": "collection",
+    "entry": [
+        {
+            "fullUrl": "Patient/patient-1",
+            "resource": {
+                "resourceType": "Patient",
+                "id": "patient-1",
+                "active": true,
+                "name": [{"use": "usual", "family": "Landvater", "given": ["Ryan", "Eric"]}],
+                "gender": "male"
+            }
+        },
+        {
+            "fullUrl": "Observation/obs-1",
+            "resource": {
+                "resourceType": "Observation",
+                "id": "obs-1",
+                "status": "final",
+                "code": {
+                    "coding": [
+                        {
+                            "system": "http://loinc.org",
+                            "code": "8867-4",
+                            "display": "Heart rate"
+                        }
+                    ]
+                },
+                "subject": {"reference": "Patient/patient-1"},
+                "valueString": "final-value",
+                "component": [
+                    {
+                        "code": {
+                            "coding": [
+                                {
+                                    "system": "http://loinc.org",
+                                    "code": "8480-6",
+                                    "display": "Systolic blood pressure"
+                                }
+                            ]
+                        },
+                        "valueString": "nested-choice"
+                    }
+                ]
+            }
+        }
+    ]
 })";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -645,6 +700,154 @@ static void test_6() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Example 7 — Post-finalize archival compaction
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void test_7() {
+    auto src_mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
+    Parser src_parser(src_mem);
+
+    auto compact_mem = Memory::createFromFile(PATIENT_COMPACT_FFHR, 64 * 1024 * 1024);
+    auto compact_view = Compactor::archive(src_parser, compact_mem);
+    REQUIRE(!compact_view.empty(), "compact archive view is empty");
+
+    Parser compact_parser(compact_mem);
+    auto root = compact_parser.root();
+    REQUIRE(root, "compact root is null");
+
+    std::string_view id = root[FastFHIR::Fields::PATIENT::ID];
+    std::string_view gender = root[FastFHIR::Fields::PATIENT::GENDER];
+    REQUIRE(id == "patient-1", "compact patient id mismatch");
+    REQUIRE(gender == "male", "compact patient gender mismatch");
+
+    bool found_name = false;
+    auto compact_names = root[FastFHIR::Fields::PATIENT::NAME].entries();
+    for (auto& name_node : compact_names) {
+        std::string_view family = name_node[FastFHIR::Fields::HUMANNAME::FAMILY];
+        if (family == "Landvater") {
+            found_name = true;
+            break;
+        }
+    }
+    REQUIRE(found_name, "compact patient name traversal failed");
+
+    std::cout << "  compact archive bytes : " << compact_view.size() << "\n";
+    std::cout << "  original patient bytes: " << src_parser.size_bytes() << "\n";
+    std::cout << "  compact id            : " << id << "\n";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Example 8 — Array-tagged field key coverage on standard streams
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void test_8() {
+    auto patient_mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
+    Parser patient_parser(patient_mem);
+    auto patient_root = patient_parser.root();
+    REQUIRE(patient_root, "standard patient root is null");
+
+    auto name_entry = patient_root[FastFHIR::Fields::PATIENT::NAME];
+    REQUIRE(name_entry, "array-tagged PATIENT::NAME key failed on standard stream");
+    auto names = name_entry.entries();
+    REQUIRE(!names.empty(), "patient name array should not be empty");
+
+    std::string_view family = names.front()[FastFHIR::Fields::HUMANNAME::FAMILY];
+    REQUIRE(family == "Landvater", "array-tagged lookup failed for HumanName.family");
+
+    auto bundle_mem = Memory::createFromFile(BUNDLE_FFHR, 64 * 1024 * 1024);
+    Parser bundle_parser(bundle_mem);
+    auto bundle_root = bundle_parser.root();
+    REQUIRE(bundle_root, "standard bundle root is null");
+
+    auto entry_array = bundle_root[FastFHIR::Fields::BUNDLE::ENTRY];
+    REQUIRE(entry_array, "array-tagged BUNDLE::ENTRY key failed on standard stream");
+    auto entries = entry_array.entries();
+    REQUIRE(entries.size() >= 2, "expected at least two bundle entries");
+
+    auto resource_entry = entries.front()[FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE];
+    REQUIRE(resource_entry, "resource field missing from first bundle entry");
+    auto resource_node = resource_entry.as_node();
+    REQUIRE(resource_node, "resource node materialization failed on standard stream");
+
+    std::cout << "  standard array-tagged keys verified for patient.name and bundle.entry\n";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Example 9 — Compact nested choice/resource coverage (Bundle + Observation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void test_9() {
+    auto mem = Memory::createFromFile(BUNDLE_COMPLEX_FFHR, 64 * 1024 * 1024);
+    Builder builder(mem, FHIR_VERSION_R5);
+    Ingest::Ingestor ingestor;
+
+    Reflective::ObjectHandle bundle_handle;
+    size_t count = 0;
+    auto result = ingestor.ingest(
+        {builder, Ingest::SourceType::FHIR_JSON, BUNDLE_COMPLEX_JSON},
+        bundle_handle, count);
+    REQUIRE(result.code == FF_SUCCESS, "complex bundle ingest failed: " + result.message);
+    REQUIRE(bundle_handle, "complex bundle handle is null");
+
+    builder.set_root(bundle_handle);
+    auto source_view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(!source_view.empty(), "complex bundle finalize returned empty view");
+
+    Parser source_parser(mem);
+    auto source_root = source_parser.root();
+    REQUIRE(source_root, "complex bundle source root is null");
+
+    bool found_observation_source = false;
+    for (auto& entry_node : source_root[FastFHIR::Fields::BUNDLE::ENTRY].entries()) {
+        auto resource_entry = entry_node[FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE];
+        if (!resource_entry) continue;
+
+        auto resource_node = resource_entry.as_node();
+        if (!resource_node || resource_node.recovery() != RECOVER_FF_OBSERVATION) continue;
+
+        found_observation_source = true;
+        std::string_view obs_value = resource_node[FastFHIR::Fields::OBSERVATION::VALUE];
+        REQUIRE(obs_value == "final-value", "source observation value[x] mismatch");
+
+        auto components = resource_node[FastFHIR::Fields::OBSERVATION::COMPONENT].entries();
+        REQUIRE(!components.empty(), "source observation.component is empty");
+        std::string_view component_value = components.front()[FastFHIR::Fields::OBSERVATION_COMPONENT::VALUE];
+        REQUIRE(component_value == "nested-choice", "source component value[x] mismatch");
+    }
+    REQUIRE(found_observation_source, "source complex bundle observation not found");
+
+    auto compact_mem = Memory::createFromFile(BUNDLE_COMPLEX_COMPACT_FFHR, 64 * 1024 * 1024);
+    auto compact_view = Compactor::archive(source_parser, compact_mem);
+    REQUIRE(!compact_view.empty(), "complex compact archive view is empty");
+
+    Parser compact_parser(compact_mem);
+    auto compact_root = compact_parser.root();
+    REQUIRE(compact_root, "complex compact root is null");
+
+    bool found_observation_compact = false;
+    for (auto& entry_node : compact_root[FastFHIR::Fields::BUNDLE::ENTRY].entries()) {
+        auto resource_entry = entry_node[FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE];
+        if (!resource_entry) continue;
+
+        auto resource_node = resource_entry.as_node();
+        if (!resource_node || resource_node.recovery() != RECOVER_FF_OBSERVATION) continue;
+
+        found_observation_compact = true;
+        std::string_view obs_value = resource_node[FastFHIR::Fields::OBSERVATION::VALUE];
+        REQUIRE(obs_value == "final-value", "compact observation value[x] mismatch");
+
+        auto components = resource_node[FastFHIR::Fields::OBSERVATION::COMPONENT].entries();
+        REQUIRE(!components.empty(), "compact observation.component is empty");
+        std::string_view component_value = components.front()[FastFHIR::Fields::OBSERVATION_COMPONENT::VALUE];
+        REQUIRE(component_value == "nested-choice", "compact component value[x] mismatch");
+    }
+    REQUIRE(found_observation_compact, "compact complex bundle observation not found");
+
+    std::cout << "  complex compact bytes : " << compact_view.size() << "\n";
+    std::cout << "  complex source bytes  : " << source_view.size() << "\n";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -675,6 +878,12 @@ int main() {
         [] { test_5(); });
     run("Example 6 — Lock-free concurrent generation",
         [] { test_6(); });
+    run("Example 7 — Post-finalize archival compaction",
+        [] { test_7(); });
+    run("Example 8 — Standard array-tagged field key coverage",
+        [] { test_8(); });
+    run("Example 9 — Compact nested choice/resource coverage",
+        [] { test_9(); });
 
     // Summary
     std::cout << "\n" << std::string(60, '=') << "\n";

@@ -50,9 +50,11 @@ private:
         std::atomic<uint64_t>* _queue_weak_head{nullptr};
 
         inline uint32_t wrap(uint32_t raw_index) const { return raw_index & INDEX_MASK; }
-        inline Slot& get_slot(uint32_t index) { return _slots[wrap(index)]; }
 
     public:
+        inline Slot& get_slot(uint32_t index) { return _slots[wrap(index)]; }
+        inline const Slot& get_slot(uint32_t index) const { return _slots[wrap(index)]; }
+
         NodeRegistry() {
             for (uint32_t i = 0; i < CAPACITY; ++i) {
                 _slots[i].state.store(make_state(1, false, false, 0), std::memory_order_relaxed);
@@ -102,6 +104,7 @@ private:
             }
 
             Node* operator->() { return node; }
+            const Node* operator->() const { return node; }
             explicit operator bool() const { return node != nullptr; }
         };
 

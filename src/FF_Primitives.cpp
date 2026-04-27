@@ -71,8 +71,13 @@ FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
         return {FF_VALIDATION_FAILURE, "FF_HEADER unsupported FHIR schema revision."};
     }
 
-    // 3. FastFHIR Engine Version Check (Optional: reject future incompatible files)
-     uint32_t engine_ver = LOAD_U32(__base + VERSION);
+    // 3. FastFHIR Engine Version / Stream Layout metadata checks
+    uint32_t encoded_version = LOAD_U32(__base + VERSION);
+    uint32_t engine_ver = FF_HEADER_ENGINE_VERSION(encoded_version);
+    FF_StreamLayout layout = FF_HEADER_STREAM_LAYOUT(encoded_version);
+    if (layout != FF_STREAM_LAYOUT_STANDARD && layout != FF_STREAM_LAYOUT_COMPACT) {
+        return {FF_VALIDATION_FAILURE, "FF_HEADER stream layout flag is invalid."};
+    }
     // if ((engine_ver >> 16) > FF_VERSION_MAJOR) return {FF_VALIDATION_FAILURE, "Unsupported engine."};
 
     // 4. Footer Checksum Validation
@@ -87,7 +92,12 @@ FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
 }
 
 // Accessors correctly split between Engine Version and FHIR Schema
-uint32_t FF_HEADER::get_engine_version(const BYTE* const __base) const { return LOAD_U32(__base + VERSION); }
+uint32_t FF_HEADER::get_engine_version(const BYTE* const __base) const {
+    return FF_HEADER_ENGINE_VERSION(LOAD_U32(__base + VERSION));
+}
+FF_StreamLayout FF_HEADER::get_stream_layout(const BYTE* const __base) const {
+    return FF_HEADER_STREAM_LAYOUT(LOAD_U32(__base + VERSION));
+}
 uint16_t FF_HEADER::get_fhir_rev(const BYTE* const __base) const { return LOAD_U16(__base + FHIR_REV); }
 
 Offset FF_HEADER::get_root(const BYTE* const __base) const { return LOAD_U64(__base + ROOT_OFFSET); }
@@ -110,7 +120,8 @@ void STORE_FF_HEADER (BYTE* const __base,
                             Size stream_size,
                             Offset root_offset,
                             RECOVERY_TAG root_recovery,
-                            Offset checksum_offset) {
+                            Offset checksum_offset,
+                            FF_StreamLayout stream_layout) {
                             
     STORE_U32(__base + FF_HEADER::MAGIC, FF_MAGIC_BYTES);
     STORE_U16(__base + FF_HEADER::RECOVERY, RECOVER_FF_HEADER); // Assumes you defined this tag
@@ -123,9 +134,11 @@ void STORE_FF_HEADER (BYTE* const __base,
     STORE_U16(__base + FF_HEADER::ROOT_RECOVERY, root_recovery);
     STORE_U64(__base + FF_HEADER::CHECKSUM_OFFSET, checksum_offset);
     
-    // Bake the preprocessor engine version bits into the 32-bit slot
-    STORE_U32(__base + FF_HEADER::VERSION,  (static_cast<uint32_t>(FF_VERSION_MAJOR) << 16) |
-                                            (static_cast<uint32_t>(FF_VERSION_MINOR) & 0xFFFF));
+    // Bake engine version + stream layout into the 32-bit slot.
+    uint32_t engine_version =
+        (static_cast<uint32_t>(FF_VERSION_MAJOR) << 16) |
+        (static_cast<uint32_t>(FF_VERSION_MINOR) & 0xFFFF);
+    STORE_U32(__base + FF_HEADER::VERSION, FF_ENCODE_HEADER_VERSION(engine_version, stream_layout));
 }
 
 // =====================================================================

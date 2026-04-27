@@ -105,3 +105,4 @@
 // Include the public headers
 #include "FF_Parser.hpp"
 #include "FF_Builder.hpp"
+#include "FF_Compactor.hpp"

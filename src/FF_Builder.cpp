@@ -50,8 +50,12 @@ m_active_mutators(0)
     // access stream.root without an explicit set_root() call.
     // Parser throws on fresh/provisional memory (header validation fails) —
     // treat that as a new writable stream.
+    bool parsed_existing_stream = false;
+    FF_StreamLayout existing_layout = FF_STREAM_LAYOUT_STANDARD;
     try {
         Parser p(m_memory);
+        parsed_existing_stream = true;
+        existing_layout = p.stream_layout();
         if (p.m_root_offset   != FF_NULL_OFFSET &&
             p.m_root_recovery != FF_RECOVER_UNDEFINED) {
             m_root_offset   = p.m_root_offset;
@@ -60,6 +64,13 @@ m_active_mutators(0)
         }
     } catch (const std::exception&) {
         // No valid FastFHIR stream detected — this is a new stream, leave root unset.
+    }
+
+    if (parsed_existing_stream && existing_layout == FF_STREAM_LAYOUT_COMPACT) {
+        throw std::runtime_error(
+            "FastFHIR: Cannot open Builder on a compact archive. "
+            "Decompact to a standard stream before append/mutation."
+        );
     }
 
     // Fresh writable streams start with committed size 0. Reserve the serialized

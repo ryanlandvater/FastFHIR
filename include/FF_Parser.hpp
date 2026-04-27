@@ -31,6 +31,7 @@ concept HasTypeTraits = requires(const BYTE* base, Offset off, Size sz, uint32_t
 };
 
 namespace Reflective {
+struct ParserOps;
 class Node;
 struct Entry;
 }
@@ -48,6 +49,8 @@ class Parser {
     const BYTE*     m_base = nullptr;
     Size            m_size = 0;
     uint32_t        m_version = 0;
+    FF_StreamLayout m_stream_layout = FF_STREAM_LAYOUT_STANDARD;
+    const Reflective::ParserOps* m_ops = nullptr;
     Offset          m_root_offset = FF_NULL_OFFSET;
     RECOVERY_TAG    m_root_recovery = FF_RECOVER_UNDEFINED;
 
@@ -81,6 +84,18 @@ public:
     * @return Version value stored in the header.
      */
     uint32_t version() const;
+
+    /** @brief Pointer to the underlying stream bytes. */
+    const BYTE* data() const { return m_base; }
+
+    /** @brief Total stream size in bytes. */
+    Size size_bytes() const { return m_size; }
+
+    /**
+    * @brief Get the stream layout mode detected from header metadata.
+    * @return Standard or compact stream layout mode.
+     */
+    FF_StreamLayout stream_layout() const { return m_stream_layout; }
     
     /** 
     * @brief Get the root resource recovery/type tag from the header.
@@ -145,6 +160,7 @@ struct Entry {
     FF_FieldKind kind            = FF_FIELD_UNKNOWN;
     Size         m_size          = 0;
     uint32_t     m_version       = 0;
+    const ParserOps* m_ops       = nullptr;
 
     Entry() = default;
     // 5-arg constructor — backward-compatible; size/version remain zero.
@@ -152,9 +168,9 @@ struct Entry {
         : base(b), parent_offset(parent), vtable_offset(vtable), target_recovery(recovery), kind(field_kind) {}
     // 7-arg constructor — bakes in size/version for self-contained chaining.
     Entry(const BYTE* b, Offset parent, uint32_t vtable, RECOVERY_TAG recovery, FF_FieldKind field_kind,
-          Size size, uint32_t version)
+            Size size, uint32_t version, const ParserOps* ops = nullptr)
         : base(b), parent_offset(parent), vtable_offset(vtable), target_recovery(recovery), kind(field_kind),
-          m_size(size), m_version(version) {}
+            m_size(size), m_version(version), m_ops(ops) {}
 
     Offset absolute_offset() const {
         if (parent_offset == FF_NULL_OFFSET) return FF_NULL_OFFSET;
@@ -178,7 +194,8 @@ struct Entry {
 
     // Produce a Node over a DATA_BLOCK field (block, array, string, choice, resource).
     // 4-arg form used by generated code and Python bindings.
-    Node as_node(Size size, uint32_t version, RECOVERY_TAG tag, FF_FieldKind field_kind) const;
+    Node as_node(Size size, uint32_t version, RECOVERY_TAG tag, FF_FieldKind field_kind,
+                 const ParserOps* ops = nullptr) const;
     // 0-arg form — uses stored m_size/m_version; requires the 7-arg constructor.
     Node as_node() const;
 
@@ -223,6 +240,7 @@ struct Entry {
  */
 class Node {
 protected:
+    friend struct ParserOps;
     const BYTE* m_base = nullptr;
     Offset m_node_offset = FF_NULL_OFFSET;
     Size m_size = 0;
@@ -231,6 +249,7 @@ protected:
     RECOVERY_TAG m_child_recovery = FF_RECOVER_UNDEFINED;
     FF_FieldKind m_kind = FF_FIELD_UNKNOWN;
     bool m_array_entries_are_offsets = false;
+    const ParserOps* m_ops = nullptr;
 public:
     /** @brief Construct an empty/invalid node handle. */
     Node() = default;
@@ -239,7 +258,8 @@ public:
     */
     Node(const BYTE* base, Size size, uint32_t version, Offset offset,
          RECOVERY_TAG recovery, FF_FieldKind kind,
-         RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED, bool array_entries_are_offsets = false);
+            RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED, bool array_entries_are_offsets = false,
+            const ParserOps* ops = nullptr);
 
     /** @brief Check whether this node contains a value */
     bool is_empty() const;
@@ -256,7 +276,8 @@ public:
      * @return Node representing the resolved choice.
      */
     static Node resolve_choice(const BYTE* base, Size size, uint32_t version, 
-                       Offset parent_offset, Offset value_offset, FF_FieldKind schema_kind);
+                       Offset parent_offset, Offset value_offset, FF_FieldKind schema_kind,
+                       const ParserOps* ops = nullptr);
 
     /**
      * @brief Check whether this node references a valid underlying value.
@@ -393,10 +414,26 @@ public:
 
 // ── Entry methods requiring the complete Node definition ─────────────────────
 inline Node Entry::as_node() const {
-    return as_node(m_size, m_version, target_recovery, kind);
+    return as_node(m_size, m_version, target_recovery, kind, m_ops);
 }
 
 inline Entry::operator std::string_view() const {
+    if (kind == FF_FIELD_CODE) {
+        uint32_t raw_code = LOAD_U32(base + absolute_offset());
+        if (raw_code == FF_CODE_NULL) return "";
+
+        if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
+            return resolved;
+        }
+
+        if (raw_code & FF_CUSTOM_STRING_FLAG) {
+            Offset relative_off = static_cast<Offset>(raw_code & ~FF_CUSTOM_STRING_FLAG);
+            return FF_STRING(parent_offset + relative_off, m_size, m_version).read_view(base);
+        }
+
+        return "";
+    }
+
     return as_node().as<std::string_view>();
 }
 

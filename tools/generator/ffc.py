@@ -171,6 +171,26 @@ def _field_kind_expr(f):
         return 'FF_FIELD_CHOICE'
     return 'FF_FIELD_UNKNOWN'
 
+def _compact_slot_size(f):
+    """Return the compact binary slot size (bytes) for a field, matching compact_slot_size() in FF_Parser.cpp."""
+    if f.get('is_choice'):                              return 10  # TYPE_SIZE_CHOICE
+    if f['fhir_type'] == 'Resource':                   return 10  # TYPE_SIZE_RESOURCE
+    if f['fhir_type'] == 'boolean':                    return 1   # TYPE_SIZE_UINT8
+    if f['fhir_type'] == 'code' and not f.get('is_array'): return 4  # TYPE_SIZE_UINT32 (code)
+    if f.get('data_type') == 'uint32_t':               return 4   # TYPE_SIZE_UINT32/INT32
+    if f.get('data_type') == 'double':                 return 8   # TYPE_SIZE_FLOAT64
+    return 8  # string / array / block / offset -> TYPE_SIZE_OFFSET
+
+def _compact_slot_size(f):
+    """Return the compact binary slot size (bytes) for a field, matching compact_slot_size() in FF_Parser.cpp."""
+    if f.get('is_choice'):               return 10  # TYPE_SIZE_CHOICE
+    if f['fhir_type'] == 'Resource':     return 10  # TYPE_SIZE_RESOURCE
+    if f['fhir_type'] == 'boolean':      return 1   # TYPE_SIZE_UINT8
+    if f['fhir_type'] == 'code' and not f.get('is_array'): return 4  # TYPE_SIZE_UINT32 (code enum)
+    if f.get('data_type') == 'uint32_t': return 4   # TYPE_SIZE_UINT32/INT32
+    if f.get('data_type') == 'double':   return 8   # TYPE_SIZE_FLOAT64
+    return 8  # string / array / block / offset → TYPE_SIZE_OFFSET
+
 def _child_recovery_expr(f, block_struct_name):
     if f['fhir_type'] == 'Resource':
         return 'RECOVER_FF_RESOURCE'
@@ -261,9 +281,13 @@ def generate_field_info_implementation(layout, block_struct_name):
     for f in layout:
         cpp += (
             f'    {{"{f["orig_name"]}", {_field_kind_expr(f)}, {block_struct_name}::{f["name"]}, '
-            f'{_child_recovery_expr(f, block_struct_name)}, {_array_entries_are_offsets_expr(f)}}},\n'
+            f'{_child_recovery_expr(f, block_struct_name)}, {_array_entries_are_offsets_expr(f)}, {_compact_slot_size(f)}}},\n'
         )
     cpp += '};\n'
+    # Pre-baked compact slot sizes table; zero-padded to next multiple of 8 for SIMD single-shot load safety.
+    stride = ((len(layout) + 7) // 8) * 8
+    vals   = [str(_compact_slot_size(f)) for f in layout] + ['0'] * (stride - len(layout))
+    cpp += f'alignas(8) const uint8_t {block_struct_name}::COMPACT_SLOT_SIZES[{block_struct_name}::COMPACT_SIZES_STRIDE] = {{{", ".join(vals)}}};\n'
     cpp += f'const FF_FieldInfo* {block_struct_name}::find_field(std::string_view name) const {{\n'
     cpp += f'    const FF_FieldInfo* fallback_choice = nullptr;\n'
     cpp += f'    for (size_t i = 0; i < FIELD_COUNT; ++i) {{\n'
@@ -296,6 +320,7 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "std::vector<std::string_view> reflected_keys(uint16_t recovery);\n"
         "Reflective::Node reflected_child_node(const BYTE* base, Size size, uint32_t version, Offset offset, uint16_t recovery, std::string_view key);\n"
         "std::string_view reflected_resource_type(uint16_t recovery);\n"
+        "const uint8_t* compact_field_sizes(uint16_t recovery);\n"
         "} // namespace FastFHIR\n"
     )
 
@@ -312,6 +337,10 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "template <typename T_Block>\n"
         "std::vector<FF_FieldInfo> fields_for_block() {\n"
         "    return std::vector<FF_FieldInfo>(T_Block::FIELDS, T_Block::FIELDS + T_Block::FIELD_COUNT);\n"
+        "}\n\n"
+        "template <typename T_Block>\n"
+        "const uint8_t* compact_sizes_for_block() {\n"
+        "    return T_Block::COMPACT_SLOT_SIZES;\n"
         "}\n\n"
         "template <typename T_Block>\n"
         "Reflective::Node object_field_node(const T_Block& block, const BYTE* base, std::string_view key) {\n"
@@ -367,6 +396,15 @@ def generate_reflection_dispatch(block_struct_names, resources):
         cpp += f"        case FF_{res.upper()}::recovery: return \"{res}\";\n"
     cpp += (
         "        default: return \"\";\n"
+        "    }\n"
+        "}\n\n"
+        "const uint8_t* compact_field_sizes(uint16_t recovery) {\n"
+        "    switch (recovery) {\n"
+    )
+    for s_name in block_struct_names:
+        cpp += f"        case {s_name}::recovery: return compact_sizes_for_block<{s_name}>();\n"
+    cpp += (
+        "        default: return nullptr;\n"
         "    }\n"
         "}\n\n"
     )
@@ -814,6 +852,8 @@ def generate_cxx_for_blocks(master_blocks, versions):
         internal_hpp += f"    explicit {s_name}(Offset off, Size total_size, uint32_t ver) : DATA_BLOCK(off, total_size, ver) {{}}\n"
         internal_hpp += f"    static constexpr size_t FIELD_COUNT = {len(layout)};\n"
         internal_hpp += f"    static const FF_FieldInfo FIELDS[FIELD_COUNT];\n"
+        internal_hpp += f"    static constexpr size_t COMPACT_SIZES_STRIDE = {((len(layout)+7)//8)*8};\n"
+        internal_hpp += f"    static const uint8_t COMPACT_SLOT_SIZES[COMPACT_SIZES_STRIDE];  // pre-baked, 8-aligned\n"
         internal_hpp += f"    FF_Result validate_full(const BYTE* const __base) const noexcept;\n\n"
         internal_hpp += f"    static {d_name} deserialize(const BYTE* const __base, Offset __offset, Size __size, uint32_t __version);\n"
         internal_hpp += f"    const FF_FieldInfo* find_field(std::string_view name) const;\n"
