@@ -11,7 +11,7 @@ FastFHIR
 
 Healthcare interoperability has historically relied on formats that are inherently unsafe, computationally expensive, or structurally brittle. FastFHIR replaces traditional parsing with a mathematically strict, offset-based binary layout that guarantees safety, in-stream HL7 enrichment, and blistering speed. It generates strongly-typed C++ structs and a mathematically strict, zero-copy binary architecture directly from official HL7 FHIR Structure Definitions.
 
-A Python binding is available under [`python/`](python/) — see [`python/README.md`](python/README.md) for Python API examples.
+A Python binding is available — see [`The Python Readme`](python/README.md) for Python API examples.
 
 ## Why FastFHIR?
 
