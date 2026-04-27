@@ -75,8 +75,10 @@
 
 #pragma once
 
-// Include the generated FHIR field keys for convenient access to common FHIR field names.
-#include "FF_FieldKeys.hpp"
+// NOTE:
+// Generic FF_* key registry is intentionally not included by default to avoid
+// accidental use in C++ mutation paths. Include <FF_FieldKeys.hpp> explicitly
+// ONLY when you need generic reflective keys. It's confusing and not recommended. 
 
 // Include the public headers
 #include "FF_Parser.hpp"

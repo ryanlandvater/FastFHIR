@@ -8,6 +8,9 @@ Healthcare interoperability has historically relied on formats that are inherent
 
 A Python binding is available under [`python/`](python/) — see [`python/README.md`](python/README.md) for Python API examples.
 
+Note for C++ users: generic `FF_*` keys are optional and must be explicitly included via `#include <FF_FieldKeys.hpp>`.
+For mutation paths, prefer typed keys such as `FastFHIR::Fields::PATIENT::ACTIVE`.
+
 ## Why FastFHIR?
 
 ### 1. Extreme Performance
@@ -28,9 +31,9 @@ Legacy text standards expose systems to XML injection (CDA) and heap fragmentati
 
 ### 4. Developer Ergonomics
 You do not have to sacrifice a clean API for bare-metal performance.
-* **IDE-Friendly Static Keys:** Zero-overhead, compiled O(1) field keys (e.g., `FastFHIR::FieldKeys::FF_STATUS`) completely bypass runtime string hashing.
+* **IDE-Friendly Static Keys:** Zero-overhead, compiled O(1) typed keys (e.g., `FastFHIR::Fields::PATIENT::ACTIVE`) completely bypass runtime string hashing.
 * **Polymorphic Type Safety:** Extract primitives or complex structs with strict runtime schema validation using `node.as<PatientData>()` or `node.as<std::string_view>()`.
-* **JSON-Style Traversal:** Walk complex trees using native C++ `[]` operators (e.g., `root[FF_NAME][0]`).
+* **JSON-Style Traversal:** Walk complex trees using native C++ `[]` operators (e.g., `root[FastFHIR::Fields::PATIENT::NAME][0]`).
 
 ---
 
@@ -39,46 +42,79 @@ You do not have to sacrifice a clean API for bare-metal performance.
 These three short steps walk you from zero to a fully-functioning FastFHIR workflow.
 Start at whichever step matches your use-case — you do not have to use all three together.
 
+All example code below is validated in [tests/cpp/test_readme.cpp](tests/cpp/test_readme.cpp) for reference.
+
 ---
 
 ## Step 1 — Parse raw bytes
 
-`Parser` is the read-only entry point. The simplest overload accepts nothing but a raw
-byte pointer and a size, so you can hand it any buffer you already have in memory — a
-`std::vector`, a memory-mapped file you loaded yourself, or bytes from a network socket.
+`Parser` is the read-only entry point. Below is a minimal file-based path that opens an
+existing `.ffhr` archive in read-only mode, loads it into memory, and prints fields only
+when they are present.
 
 ```cpp
 #include <FastFHIR.hpp>
-using namespace FastFHIR::FieldKeys;
+#include <cstdio>
+#include <cstdint>
+#include <iostream>
+#include <stdexcept>
+#include <vector>
 
-// Any contiguous buffer that holds a sealed FastFHIR archive will work.
-// Here we use a std::vector<uint8_t> as an example.
-std::vector<uint8_t> raw_bytes = /* load from file, network, etc. */;
+static std::vector<uint8_t> open_read_only_file(const char* path) {
+    std::FILE* fp = std::fopen(path, "rb");
+    if (!fp) throw std::runtime_error("failed to open .ffhr file");
 
+    if (std::fseek(fp, 0, SEEK_END) != 0) {
+        std::fclose(fp);
+        throw std::runtime_error("failed to seek file end");
+    }
+
+    long file_size = std::ftell(fp);
+    if (file_size <= 0) {
+        std::fclose(fp);
+        throw std::runtime_error("empty or unreadable file");
+    }
+    std::rewind(fp);
+
+    std::vector<uint8_t> raw_bytes(static_cast<size_t>(file_size));
+    size_t bytes_read = std::fread(raw_bytes.data(), 1, raw_bytes.size(), fp);
+    std::fclose(fp);
+
+    if (bytes_read != raw_bytes.size())
+        throw std::runtime_error("short read while loading .ffhr file");
+
+    return raw_bytes;
+}
+
+auto raw_bytes = open_read_only_file("patient.ffhr");
 // Bind the parser — validates the header immediately, zero heap allocations.
 FastFHIR::Parser parser(raw_bytes.data(), raw_bytes.size());
 
 // Access the root node.
 auto root = parser.root();
 
-// Read scalar fields — O(1) offset arithmetic, no string hashing.
-auto id     = root[FF_ID].as<std::string_view>();
-auto active = root[FF_ACTIVE].as<bool>();
-auto gender = root[FF_GENDER].as<std::string_view>();
+// Read scalar fields only if present.
+if (auto id_node = root[FastFHIR::Fields::PATIENT::ID])
+    std::cout << "id=" << id_node.as<std::string_view>() << "\n";
+if (auto active_node = root[FastFHIR::Fields::PATIENT::ACTIVE])
+    std::cout << "active=" << std::boolalpha << active_node.as<bool>() << "\n";
+if (auto gender_node = root[FastFHIR::Fields::PATIENT::GENDER])
+    std::cout << "gender=" << gender_node.as<std::string_view>() << "\n";
 
-// Walk structured arrays.
-for (auto& name_node : root[FF_NAME].entries()) {
-    auto family = name_node[FF_FAMILY].as<std::string_view>();
-    for (auto& given : name_node[FF_GIVEN].entries())
-        std::cout << given.as<std::string_view>() << " ";
-    std::cout << family << "\n";
+// Walk arrays only if the parent field exists.
+if (auto name_array = root[FastFHIR::Fields::PATIENT::NAME]) {
+    for (auto& name_node : name_array.entries()) {
+        if (auto family = name_node[FastFHIR::Fields::HUMANNAME::FAMILY])
+            std::cout << "family=" << family.as<std::string_view>() << "\n";
+        if (auto given_array = name_node[FastFHIR::Fields::HUMANNAME::GIVEN]) {
+            for (auto& given : given_array.entries())
+                std::cout << "given=" << given.as<std::string_view>() << "\n";
+        }
+    }
 }
-
-// Stream the whole record back out as minified FHIR JSON.
-parser.print_json(std::cout);
 ```
 
-That is the complete read path. No `Memory` object, no `Builder` — just bytes and a parser.
+That is the complete read path.
 
 ---
 
@@ -94,7 +130,7 @@ streaming ingestion path. There are three flavours:
 
 // Reserve a 256 MB sparse virtual-address window backed by anonymous RAM.
 // Physical pages are only committed by the OS as you actually write to them.
-auto mem = FastFHIR::Memory::create(256 * 1024 * 1024);
+auto mem = FastFHIR::Memory::create();
 ```
 
 ### File-backed arena (persistent storage)
@@ -105,64 +141,43 @@ auto mem = FastFHIR::Memory::create(256 * 1024 * 1024);
 // Map the arena straight to a file on disk.
 // Every write goes directly into the OS page cache — no separate write() call needed.
 // The file is created (or reopened) and grown to the requested capacity.
-auto mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
+auto mem = FastFHIR::Memory::createFromFile("patient.ffhr");
 ```
 
-### Streaming arena (raw socket ingestion)
+### Using a FastFHIR Memory Arena
 
-When bytes are arriving over a TCP socket you can DMA them directly into the arena with
-`try_acquire_stream()`. This returns an RAII `StreamHead` that pins the write edge and
-exposes a buffer-compatible interface usable with any Asio or POSIX `read_some` call.
+Once a `Memory` object is created, it can be used to parse or parse, build, or ingest FHIR resources.
 
 ```cpp
-#include <FastFHIR.hpp>
-
-auto mem  = FastFHIR::Memory::create(256 * 1024 * 1024);
-
-// Acquire the exclusive stream lock (returns std::nullopt if already held).
-auto head = mem.try_acquire_stream();
-if (!head) throw std::runtime_error("stream busy");
-
-// head->write_ptr() / head->size() satisfy std::buffer requirements.
-// Pass them directly to your socket layer:
-//   asio::read(conn, asio::buffer(head->write_ptr(), head->size()));
-// Then commit however many bytes actually arrived:
-head->commit(bytes_received);
-// StreamHead destructor releases the lock automatically.
-```
-
-Once data is committed, bind a `Parser` directly to the `Memory` handle to read it:
-
-```cpp
+// Parse memory like Step 1 above, but in a much easier path
 FastFHIR::Parser parser(mem);
 auto root = parser.root();
 ```
+**A `Memory` arena is much more powerful than a simple fopen filestream. It can create a `Memory::Streamhead` into which a network socket can directly stream network data and the `Memory` can safely (and lockelessly) write FastFHIR data into the same archive from multiple concurrent threads.**
 
 ---
 
 ## Step 3 — Build a FastFHIR record from FHIR JSON
 
-`Builder` writes binary data into the arena; `Ingest::Ingestor` converts FHIR JSON into
+`Builder` writes binary data into the `Memory` arena; `Ingest::Ingestor` converts FHIR JSON into
 the binary layout for you. Together they replace the traditional parse → validate →
 serialize pipeline with a single in-place ingestion pass.
 
 ```cpp
 #include <FastFHIR.hpp>
+#include <FF_FieldKeys.hpp>
 #include <FF_Ingestor.hpp>
-using namespace FastFHIR::FieldKeys;
 
 // Use an anonymous arena for this example — swap in createFromFile() to persist to disk.
-auto mem = FastFHIR::Memory::create(64 * 1024 * 1024);
+auto mem = FastFHIR::Memory::create(/*Optionally provide arena upper bounds (something like 4 GB)*/);
 
 FastFHIR::Builder          builder(mem, FHIR_VERSION_R5);
 FastFHIR::Ingest::Ingestor ingestor;
 
 // Any valid FHIR R4/R5 Patient JSON string.
-// birthDate is intentionally omitted here so we can demonstrate amendment below.
 std::string json = R"({
     "resourceType": "Patient",
     "id": "patient-1",
-    "active": false,
     "gender": "male",
     "name": [{"family": "Smith", "given": ["John"]}]
 })";
@@ -173,9 +188,9 @@ size_t parsed_count = 0;
 ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, json},
                 patient_handle, parsed_count);
 
-// Amend fields — appends new bytes to the arena tail, patches only the pointer.
-patient_handle[FF_ACTIVE]     = true;           // flip false → true
-patient_handle[FF_BIRTH_DATE] = "1990-03-21";   // add a field that wasn't in the JSON
+// Enrich fields using typed resource keys.
+patient_handle[FastFHIR::Fields::PATIENT::ACTIVE] = true;
+patient_handle[FastFHIR::Fields::PATIENT::BIRTH_DATE] = "1990-03-21";
 
 // Seal the stream (no checksum for brevity; see API Examples for SHA-256).
 builder.set_root(patient_handle);
@@ -183,10 +198,13 @@ auto view = builder.finalize();      // returns a lifetime-safe Memory::View
 
 // Read it back immediately — zero copies, same arena pages.
 FastFHIR::Parser parser(view.data(), view.size());
-auto root   = parser.root();
-auto id     = root[FF_ID].as<std::string_view>();     // "patient-1"
-auto gender = root[FF_GENDER].as<std::string_view>(); // "male"
-std::cout << "id=" << id << "  gender=" << gender << "\n";
+auto root       = parser.root();
+auto id         = root[FastFHIR::Fields::PATIENT::ID].as<std::string_view>();         // "patient-1"
+auto active     = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>();                  // true
+auto gender     = root[FastFHIR::Fields::PATIENT::GENDER].as<std::string_view>();      // "male"
+auto birthdate  = root[FastFHIR::Fields::PATIENT::BIRTH_DATE].as<std::string_view>();  // "1990-03-21"
+std::cout << "id=" << id << "  active=" << active
+          << "  gender=" << gender << "  birthdate=" << birthdate << "\n";
 ```
 
 That is the complete write + read cycle. The advanced examples below show checksums,
@@ -205,8 +223,8 @@ sealed FastFHIR archive on disk.
 
 ```cpp
 #include <FastFHIR.hpp>
+#include <FF_FieldKeys.hpp>
 #include <openssl/sha.h>
-using namespace FastFHIR::FieldKeys;
 
 // Map the arena straight to a file — every write goes directly to disk
 auto mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
@@ -223,14 +241,14 @@ ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, json_string},
 
 // Inspect while the stream is still open — zero heap allocations
 auto root = FastFHIR::Parser(mem).root();
-auto id     = root[FF_ID].as<std::string_view>();       // "patient-1"
-auto gender = root[FF_GENDER].as<std::string_view>();   // "male"
-auto active = root[FF_ACTIVE].as<bool>();               // true
+auto id     = root[FastFHIR::Fields::PATIENT::ID].as<std::string_view>();       // "patient-1"
+auto gender = root[FastFHIR::Fields::PATIENT::GENDER].as<std::string_view>();   // "male"
+auto active = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>();                // true
 
 // Walk the name array
-for (auto& name_entry : root[FF_NAME].entries()) {
-    auto family = name_entry[FF_FAMILY].as<std::string_view>();
-    for (auto& given_entry : name_entry[FF_GIVEN].entries())
+for (auto& name_entry : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
+    auto family = name_entry[FastFHIR::Fields::HUMANNAME::FAMILY].as<std::string_view>();
+    for (auto& given_entry : name_entry[FastFHIR::Fields::HUMANNAME::GIVEN].entries())
         std::cout << given_entry.as<std::string_view>() << " ";
     std::cout << family << "\n";
 }
@@ -253,22 +271,22 @@ Mount an existing archive and traverse directly via `Parser::root()`.
 
 ```cpp
 #include <FastFHIR.hpp>
-using namespace FastFHIR::FieldKeys;
+#include <FF_FieldKeys.hpp>
 
 auto mem    = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
 auto parser = FastFHIR::Parser(mem);
 auto root   = parser.root();
 
 // Scalars coerce directly to C++ types — zero heap allocations
-auto id     = root[FF_ID].as<std::string_view>();         // std::string_view
-auto gender = root[FF_GENDER].as<std::string_view>();     // std::string_view
-auto active = root[FF_ACTIVE].as<bool>();                  // bool
-auto dob    = root[FF_BIRTH_DATE].as<std::string_view>(); // std::string_view
+auto id     = root[FastFHIR::Fields::PATIENT::ID].as<std::string_view>();          // std::string_view
+auto gender = root[FastFHIR::Fields::PATIENT::GENDER].as<std::string_view>();      // std::string_view
+auto active = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>();                   // bool
+auto dob    = root[FastFHIR::Fields::PATIENT::BIRTH_DATE].as<std::string_view>();   // std::string_view
 
 // Walk structured arrays
-for (auto& name_node : root[FF_NAME].entries()) {
-    auto family = name_node[FF_FAMILY].as<std::string_view>();
-    for (auto& g : name_node[FF_GIVEN].entries())
+for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
+    auto family = name_node[FastFHIR::Fields::HUMANNAME::FAMILY].as<std::string_view>();
+    for (auto& g : name_node[FastFHIR::Fields::HUMANNAME::GIVEN].entries())
         std::cout << g.as<std::string_view>() << " ";
     std::cout << family << "\n";
 }
@@ -288,8 +306,8 @@ pointers). The file grows solely by the delta; no copy of existing data is ever 
 
 ```cpp
 #include <FastFHIR.hpp>
+#include <FF_FieldKeys.hpp>
 #include <openssl/sha.h>
-using namespace FastFHIR::FieldKeys;
 
 auto mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
 
@@ -300,11 +318,11 @@ FastFHIR::Ingest::Ingestor ingestor;
 auto patient = builder.snapshot().root_handle();
 
 // Append or overwrite scalar fields (new bytes appended; field pointer amended)
-patient[FF_BIRTH_DATE] = "1990-03-21";
-patient[FF_ACTIVE]     = true;
+patient[FastFHIR::Fields::PATIENT::BIRTH_DATE] = "1990-03-21";
+patient[FastFHIR::Fields::PATIENT::ACTIVE]     = true;
 
 // Append a structured sub-object via the ingestor
-ingestor.insert_at_field(patient, FF_TELECOM,
+ingestor.insert_at_field(patient, FastFHIR::Fields::PATIENT::TELECOM,
     R"({"system":"phone","value":"555-0199","use":"mobile"})");
 
 // Re-seal with an updated checksum — original data untouched, new tail written
@@ -332,8 +350,8 @@ loopback TCP transport.
 
 ```cpp
 #include <FastFHIR.hpp>
+#include <FF_FieldKeys.hpp>
 #include <asio.hpp>
-using namespace FastFHIR::FieldKeys;
 
 auto mem = FastFHIR::Memory::create(256 * 1024 * 1024);   // 256 MB anonymous arena
 
@@ -363,8 +381,8 @@ size_t count = 0;
 ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, raw_json},
                 patient_handle, count);
 
-patient_handle[FF_ACTIVE]  = true;
-ingestor.insert_at_field(patient_handle, FF_TELECOM,
+patient_handle[FastFHIR::Fields::PATIENT::ACTIVE]  = true;
+ingestor.insert_at_field(patient_handle, FastFHIR::Fields::PATIENT::TELECOM,
     R"({"system":"phone","value":"555-0199","use":"mobile"})");
 
 // ── Step 3: seal and send back — view reads straight from the arena ──
@@ -385,8 +403,8 @@ are ever written back to disk.
 
 ```cpp
 #include <FastFHIR.hpp>
+#include <FF_FieldKeys.hpp>
 #include <openssl/sha.h>
-using namespace FastFHIR::FieldKeys;
 
 // Map the entire bundle — address space reserved, pages not loaded until accessed
 auto mem = FastFHIR::Memory::createFromFile("bundle.ffhr", 8ULL * 1024 * 1024 * 1024);
@@ -399,11 +417,11 @@ auto bundle = parser.root();
 
 // Walk bundle.entry; the OS faults in only the pages we read
 FastFHIR::Reflective::ObjectHandle target_patient;
-for (auto& entry_node : bundle[FF_ENTRY].entries()) {
-    auto resource = entry_node[FF_RESOURCE];
+for (auto& entry_node : bundle[FastFHIR::Fields::BUNDLE::ENTRY].entries()) {
+    auto resource = entry_node[FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE];
     if (!resource) continue;
     if (resource.recovery() != RECOVERY_TAG::Patient) continue;
-    if (resource[FF_ID].as<std::string_view>() == "patient-42") {
+    if (resource[FastFHIR::Fields::PATIENT::ID].as<std::string_view>() == "patient-42") {
         target_patient = builder.mutable_handle(resource);
         break;
     }
@@ -423,7 +441,7 @@ ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, R"({
 })"}, obs_handle, count);
 
 // Amend the patient record — only this entry's pages are dirtied
-target_patient[FF_TELECOM] = /* ... */;
+target_patient[FastFHIR::Fields::PATIENT::TELECOM] = /* ... */;
 
 // Reseal — rewrites only the header + checksum pages, nothing else
 builder.set_root(builder.mutable_handle(bundle));
@@ -473,28 +491,24 @@ for (auto& t : pool) t.join();
 
 # Reference
 
-### Field Keys — `FastFHIR::FieldKeys::FF_<FIELD>`
+### Typed Resource Keys — `FastFHIR::Fields::<RESOURCE>::<FIELD>`
 
-All FHIR fields are generated as `constexpr FF_FieldKey` constants in the `FastFHIR::FieldKeys` namespace. Use them with `node[key]` for O(1) field access without any runtime string hashing.
+For C++ code, prefer typed resource keys. They carry owner recovery, field kind, and byte offset metadata for safer mutation and traversal.
 
 ```cpp
-using namespace FastFHIR::FieldKeys;
-
-FF_ID          // "id"          (scalar)
-FF_ACTIVE      // "active"      (bool)
-FF_GENDER      // "gender"      (code → string_view)
-FF_BIRTH_DATE  // "birthDate"   (string_view)
-FF_NAME        // "name"        (array of HumanName)
-FF_FAMILY      // "family"      (string_view)
-FF_GIVEN       // "given"       (array of string_view)
-FF_TELECOM     // "telecom"     (array of ContactPoint)
-FF_ADDRESS     // "address"     (array of Address)
-FF_STATUS      // "status"      (code → string_view)
-FF_CODE        // "code"        (CodeableConcept block)
-FF_CODING      // "coding"      (array of Coding)
-FF_SYSTEM      // "system"      (string_view)
-FF_ENTRY       // "entry"       (bundle entry array)
-FF_RESOURCE    // "resource"    (polymorphic resource)
+FastFHIR::Fields::PATIENT::ID          // "id"          (scalar)
+FastFHIR::Fields::PATIENT::ACTIVE      // "active"      (bool)
+FastFHIR::Fields::PATIENT::GENDER      // "gender"      (code)
+FastFHIR::Fields::PATIENT::BIRTH_DATE  // "birthDate"   (string)
+FastFHIR::Fields::PATIENT::NAME        // "name"        (array of HumanName)
+FastFHIR::Fields::HUMANNAME::FAMILY    // "family"      (string)
+FastFHIR::Fields::HUMANNAME::GIVEN     // "given"       (array of string)
+FastFHIR::Fields::PATIENT::TELECOM     // "telecom"     (array of ContactPoint)
+FastFHIR::Fields::OBSERVATION::STATUS  // "status"      (code)
+FastFHIR::Fields::OBSERVATION::CODE    // "code"        (CodeableConcept)
+FastFHIR::Fields::CODING::SYSTEM       // "system"      (string)
+FastFHIR::Fields::BUNDLE::ENTRY        // "entry"       (bundle entry array)
+FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE // "resource"  (polymorphic resource)
 ```
 
 ### Checksum Algorithms
@@ -542,23 +556,6 @@ This will:
 5. Clean temporary `fhir_specs/` downloads
 
 By default CMake runs the generator during configure (`FASTFHIR_RUN_GENERATOR=ON`). Generated `.cpp` files are discovered from `generated_src/` and compiled into `libfastfhir.a`.
-
-To skip generation if you have already run it manually:
-
-```bash
-python3 tools/generator/make_lib.py
-cmake -S . -B build -DFASTFHIR_RUN_GENERATOR=OFF
-cmake --build build -j
-```
-
-### Validate generated output
-
-```bash
-clang++ -c generated_src/FF_DataTypes.cpp -I. -std=c++20
-clang++ -c generated_src/FF_Patient.cpp   -I. -std=c++20
-clang++ -c generated_src/FF_Observation.cpp -I. -std=c++20
-```
-
 ### Generator Architecture
 
 The generator lives in `tools/generator/` and is split by responsibility:
