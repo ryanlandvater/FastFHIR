@@ -34,7 +34,7 @@ Legacy text standards expose systems to XML injection (CDA) and heap fragmentati
 ### 4. Developer Ergonomics
 You do not have to sacrifice a clean API for bare-metal performance.
 * **IDE-Friendly Static Keys:** Zero-overhead, compiled O(1) typed keys (e.g., `FastFHIR::Fields::PATIENT::ACTIVE`) completely bypass runtime string hashing.
-* **Polymorphic Type Safety:** Extract primitives or complex structs with strict runtime schema validation using `node.as<PatientData>()` or `node.as<std::string_view>()`.
+* **Polymorphic Type Safety:** Assign fields directly to C++ types with zero-overhead implicit conversion (e.g., `std::string_view id = node[FastFHIR::Fields::PATIENT::ID]`), or eagerly materialize an entire struct (`PatientData patient = parser.root()`).
 * **JSON-Style Traversal:** Walk complex trees using native C++ `[]` operators (e.g., `root[FastFHIR::Fields::PATIENT::NAME][0]`).
 
 ---
@@ -97,17 +97,17 @@ auto root = parser.root();
 
 // Read scalar fields only if present.
 if (auto id_node = root[FastFHIR::Fields::PATIENT::ID])
-    std::cout << "id=" << id_node.as<std::string_view>() << "\n";
+    std::cout << "id=" << std::string_view(id_node) << "\n";
 if (auto active_node = root[FastFHIR::Fields::PATIENT::ACTIVE])
     std::cout << "active=" << std::boolalpha << active_node.as<bool>() << "\n";
 if (auto gender_node = root[FastFHIR::Fields::PATIENT::GENDER])
-    std::cout << "gender=" << gender_node.as<std::string_view>() << "\n";
+    std::cout << "gender=" << std::string_view(gender_node) << "\n";
 
 // Walk arrays only if the parent field exists.
 if (auto name_array = root[FastFHIR::Fields::PATIENT::NAME]) {
     for (auto& name_node : name_array.entries()) {
         if (auto family = name_node[FastFHIR::Fields::HUMANNAME::FAMILY])
-            std::cout << "family=" << family.as<std::string_view>() << "\n";
+            std::cout << "family=" << std::string_view(family) << "\n";
         if (auto given_array = name_node[FastFHIR::Fields::HUMANNAME::GIVEN]) {
             for (auto& given : given_array.entries())
                 std::cout << "given=" << given.as<std::string_view>() << "\n";
@@ -200,11 +200,11 @@ auto view = builder.finalize();      // returns a lifetime-safe Memory::View
 
 // Read it back immediately — zero copies, same arena pages.
 FastFHIR::Parser parser(view.data(), view.size());
-auto root       = parser.root();
-auto id         = root[FastFHIR::Fields::PATIENT::ID].as<std::string_view>();         // "patient-1"
-auto active     = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>();                  // true
-auto gender     = root[FastFHIR::Fields::PATIENT::GENDER].as<std::string_view>();      // "male"
-auto birthdate  = root[FastFHIR::Fields::PATIENT::BIRTH_DATE].as<std::string_view>();  // "1990-03-21"
+auto root              = parser.root();
+std::string_view id       = root[FastFHIR::Fields::PATIENT::ID];         // "patient-1"
+bool             active   = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>();  // true
+std::string_view gender   = root[FastFHIR::Fields::PATIENT::GENDER];     // "male"
+std::string_view birthdate = root[FastFHIR::Fields::PATIENT::BIRTH_DATE]; // "1990-03-21"
 std::cout << "id=" << id << "  active=" << active
           << "  gender=" << gender << "  birthdate=" << birthdate << "\n";
 ```
@@ -243,13 +243,13 @@ ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, json_string},
 
 // Inspect while the stream is still open — zero heap allocations
 auto root = FastFHIR::Parser(mem).root();
-auto id     = root[FastFHIR::Fields::PATIENT::ID].as<std::string_view>();       // "patient-1"
-auto gender = root[FastFHIR::Fields::PATIENT::GENDER].as<std::string_view>();   // "male"
-auto active = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>();                // true
+std::string_view id     = root[FastFHIR::Fields::PATIENT::ID];    // "patient-1"
+std::string_view gender = root[FastFHIR::Fields::PATIENT::GENDER]; // "male"
+bool             active = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>(); // true
 
 // Walk the name array
 for (auto& name_entry : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
-    auto family = name_entry[FastFHIR::Fields::HUMANNAME::FAMILY].as<std::string_view>();
+    std::string_view family = name_entry[FastFHIR::Fields::HUMANNAME::FAMILY];
     for (auto& given_entry : name_entry[FastFHIR::Fields::HUMANNAME::GIVEN].entries())
         std::cout << given_entry.as<std::string_view>() << " ";
     std::cout << family << "\n";
@@ -280,21 +280,21 @@ auto parser = FastFHIR::Parser(mem);
 auto root   = parser.root();
 
 // Scalars coerce directly to C++ types — zero heap allocations
-auto id     = root[FastFHIR::Fields::PATIENT::ID].as<std::string_view>();          // std::string_view
-auto gender = root[FastFHIR::Fields::PATIENT::GENDER].as<std::string_view>();      // std::string_view
-auto active = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>();                   // bool
-auto dob    = root[FastFHIR::Fields::PATIENT::BIRTH_DATE].as<std::string_view>();   // std::string_view
+std::string_view id     = root[FastFHIR::Fields::PATIENT::ID];           // std::string_view
+std::string_view gender = root[FastFHIR::Fields::PATIENT::GENDER];       // std::string_view
+bool             active = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>(); // bool
+std::string_view dob    = root[FastFHIR::Fields::PATIENT::BIRTH_DATE];   // std::string_view
 
 // Walk structured arrays
 for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
-    auto family = name_node[FastFHIR::Fields::HUMANNAME::FAMILY].as<std::string_view>();
+    std::string_view family = name_node[FastFHIR::Fields::HUMANNAME::FAMILY];
     for (auto& g : name_node[FastFHIR::Fields::HUMANNAME::GIVEN].entries())
         std::cout << g.as<std::string_view>() << " ";
     std::cout << family << "\n";
 }
 
 // Eagerly materialize into a generated C++ struct (strict schema validation)
-auto patient_data = root.as<FastFHIR::PatientData>();
+PatientData patient_data = root;
 ```
 
 ---
@@ -423,7 +423,7 @@ for (auto& entry_node : bundle[FastFHIR::Fields::BUNDLE::ENTRY].entries()) {
     auto resource = entry_node[FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE];
     if (!resource) continue;
     if (resource.recovery() != RECOVERY_TAG::Patient) continue;
-    if (resource[FastFHIR::Fields::PATIENT::ID].as<std::string_view>() == "patient-42") {
+    if (resource[FastFHIR::Fields::PATIENT::ID] == "patient-42") {
         target_patient = builder.mutable_handle(resource);
         break;
     }
@@ -592,7 +592,7 @@ The generator lives in `tools/generator/` and is split by responsibility:
 * Version-specific fields are guarded by generated version checks.
 * The top-level file container is `FF_HEADER`, which stores file magic, version, checksum offset, root offset, and payload size.
 * `Parser::root()` and `Node` traversal use offset/recovery checks to validate data block integrity.
-* Full recursive validation is available via typed APIs such as `node.as<PatientData>()`.
+* Full recursive validation is available via typed struct assignment such as `PatientData patient = parser.root()`.
 
 ---
 

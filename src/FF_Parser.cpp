@@ -168,7 +168,7 @@ void Reflective::Node::print_json(std::ostream& out) const {
                 break;
             
             default:
-                child_entry.as_node(m_size, m_version, child_entry.target_recovery, child_entry.kind).print_json(out);
+                child_entry.as_node().print_json(out);
                 break;
             }
             first = false;
@@ -449,11 +449,11 @@ std::vector<Node> Node::entries() const {
 // =====================================================================
 // Node child lookup
 // =====================================================================
-const Entry NULL_ENTRY = {nullptr, FF_NULL_OFFSET, 0, FF_RECOVER_UNDEFINED, FF_FIELD_UNKNOWN};
-Entry Node::operator[](FF_FieldKey key) const {
-    if (!is_object()) return {nullptr, FF_NULL_OFFSET, 0, FF_RECOVER_UNDEFINED, FF_FIELD_UNKNOWN};
+static const Entry NULL_ENTRY = {nullptr, FF_NULL_OFFSET, 0, FF_RECOVER_UNDEFINED, FF_FIELD_UNKNOWN};
 
-    // 1. Validation
+Entry Node::operator[](FF_FieldKey key) const {
+    if (!is_object()) return NULL_ENTRY;
+
     if (key.owner_recovery != FF_RECOVER_UNDEFINED && key.owner_recovery != m_recovery) {
         if (!(key.owner_recovery == RECOVER_FF_RESOURCE && FF_IsResourceTag(m_recovery))) {
             return NULL_ENTRY;
@@ -462,21 +462,49 @@ Entry Node::operator[](FF_FieldKey key) const {
 
     const Offset value_offset = m_node_offset + key.field_offset;
 
-    // 2. Fast Path: Empty slot
     if (FF_IsFieldEmpty(m_base, value_offset, key.kind)) {
         return NULL_ENTRY;
     }
 
-    // 3. Return lightweight coordinate entry.
-    // Entry::kind already encodes whether this is an array; target_recovery holds the
-    // clean element type directly — no ToArrayTag encoding needed or wanted here.
     RECOVERY_TAG target_tag = key.child_recovery;
     if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN) {
         target_tag = Kind_to_Recovery(key.kind);
     }
-
-    return {m_base, m_node_offset, key.field_offset, target_tag, key.kind};
+    return {m_base, m_node_offset, key.field_offset, target_tag, key.kind, m_size, m_version};
 }
+
+Node Node::operator[](size_t index) const {
+    if (!is_array()) return {};
+
+    FF_ARRAY arr(m_node_offset, m_size, m_version);
+    uint32_t count = arr.entry_count(m_base);
+    if (index >= count) return {};
+
+    const BYTE* entries_start = arr.entries(m_base);
+    uint16_t step = arr.entry_step(m_base);
+    FF_ARRAY::EntryKind ekind = arr.entry_kind(m_base);
+
+    switch (ekind) {
+        case FF_ARRAY::SCALAR: {
+            Offset item_off = m_node_offset + FF_ARRAY::HEADER_SIZE + index * step;
+            return Node(m_base, m_size, m_version, item_off, m_child_recovery, m_kind);
+        }
+        case FF_ARRAY::OFFSET: {
+            Offset ptr_off = static_cast<Offset>(entries_start - m_base) + index * step;
+            Offset item_off = LOAD_U64(m_base + ptr_off);
+            if (item_off == FF_NULL_OFFSET) return {};
+            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + item_off + DATA_BLOCK::RECOVERY));
+            return Node(m_base, m_size, m_version, item_off, actual_tag, FF_FIELD_BLOCK);
+        }
+        case FF_ARRAY::INLINE_BLOCK: {
+            Offset item_off = static_cast<Offset>(entries_start - m_base) + index * step;
+            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + item_off + DATA_BLOCK::RECOVERY));
+            return Node(m_base, m_size, m_version, item_off, actual_tag, FF_FIELD_BLOCK);
+        }
+    }
+    return {};
+}
+
 Node Entry::as_node(Size size, uint32_t version, RECOVERY_TAG expected_tag, FF_FieldKind schema_kind) const {
     if (base == nullptr || absolute_offset() == FF_NULL_OFFSET) return {};
 

@@ -512,9 +512,6 @@ def generate_size_fields(layout, block_struct_name, data_name):
                 cpp += f"        for (const auto& __item : {data_name}.{f['cpp_name']}) {{\n"
                 cpp += f"            __total += SIZE_{child_struct}(__item);\n"
                 cpp += f"        }}\n    }}\n"
-                cpp += f"    else if (!{data_name}.{f['cpp_name']}_offsets.empty()) {{\n"
-                cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}_offsets.size() * TYPE_SIZE_OFFSET);\n"
-                cpp += f"    }}\n"
                 
         elif f['fhir_type'] == 'string':
             cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
@@ -630,20 +627,6 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
                 cpp += f"            child_off = {store_fn}(__base, __entries_start + __i * {child_struct}::HEADER_SIZE, child_off, {data_name}.{f['cpp_name']}[__i]);\n"
                 cpp += f"        }}\n"
-                cpp += f"    }} "
-                
-                # Branch 3b: Collected Offsets (Used during concurrent worker-thread ingestion)
-                # Physically: 8-byte pointers.
-                cpp += f"    else if (!{data_name}.{f['cpp_name']}_offsets.empty()) {{\n"
-                cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
-                cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}_offsets.size());\n"
-                # Uses OFFSET with 8-byte hops
-                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, __n, ToArrayTag({_child_recovery_expr(f, block_struct_name)}));\n"
-                cpp += f"        Offset __entries_start = child_off;\n"
-                cpp += f"        child_off += static_cast<Offset>(__n) * TYPE_SIZE_OFFSET;\n"
-                cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
-                cpp += f"            STORE_U64(__base + __entries_start + __i * TYPE_SIZE_OFFSET, {data_name}.{f['cpp_name']}_offsets[__i]);\n"
-                cpp += f"        }}\n"
                 cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
         
         elif f['fhir_type'] == 'Resource':
@@ -742,14 +725,27 @@ def merge_fhir_versions(schemas_by_version, root_resource):
     return master_blocks
 
 def generate_cxx_for_blocks(master_blocks, versions):
-    hpp, cpp = "", ""
+    """Returns (public_hpp, internal_hpp, cpp).
+
+    public_hpp  – Data structs, free-function declarations, bridge decls, TypeTraits.
+                  Safe to ship in the public API; contains NO vtable offset enums.
+    internal_hpp – FF_* DATA_BLOCK structs (vtable_sizes/vtable_offsets enums) and
+                   *View<VERSION> zero-copy templates.  Include via FF_AllTypes.hpp only.
+    cpp          – All implementations plus two bridge functions per block:
+                     • STORE_{s_name}(base, start_off, data, version)  — 2-param, non-inline
+                     • FF_DESERIALIZE_{s_name}(...)                     — thin wrapper around ::deserialize
+    """
+    public_hpp, internal_hpp, cpp = "", "", ""
     block_data_names = sorted({path.replace('.', '') + "Data" for path in master_blocks})
     block_struct_names = sorted({"FF_" + path.replace('.', '_').upper() for path in master_blocks})
     block_view_names = sorted({s_name.replace("FF_", "") + "View" for s_name in block_struct_names})
-    for d_name in block_data_names: hpp += f"struct {d_name};\n"
-    for s_name in block_struct_names: hpp += f"struct {s_name};\n"
-    for v_name in block_view_names: hpp += f"template <uint32_t VERSION> struct {v_name};\n"
-    if block_data_names or block_struct_names: hpp += "\n"
+    # Only Data struct forward declarations belong in the public header
+    for d_name in block_data_names: public_hpp += f"struct {d_name};\n"
+    if block_data_names: public_hpp += "\n"
+    # FF_* vtable structs and *View templates are internal-only
+    for s_name in block_struct_names: internal_hpp += f"struct {s_name};\n"
+    for v_name in block_view_names: internal_hpp += f"template <uint32_t VERSION> struct {v_name};\n"
+    if block_struct_names: internal_hpp += "\n"
 
     def get_deps(layout):
         deps = set()
@@ -773,79 +769,83 @@ def generate_cxx_for_blocks(master_blocks, versions):
         s_name, d_name = "FF_" + path.replace('.', '_').upper(), path.replace('.', '') + "Data"
         layout, sizes = blk['layout'], blk['sizes']
         
-        # POD Struct Implementation
-        hpp += f"struct {d_name} {{\n"
+        # ── PUBLIC: POD Data Struct ──────────────────────────────────────────
+        public_hpp += f"struct {d_name} {{\n"
         for f in layout:
             code_enum = f.get('code_enum')
-            if f.get('is_choice'): hpp += f"    ChoiceEntry {f['cpp_name']};\n"
+            if f.get('is_choice'): public_hpp += f"    ChoiceEntry {f['cpp_name']};\n"
             elif f['is_array']:
                 item_type = code_enum['enum'] if code_enum else _resolve_data_type_name(f['fhir_type'], f['orig_name'], path, f.get('resolved_path'))
-                hpp += f"    std::vector<{item_type}> {f['cpp_name']};\n"
-                if f['fhir_type'] not in ('string', 'code', 'Resource'):
-                    hpp += f"    std::vector<Offset> {f['cpp_name']}_offsets;\n"  
-            elif f['fhir_type'] == 'string': hpp += f"    std::string_view {f['cpp_name']};\n"
-            elif code_enum: hpp += f"    {code_enum['enum']} {f['cpp_name']} = {code_enum['enum']}::Unknown;\n"
-            elif f['cpp_type'] == 'Offset': hpp += f"    std::unique_ptr<{_resolve_data_type_name(f['fhir_type'], f['orig_name'], path, f.get('resolved_path'))}> {f['cpp_name']};\n"
-            elif f['data_type'] == 'bool': hpp += f"    bool {f['cpp_name']} = false;\n"
-            elif f['data_type'] == 'std::string': hpp += f"    std::string {f['cpp_name']};\n"
+                public_hpp += f"    std::vector<{item_type}> {f['cpp_name']};\n"
+            elif f['fhir_type'] == 'string': public_hpp += f"    std::string_view {f['cpp_name']};\n"
+            elif code_enum: public_hpp += f"    {code_enum['enum']} {f['cpp_name']} = {code_enum['enum']}::Unknown;\n"
+            elif f['cpp_type'] == 'Offset': public_hpp += f"    std::unique_ptr<{_resolve_data_type_name(f['fhir_type'], f['orig_name'], path, f.get('resolved_path'))}> {f['cpp_name']};\n"
+            elif f['data_type'] == 'bool': public_hpp += f"    bool {f['cpp_name']} = false;\n"
+            elif f['data_type'] == 'std::string': public_hpp += f"    std::string {f['cpp_name']};\n"
             elif f['fhir_type'] in TYPE_MAP and 'null' in TYPE_MAP[f['fhir_type']]:
                 null_val = TYPE_MAP[f['fhir_type']]['null']
-                hpp += f"    {f['data_type']} {f['cpp_name']} = {null_val};\n"
-            else: hpp += f"    {f['data_type']} {f['cpp_name']}{{}};\n"
-        hpp += f"}};\n\n"
+                public_hpp += f"    {f['data_type']} {f['cpp_name']} = {null_val};\n"
+            else: public_hpp += f"    {f['data_type']} {f['cpp_name']}{{}};\n"
+        public_hpp += f"}};\n\n"
 
-        # Data Block Sentinel
-        hpp += f"struct FF_EXPORT {s_name} : DATA_BLOCK {{\n"
-        hpp += f"    static constexpr char type [] = \"{s_name}\";\n"
-        hpp += f"    static constexpr enum RECOVERY_TAG recovery = RECOVER_{s_name};\n"
-        hpp += f"    enum vtable_sizes {{\n        VALIDATION_S = TYPE_SIZE_UINT64,\n        RECOVERY_S = TYPE_SIZE_UINT16,\n"
-        for f in layout: hpp += f"        {f['name']}_S = {f['size_const']},\n"
-        hpp += f"    }};\n    enum vtable_offsets {{\n        VALIDATION = 0,\n        RECOVERY = VALIDATION + VALIDATION_S,\n"
+        # ── INTERNAL: Data Block Sentinel (vtable enums) ─────────────────────
+        internal_hpp += f"struct FF_EXPORT {s_name} : DATA_BLOCK {{\n"
+        internal_hpp += f"    static constexpr char type [] = \"{s_name}\";\n"
+        internal_hpp += f"    static constexpr enum RECOVERY_TAG recovery = RECOVER_{s_name};\n"
+        internal_hpp += f"    enum vtable_sizes {{\n        VALIDATION_S = TYPE_SIZE_UINT64,\n        RECOVERY_S = TYPE_SIZE_UINT16,\n"
+        for f in layout: internal_hpp += f"        {f['name']}_S = {f['size_const']},\n"
+        internal_hpp += f"    }};\n    enum vtable_offsets {{\n        VALIDATION = 0,\n        RECOVERY = VALIDATION + VALIDATION_S,\n"
         prev_name, prev_size = "RECOVERY", "RECOVERY_S"
         for f in layout:
-            hpp += f"        {f['name']:<20}= {prev_name} + {prev_size},\n"
+            internal_hpp += f"        {f['name']:<20}= {prev_name} + {prev_size},\n"
             prev_name, prev_size = f['name'], f"{f['name']}_S"
-        for v, sz in sizes.items(): hpp += f"        HEADER_{v}_SIZE = {sz},\n"
+        for v, sz in sizes.items(): internal_hpp += f"        HEADER_{v}_SIZE = {sz},\n"
         present_versions = [v for v in versions if v in sizes]
         max_v = max(present_versions, key=lambda x: versions.index(x))
-        hpp += f"        HEADER_SIZE = HEADER_{max_v}_SIZE\n    }};\n"
+        internal_hpp += f"        HEADER_SIZE = HEADER_{max_v}_SIZE\n    }};\n"
         
         min_version = next((v for v in versions if v in sizes), None)
-        hpp += f"    inline Size get_header_size() const {{\n"
-        if min_version: hpp += f"        if (__version < FHIR_VERSION_{min_version}) return 0;\n"
+        internal_hpp += f"    inline Size get_header_size() const {{\n"
+        if min_version: internal_hpp += f"        if (__version < FHIR_VERSION_{min_version}) return 0;\n"
         for v in versions:
-            if v in sizes: hpp += f"        if (__version <= FHIR_VERSION_{v}) return HEADER_{v}_SIZE;\n"
-        hpp += f"        return HEADER_SIZE;\n    }}\n"
+            if v in sizes: internal_hpp += f"        if (__version <= FHIR_VERSION_{v}) return HEADER_{v}_SIZE;\n"
+        internal_hpp += f"        return HEADER_SIZE;\n    }}\n"
 
-        hpp += f"    explicit {s_name}(Offset off, Size total_size, uint32_t ver) : DATA_BLOCK(off, total_size, ver) {{}}\n"
-        hpp += f"    static constexpr size_t FIELD_COUNT = {len(layout)};\n"
-        hpp += f"    static const FF_FieldInfo FIELDS[FIELD_COUNT];\n"
-        hpp += f"    FF_Result validate_full(const BYTE* const __base) const noexcept;\n\n"
-        hpp += f"    static {d_name} deserialize(const BYTE* const __base, Offset __offset, Size __size, uint32_t __version);\n"
-        hpp += f"    const FF_FieldInfo* find_field(std::string_view name) const;\n"
-        hpp += f"}};\n\n"
+        internal_hpp += f"    explicit {s_name}(Offset off, Size total_size, uint32_t ver) : DATA_BLOCK(off, total_size, ver) {{}}\n"
+        internal_hpp += f"    static constexpr size_t FIELD_COUNT = {len(layout)};\n"
+        internal_hpp += f"    static const FF_FieldInfo FIELDS[FIELD_COUNT];\n"
+        internal_hpp += f"    FF_Result validate_full(const BYTE* const __base) const noexcept;\n\n"
+        internal_hpp += f"    static {d_name} deserialize(const BYTE* const __base, Offset __offset, Size __size, uint32_t __version);\n"
+        internal_hpp += f"    const FF_FieldInfo* find_field(std::string_view name) const;\n"
+        internal_hpp += f"}};\n\n"
         
-        # New Templated View Struct
-        hpp += generate_lazy_view_struct(layout, s_name)
+        # ── INTERNAL: Zero-copy View Template ───────────────────────────────
+        internal_hpp += generate_lazy_view_struct(layout, s_name)
 
-        # Lock-Free Store Signatures
-        hpp += f"Size SIZE_{s_name}(const {d_name}& data, uint32_t __version = FHIR_VERSION_R5);\n"
-        hpp += f"Offset STORE_{s_name}(BYTE* const __base, Offset hdr_off, Offset child_off, const {d_name}& data, uint32_t __version = FHIR_VERSION_R5);\n"
-        hpp += f"inline Offset STORE_{s_name}(BYTE* const __base, Offset start_off, const {d_name}& data, uint32_t __version = FHIR_VERSION_R5) {{\n"
-        hpp += f"    return STORE_{s_name}(__base, start_off, start_off + {s_name}::HEADER_SIZE, data, __version);\n"
-        hpp += f"}}\n\n"
+        # ── INTERNAL: 3-arg STORE (requires layout knowledge of hdr_off/child_off split) ─
+        internal_hpp += f"Offset STORE_{s_name}(BYTE* const __base, Offset hdr_off, Offset child_off, const {d_name}& data, uint32_t __version = FHIR_VERSION_R5);\n\n"
 
-        # Type Traits Specialization (Points to deserialize instead of read)
-        hpp += f"namespace FastFHIR {{\n"
-        hpp += f"template<> struct TypeTraits<{d_name}> {{\n"
-        hpp += f"    static constexpr auto recovery = {s_name}::recovery;\n"
-        hpp += f"    static Size size(const {d_name}& d, uint32_t v = FHIR_VERSION_R5) {{ return SIZE_{s_name}(d, v); }}\n"
-        hpp += f"    static void store(BYTE* const base, Offset off, const {d_name}& d, uint32_t v = FHIR_VERSION_R5) {{ STORE_{s_name}(base, off, d, v); }}\n"
-        hpp += f"    static {d_name} read(const BYTE* const base, Offset off, Size size, uint32_t v) {{ return {s_name}::deserialize(base, off, size, v); }}\n"
-        hpp += f"}};\n"
-        hpp += f"}} // namespace FastFHIR\n\n"
+        # Bridge name strips the FF_ prefix to avoid FF_DESERIALIZE_FF_OBSERVATION noise
+        bridge_name = s_name[3:] if s_name.startswith("FF_") else s_name
 
-        # CPP Implementations
+        # ── PUBLIC: Free-function declarations (no vtable references) ────────
+        public_hpp += f"Size SIZE_{s_name}(const {d_name}& data, uint32_t __version = FHIR_VERSION_R5);\n"
+        # 2-param convenience overload — clean entry point for API callers
+        public_hpp += f"Offset STORE_{s_name}(BYTE* const __base, Offset start_off, const {d_name}& data, uint32_t __version = FHIR_VERSION_R5);\n"
+        # Bridge deserializer: decouples TypeTraits from the vtable struct
+        public_hpp += f"{d_name} FF_DESERIALIZE_{bridge_name}(const BYTE* const __base, Offset __offset, Size __size, uint32_t __version);\n\n"
+
+        # ── PUBLIC: TypeTraits — references only RECOVER_* and bridge functions
+        public_hpp += f"namespace FastFHIR {{\n"
+        public_hpp += f"template<> struct TypeTraits<{d_name}> {{\n"
+        public_hpp += f"    static constexpr auto recovery = RECOVER_{s_name};\n"
+        public_hpp += f"    static Size size(const {d_name}& d, uint32_t v = FHIR_VERSION_R5) {{ return SIZE_{s_name}(d, v); }}\n"
+        public_hpp += f"    static void store(BYTE* const base, Offset off, const {d_name}& d, uint32_t v = FHIR_VERSION_R5) {{ STORE_{s_name}(base, off, d, v); }}\n"
+        public_hpp += f"    static {d_name} read(const BYTE* const base, Offset off, Size size, uint32_t v) {{ return FF_DESERIALIZE_{bridge_name}(base, off, size, v); }}\n"
+        public_hpp += f"}};\n"
+        public_hpp += f"}} // namespace FastFHIR\n\n"
+
+        # ── CPP: Implementations ─────────────────────────────────────────────
         cpp += f"FF_Result {s_name}::validate_full(const BYTE *const __base) const noexcept {{ return validate_offset(__base, type, recovery); }}\n"
         cpp += generate_field_info_implementation(layout, s_name)
         
@@ -860,7 +860,16 @@ def generate_cxx_for_blocks(master_blocks, versions):
         cpp += f"    STORE_U16(__ptr + {s_name}::RECOVERY, {s_name}::recovery);\n"
         cpp += f"{generate_store_fields(layout, s_name, '__ptr', 'data')}\n"
         cpp += f"    return child_off;\n}}\n\n"
-    return hpp, cpp
+
+        # ── CPP: Bridge implementations (no #include of internal header needed by callers)
+        cpp += f"Offset STORE_{s_name}(BYTE* const __base, Offset start_off, const {d_name}& data, uint32_t __version) {{\n"
+        cpp += f"    return STORE_{s_name}(__base, start_off, start_off + {s_name}::HEADER_SIZE, data, __version);\n"
+        cpp += f"}}\n\n"
+        cpp += f"{d_name} FF_DESERIALIZE_{bridge_name}(const BYTE* const __base, Offset __offset, Size __size, uint32_t __version) {{\n"
+        cpp += f"    return {s_name}::deserialize(__base, __offset, __size, __version);\n"
+        cpp += f"}}\n\n"
+
+    return public_hpp, internal_hpp, cpp
 
 # =====================================================================
 # 5. RECOVERY TAG GENERATOR
@@ -1676,7 +1685,11 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     for decl in sorted(fwd_decls): hpp_head += f"struct {decl};\n"
     hpp_head += "\n"
 
-    cpp_head = f"{auto_header}\n#include \"../include/FF_Utilities.hpp\"\n#include \"FF_DataTypes.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n"
+    # Internal header preamble — includes the public FF_DataTypes.hpp
+    int_head = f"{auto_header}// MARK: - Universal Data Types (Internal — vtable structs & zero-copy Views)\n#pragma once\n#include \"FF_DataTypes.hpp\"\n\n"
+
+    # .cpp includes the internal header so bridge fns can access HEADER_SIZE
+    cpp_head = f"{auto_header}\n#include \"../include/FF_Utilities.hpp\"\n#include \"FF_DataTypes_internal.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n"
     
     all_blocks = {}
     for t in TARGET_TYPES:
@@ -1697,11 +1710,13 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
                     all_field_names.add(field['orig_name'])
     
     if all_blocks:
-        h, c = generate_cxx_for_blocks(all_blocks, versions)
-        hpp_head += h
+        pub_h, int_h, c = generate_cxx_for_blocks(all_blocks, versions)
+        hpp_head += pub_h
+        int_head += int_h
         cpp_head += c
     
     with open(os.path.join(output_dir, "FF_DataTypes.hpp"), "w") as f: f.write(hpp_head)
+    with open(os.path.join(output_dir, "FF_DataTypes_internal.hpp"), "w") as f: f.write(int_head)
     with open(os.path.join(output_dir, "FF_DataTypes.cpp"), "w") as f: f.write(cpp_head)
 
     generated_resources = []
@@ -1726,11 +1741,13 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
             for blk in blocks.values():
                 for field in blk['layout']:
                     all_field_names.add(field['orig_name'])
-            hpp, cpp = generate_cxx_for_blocks(blocks, versions)
-            with open(os.path.join(output_dir, f"FF_{res}.hpp"), "w") as f: 
-                f.write(f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n\n{hpp}")
-            with open(os.path.join(output_dir, f"FF_{res}.cpp"), "w") as f: 
-                f.write(f"{auto_header}\n#include \"FF_{res}.hpp\"\n#include \"../include/FF_Utilities.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n{cpp}")
+            public_hpp, internal_hpp, cpp_body = generate_cxx_for_blocks(blocks, versions)
+            with open(os.path.join(output_dir, f"FF_{res}.hpp"), "w") as f:
+                f.write(f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n\n{public_hpp}")
+            with open(os.path.join(output_dir, f"FF_{res}_internal.hpp"), "w") as f:
+                f.write(f"{auto_header}#pragma once\n#include \"FF_DataTypes_internal.hpp\"\n#include \"FF_{res}.hpp\"\n\n{internal_hpp}")
+            with open(os.path.join(output_dir, f"FF_{res}.cpp"), "w") as f:
+                f.write(f"{auto_header}\n#include \"FF_{res}_internal.hpp\"\n#include \"../include/FF_Utilities.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n{cpp_body}")
 
     field_keys_hpp = (
         f"{auto_header}#pragma once\n"
@@ -1817,9 +1834,10 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     with open(os.path.join(output_dir, "FF_Reflection.cpp"), "w") as f:
         f.write(reflection_cpp)
     
-    all_types_hpp = f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n#include \"FF_FieldKeys.hpp\"\n#include \"FF_Reflection.hpp\"\n"
+    # FF_AllTypes.hpp is the internal aggregator — includes all _internal variants
+    all_types_hpp = f"{auto_header}#pragma once\n#include \"FF_DataTypes_internal.hpp\"\n#include \"FF_FieldKeys.hpp\"\n#include \"FF_Reflection.hpp\"\n"
     for res in generated_resources:
-        all_types_hpp += f"#include \"FF_{res}.hpp\"\n"
+        all_types_hpp += f"#include \"FF_{res}_internal.hpp\"\n"
     all_types_hpp += "\n"
     with open(os.path.join(output_dir, "FF_AllTypes.hpp"), "w") as f: f.write(all_types_hpp)
 

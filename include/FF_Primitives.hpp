@@ -41,22 +41,22 @@ typedef uint64_t Offset;
 typedef uint64_t Size;
 
 // Standard Integer MAX Nulls
-constexpr uint8_t FF_NULL_UINT8 = 0xFF;
-constexpr uint16_t FF_NULL_UINT16 = 0xFFFF;
-constexpr uint32_t FF_NULL_UINT32 = 0xFFFFFFFF;
-constexpr uint64_t FF_NULL_UINT64 = 0xFFFFFFFFFFFFFFFF;
+constexpr uint8_t FF_NULL_UINT8          = 0xFF;
+constexpr uint16_t FF_NULL_UINT16        = 0xFFFF;
+constexpr uint32_t FF_NULL_UINT32        = 0xFFFFFFFF;
+constexpr uint64_t FF_NULL_UINT64        = 0xFFFFFFFFFFFFFFFF;
 
 // Code Null (Safely traps 0xFFFFFFFF before custom string masking)
-constexpr uint32_t FF_CODE_NULL = FF_NULL_UINT32;
+constexpr uint32_t FF_CODE_NULL          = FF_NULL_UINT32;
 
 // Float Nulls (Using max to adhere to the rule, though NaN is also an option)
-constexpr float FF_NULL_F32 = FF_NULL_UINT32;
-constexpr double FF_NULL_F64 = FF_NULL_UINT64;
-constexpr Offset FF_NULL_OFFSET = FF_NULL_UINT64;
+constexpr float FF_NULL_F32              = FF_NULL_UINT32;
+constexpr double FF_NULL_F64             = FF_NULL_UINT64;
+constexpr Offset FF_NULL_OFFSET          = FF_NULL_UINT64;
 constexpr uint32_t FF_CUSTOM_STRING_FLAG = 0x80000000;
 
 // FastFHIR magic bytes: "FFHR" in little-endian
-constexpr uint32_t FF_MAGIC_BYTES = 0x52484646;
+constexpr uint32_t FF_MAGIC_BYTES        = 0x52484646;
 
 enum FHIR_VERSION : uint16_t {
     FHIR_VERSION_R4 = 0x0400,

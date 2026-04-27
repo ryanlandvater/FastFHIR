@@ -274,7 +274,7 @@ static void test_getting_started_231() {
     auto root = parser.root();
     REQUIRE(root, "getting-started parser root is null");
 
-    auto patient = root.as<PatientData>();
+    PatientData patient = root;
 
     if (!patient.id.empty()) {
         std::cout << "  id=" << patient.id << "\n";
@@ -347,7 +347,7 @@ static void test_1(const fs::path& patient_json) {
     REQUIRE(patient_handle, "patient handle is null after ingest");
 
     // Inspect via zero-copy snapshot — no heap allocation for the read path
-    auto data = patient_handle.as_node().as<PatientData>();
+    PatientData data = patient_handle.as_node();
     std::cout << "  id     : " << data.id << "\n";
     std::cout << "  gender : " << FF_AdministrativeGenderToString(data.gender) << "\n";
     std::cout << "  active : " << (data.active == 1 ? "true" : "false") << "\n";
@@ -382,7 +382,7 @@ static void test_2() {
     auto root   = parser.root();
     REQUIRE(root, "root node is null — is patient.ffhr sealed?");
 
-    auto data = root.as<PatientData>();
+    PatientData data = root;
     std::cout << "  id       : " << data.id     << "\n";
     std::cout << "  gender   : " << FF_AdministrativeGenderToString(data.gender) << "\n";
     std::cout << "  active   : " << (data.active == 1 ? "true" : "false")        << "\n";
@@ -434,7 +434,7 @@ static void test_3() {
     auto root  = Parser(mem2).root();
     REQUIRE(root, "root is null after re-seal");
 
-    auto data = root.as<PatientData>();
+    PatientData data = root;
     REQUIRE(!data.birthdate.empty(), "birthDate should be non-empty after enrichment");
     std::cout << "  birthDate: " << data.birthdate << "\n";
     REQUIRE(data.birthdate == "1990-03-21", "unexpected birthDate value");
@@ -482,7 +482,7 @@ static void test_4(const fs::path& patient_json) {
     auto root = Parser(mem).root();
     REQUIRE(root, "re-parsed root is null");
 
-    auto data = root.as<PatientData>();
+    PatientData data = root;
     REQUIRE(data.id == "patient-1",         "unexpected patient id after re-parse");
     REQUIRE(!data.birthdate.empty(),        "birthDate should be present after enrich");
     REQUIRE(data.active == 1,               "active should be true");
@@ -507,7 +507,7 @@ static void test_4(const fs::path& patient_json) {
     auto socket_root = Parser(rx_mem).root();
     REQUIRE(socket_root, "socket-ingested root is null");
 
-    auto socket_data = socket_root.as<PatientData>();
+    PatientData socket_data = socket_root;
     REQUIRE(socket_data.id == "patient-1", "socket path changed patient id");
     REQUIRE(socket_data.active == 1, "socket path changed active flag");
     REQUIRE(socket_data.birthdate == "1990-03-21", "socket path changed birthDate");
@@ -544,7 +544,7 @@ static void test_5() {
     auto root2   = Parser(mem2).root();
     REQUIRE(root2, "bundle root is null after seal");
 
-    auto bundle_data = root2.as<BundleData>();
+    BundleData bundle_data = root2;
     REQUIRE(!bundle_data.entry.empty(), "bundle.entry is empty");
 
     // Walk entries; the OS faults in only the pages we read
@@ -588,7 +588,7 @@ static void test_5() {
     REQUIRE(root3, "bundle root is null after reseal");
 
     // Find patient-1 in the re-parsed bundle and verify telecom was appended
-    auto final_bundle = root3.as<BundleData>();
+    BundleData final_bundle = root3;
     bool found_enriched = false;
     for (auto& entry : final_bundle.entry) {
         if (entry.resource.recovery != FF_PATIENT::recovery) continue;

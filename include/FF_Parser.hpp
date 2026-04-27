@@ -16,13 +16,20 @@
  #pragma once
 
 #include "FF_Primitives.hpp"
+#include "FF_Ops.hpp"
 #include "FF_Memory.hpp"
-#include "FF_Utilities.hpp"
 #include "FF_Dictionary.hpp"
 
 namespace FastFHIR {
 class Builder;
 template<typename T> struct TypeTraits;
+
+/// Concept: true for any T that has a FastFHIR::TypeTraits<T> specialization with a read() method.
+template <typename T>
+concept HasTypeTraits = requires(const BYTE* base, Offset off, Size sz, uint32_t ver) {
+    { FastFHIR::TypeTraits<T>::read(base, off, sz, ver) } -> std::convertible_to<T>;
+};
+
 namespace Reflective {
 class Node;
 struct Entry;
@@ -129,27 +136,37 @@ public:
 };
 
 namespace Reflective {
-// Lightweight 32-byte POD slot view
+// Vtable slot coordinate — represents one field slot within a parent block.
 struct Entry {
-    const BYTE* base = nullptr;
-    Offset parent_offset = FF_NULL_OFFSET;
-    uint32_t vtable_offset = 0;
+    const BYTE*  base            = nullptr;
+    Offset       parent_offset   = FF_NULL_OFFSET;
+    uint32_t     vtable_offset   = 0;
     RECOVERY_TAG target_recovery = FF_RECOVER_UNDEFINED;
-    FF_FieldKind kind = FF_FIELD_UNKNOWN;
+    FF_FieldKind kind            = FF_FIELD_UNKNOWN;
+    Size         m_size          = 0;
+    uint32_t     m_version       = 0;
 
     Entry() = default;
+    // 5-arg constructor — backward-compatible; size/version remain zero.
     Entry(const BYTE* b, Offset parent, uint32_t vtable, RECOVERY_TAG recovery, FF_FieldKind field_kind)
         : base(b), parent_offset(parent), vtable_offset(vtable), target_recovery(recovery), kind(field_kind) {}
+    // 7-arg constructor — bakes in size/version for self-contained chaining.
+    Entry(const BYTE* b, Offset parent, uint32_t vtable, RECOVERY_TAG recovery, FF_FieldKind field_kind,
+          Size size, uint32_t version)
+        : base(b), parent_offset(parent), vtable_offset(vtable), target_recovery(recovery), kind(field_kind),
+          m_size(size), m_version(version) {}
 
     Offset absolute_offset() const {
         if (parent_offset == FF_NULL_OFFSET) return FF_NULL_OFFSET;
         return parent_offset + static_cast<Offset>(vtable_offset);
     }
 
+    // Validity check — true when this vtable slot is non-null.
     explicit operator bool() const {
         return base != nullptr && parent_offset != FF_NULL_OFFSET;
     }
-    
+
+    // Read a fixed-width scalar value at this vtable slot.
     template <typename T>
     requires std::is_arithmetic_v<T>
     T as_scalar(RECOVERY_TAG expected_tag) const {
@@ -157,12 +174,40 @@ struct Entry {
     }
 
     // Serialize an inline scalar (bool, int, uint, float, code) directly to JSON.
-    // Only valid when kind is a scalar kind; undefined for blocks/arrays/strings.
     void print_scalar_json(std::ostream& out, uint32_t version) const;
 
     // Produce a Node over a DATA_BLOCK field (block, array, string, choice, resource).
-    // Must NOT be called for scalar kinds — use print_scalar_json() instead.
-    Node as_node(Size size, uint32_t version, RECOVERY_TAG tag, FF_FieldKind kind) const;
+    // 4-arg form used by generated code and Python bindings.
+    Node as_node(Size size, uint32_t version, RECOVERY_TAG tag, FF_FieldKind field_kind) const;
+    // 0-arg form — uses stored m_size/m_version; requires the 7-arg constructor.
+    Node as_node() const;
+
+    // ── Implicit conversions — bodies defined after Node ──────────────────────
+    // String and code reads require a Node expansion (as_node() pointer-hop).
+    operator std::string_view() const;
+    // TypeTraits-backed struct reads (PatientData, BundleData, …).
+    template <HasTypeTraits T>
+    operator T() const;
+    // Pure in-place scalar reads — no Node expansion needed.
+    operator int32_t()  const { return as_scalar<int32_t> (RECOVER_FF_INT32);   }
+    operator uint32_t() const { return as_scalar<uint32_t>(RECOVER_FF_UINT32);  }
+    operator int64_t()  const { return as_scalar<int64_t> (RECOVER_FF_INT64);   }
+    operator uint64_t() const { return as_scalar<uint64_t>(RECOVER_FF_UINT64);  }
+    operator double()   const { return as_scalar<double>  (RECOVER_FF_FLOAT64); }
+    // Explicit escape hatch — handles bool and auto/template contexts.
+    // Body defined after Node.
+    template <typename T>
+    T as() const;
+
+    // ── Chained traversal — bodies defined after Node ─────────────────────────
+    Entry             operator[](FF_FieldKey key) const;
+    Node              operator[](size_t index)    const;
+    std::vector<Node> entries()                   const;
+    bool   is_array()  const;
+    bool   is_object() const;
+    bool   is_string() const;
+    bool   is_scalar() const;
+    size_t size()      const;
 };
 /**
  * @class Node
@@ -265,23 +310,28 @@ public:
     std::vector<Node> entries() const;
 
     /**
-     * @brief Lookup an object child by precomputed field key descriptor.
-     * @param key Field key descriptor produced from generated field metadata.
-     * @return Matching slot entry, or an empty entry if incompatible/not found.
+     * @brief Lookup a child field by precomputed key descriptor.
+     * @return An Entry containing vtable slot coordinates; implicitly converts to scalars or structs.
      */
     Entry operator[](FF_FieldKey key) const;
 
     /**
-     * @brief Lookup an array child by index.
-     * @param index Zero-based entry index.
-     * @return Matching slot entry, or an empty entry if out of bounds/not an array.
+     * @brief Lookup an array element by index.
+     * @return The resolved child Node at the given index.
      */
-    Entry operator[](size_t index) const;
-    
+    Node operator[](size_t index) const;
+
     /**
-     * @brief Eagerly parses this node into its concrete C++ POD structure.
-     * @tparam T_Data The generated FastFHIR Data struct (e.g., PatientData).
-     * @throws std::invalid_argument if the node's recovery tag doesn't match the requested type.
+     * @brief Materialize this block node into a typed C++ struct.
+     * @tparam T A generated FastFHIR data struct with a TypeTraits specialization.
+     */
+    template <HasTypeTraits T>
+    operator T() const { return as<T>(); }
+
+    /**
+     * @brief Explicit typed read — escape hatch for auto/template/bool contexts.
+     * @tparam T Primitives, std::string_view, or a HasTypeTraits struct.
+     * @throws std::runtime_error on recovery tag mismatch.
      */
     template <typename T>
     T as() const {
@@ -332,7 +382,8 @@ public:
             return TypeTraits<T>::read(m_base, m_node_offset, m_size, m_version);
         }
     }
-    
+
+public:
     /**
      * @brief Recursively print this node and all children as minified FHIR JSON.
      * @param out The output stream.
@@ -340,8 +391,38 @@ public:
     void print_json(std::ostream& out) const;
 };
 
-class ArrayNode : public Node {
-    
-};
+// ── Entry methods requiring the complete Node definition ─────────────────────
+inline Node Entry::as_node() const {
+    return as_node(m_size, m_version, target_recovery, kind);
+}
+
+inline Entry::operator std::string_view() const {
+    return as_node().as<std::string_view>();
+}
+
+template <HasTypeTraits T>
+inline Entry::operator T() const { return as_node().as<T>(); }
+
+template <typename T>
+inline T Entry::as() const {
+    if constexpr (std::is_same_v<T, bool>)               return as_scalar<bool>(RECOVER_FF_BOOL);
+    else if constexpr (std::is_same_v<T, std::string_view>) return operator std::string_view();
+    else if constexpr (std::is_same_v<T, int32_t>)       return operator int32_t();
+    else if constexpr (std::is_same_v<T, uint32_t>)      return operator uint32_t();
+    else if constexpr (std::is_same_v<T, int64_t>)       return operator int64_t();
+    else if constexpr (std::is_same_v<T, uint64_t>)      return operator uint64_t();
+    else if constexpr (std::is_same_v<T, double>)        return operator double();
+    else                                                  return operator T();
+}
+
+inline Entry             Entry::operator[](FF_FieldKey key) const { return as_node()[key]; }
+inline Node              Entry::operator[](size_t index)    const { return as_node()[index]; }
+inline std::vector<Node> Entry::entries()                   const { return as_node().entries(); }
+inline bool   Entry::is_array()  const { return as_node().is_array(); }
+inline bool   Entry::is_object() const { return as_node().is_object(); }
+inline bool   Entry::is_string() const { return as_node().is_string(); }
+inline bool   Entry::is_scalar() const { return as_node().is_scalar(); }
+inline size_t Entry::size()      const { return as_node().size(); }
+
 } // namespace Reflective
 } // namespace FastFHIR
