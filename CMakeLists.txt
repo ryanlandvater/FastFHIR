@@ -13,6 +13,29 @@ project(FastFHIR
     LANGUAGES CXX
 )
 
+# =====================================================================
+# Version Resolution
+# =====================================================================
+# CI sets FASTFHIR_VERSION_MAJOR / _MINOR / _BUILD from the GitHub release
+# tag (e.g. v1.2.3 → 1, 2, 3) before invoking cmake.  Falls back to the
+# version declared in project() above for local / offline builds.
+if(DEFINED ENV{FASTFHIR_VERSION_MAJOR})
+    set(FASTFHIR_VERSION_MAJOR "$ENV{FASTFHIR_VERSION_MAJOR}")
+else()
+    set(FASTFHIR_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
+endif()
+if(DEFINED ENV{FASTFHIR_VERSION_MINOR})
+    set(FASTFHIR_VERSION_MINOR "$ENV{FASTFHIR_VERSION_MINOR}")
+else()
+    set(FASTFHIR_VERSION_MINOR "${PROJECT_VERSION_MINOR}")
+endif()
+if(DEFINED ENV{FASTFHIR_VERSION_BUILD})
+    set(FASTFHIR_VERSION_BUILD "$ENV{FASTFHIR_VERSION_BUILD}")
+else()
+    set(FASTFHIR_VERSION_BUILD "${PROJECT_VERSION_PATCH}")
+endif()
+message(STATUS "FastFHIR version: ${FASTFHIR_VERSION_MAJOR}.${FASTFHIR_VERSION_MINOR}.${FASTFHIR_VERSION_BUILD}")
+
 # Make the language mode explicit for build tools and editor integrations.
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -131,6 +154,15 @@ target_include_directories(fastfhir_obj
 )
 
 target_compile_features(fastfhir_obj PUBLIC cxx_std_20)
+
+# Propagate version to every target that links fastfhir_obj (PUBLIC propagates
+# through target_link_libraries to ff_export, ff_test_readme, fastfhir, etc.).
+target_compile_definitions(fastfhir_obj
+    PUBLIC
+        FASTFHIR_VERSION_MAJOR=${FASTFHIR_VERSION_MAJOR}
+        FASTFHIR_VERSION_MINOR=${FASTFHIR_VERSION_MINOR}
+        FASTFHIR_VERSION_BUILD=${FASTFHIR_VERSION_BUILD}
+)
 
 target_precompile_headers(fastfhir_obj 
     PRIVATE
@@ -381,6 +413,15 @@ if (FASTFHIR_BUILD_PYTHON_BINDINGS)
     target_include_directories(fastfhir_python PRIVATE 
         ${FASTFHIR_INCLUDE_DIR}
         ${FASTFHIR_GENERATED_DIR}
+    )
+
+    # pybind11_add_module takes $<TARGET_OBJECTS:...> as source files, not as
+    # linked targets, so PUBLIC compile definitions from fastfhir_obj do not
+    # propagate automatically.  Inject the version definitions explicitly.
+    target_compile_definitions(fastfhir_python PRIVATE
+        FASTFHIR_VERSION_MAJOR=${FASTFHIR_VERSION_MAJOR}
+        FASTFHIR_VERSION_MINOR=${FASTFHIR_VERSION_MINOR}
+        FASTFHIR_VERSION_BUILD=${FASTFHIR_VERSION_BUILD}
     )
 
     # Unconditionally link the ingestor dependencies

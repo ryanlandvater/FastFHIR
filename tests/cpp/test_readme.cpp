@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <cstdio>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -32,7 +33,6 @@
 
 namespace fs = std::filesystem;
 using namespace FastFHIR;
-using namespace FastFHIR::FieldKeys;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Assertion helper
@@ -216,6 +216,113 @@ static constexpr std::string_view BUNDLE_JSON = R"({
     }
   ]
 })";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Getting Started — run in practical order: Step 2 -> Step 3 -> Step 1
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void test_getting_started_231() {
+    // Step 2: Create a file-backed Memory arena so we can persist patient.ffhr.
+    auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
+
+    // Step 3: Build from inline FHIR JSON, enrich with typed field keys, and seal.
+    Builder builder(mem, FHIR_VERSION_R5);
+    Ingest::Ingestor ingestor;
+
+    const std::string json = R"({
+        "resourceType": "Patient",
+        "id": "patient-1",
+        "active": false,
+        "gender": "male",
+        "name": [{"family": "Smith", "given": ["John"]}]
+    })";
+
+    Reflective::ObjectHandle patient_handle;
+    size_t parsed_count = 0;
+    auto result = ingestor.ingest(
+        {builder, Ingest::SourceType::FHIR_JSON, json},
+        patient_handle,
+        parsed_count);
+
+    REQUIRE(result.code == FF_SUCCESS, "getting-started ingest failed: " + result.message);
+    REQUIRE(parsed_count > 0, "getting-started ingest parsed 0 resources");
+    REQUIRE(patient_handle, "getting-started patient handle is null");
+
+    // Typed resource keys carry the exact write metadata (kind/offset/recovery).
+    patient_handle[FastFHIR::Fields::PATIENT::ACTIVE] = true;
+    patient_handle[FastFHIR::Fields::PATIENT::BIRTH_DATE] = std::string_view("1990-03-21");
+
+    builder.set_root(patient_handle);
+    auto view = builder.finalize();
+    REQUIRE(!view.empty(), "getting-started finalize returned empty view");
+
+    // Step 1: Open patient.ffhr read-only, parse bytes, and read fields only if present.
+    std::FILE* fp = std::fopen(PATIENT_FFHR.string().c_str(), "rb");
+    REQUIRE(fp != nullptr, "fopen(patient.ffhr, rb) failed");
+
+    REQUIRE(std::fseek(fp, 0, SEEK_END) == 0, "fseek failed");
+    const long file_size = std::ftell(fp);
+    REQUIRE(file_size > 0, "patient.ffhr is empty or unreadable");
+    std::rewind(fp);
+
+    std::vector<uint8_t> raw_bytes(static_cast<size_t>(file_size));
+    const size_t bytes_read = std::fread(raw_bytes.data(), 1, raw_bytes.size(), fp);
+    std::fclose(fp);
+    REQUIRE(bytes_read == raw_bytes.size(), "short read while loading patient.ffhr");
+
+    Parser parser(raw_bytes.data(), raw_bytes.size());
+    auto root = parser.root();
+    REQUIRE(root, "getting-started parser root is null");
+
+    auto patient = root.as<PatientData>();
+
+    if (!patient.id.empty()) {
+        std::cout << "  id=" << patient.id << "\n";
+        REQUIRE(patient.id == "patient-1", "unexpected id in getting-started parse");
+    } else {
+        throw std::runtime_error("expected id field to exist");
+    }
+
+    if (patient.active == 1) {
+        const bool active = patient.active == 1;
+        std::cout << "  active=" << std::boolalpha << active << "\n";
+        REQUIRE(active, "active should be true after typed key enrichment");
+    }
+
+    if (patient.gender != AdministrativeGender::Unknown) {
+        auto gender = FF_AdministrativeGenderToString(patient.gender);
+        std::cout << "  gender=" << gender << "\n";
+        REQUIRE(std::string_view(gender) == "male", "unexpected gender in getting-started parse");
+    }
+
+    if (!patient.birthdate.empty()) {
+        std::cout << "  birthDate=" << patient.birthdate << "\n";
+        REQUIRE(patient.birthdate == "1990-03-21", "unexpected birthDate after typed key enrichment");
+    }
+
+    if (!patient.name.empty()) {
+        bool saw_family = false;
+        bool saw_given = false;
+        for (auto& name : patient.name) {
+            if (!name.family.empty()) {
+                auto family = name.family;
+                std::cout << "  family=" << family << "\n";
+                REQUIRE(family == "Smith", "unexpected family in getting-started parse");
+                saw_family = true;
+            }
+            for (auto& given : name.given) {
+                auto g = given;
+                std::cout << "  given=" << g << "\n";
+                REQUIRE(g == "John", "unexpected given in getting-started parse");
+                    saw_given = true;
+            }
+        }
+        REQUIRE(saw_family, "expected at least one family name");
+        REQUIRE(saw_given, "expected at least one given name");
+    } else {
+        throw std::runtime_error("expected name array to exist");
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Example 1 — Ingest patient.json and save as patient.ffhr
@@ -552,6 +659,9 @@ int main() {
         std::cerr << "ERROR: " << e.what() << "\n";
         return 1;
     }
+
+    run("Getting Started — Step 2 -> Step 3 -> Step 1",
+        [] { test_getting_started_231(); });
 
     run("Example 1 — Ingest patient.json → save patient.ffhr",
         [&] { test_1(patient_json); });

@@ -455,6 +455,7 @@ PyMutableEntry resolve_ast_path(const PyStreamNode& root, py::tuple path) {
 
 PYBIND11_MODULE(_core, m) {
     m.doc() = "FastFHIR core C++ engine.";
+    m.attr("__version__") = FASTFHIR_VERSION_STRING;
 
     // =====================================================================
     // 1. Enums
