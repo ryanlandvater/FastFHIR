@@ -8,17 +8,17 @@ from . import _core
 from .fields import *
 
 # 3. Hoist core classes to the main namespace
-Memory      = _core.Memory
-MemoryView  = _core.MemoryView
-StreamHead  = _core.StreamHead
-StreamNode  = _core.StreamNode
-Ingestor    = _core.Ingestor
+Memory          = _core.Memory
+MemoryView      = _core.MemoryView
+StreamHead      = _core.StreamHead
+StreamNode      = _core.StreamNode
+Ingestor        = _core.Ingestor
 
 # Enums
-Checksum    = _core.Checksum
-SourceType  = _core.SourceType
-FhirVersion = _core.FhirVersion
-ResourceType = _core.ResourceType
+Checksum        = _core.Checksum
+SourceType      = _core.SourceType
+FhirVersion     = _core.FhirVersion
+ResourceType    = _core.ResourceType
 
 # ---------------------------------------------------------
 # Default Hasher Injections (Zero-Copy)

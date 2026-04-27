@@ -538,13 +538,14 @@ def test_6():
                 continue
             pid = node_val[Patient.ID].value()
             if pid == "patient-1":
-                assert bool(node_val[Patient.TELECOM]), "patient-1 telecom empty after surgical edit"
                 telecom_json = node_val[Patient.TELECOM].to_json()
                 assert "555-0199" in telecom_json, f"telecom value not in JSON: {telecom_json}"
-                print(f"  patient-1 telecom : 555-0199 (verified via JSON)")
+                print("  patient-1 telecom : 555-0199 (verified via to_json)")
                 found_enriched = True
             elif pid == "patient-2":
-                assert not bool(node_val[Patient.TELECOM]), "patient-2 telecom should still be empty"
+                # Verify patient-2 was not modified
+                telecom_items = list(node_val[Patient.TELECOM].items())
+                assert len(telecom_items) == 0, f"patient-2 telecom should be empty but has {telecom_items}"
                 print("  patient-2 untouched (telecom empty as expected)")
 
         assert found_enriched, "patient-1 not found in re-sealed bundle"

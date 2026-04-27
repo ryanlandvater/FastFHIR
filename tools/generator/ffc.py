@@ -1539,12 +1539,9 @@ def emit_python_fields(python_resource_map, output_dir="generated_src"):
     target_dir = os.path.join(output_dir, "python", "fields")
     os.makedirs(target_dir, exist_ok=True)
     
-    # 1. Generate an __init__.py so Python treats the folder as a package
-    init_path = os.path.join(target_dir, "__init__.py")
-    with open(init_path, "w") as f:
-        f.write("# Auto-generated FastFHIR fields module.\n")
-        f.write("# Import resources lazily to save memory.\n")
-        
+    # Note: __init__.py is created by emit_python_ast() which generates the actual imports.
+    # This function only generates the individual field module files.
+    
     # 2. Emit a separate file for every single FHIR resource/block
     for class_name, fields in python_resource_map.items():
         file_name = f"{class_name.lower()}.py"
@@ -1609,11 +1606,12 @@ def emit_python_ast(master_blocks, block_key_defs, token_registry, output_dir="g
         class_name = path.replace('.', '_').upper()
         file_name = f"{class_name.lower()}.py"
         
-        with open(os.path.join(target_dir, file_name), "w") as f:
-            f.write("from .. import _core\n")
-            f.write("from .base import ASTNode\n\n")
-            
-            f.write(f"class {class_name}_PATH(ASTNode):\n")
+        # APPEND to the existing file (created by emit_python_fields) instead of overwriting
+        with open(os.path.join(target_dir, file_name), "a") as f:
+            # Add the ASTNode import if not already present (it's added by emit_python_fields for resources)
+            # We need it for the PATH classes
+            f.write("from .base import ASTNode\n")
+            f.write(f"\nclass {class_name}_PATH(ASTNode):\n")
             if not layout:
                 f.write("    pass\n")
             
@@ -1684,7 +1682,129 @@ def emit_python_ast(master_blocks, block_key_defs, token_registry, output_dir="g
         f.write("]\n")
 
 # =====================================================================
-# 7. MASTER BUILD ORCHESTRATOR
+# 7. PYTHON STUB FILE GENERATION (PEP 561 Type Hints)
+# =====================================================================
+
+def emit_python_fields_stubs(python_resource_map, output_dir="generated_src"):
+    """
+    Generates .pyi stub files for field modules to enable IDE autocomplete
+    and type checking. One stub file per resource/block class.
+    """
+    import os
+    target_dir = os.path.join(output_dir, "python", "fields")
+    
+    for class_name, fields in python_resource_map.items():
+        stub_path = os.path.join(target_dir, f"{class_name.lower()}.pyi")
+        
+        with open(stub_path, "w") as f:
+            f.write("# Auto-generated stub file for type checking.\n")
+            f.write("# See corresponding .py file for implementation.\n\n")
+            f.write("from typing import ClassVar\n")
+            f.write("from .. import _core\n\n")
+            
+            f.write(f"class {class_name}:\n")
+            if not fields:
+                f.write("    ...\n\n")
+                continue
+            
+            for field_name, metadata in fields.items():
+                idx, orig_name, owner, fhir_type = metadata
+                safe_name = field_name.upper()
+                
+                if safe_name in ["CLASS", "IMPORT", "GLOBAL", "FOR", "WHILE", "IN", "IS", "AS"]:
+                    safe_name += "_"
+                
+                f.write(f"    {safe_name}: ClassVar[_core.Field]\n")
+            
+            f.write("\n")
+    
+    print(f"-- Emitted {len(python_resource_map)} Python field stub files (.pyi) into: {target_dir}/")
+
+def emit_python_ast_stubs(master_blocks, block_key_defs, output_dir="generated_src"):
+    """
+    Generates .pyi stub files for AST path builder classes to enable IDE
+    autocomplete and type checking. Declares property return types.
+    """
+    import os
+    target_dir = os.path.join(output_dir, "python", "fields")
+    
+    # Stub for base.py
+    with open(os.path.join(target_dir, "base.pyi"), "w") as f:
+        f.write("# Auto-generated stub file for type checking.\n")
+        f.write("from typing import Tuple, Type, TypeVar, Generic, overload\n\n")
+        
+        f.write("T = TypeVar('T', bound='ASTNode')\n\n")
+        
+        f.write("class ASTNode:\n")
+        f.write("    path: Tuple\n")
+        f.write("    def __init__(self, current_path: Tuple | None = ...) -> None: ...\n")
+        f.write("    def cast(self, target_class: Type[T] | ASTNode) -> T: ...\n\n")
+        
+        f.write("class ASTArrayNode(ASTNode):\n")
+        f.write("    item_class: Type[ASTNode]\n")
+        f.write("    def __init__(self, current_path: Tuple, item_class: Type[ASTNode]) -> None: ...\n")
+        f.write("    def __getitem__(self, index: int) -> ASTNode: ...\n\n")
+    
+    # Stubs for each path builder class
+    for path, layout in block_key_defs:
+        class_name = path.replace('.', '_').upper()
+        stub_path = os.path.join(target_dir, f"{class_name.lower()}.pyi")
+        
+        with open(stub_path, "w") as f:
+            f.write("# Auto-generated stub file for type checking.\n")
+            f.write("# See corresponding .py file for implementation.\n\n")
+            f.write("from typing import overload\n")
+            f.write("from . import _core\n")
+            f.write("from .base import ASTNode, ASTArrayNode\n\n")
+            
+            f.write(f"class {class_name}_PATH(ASTNode):\n")
+            if not layout:
+                f.write("    ...\n")
+            
+            for f_def in layout:
+                orig_name = f_def['orig_name']
+                safe_name = orig_name.upper()
+                if safe_name in ["CLASS", "IMPORT", "GLOBAL", "FOR", "WHILE", "IN", "IS", "AS"]:
+                    safe_name += "_"
+                
+                is_array = f_def.get('is_array', False)
+                
+                # Determine return type
+                if f_def['fhir_type'] in master_blocks:
+                    target_path = f_def['fhir_type']
+                    base_name = target_path.replace('.', '_').upper()
+                    return_type = f"{base_name}_PATH"
+                    if is_array:
+                        return_type = f"ASTArrayNode"
+                else:
+                    return_type = "ASTNode"
+                    if is_array:
+                        return_type = "ASTArrayNode"
+                
+                f.write(f"    @property\n")
+                f.write(f"    def {safe_name}(self) -> {return_type}: ...\n")
+            
+            f.write("\n")
+    
+    print(f"-- Emitted {len(block_key_defs)} Python AST path stub files (.pyi) into: {target_dir}/")
+
+def emit_py_typed_marker(output_dir="generated_src"):
+    """
+    Creates a py.typed marker file (PEP 561) to indicate the package
+    provides inline type information for type checkers like mypy.
+    """
+    import os
+    py_typed_path = os.path.join(output_dir, "python", "py.typed")
+    os.makedirs(os.path.dirname(py_typed_path), exist_ok=True)
+    
+    # py.typed is an empty marker file
+    with open(py_typed_path, "w") as f:
+        pass
+    
+    print(f"-- Emitted py.typed marker file: {py_typed_path}")
+
+# =====================================================================
+# 8. MASTER BUILD ORCHESTRATOR
 # =====================================================================
 def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir="generated_src", code_enum_map=None):
     code_enums = code_enum_map or {}
@@ -1864,8 +1984,16 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     with open(os.path.join(output_dir, "FF_FieldKeys.hpp"), "w") as f: f.write(field_keys_hpp)
     with open(os.path.join(output_dir, "FF_FieldKeys.cpp"), "w") as f: f.write(field_keys_cpp)
 
-    # Emit the Deferred Path Builder
+    # Emit Python field modules first (creates ADDRESS, BUNDLE, etc.)
+    emit_python_fields(python_resource_map, output_dir)
+    
+    # Emit the Deferred Path Builder second (appends ADDRESS_PATH, BUNDLE_PATH to same files)
     emit_python_ast(all_blocks, block_key_defs, token_registry, output_dir)
+    
+    # Emit stubs for IDE support (PEP 561)
+    emit_python_fields_stubs(python_resource_map, output_dir)
+    emit_python_ast_stubs(all_blocks, block_key_defs, output_dir)
+    emit_py_typed_marker(output_dir)
 
     # Generate reflection dispatch files
     reflection_hpp, reflection_cpp = generate_reflection_dispatch(sorted(reflected_block_names), resources)

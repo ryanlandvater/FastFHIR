@@ -430,9 +430,6 @@ if (FASTFHIR_BUILD_PYTHON_BINDINGS)
         OpenSSL::Crypto
     )
 
-    set_property(TARGET fastfhir_python PROPERTY OUTPUT_NAME fastfhir)
-    install(TARGETS fastfhir_python DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR})
-
 endif(FASTFHIR_BUILD_PYTHON_BINDINGS)
 
 # ---------------------------------------------------------------------
@@ -479,7 +476,7 @@ if (FASTFHIR_BUILD_PYTHON_BINDINGS)
 
     # 1. Install the core __init__.py from the new python directory
     install(
-        FILES ${CMAKE_CURRENT_SOURCE_DIR}/python/fastFHIR/__init__.py 
+        FILES ${CMAKE_CURRENT_SOURCE_DIR}/python/fastfhir/__init__.py
         DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR}/fastfhir
     )
 
@@ -489,7 +486,13 @@ if (FASTFHIR_BUILD_PYTHON_BINDINGS)
         DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR}/fastfhir
     )
 
-    # 3. Install the compiled C++ extension (_core.so) into the package folder
+    # 3. Install py.typed marker for PEP 561 type checking support
+    install(
+        FILES ${CMAKE_CURRENT_SOURCE_DIR}/generated_src/python/py.typed
+        DESTINATION ${FASTFHIR_INSTALL_PYTHON_LIBDIR}/fastfhir
+    )
+
+    # 4. Install the compiled C++ extension (_core.so) into the package folder
     # Note: Ensure OUTPUT_NAME is set to _core so it matches 'from . import _core'
     set_property(TARGET fastfhir_python PROPERTY OUTPUT_NAME _core)
     install(

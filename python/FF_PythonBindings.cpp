@@ -244,29 +244,36 @@ static std::string render_mutable_entry_json(const PyMutableEntry& entry_wrapper
         return "null";
     }
 
-    const auto* builder = entry_wrapper.entry.get_builder();
-    const Size arena_size = builder ? builder->memory().size() : 0;
-    const uint32_t version = builder ? static_cast<uint32_t>(builder->FhirVersion()) : 0;
-
     const FF_FieldKind kind = entry_wrapper.kind();
-    if (kind == FF_FIELD_STRING || kind == FF_FIELD_BLOCK ||
-        kind == FF_FIELD_RESOURCE || kind == FF_FIELD_ARRAY) {
-        Reflective::Node node = entry.as_node(arena_size, version,
-                                              entry_wrapper.effective_recovery(),
-                                              kind);
-        if (node.is_empty()) {
-            return "null";
+    
+    // For arrays, iterate through elements and materialize each one
+    // (this handles mutations correctly unlike reading from the original offset)
+    if (entry_wrapper.entry.is_array()) {
+        py::list items;
+        size_t sz = entry_wrapper.entry.size();
+        for (size_t i = 0; i < sz; ++i) {
+            auto elem = PyMutableEntry(entry_wrapper.builder, entry_wrapper.entry[i]);
+            py::object mat = materialize_mutable_entry_value(elem, true);
+            items.append(mat);
         }
-        return render_node_json(node);
+        
+        // Serialize array to JSON
+        try {
+            py::module_ json = py::module_::import("json");
+            return py::cast<std::string>(json.attr("dumps")(items));
+        } catch (const std::exception&) {
+            return "[]";
+        }
     }
-
-    if (kind != FF_FIELD_UNKNOWN) {
-        std::ostringstream oss;
-        entry.print_scalar_json(oss, version);
-        return oss.str();
+    
+    // For non-array fields, materialize and serialize
+    py::object materialized = materialize_mutable_entry_value(entry_wrapper, true);
+    try {
+        py::module_ json = py::module_::import("json");
+        return py::cast<std::string>(json.attr("dumps")(materialized));
+    } catch (const std::exception&) {
+        return "null";
     }
-
-    return "null";
 }
 
 static std::string render_parser_json(const Parser& parser) {
