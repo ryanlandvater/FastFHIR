@@ -2,19 +2,21 @@
 FastFHIR
 ===========
 
+[![Release](https://img.shields.io/github/v/release/RyanLandvater/FastFHIR?label=version&color=blue)](https://github.com/RyanLandvater/FastFHIR/releases)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
+![FHIR R4/R5](https://img.shields.io/badge/FHIR-R4%20%7C%20R5-blueviolet)
+![License](https://img.shields.io/badge/license-FF--SSL-orange)
+
 **FastFHIR** is a wildly fast, lock-free binary serializer and C++20 code generation pipeline for HL7 FHIR resources (R4 and R5).
 
 Healthcare interoperability has historically relied on formats that are inherently unsafe, computationally expensive, or structurally brittle. FastFHIR replaces traditional parsing with a mathematically strict, offset-based binary layout that guarantees safety, in-stream HL7 enrichment, and blistering speed. It generates strongly-typed C++ structs and a mathematically strict, zero-copy binary architecture directly from official HL7 FHIR Structure Definitions.
 
 A Python binding is available under [`python/`](python/) — see [`python/README.md`](python/README.md) for Python API examples.
 
-Note for C++ users: generic `FF_*` keys are optional and must be explicitly included via `#include <FF_FieldKeys.hpp>`.
-For mutation paths, prefer typed keys such as `FastFHIR::Fields::PATIENT::ACTIVE`.
-
 ## Why FastFHIR?
 
 ### 1. Extreme Performance
-FastFHIR turns data traversal into pure pointer arithmetic, fundamentally outpacing both legacy text formats and modern serialized binaries.
+FastFHIR turns data traversal into pure pointer arithmetic, **fundamentally outpacing both legacy text formats and modern serialized binaries**.
 * **O(1) Random Access:** Jump instantly to any deeply nested FHIR field — completely bypassing the O(N) linear scanning of HL7v2 and the O(N) string-hashing and DOM construction of JSON.
 * **Zero-Heap Allocation:** Reading a FastFHIR stream requires 0 heap allocations. A lightweight `Node` viewing lens is passed directly over the raw memory buffer, enabling nanosecond read times from the instant the message hits RAM.
 * **Zero-Copy Engine:** FastFHIR outperforms even Google Research's Protobuf FHIR implementation because it skips the deserialization phase entirely, operating natively at the absolute memory-bandwidth limit without unpacking varints or allocating C++ message objects.
@@ -547,6 +549,23 @@ FastFHIR includes a root `CMakeLists.txt`. Configure and build:
 cmake -S . -B build
 cmake --build build -j
 ```
+
+### Version injection
+
+The library embeds `FASTFHIR_VERSION_MAJOR`, `FASTFHIR_VERSION_MINOR`, and `FASTFHIR_VERSION_BUILD` macros (available via `<FastFHIR.hpp>` as `FASTFHIR_VERSION_STRING`). CMake reads the values from environment variables of the same name before falling back to the version declared in `CMakeLists.txt`. This makes CI version stamping from a GitHub tag straightforward:
+
+```yaml
+# .github/workflows/release.yml (excerpt)
+- name: Set version from tag
+  run: |
+    TAG="${GITHUB_REF_NAME#v}"          # strip leading 'v' from e.g. v1.2.3
+    IFS='.' read MAJOR MINOR BUILD <<< "$TAG"
+    echo "FASTFHIR_VERSION_MAJOR=$MAJOR" >> $GITHUB_ENV
+    echo "FASTFHIR_VERSION_MINOR=$MINOR" >> $GITHUB_ENV
+    echo "FASTFHIR_VERSION_BUILD=$BUILD" >> $GITHUB_ENV
+```
+
+The same env vars are consumed by the Python bindings (`fastfhir.__version__`) and any other tool that reads them during the build.
 
 This will:
 1. Download and extract FHIR specs (R4/R5)

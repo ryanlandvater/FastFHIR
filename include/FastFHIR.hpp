@@ -75,6 +75,28 @@
 
 #pragma once
 
+// =====================================================================
+// Version — injected at compile time by CMake, which reads
+// FASTFHIR_VERSION_MAJOR / _MINOR / _BUILD environment variables
+// (set by CI from the GitHub release tag, e.g. v1.2.3 → 1, 2, 3).
+// The #ifndef guards keep local / offline builds working without CI.
+// =====================================================================
+#ifndef FASTFHIR_VERSION_MAJOR
+#  define FASTFHIR_VERSION_MAJOR 0
+#endif
+#ifndef FASTFHIR_VERSION_MINOR
+#  define FASTFHIR_VERSION_MINOR 1
+#endif
+#ifndef FASTFHIR_VERSION_BUILD
+#  define FASTFHIR_VERSION_BUILD 0
+#endif
+
+#define FASTFHIR_STRINGIFY_IMPL(x) #x
+#define FASTFHIR_STRINGIFY(x)      FASTFHIR_STRINGIFY_IMPL(x)
+#define FASTFHIR_VERSION_STRING    FASTFHIR_STRINGIFY(FASTFHIR_VERSION_MAJOR) "." \
+                                   FASTFHIR_STRINGIFY(FASTFHIR_VERSION_MINOR) "." \
+                                   FASTFHIR_STRINGIFY(FASTFHIR_VERSION_BUILD)
+
 // NOTE:
 // Generic FF_* key registry is intentionally not included by default to avoid
 // accidental use in C++ mutation paths. Include <FF_FieldKeys.hpp> explicitly
