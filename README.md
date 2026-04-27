@@ -34,6 +34,166 @@ You do not have to sacrifice a clean API for bare-metal performance.
 
 ---
 
+# Getting Started
+
+These three short steps walk you from zero to a fully-functioning FastFHIR workflow.
+Start at whichever step matches your use-case — you do not have to use all three together.
+
+---
+
+## Step 1 — Parse raw bytes
+
+`Parser` is the read-only entry point. The simplest overload accepts nothing but a raw
+byte pointer and a size, so you can hand it any buffer you already have in memory — a
+`std::vector`, a memory-mapped file you loaded yourself, or bytes from a network socket.
+
+```cpp
+#include <FastFHIR.hpp>
+using namespace FastFHIR::FieldKeys;
+
+// Any contiguous buffer that holds a sealed FastFHIR archive will work.
+// Here we use a std::vector<uint8_t> as an example.
+std::vector<uint8_t> raw_bytes = /* load from file, network, etc. */;
+
+// Bind the parser — validates the header immediately, zero heap allocations.
+FastFHIR::Parser parser(raw_bytes.data(), raw_bytes.size());
+
+// Access the root node.
+auto root = parser.root();
+
+// Read scalar fields — O(1) offset arithmetic, no string hashing.
+auto id     = root[FF_ID].as<std::string_view>();
+auto active = root[FF_ACTIVE].as<bool>();
+auto gender = root[FF_GENDER].as<std::string_view>();
+
+// Walk structured arrays.
+for (auto& name_node : root[FF_NAME].entries()) {
+    auto family = name_node[FF_FAMILY].as<std::string_view>();
+    for (auto& given : name_node[FF_GIVEN].entries())
+        std::cout << given.as<std::string_view>() << " ";
+    std::cout << family << "\n";
+}
+
+// Stream the whole record back out as minified FHIR JSON.
+parser.print_json(std::cout);
+```
+
+That is the complete read path. No `Memory` object, no `Builder` — just bytes and a parser.
+
+---
+
+## Step 2 — Create a `Memory` arena
+
+FastFHIR's Virtual Memory Arena (VMA) is the backing store used by the `Builder` and the
+streaming ingestion path. There are three flavours:
+
+### Anonymous RAM arena (in-process only)
+
+```cpp
+#include <FastFHIR.hpp>
+
+// Reserve a 256 MB sparse virtual-address window backed by anonymous RAM.
+// Physical pages are only committed by the OS as you actually write to them.
+auto mem = FastFHIR::Memory::create(256 * 1024 * 1024);
+```
+
+### File-backed arena (persistent storage)
+
+```cpp
+#include <FastFHIR.hpp>
+
+// Map the arena straight to a file on disk.
+// Every write goes directly into the OS page cache — no separate write() call needed.
+// The file is created (or reopened) and grown to the requested capacity.
+auto mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
+```
+
+### Streaming arena (raw socket ingestion)
+
+When bytes are arriving over a TCP socket you can DMA them directly into the arena with
+`try_acquire_stream()`. This returns an RAII `StreamHead` that pins the write edge and
+exposes a buffer-compatible interface usable with any Asio or POSIX `read_some` call.
+
+```cpp
+#include <FastFHIR.hpp>
+
+auto mem  = FastFHIR::Memory::create(256 * 1024 * 1024);
+
+// Acquire the exclusive stream lock (returns std::nullopt if already held).
+auto head = mem.try_acquire_stream();
+if (!head) throw std::runtime_error("stream busy");
+
+// head->write_ptr() / head->size() satisfy std::buffer requirements.
+// Pass them directly to your socket layer:
+//   asio::read(conn, asio::buffer(head->write_ptr(), head->size()));
+// Then commit however many bytes actually arrived:
+head->commit(bytes_received);
+// StreamHead destructor releases the lock automatically.
+```
+
+Once data is committed, bind a `Parser` directly to the `Memory` handle to read it:
+
+```cpp
+FastFHIR::Parser parser(mem);
+auto root = parser.root();
+```
+
+---
+
+## Step 3 — Build a FastFHIR record from FHIR JSON
+
+`Builder` writes binary data into the arena; `Ingest::Ingestor` converts FHIR JSON into
+the binary layout for you. Together they replace the traditional parse → validate →
+serialize pipeline with a single in-place ingestion pass.
+
+```cpp
+#include <FastFHIR.hpp>
+#include <FF_Ingestor.hpp>
+using namespace FastFHIR::FieldKeys;
+
+// Use an anonymous arena for this example — swap in createFromFile() to persist to disk.
+auto mem = FastFHIR::Memory::create(64 * 1024 * 1024);
+
+FastFHIR::Builder          builder(mem, FHIR_VERSION_R5);
+FastFHIR::Ingest::Ingestor ingestor;
+
+// Any valid FHIR R4/R5 Patient JSON string.
+std::string json = R"({
+    "resourceType": "Patient",
+    "id": "patient-1",
+    "active": true,
+    "gender": "male",
+    "birthDate": "1990-03-21",
+    "name": [{"family": "Smith", "given": ["John"]}]
+})";
+
+// Ingest: converts JSON → binary in a single pass, writes into the arena.
+FastFHIR::Reflective::ObjectHandle patient_handle;
+size_t parsed_count = 0;
+ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, json},
+                patient_handle, parsed_count);
+
+// Amend fields directly on the handle — appends new bytes, patches the pointer.
+patient_handle[FF_ACTIVE]     = true;
+patient_handle[FF_BIRTH_DATE] = std::string("1990-03-21");
+
+// Seal the stream (no checksum for brevity; see API Examples for SHA-256).
+builder.set_root(patient_handle);
+auto view = builder.finalize();      // returns a lifetime-safe Memory::View
+
+// Read it back immediately — zero copies, same arena pages.
+FastFHIR::Parser parser(view.data(), view.size());
+auto root   = parser.root();
+auto id     = root[FF_ID].as<std::string_view>();     // "patient-1"
+auto gender = root[FF_GENDER].as<std::string_view>(); // "male"
+std::cout << "id=" << id << "  gender=" << gender << "\n";
+```
+
+That is the complete write + read cycle. The advanced examples below show checksums,
+file-backed persistence, socket transport, bundle editing, and lock-free concurrency.
+
+---
+
 # API Examples
 
 ## 1 — Ingest a FHIR JSON file and save as `.ffhr`
