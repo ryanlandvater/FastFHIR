@@ -158,12 +158,12 @@ FastFHIR::Builder          builder(mem, FHIR_VERSION_R5);
 FastFHIR::Ingest::Ingestor ingestor;
 
 // Any valid FHIR R4/R5 Patient JSON string.
+// birthDate is intentionally omitted here so we can demonstrate amendment below.
 std::string json = R"({
     "resourceType": "Patient",
     "id": "patient-1",
-    "active": true,
+    "active": false,
     "gender": "male",
-    "birthDate": "1990-03-21",
     "name": [{"family": "Smith", "given": ["John"]}]
 })";
 
@@ -173,9 +173,9 @@ size_t parsed_count = 0;
 ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, json},
                 patient_handle, parsed_count);
 
-// Amend fields directly on the handle — appends new bytes, patches the pointer.
-patient_handle[FF_ACTIVE]     = true;
-patient_handle[FF_BIRTH_DATE] = std::string("1990-03-21");
+// Amend fields — appends new bytes to the arena tail, patches only the pointer.
+patient_handle[FF_ACTIVE]     = true;           // flip false → true
+patient_handle[FF_BIRTH_DATE] = "1990-03-21";   // add a field that wasn't in the JSON
 
 // Seal the stream (no checksum for brevity; see API Examples for SHA-256).
 builder.set_root(patient_handle);
