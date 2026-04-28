@@ -208,19 +208,19 @@ target_compile_features(fastfhir PUBLIC cxx_std_20)
 # Ingestor Module (fastfhir_ingestor)
 # ---------------------------------------------------------------------
 if(FASTFHIR_BUILD_INGESTOR)
-    find_package(simdjson QUIET)
-
-    if(NOT simdjson_FOUND)
-        message(STATUS "FastFHIR: Local simdjson not found. Fetching via FetchContent...")
-        include(FetchContent)
-        set(SIMDJSON_BUILD_TESTING OFF CACHE BOOL "" FORCE)
-        set(SIMDJSON_JUST_LIBRARY ON CACHE BOOL "" FORCE)
-        FetchContent_Declare(simdjson
-            GIT_REPOSITORY https://github.com/simdjson/simdjson.git
-            GIT_TAG v3.9.5
-        )
-        FetchContent_MakeAvailable(simdjson)
-    endif()
+    # Always fetch simdjson via FetchContent to avoid picking up bundled copies
+    # from Anaconda or other Python environments, which ship an incompatible
+    # simdjson.h that breaks int8_t resolution on Apple Silicon (arm_neon.h
+    # gets included before <cstdint> defines the fixed-width integer types).
+    message(STATUS "FastFHIR: Fetching simdjson via FetchContent...")
+    include(FetchContent)
+    set(SIMDJSON_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(SIMDJSON_JUST_LIBRARY ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(simdjson
+        GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+        GIT_TAG v3.9.5
+    )
+    FetchContent_MakeAvailable(simdjson)
 
     # Create an object library for the ingestor-specific logic
     add_library(fastfhir_ingest_obj 
@@ -328,7 +328,11 @@ if(FASTFHIR_BUILD_TESTS)
             ${FASTFHIR_GENERATED_DIR}
             ${ASIO_INCLUDE_DIR}
     )
-    target_compile_definitions(ff_test_readme PRIVATE ASIO_STANDALONE)
+    target_compile_definitions(ff_test_readme
+        PRIVATE
+            ASIO_STANDALONE
+            FASTFHIR_TEST_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/tests/cpp"
+    )
 
     if(WIN32)
         target_compile_definitions(ff_test_readme PRIVATE _WIN32_WINNT=0x0601 WIN32_LEAN_AND_MEAN NOMINMAX)

@@ -7,6 +7,7 @@
 
 #include "FF_Builder.hpp"
 #include "FF_Logger.hpp"
+#include <cstdint>
 #include <simdjson.h>
 #include <string_view>
 #include <vector>

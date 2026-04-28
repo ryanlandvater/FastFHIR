@@ -17,6 +17,8 @@
 #include "FF_Primitives.hpp"
 #include <bit>
 #include <cmath>
+#include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 

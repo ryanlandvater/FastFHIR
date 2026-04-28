@@ -7,15 +7,138 @@
 // Main Thread Ingestion Routing & Bundle Parsing
 // ============================================================
 #include "FF_Ingestor.hpp"
-#include "../generated_src/FF_IngestMappings.hpp"
+#include "../include/FF_Queue.hpp"
 #include "../generated_src/FF_Bundle.hpp"
-#include <simdjson.h>
+#include "../generated_src/FF_IngestMappings.hpp"
 #include <cctype>
-#include <iostream>
 #include <thread>
 #include <vector>
 
 namespace FastFHIR::Ingest {
+
+// =====================================================================
+// INGEST WORK QUEUE
+// Complex field values (blocks and arrays) are enqueued rather than
+// dispatched inline, so the calling frame stays shallow and the queue
+// is drained iteratively after the initial parse.
+// =====================================================================
+
+enum class IngestPendingKind {
+    BlockField,   // FF_FIELD_BLOCK  → dispatch_block → parent[key] = child
+    ArrayField,   // FF_FIELD_ARRAY  → dispatch_block(synthetic owner) → extract array → parent[key] = array
+};
+
+struct IngestPending {
+    IngestPendingKind          kind     = IngestPendingKind::BlockField;
+    Reflective::ObjectHandle   parent;                            // target parent object
+    FF_FieldKey                key;                               // field within parent to write
+    std::string                payload;                           // owned JSON for this value
+    RECOVERY_TAG               recovery = FF_RECOVER_UNDEFINED;  // dispatch recovery tag
+};
+
+using IngestQueue = FIFO::Queue<IngestPending, 256>;
+
+// =====================================================================
+// BUNDLE WORK QUEUE
+// Each bundle entry is represented as a lightweight view-plus-index task.
+// The queue is fully populated before any worker starts (all slots are
+// PENDING), so workers never spin waiting for items to be written.
+// Workers each hold an independent Consumer; pop() uses a CAS on every
+// slot so exactly one thread claims each task — no coordinator needed.
+// =====================================================================
+struct BundleTask {
+    std::string_view payload;   // view into the original request JSON (zero-copy)
+    size_t           index;     // position within the preallocated inline entry array
+};
+
+// CAPACITY=64 → up to 64 concurrent live nodes × 2000 entries/node = 128 000 entries.
+using BundleQueue = FIFO::Queue<BundleTask, 64>;
+
+struct IngestContext {
+    Builder&                      builder;
+    simdjson::ondemand::parser&   parser;
+    IngestQueue                   queue;
+    IngestQueue::Injector         injector;
+    IngestQueue::Consumer         consumer;
+    ConcurrentLogger*             logger;
+
+    IngestContext(Builder& b, simdjson::ondemand::parser& p, ConcurrentLogger* lg)
+        : builder(b), parser(p), queue(),
+          injector(queue.get_injector()), consumer(queue.get_consumer()), logger(lg) {}
+};
+
+static void enqueue_ingest_pending(IngestContext& ctx, IngestPending item) {
+    ctx.injector.push(item);
+}
+
+static FF_Result process_ingest_pending(IngestPending& pending, IngestContext& ctx) {
+    simdjson::padded_string safe_json(pending.payload);
+    try {
+        if (pending.kind == IngestPendingKind::BlockField) {
+            simdjson::ondemand::document doc = ctx.parser.iterate(safe_json);
+            simdjson::ondemand::value    val = doc.get_value();
+            Reflective::ObjectHandle child =
+                dispatch_block(pending.recovery, val, ctx.builder, ctx.logger);
+            if (child.offset() == FF_NULL_OFFSET)
+                return FF_Result{FF_FAILURE,
+                    std::string("IngestPending: failed to build block '") + pending.key.name + "'."};
+            pending.parent[pending.key] = child;
+
+        } else /* ArrayField */ {
+            // INLINE OBJECT ARRAYS ONLY.
+            // FastFHIR never uses offset-arrays for object fields. Every element is
+            // written contiguously into the arena as an inline block at the time the
+            // generated *_from_json() function runs. The resulting layout is:
+            //
+            //   [ FF_ARRAY header | elem[0] block | elem[1] block | ... ]
+            //
+            // We call dispatch_block() with the owner_recovery tag, which resolves to
+            // the generated function for the *parent* type (e.g. Patient for Patient.telecom).
+            // That function writes the full owner object including the packed array block
+            // into the arena in one call. We then read back the array offset from the
+            // owner's vtable slot and hand a typed ObjectHandle to the MutableEntry
+            // assignment, which patches the pointer in the real parent.
+            simdjson::ondemand::document doc  = ctx.parser.iterate(safe_json);
+            simdjson::ondemand::value    val  = doc.get_value();
+            Reflective::ObjectHandle owner =
+                dispatch_block(pending.recovery, val, ctx.builder, ctx.logger);
+            if (owner.offset() == FF_NULL_OFFSET)
+                return FF_Result{FF_FAILURE,
+                    std::string("IngestPending: failed to build array owner for field '") + pending.key.name + "'."};
+
+            // Read the array block offset from the owner's vtable slot for this field.
+            // key.field_offset is the byte distance from the owner block base to the
+            // 8-byte pointer slot that holds the FF_ARRAY block offset.
+            const BYTE* base      = ctx.builder.memory().base();
+            Offset      slot_addr = owner.offset() + pending.key.field_offset;
+            Offset      array_off = LOAD_U64(base + slot_addr);
+            if (array_off == FF_NULL_OFFSET)
+                return FF_Result{FF_FAILURE,
+                    std::string("IngestPending: array payload parsed to null for field '") + pending.key.name + "'."};
+
+            // Confirm the block at array_off is a genuine FF_ARRAY (RECOVER_ARRAY_BIT set).
+            // This catches any mismatch between owner_recovery and the actual field.
+            RECOVERY_TAG stored_tag = static_cast<RECOVERY_TAG>(
+                LOAD_U16(base + array_off + DATA_BLOCK::RECOVERY));
+            if ((stored_tag & RECOVER_ARRAY_BIT) == 0)
+                return FF_Result{FF_FAILURE,
+                    std::string("IngestPending: payload is not an FF_ARRAY block for field '") + pending.key.name + "'."};
+
+            // Wrap the existing inline array block in an ObjectHandle using the
+            // semantic element recovery tag (child_recovery), then assign it to
+            // the parent's field slot via MutableEntry::operator=(ObjectHandle).
+            Reflective::ObjectHandle array_handle(&ctx.builder, array_off, pending.key.child_recovery);
+            pending.parent[pending.key] = array_handle;
+        }
+    } catch (const simdjson::simdjson_error& e) {
+        return FF_Result{FF_FAILURE,
+            std::string("IngestPending simdjson error for field '") + pending.key.name + "': " + e.what()};
+    } catch (const std::exception& e) {
+        return FF_Result{FF_FAILURE,
+            std::string("IngestPending error for field '") + pending.key.name + "': " + e.what()};
+    }
+    return FF_SUCCESS;
+}
 
 FF_Result Ingestor::ingest(const IngestRequest& request, Reflective::ObjectHandle& out_root, size_t& out_parsed_count)
 {
@@ -98,65 +221,108 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
         // =====================================================================
         // 2. PREPARE THE PREALLOCATED ARRAY
         // =====================================================================
-        // Force the Builder to allocate exactly N inline 82-byte structs!
+        // INLINE OBJECTS: Bundle.entry elements are stored inline — not as an
+        // array of offsets pointing to heap-allocated objects. Each BundleentryData
+        // is a fixed-size struct; by pre-populating N default-constructed entries
+        // here, the Builder's append_obj() call below writes a single contiguous
+        // arena region:
+        //
+        //   [ FF_ARRAY header | BundleentryData[0] | BundleentryData[1] | ... ]
+        //
+        // Worker threads then patch fields *within* each already-allocated slot
+        // using MutableEntry assignments — no secondary allocation or pointer
+        // chasing for the array elements themselves.
         size_t count = task_payloads.size();
         pre_bundle.entry = std::vector<BundleentryData>(count);
 
         // =====================================================================
         // 3. WRITE THE PREALLOCATED BUNDLE TOP-DOWN
         // =====================================================================
-        // This safely writes the strings, the header, and the perfectly packed array block to mmap.
+        // Writes strings, the Bundle header block, and the fully-packed inline
+        // entry array block to the arena in one append_obj() call.
         Reflective::ObjectHandle root_handle = m_builder.append_obj(pre_bundle);
         Offset bundle_offset = root_handle.offset();
+        (void)bundle_offset;
 
         // =====================================================================
         // 4. LOCATE THE PREALLOCATED ARRAY BLOCK FOR PATCHING
         // =====================================================================
-        // Safely retrieve the proxy using the generated reflection key
+        // entry_array is an ObjectHandle pointing at the inline FF_ARRAY block.
+        // Indexing it with operator[](size_t) returns a MutableEntry whose
+        // parent_offset is the array block itself and whose vtable_offset is the
+        // byte position of that element within the contiguous block.
         Reflective::ObjectHandle entry_array = root_handle[Fields::BUNDLE::ENTRY];
 
         // =====================================================================
-        // 5. CONCURRENT ARRAY PATCHING
+        // 5. CONCURRENT ARRAY PATCHING — SHARED QUEUE / DYNAMIC LOAD BALANCING
         // =====================================================================
+        // All N entry tasks are pushed into a single BundleQueue before any
+        // worker is spawned. Workers race to pop() tasks via an atomic CAS on
+        // every queue slot: the first thread to successfully CAS a slot from
+        // PENDING → READING owns that entry; all other threads skip it and
+        // advance to the next slot. This gives perfect dynamic load balancing
+        // — faster threads naturally pull more work with zero coordination
+        // overhead, and no thread ever idles while tasks remain in the queue.
         out_parsed_count = count;
-        std::atomic<size_t> current_task{0};
+
+        // Push all tasks before spawning workers so every slot is PENDING
+        // (not WRITING) when consumers start, eliminating any spin-wait.
+        BundleQueue bundle_queue;
+        {
+            auto injector = bundle_queue.get_injector();
+            for (size_t i = 0; i < count; ++i) {
+                injector.push(BundleTask{task_payloads[i], i});
+            }
+            // Injector destructs here; all slots are now PENDING.
+        }
+
         std::vector<std::thread> workers;
-        
         for (unsigned int i = 0; i < m_num_threads; ++i) {
-            workers.emplace_back([this, i, &task_payloads, entry_array, &current_task, &m_builder]() mutable {
+            workers.emplace_back([this, i, &bundle_queue, entry_array, &m_builder]() mutable {
                 auto& local_parser = m_parser_pool[i];
-                
+
+                // Each worker gets its own Consumer starting at the queue head.
+                // pop() uses CAS so no two workers ever claim the same task.
+                // Faster workers simply pop more entries — no static partition.
+                auto consumer = bundle_queue.get_consumer();
+                BundleTask task;
+
                 while (!m_engine_faulted.load(std::memory_order_relaxed)) {
-                    size_t task_idx = current_task.fetch_add(1, std::memory_order_relaxed);
-                    if (task_idx >= task_payloads.size()) break;
+                    if (consumer.pop(task)) {
+                        try {
+                            simdjson::padded_string       local_pad(task.payload);
+                            simdjson::ondemand::document  local_doc = local_parser.iterate(local_pad);
+                            simdjson::ondemand::object    local_obj = local_doc.get_object();
 
-                    try {
-                        simdjson::padded_string local_pad(task_payloads[task_idx]);
-                        simdjson::ondemand::document local_doc = local_parser.iterate(local_pad);
-                        simdjson::ondemand::object local_obj = local_doc.get_object();
-                        
-                        // 1. Get the handle to the absolute memory offset of this specific array slot
-                        Reflective::MutableEntry entry_wrapper = entry_array[task_idx];
+                            // Locate the pre-allocated inline arena slot for this entry.
+                            Reflective::MutableEntry entry_wrapper = entry_array[task.index];
 
-                        // 2. Pass the JSON tape and the wrapper handle directly to the auto-generated patcher
-                        Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
-                            
-                    } catch (const simdjson::simdjson_error& e) {
-                        m_engine_faulted.store(true, std::memory_order_release);
-                        m_logger.log(std::string("[Fatal] Worker thread crashed on resource index ") + 
-                                     std::to_string(task_idx) + " (simdjson): " + e.what());
-                        break;
-                    } catch (const std::exception& e) {
-                        m_engine_faulted.store(true, std::memory_order_release);
-                        m_logger.log(std::string("[Fatal] Worker thread crashed on resource index ") + 
-                                     std::to_string(task_idx) + " (std::exception): " + e.what());
-                        break;
-                    } catch (...) {
-                        m_engine_faulted.store(true, std::memory_order_release);
-                        m_logger.log(std::string("[Fatal] Worker thread crashed on resource index ") + 
-                                     std::to_string(task_idx) + " with an unknown exception.");
-                        break;
+                            // Write all entry fields into the existing inline block.
+                            // All objects are written inline — no heap indirection.
+                            Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
+
+                        } catch (const simdjson::simdjson_error& e) {
+                            m_engine_faulted.store(true, std::memory_order_release);
+                            m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                         std::to_string(task.index) + " (simdjson): " + e.what());
+                            break;
+                        } catch (const std::exception& e) {
+                            m_engine_faulted.store(true, std::memory_order_release);
+                            m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                         std::to_string(task.index) + " (std::exception): " + e.what());
+                            break;
+                        } catch (...) {
+                            m_engine_faulted.store(true, std::memory_order_release);
+                            m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                         std::to_string(task.index) + " with unknown exception.");
+                            break;
+                        }
+                        continue;
                     }
+                    // Queue exhausted — all entries claimed by this or other workers.
+                    if (consumer.at_end()) break;
+                    // pop() returned false but queue not yet exhausted: another
+                    // thread holds the next slot mid-claim. Spin briefly.
                 }
             });
         }
@@ -211,88 +377,66 @@ FF_Result Ingestor::insert_at_field_json(Reflective::ObjectHandle& parent_object
         }
     }
 
-    try {
-        auto& parser = m_parser_pool[0];
-        
-        // STRICT SAFETY: Ensure padding for AVX-512 instructions
-        simdjson::padded_string safe_json(payload);
-        simdjson::ondemand::document doc = parser.iterate(safe_json);
-        simdjson::ondemand::value json_val = doc.get_value();
+    // 2. Build an IngestContext and enqueue the work item rather than dispatching inline.
+    //    The parent slot is recorded, and the actual JSON parse + builder write happens 
+    //    during the queue drain below.
+    IngestContext ctx(*parent_object.get_builder(), m_parser_pool[0], &m_logger);
 
-        // 2. Build and link according to target field kind.
-        if (key.kind == FF_FIELD_ARRAY) {
-            // Parse as a single item or an already-formed JSON array.
-            bool is_array_payload = false;
-            for (char ch : payload) {
-                if (!std::isspace(static_cast<unsigned char>(ch))) {
-                    is_array_payload = (ch == '[');
-                    break;
-                }
+    if (key.kind == FF_FIELD_ARRAY) {
+        // Build the synthetic owner JSON that wraps the array payload.
+        bool is_array_payload = false;
+        for (char ch : payload) {
+            if (!std::isspace(static_cast<unsigned char>(ch))) {
+                is_array_payload = (ch == '[');
+                break;
             }
-
-            std::string owner_json;
-            owner_json.reserve(key.name_len + payload.size() + 16);
-            owner_json += "{\"";
-            owner_json.append(key.name, key.name_len);
-            owner_json += "\":";
-            if (is_array_payload) {
-                owner_json.append(payload.data(), payload.size());
-            } else {
-                owner_json += "[";
-                owner_json.append(payload.data(), payload.size());
-                owner_json += "]";
-            }
-            owner_json += "}";
-
-            simdjson::padded_string owner_safe_json(owner_json);
-            simdjson::ondemand::document owner_doc = parser.iterate(owner_safe_json);
-            simdjson::ondemand::value owner_val = owner_doc.get_value();
-
-            Reflective::ObjectHandle owner_handle =
-                dispatch_block(key.owner_recovery, owner_val, *parent_object.get_builder(), &m_logger);
-            if (owner_handle.offset() == FF_NULL_OFFSET) {
-                return FF_Result{FF_FAILURE,
-                    std::string("Failed to build inline array payload for field '") + key.name + "'."};
-            }
-
-            const BYTE* base = parent_object.get_builder()->memory().base();
-            Offset slot_addr = owner_handle.offset() + key.field_offset;
-            Offset array_offset = LOAD_U64(base + slot_addr);
-
-            if (array_offset == FF_NULL_OFFSET) {
-                return FF_Result{FF_FAILURE,
-                    std::string("Array payload parsed to null for field '") + key.name + "'."};
-            }
-
-            RECOVERY_TAG stored_tag = static_cast<RECOVERY_TAG>(
-                LOAD_U16(base + array_offset + DATA_BLOCK::RECOVERY));
-            if ((stored_tag & RECOVER_ARRAY_BIT) == 0) {
-                return FF_Result{FF_FAILURE,
-                    std::string("Internal array insert error for field '") + key.name +
-                    "': generated payload is not an FF_ARRAY block."};
-            }
-
-            // MutableEntry validates against child_recovery, so use semantic element tag here.
-            Reflective::ObjectHandle array_handle(
-                parent_object.get_builder(), array_offset, key.child_recovery);
-            parent_object[key] = array_handle;
-        } else {
-            // Block field path.
-            Reflective::ObjectHandle child_handle =
-                dispatch_block(key.child_recovery, json_val, *parent_object.get_builder(), &m_logger);
-
-            if (child_handle.offset() == FF_NULL_OFFSET)
-                return FF_Result{FF_FAILURE, "Failed to parse child JSON payload into FastFHIR::Memory arena."};
-
-            parent_object[key] = child_handle;
         }
 
-        return FF_SUCCESS;
+        std::string owner_json;
+        owner_json.reserve(key.name_len + payload.size() + 16);
+        owner_json += "{\"";
+        owner_json.append(key.name, key.name_len);
+        owner_json += "\":";
+        if (is_array_payload) {
+            owner_json.append(payload.data(), payload.size());
+        } else {
+            owner_json += "[";
+            owner_json.append(payload.data(), payload.size());
+            owner_json += "]";
+        }
+        owner_json += "}";
 
-    } catch (const simdjson::simdjson_error& e) {
-        return FF_Result{FF_FAILURE, std::string("simdjson Exception during field insert: ") + e.what()};
-    } catch (const std::exception& e) {
-        return FF_Result{FF_FAILURE, std::string("Standard Exception during field insert: ") + e.what()};
+        enqueue_ingest_pending(ctx, IngestPending{
+            IngestPendingKind::ArrayField,
+            parent_object,
+            key,
+            std::move(owner_json),
+            key.owner_recovery,
+        });
+    } else {
+        // Block field path.
+        enqueue_ingest_pending(ctx, IngestPending{
+            IngestPendingKind::BlockField,
+            parent_object,
+            key,
+            std::string(payload),
+            key.child_recovery,
+        });
     }
+
+    // 3. Drain the queue
+    //    Each item records the MutableEntry slot (parent + key) and is updated
+    //    once its JSON is parsed and the child block written to the arena.
+    IngestPending pending;
+    while (true) {
+        if (ctx.consumer.pop(pending)) {
+            FF_Result result = process_ingest_pending(pending, ctx);
+            if (!result) return result;
+            continue;
+        }
+        if (ctx.consumer.at_end()) break;
+    }
+
+    return FF_SUCCESS;
 }
 } // namespace FastFHIR::Ingest

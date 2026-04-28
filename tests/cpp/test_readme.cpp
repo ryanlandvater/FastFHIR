@@ -10,16 +10,15 @@
  */
 
 #include <FastFHIR.hpp>
-#include "FF_AllTypes.hpp"     // PatientData, BundleData, ObservationData, …
 #include <FF_Ingestor.hpp>
+#include "FF_AllTypes.hpp"     // PatientData, BundleData, ObservationData, …
 
 #include <openssl/evp.h>
 
 #include <algorithm>
+#include <iostream>
 #include <filesystem>
 #include <fstream>
-#include <cstdio>
-#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -139,16 +138,27 @@ static void socket_recv_exact_to_memory(asio::ip::tcp::socket& in_sock, Memory& 
 // Test fixture paths
 // ─────────────────────────────────────────────────────────────────────────────
 
-static const fs::path TEST_DIR     = fs::path(__FILE__).parent_path();
-static const fs::path PATIENT_FFHR = TEST_DIR / "patient.ffhr";
-static const fs::path BUNDLE_FFHR  = TEST_DIR / "bundle.ffhr";
-static const fs::path PATIENT_COMPACT_FFHR = TEST_DIR / "patient.compact.ffhr";
-static const fs::path BUNDLE_COMPLEX_FFHR = TEST_DIR / "bundle.complex.ffhr";
-static const fs::path BUNDLE_COMPLEX_COMPACT_FFHR = TEST_DIR / "bundle.complex.compact.ffhr";
+#ifndef FASTFHIR_TEST_ARTIFACT_DIR
+#define FASTFHIR_TEST_ARTIFACT_DIR "."
+#endif
+
+static const fs::path TEST_SOURCE_DIR = fs::path(__FILE__).parent_path();
+static const fs::path TEST_ARTIFACT_DIR = [] {
+    fs::path p(FASTFHIR_TEST_ARTIFACT_DIR);
+    std::error_code ec;
+    fs::create_directories(p, ec);
+    return p;
+}();
+
+static const fs::path PATIENT_FFHR = TEST_ARTIFACT_DIR / "patient.ffhr";
+static const fs::path BUNDLE_FFHR  = TEST_ARTIFACT_DIR / "bundle.ffhr";
+static const fs::path PATIENT_COMPACT_FFHR = TEST_ARTIFACT_DIR / "patient.compact.ffhr";
+static const fs::path BUNDLE_COMPLEX_FFHR = TEST_ARTIFACT_DIR / "bundle.complex.ffhr";
+static const fs::path BUNDLE_COMPLEX_COMPACT_FFHR = TEST_ARTIFACT_DIR / "bundle.complex.compact.ffhr";
 
 static fs::path find_patient_json() {
     const std::vector<fs::path> candidates = {
-        TEST_DIR / "patient.json",
+        TEST_SOURCE_DIR / "patient.json",
         // sibling FastFHIR_Python repo (common development layout)
         fs::path(__FILE__).parent_path() / "../../../FastFHIR_Python/test/patient.json",
     };
