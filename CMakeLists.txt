@@ -49,7 +49,7 @@ option(FASTFHIR_GENERATE_ON_BUILD "Regenerate generated sources on each build" O
 
 # Production profile passed into the Python generator.
 # Supported values: us, uk, all
-set(FASTFHIR_PRODUCTION_PROFILE "us" CACHE STRING "FastFHIR production profile for generator (us|uk|all)")
+set(FASTFHIR_PRODUCTION_PROFILE "us" CACHE STRING "FastFHIR production profile for generator (us|uk)")
 set_property(CACHE FASTFHIR_PRODUCTION_PROFILE PROPERTY STRINGS us uk all)
 if(NOT FASTFHIR_PRODUCTION_PROFILE MATCHES "^(us|uk|all)$")
     message(FATAL_ERROR "Invalid FASTFHIR_PRODUCTION_PROFILE='${FASTFHIR_PRODUCTION_PROFILE}'. Use us, uk, or all.")
@@ -255,7 +255,7 @@ if(FASTFHIR_BUILD_INGESTOR)
 
     target_link_libraries(fastfhir_ingest_obj PRIVATE fastfhir_obj simdjson::simdjson)
 
-    if(FASTFHIR_RUN_GENERATOR)
+    if(FASTFHIR_RUN_GENERATOR AND FASTFHIR_GENERATE_ON_BUILD)
         add_dependencies(fastfhir_ingest_obj fastfhir_generate)
     endif()
 
@@ -522,6 +522,23 @@ if (FASTFHIR_BUILD_PYTHON_BINDINGS)
     )
 
 endif()
+
+# ---------------------------------------------------------------------
+# Convenience Target — build_all
+# Builds every enabled target in one shot: core library, ingestor,
+# exporter CLI, tests, and (if enabled) Python bindings.
+# ---------------------------------------------------------------------
+set(_BUILD_ALL_TARGETS fastfhir ff_export)
+if(FASTFHIR_BUILD_INGESTOR)
+    list(APPEND _BUILD_ALL_TARGETS fastfhir_ingestor ff_ingest)
+endif()
+if(FASTFHIR_BUILD_TESTS)
+    list(APPEND _BUILD_ALL_TARGETS ff_test_readme)
+endif()
+if(FASTFHIR_BUILD_PYTHON_BINDINGS)
+    list(APPEND _BUILD_ALL_TARGETS fastfhir_python)
+endif()
+add_custom_target(build_all DEPENDS ${_BUILD_ALL_TARGETS})
 
 # ---------------------------------------------------------------------
 # Xcode Project Navigator Organization

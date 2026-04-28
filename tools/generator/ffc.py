@@ -29,7 +29,7 @@ PRODUCTION_TYPES = [
 # US Core baseline resource set commonly used in Epic/US interoperability flows.
 # Keep this curated and update as your target US Core version evolves.
 US_CORE_RESOURCES = [
-    "AllergyIntolerance", "CarePlan", "CareTeam", "Condition", "Coverage",
+    "AllergyIntolerance", "Bundle", "CarePlan", "CareTeam", "Condition", "Coverage",
     "Device", "DiagnosticReport", "DocumentReference", "Encounter", "Goal",
     "Immunization", "Location", "Medication", "MedicationDispense",
     "MedicationRequest", "MedicationStatement", "Observation", "Organization",
@@ -40,7 +40,7 @@ US_CORE_RESOURCES = [
 # UK Core baseline resource set for typical NHS/UK profile implementations.
 # Keep this curated and update as your target UK Core version evolves.
 UK_CORE_RESOURCES = [
-    "AllergyIntolerance", "Appointment", "CarePlan", "CareTeam", "Condition",
+    "AllergyIntolerance", "Appointment", "Bundle", "CarePlan", "CareTeam", "Condition",
     "DiagnosticReport", "Encounter", "Immunization", "Location", "Medication",
     "MedicationDispense", "MedicationRequest", "MedicationStatement", "Observation",
     "Organization", "Patient", "Practitioner", "Procedure", "QuestionnaireResponse",
@@ -69,6 +69,15 @@ TYPE_MAP = {
 }
 
 BASE_BLOCK_HEADER_SIZE = 10
+
+# Scalar FHIR types that are stored inline (fixed-size, no child block).
+SCALAR_PRIMITIVE_TYPES = {'boolean', 'integer', 'unsignedInt', 'positiveInt', 'decimal'}
+
+def _scalar_recovery_tag(fhir_type):
+    """Return the RECOVERY_TAG constant for a scalar primitive type used in arrays."""
+    if fhir_type == 'boolean': return 'RECOVER_FF_BOOL'
+    if fhir_type == 'decimal': return 'RECOVER_FF_FLOAT64'
+    return 'RECOVER_FF_UINT32'  # integer, unsignedInt, positiveInt
 
 STRING_TYPES = {
     'string', 'id', 'oid', 'uuid', 'uri', 'url', 'canonical', 
@@ -153,6 +162,8 @@ def _child_recovery_key_expr(f, block_struct_name):
     elif f['is_array']:
         if f['fhir_type'] in ('string', 'code'):
             return 'RECOVER_FF_STRING'
+        if f['fhir_type'] in SCALAR_PRIMITIVE_TYPES:
+            return _scalar_recovery_tag(f['fhir_type'])
         child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
         return f'RECOVER_{child_struct}'
     elif f['fhir_type'] == 'string':
@@ -224,6 +235,8 @@ def _child_recovery_expr(f, block_struct_name):
             return 'RECOVER_FF_CODE'
         if f['fhir_type'] in ('string', 'code'):
             return 'FF_STRING::recovery'
+        if f['fhir_type'] in SCALAR_PRIMITIVE_TYPES:
+            return _scalar_recovery_tag(f['fhir_type'])
         child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
         return f'{child_struct}::recovery'
     if f['fhir_type'] == 'string':
@@ -493,6 +506,9 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
                 cpp += f"{indent}            RECOVERY_TAG res_tag = static_cast<RECOVERY_TAG>(LOAD_U16(blk_item_ptr + DATA_BLOCK::RECOVERY));\n"
                 cpp += f"{indent}            data.{f['cpp_name']}.push_back(ResourceReference(res_off, res_tag));\n"
                 cpp += f"{indent}        }}\n"
+            elif f['fhir_type'] in SCALAR_PRIMITIVE_TYPES:
+                load_macro = TYPE_MAP[f['fhir_type']]['macro']
+                cpp += f"{indent}        data.{f['cpp_name']}.push_back({load_macro}(blk_item_ptr));\n"
             else:
                 child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
                 cpp += f"{indent}        data.{f['cpp_name']}.push_back({child_struct}::deserialize(__base, static_cast<Offset>(blk_item_ptr - __base), __size, __version));\n"
@@ -567,6 +583,11 @@ def generate_size_fields(layout, block_struct_name, data_name):
                 # The primary array IS the array of ResourceReferences, so .size() works perfectly
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * TYPE_SIZE_RESOURCE);\n"
+                cpp += f"    }}\n"
+            elif f['fhir_type'] in SCALAR_PRIMITIVE_TYPES:
+                size_const = TYPE_MAP[f['fhir_type']]['size_const']
+                cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
+                cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * {size_const});\n"
                 cpp += f"    }}\n"
             else:
                 child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
@@ -673,6 +694,22 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"        }}\n"
                 cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             
+            # --- PATTERN 3: ARRAY OF COMPLEX STRUCTS ---
+            # --- PATTERN 4: ARRAY OF INLINE SCALAR PRIMITIVES ---
+            elif f['fhir_type'] in SCALAR_PRIMITIVE_TYPES:
+                size_const = TYPE_MAP[f['fhir_type']]['size_const']
+                recovery   = _scalar_recovery_tag(f['fhir_type'])
+                store_mac  = {'boolean': 'STORE_U8', 'decimal': 'STORE_F64'}.get(f['fhir_type'], 'STORE_U32')
+                cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
+                cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
+                cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
+                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, {size_const}, __n, ToArrayTag({recovery}));\n"
+                cpp += f"        Offset __entries_start = child_off;\n"
+                cpp += f"        child_off += static_cast<Offset>(__n) * {size_const};\n"
+                cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
+                cpp += f"            {store_mac}(__base + __entries_start + __i * {size_const}, {data_name}.{f['cpp_name']}[__i]);\n"
+                cpp += f"        }}\n"
+                cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             # --- PATTERN 3: ARRAY OF COMPLEX STRUCTS ---
             else:
                 child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
@@ -1262,6 +1299,34 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                             f"                    }}\n"
                         )
                         
+                    elif f["fhir_type"] in SCALAR_PRIMITIVE_TYPES:
+                        if f["fhir_type"] == "boolean":
+                            cpp += (
+                                f"                    bool val;\n"
+                                f"                    if (item.get_bool().get(val) == simdjson::SUCCESS) {{\n"
+                                f"                        data.{cpp_name}.push_back(val ? 1 : 0);\n"
+                                f"                    }} else {{\n"
+                                f"                        {err_log}\n"
+                                f"                    }}\n"
+                            )
+                        elif f["fhir_type"] == "decimal":
+                            cpp += (
+                                f"                    double val;\n"
+                                f"                    if (item.get_double().get(val) == simdjson::SUCCESS) {{\n"
+                                f"                        data.{cpp_name}.push_back(val);\n"
+                                f"                    }} else {{\n"
+                                f"                        {err_log}\n"
+                                f"                    }}\n"
+                            )
+                        else:
+                            cpp += (
+                                f"                    uint64_t val;\n"
+                                f"                    if (item.get_uint64().get(val) == simdjson::SUCCESS) {{\n"
+                                f"                        data.{cpp_name}.push_back(static_cast<uint32_t>(val));\n"
+                                f"                    }} else {{\n"
+                                f"                        {err_log}\n"
+                                f"                    }}\n"
+                            )
                     else:
                         child_fn = f.get("resolved_path", f"{path}.{json_key}").replace(".", "_") + "_from_json" if f["fhir_type"] in ("BackboneElement", "Element") else f"{f['fhir_type']}_from_json"
                         cpp += (
@@ -1482,6 +1547,41 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         f"                wrapper[{field_key_enum}] = builder.append_obj(refs);\n"
                     )
                 
+                elif f["fhir_type"] in SCALAR_PRIMITIVE_TYPES:
+                    if f["fhir_type"] == "boolean":
+                        cpp += (
+                            f"                std::vector<uint8_t> vals;\n"
+                            f"                for (auto item : arr) {{\n"
+                            f"                    bool val;\n"
+                            f"                    if (item.get_bool().get(val) == simdjson::SUCCESS) {{\n"
+                            f"                        vals.push_back(val ? 1 : 0);\n"
+                            f"                    }}\n"
+                            f"                }}\n"
+                            f"                wrapper[{field_key_enum}] = builder.append_obj(vals);\n"
+                        )
+                    elif f["fhir_type"] == "decimal":
+                        cpp += (
+                            f"                std::vector<double> vals;\n"
+                            f"                for (auto item : arr) {{\n"
+                            f"                    double val;\n"
+                            f"                    if (item.get_double().get(val) == simdjson::SUCCESS) {{\n"
+                            f"                        vals.push_back(val);\n"
+                            f"                    }}\n"
+                            f"                }}\n"
+                            f"                wrapper[{field_key_enum}] = builder.append_obj(vals);\n"
+                        )
+                    else:
+                        cpp += (
+                            f"                std::vector<uint32_t> vals;\n"
+                            f"                for (auto item : arr) {{\n"
+                            f"                    uint64_t val;\n"
+                            f"                    if (item.get_uint64().get(val) == simdjson::SUCCESS) {{\n"
+                            f"                        vals.push_back(static_cast<uint32_t>(val));\n"
+                            f"                    }}\n"
+                            f"                }}\n"
+                            f"                wrapper[{field_key_enum}] = builder.append_obj(vals);\n"
+                        )
+
                 else:
                     child_fn = f.get("resolved_path", f"{path}.{json_key}").replace(".", "_") + "_from_json" if f["fhir_type"] in ("BackboneElement", "Element") else f"{f['fhir_type']}_from_json"
                     cpp += (
@@ -1878,6 +1978,30 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     hpp_head += "        for (const auto& ref : d) {\n"
     hpp_head += "            STORE_U64(base + off, ref.offset); STORE_U16(base + off + DATA_BLOCK::RECOVERY, ref.recovery); off += TYPE_SIZE_RESOURCE;\n"
     hpp_head += "        }\n"
+    hpp_head += "    }\n"
+    hpp_head += "};\n"
+    hpp_head += "template<> struct TypeTraits<std::vector<uint8_t>> {\n"
+    hpp_head += "    static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_BOOL | RECOVER_ARRAY_BIT);\n"
+    hpp_head += "    static Size size(const std::vector<uint8_t>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_UINT8); }\n"
+    hpp_head += "    static void store(BYTE* const base, Offset off, const std::vector<uint8_t>& d, uint32_t = FHIR_VERSION_R5) {\n"
+    hpp_head += "        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_UINT8, static_cast<uint32_t>(d.size()), recovery);\n"
+    hpp_head += "        for (const auto& v : d) { STORE_U8(base + off, v); off += TYPE_SIZE_UINT8; }\n"
+    hpp_head += "    }\n"
+    hpp_head += "};\n"
+    hpp_head += "template<> struct TypeTraits<std::vector<uint32_t>> {\n"
+    hpp_head += "    static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_UINT32 | RECOVER_ARRAY_BIT);\n"
+    hpp_head += "    static Size size(const std::vector<uint32_t>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_UINT32); }\n"
+    hpp_head += "    static void store(BYTE* const base, Offset off, const std::vector<uint32_t>& d, uint32_t = FHIR_VERSION_R5) {\n"
+    hpp_head += "        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_UINT32, static_cast<uint32_t>(d.size()), recovery);\n"
+    hpp_head += "        for (const auto& v : d) { STORE_U32(base + off, v); off += TYPE_SIZE_UINT32; }\n"
+    hpp_head += "    }\n"
+    hpp_head += "};\n"
+    hpp_head += "template<> struct TypeTraits<std::vector<double>> {\n"
+    hpp_head += "    static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_FLOAT64 | RECOVER_ARRAY_BIT);\n"
+    hpp_head += "    static Size size(const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_FLOAT64); }\n"
+    hpp_head += "    static void store(BYTE* const base, Offset off, const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) {\n"
+    hpp_head += "        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_FLOAT64, static_cast<uint32_t>(d.size()), recovery);\n"
+    hpp_head += "        for (const auto& v : d) { STORE_F64(base + off, v); off += TYPE_SIZE_FLOAT64; }\n"
     hpp_head += "    }\n"
     hpp_head += "};\n"
     hpp_head += "} // namespace FastFHIR\n\n"

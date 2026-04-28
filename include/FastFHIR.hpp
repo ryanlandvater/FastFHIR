@@ -82,7 +82,7 @@
 // The #ifndef guards keep local / offline builds working without CI.
 // =====================================================================
 #ifndef FASTFHIR_VERSION_MAJOR
-#  define FASTFHIR_VERSION_MAJOR 0
+#  define FASTFHIR_VERSION_MAJOR 2026
 #endif
 #ifndef FASTFHIR_VERSION_MINOR
 #  define FASTFHIR_VERSION_MINOR 1

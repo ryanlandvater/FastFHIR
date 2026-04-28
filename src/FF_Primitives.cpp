@@ -136,8 +136,8 @@ void STORE_FF_HEADER (BYTE* const __base,
     
     // Bake engine version + stream layout into the 32-bit slot.
     uint32_t engine_version =
-        (static_cast<uint32_t>(FF_VERSION_MAJOR) << 16) |
-        (static_cast<uint32_t>(FF_VERSION_MINOR) & 0xFFFF);
+        (static_cast<uint32_t>(FASTFHIR_VERSION_MAJOR) << 16) |
+        (static_cast<uint32_t>(FASTFHIR_VERSION_MINOR) & 0xFFFF);
     STORE_U32(__base + FF_HEADER::VERSION, FF_ENCODE_HEADER_VERSION(engine_version, stream_layout));
 }
 

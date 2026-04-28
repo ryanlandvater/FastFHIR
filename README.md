@@ -19,9 +19,6 @@ A Python binding is available — see [`The Python Readme`](python/README.md) fo
 
 - [Why FastFHIR?](#why-fastfhir)
 - [Quick Start](#quick-start)
-  - [Prerequisites](#prerequisites)
-  - [Build](#build)
-  - [Production Profile](#production-profile)
 - [Getting Started](#getting-started)
   - [Step 1 — Parse raw bytes](#step-1--parse-raw-bytes)
   - [Step 2 — Create a Memory arena](#step-2--create-a-memory-arena)
@@ -78,65 +75,41 @@ You do not have to sacrifice a clean API for bare-metal performance.
 * CMake 3.20+
 * Network access (generator fetches FHIR bundles from HL7)
 
-## Build
-
-FastFHIR includes a root `CMakeLists.txt`. Configure and build:
+### Build
 
 ```bash
 cmake -S . -B build
-cmake --build build -j
+cmake --build build --target build_all -j
 ```
 
-### Production Profile
+On first configure, CMake automatically runs the code generator — downloading FHIR R4/R5 specification bundles from HL7 and emitting strongly-typed C++ source into `generated_src/`. No manual generator step is needed.
 
-The generator selects a curated set of FHIR resources based on a *production profile*. The profile is controlled by the CMake cache variable `FASTFHIR_PRODUCTION_PROFILE` (default: `us`) or the environment variable `FASTFHIR_PRODUCTION_PROFILE`.
+The `build_all` target builds every enabled component: the core library (`libfastfhir`), the ingestor, the `ff_export` CLI tool, and the C++ test suite. Omit `--target build_all` to build only `libfastfhir` and `ff_export`.
 
-| Profile | Value | Resources |
-|---------|-------|----------|
-| US Core (default) | `us` | 27 resources matching the US Core IG (Epic MyChart, etc.) |
-| UK Core | `uk` | 22 resources matching the UK Core IG (NHS) |
-| All resources | `all` | All concrete FHIR resources discovered from HL7 bundles |
+### CMake Options
 
-To build with a different profile at configure time:
+| Option | Default | Description |
+|---|---|---|
+| `FASTFHIR_PRODUCTION_PROFILE` | `us` | Resource profile for code generation: `us` (US Core IG, 27 resources) or `uk` (UK Core IG, 22 resources) |
+| `FASTFHIR_BUILD_SHARED` | `ON` | Build `libfastfhir` as a shared library; set `OFF` for a static archive |
+| `FASTFHIR_BUILD_INGESTOR` | `OFF` | Build the JSON→binary ingest library and `ff_ingest` CLI (requires simdjson) |
+| `FASTFHIR_BUILD_PYTHON_BINDINGS` | `OFF` | Build the pybind11 `_core` extension module |
+| `FASTFHIR_BUILD_TESTS` | `OFF` | Build the C++ test suite (`ff_test_readme`); requires `FASTFHIR_BUILD_INGESTOR` |
+| `FASTFHIR_RUN_GENERATOR` | `ON` | Run the Python code generator at configure time |
+| `FASTFHIR_GENERATE_ON_BUILD` | `OFF` | Re-run the generator before every build (may invalidate the PCH) |
+
+Example — UK Core profile with ingestor, tests, and Python bindings:
 
 ```bash
-cmake -S . -B build -DFASTFHIR_PRODUCTION_PROFILE=uk
-cmake --build build -j
+cmake -S . -B build \
+  -DFASTFHIR_PRODUCTION_PROFILE=uk \
+  -DFASTFHIR_BUILD_INGESTOR=ON \
+  -DFASTFHIR_BUILD_TESTS=ON \
+  -DFASTFHIR_BUILD_PYTHON_BINDINGS=ON
+cmake --build build --target build_all -j
 ```
 
-Or via environment variable when running the generator directly:
-
-```bash
-FASTFHIR_PRODUCTION_PROFILE=all python tools/generator/make_lib.py
-```
-
-The `fastfhir_generate` custom CMake target can be re-run manually at any time to regenerate sources with the current profile. By default, sources are only regenerated during CMake configure to avoid invalidating the precompiled header on every build. Set `FASTFHIR_GENERATE_ON_BUILD=ON` to rerun the generator before every build.
-
-### Version injection
-
-The library embeds `FASTFHIR_VERSION_MAJOR`, `FASTFHIR_VERSION_MINOR`, and `FASTFHIR_VERSION_BUILD` macros (available via `<FastFHIR.hpp>` as `FASTFHIR_VERSION_STRING`). CMake reads the values from environment variables of the same name before falling back to the version declared in `CMakeLists.txt`. This makes CI version stamping from a GitHub tag straightforward:
-
-```yaml
-# .github/workflows/release.yml (excerpt)
-- name: Set version from tag
-  run: |
-    TAG="${GITHUB_REF_NAME#v}"          # strip leading 'v' from e.g. v1.2.3
-    IFS='.' read MAJOR MINOR BUILD <<< "$TAG"
-    echo "FASTFHIR_VERSION_MAJOR=$MAJOR" >> $GITHUB_ENV
-    echo "FASTFHIR_VERSION_MINOR=$MINOR" >> $GITHUB_ENV
-    echo "FASTFHIR_VERSION_BUILD=$BUILD" >> $GITHUB_ENV
-```
-
-The same env vars are consumed by the Python bindings (`fastfhir.__version__`) and any other tool that reads them during the build.
-
-This will:
-1. Download and extract FHIR specs (R4/R5)
-2. Build the master dictionary (`generated_src/FF_Dictionary.hpp`)
-3. Build code system enums (`generated_src/FF_CodeSystems.hpp`)
-4. Generate data type and resource structs under `generated_src/`
-5. Clean temporary `fhir_specs/` downloads
-
-By default CMake runs the generator during configure (`FASTFHIR_RUN_GENERATOR=ON`). Generated `.cpp` files are discovered from `generated_src/` and compiled into `libfastfhir.a`.
+See [Generator Architecture](#generator-architecture) for details on profiles and the generation pipeline.
 
 ---
 
@@ -256,7 +229,9 @@ Once a `Memory` object is created, it can be used to parse or parse, build, or i
 FastFHIR::Parser parser(mem);
 auto root = parser.root();
 ```
-**A `Memory` arena is much more powerful than a simple fopen filestream. It can create a `Memory::Streamhead` into which a network socket can directly stream network data and the `Memory` can safely (and lockelessly) write FastFHIR data into the same archive from multiple concurrent threads.**
+
+> [!TIP]
+> **A `Memory` arena is much more powerful than a simple filestream or memory buffer.** It can create a `Memory::Streamhead` into which a network socket can directly stream network data and the `Memory` can safely (and lockelessly) write FastFHIR data into the same archive from multiple concurrent threads. **If unsure, always use a `FastFHIR::Memory` arena.**
 
 ---
 

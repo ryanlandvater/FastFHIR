@@ -63,14 +63,6 @@ enum FHIR_VERSION : uint16_t {
     FHIR_VERSION_R5 = 0x0500,
 };
 
-#ifndef FF_VERSION_MAJOR
-#define FF_VERSION_MAJOR 0
-#endif
-
-#ifndef FF_VERSION_MINOR
-#define FF_VERSION_MINOR 1
-#endif
-
 // =====================================================================
 // STREAM LAYOUT MODE (encoded in FF_HEADER::VERSION high bits)
 // =====================================================================

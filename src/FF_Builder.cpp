@@ -37,7 +37,7 @@ m_checksum_offset(FF_NULL_OFFSET),
 m_root_offset(FF_NULL_OFFSET),
 m_root_recovery(FF_RECOVER_UNDEFINED),
 m_fhir_rev(fhir_revision),
-m_ff_version(FF_VERSION_MAJOR<<16|FF_VERSION_MINOR),
+m_ff_version(FASTFHIR_VERSION_MAJOR<<16|FASTFHIR_VERSION_MINOR),
 m_finalizing(false),
 m_active_mutators(0)
 {
