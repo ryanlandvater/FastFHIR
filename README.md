@@ -7,9 +7,9 @@ FastFHIR
 ![FHIR R4/R5](https://img.shields.io/badge/FHIR-R4%20%7C%20R5-blueviolet)
 ![License](https://img.shields.io/badge/license-FF--SSL-orange)
 
-**FastFHIR** is a wildly fast, lock-free binary serializer and C++20 code generation pipeline for HL7 FHIR resources (R4 and R5).
+**FastFHIR** is a **wildly fast binary HL7 format** comprising a lock-free binary serializer and C++20 code generation pipeline targeting the HL7 FHIR resources (R4 and R5).
 
-Healthcare interoperability has historically relied on formats that are inherently unsafe, computationally expensive, or structurally brittle. FastFHIR replaces traditional parsing with a mathematically strict, offset-based binary layout that guarantees safety, in-stream HL7 enrichment, and blistering speed. It generates strongly-typed C++ structs and a mathematically strict, zero-copy binary architecture directly from official HL7 FHIR Structure Definitions.
+Healthcare interoperability has historically relied on formats that are **inherently unsafe**, **computationally expensive**, and **structurally brittle**. FastFHIR replaces traditional parsing with a mathematically strict, offset-based binary layout that guarantees tye safety, data recovery, in-stream HL7 enrichment, and blistering speed. It generates strongly-typed C++ structs and a mathematically strict, zero-copy binary architecture directly from official HL7 FHIR Structure Definitions.
 
 A Python binding is available — see [`The Python Readme`](python/README.md) for Python API examples.
 
@@ -18,6 +18,10 @@ A Python binding is available — see [`The Python Readme`](python/README.md) fo
 ## Table of Contents
 
 - [Why FastFHIR?](#why-fastfhir)
+- [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Build](#build)
+  - [Production Profile](#production-profile)
 - [Getting Started](#getting-started)
   - [Step 1 — Parse raw bytes](#step-1--parse-raw-bytes)
   - [Step 2 — Create a Memory arena](#step-2--create-a-memory-arena)
@@ -34,11 +38,8 @@ A Python binding is available — see [`The Python Readme`](python/README.md) fo
   - [Typed Resource Keys](#typed-resource-keys--fastfhirfieldsresourcefield)
   - [Checksum Algorithms](#checksum-algorithms)
   - [FHIR Versions](#fhir-versions)
-- [Quick Start](#quick-start)
-  - [Prerequisites](#prerequisites)
-  - [Build](#build)
-  - [Generator Architecture](#generator-architecture)
-  - [Design Notes](#design-notes)
+- [Generator Architecture](#generator-architecture)
+- [Design Notes](#design-notes)
 - [License](#license)
 
 ---
@@ -66,6 +67,76 @@ You do not have to sacrifice a clean API for bare-metal performance.
 * **IDE-Friendly Static Keys:** Zero-overhead, compiled O(1) typed keys (e.g., `FastFHIR::Fields::PATIENT::ACTIVE`) completely bypass runtime string hashing.
 * **Polymorphic Type Safety:** Assign fields directly to C++ types with zero-overhead implicit conversion (e.g., `std::string_view id = node[FastFHIR::Fields::PATIENT::ID]`), or eagerly materialize an entire struct (`PatientData patient = parser.root()`).
 * **JSON-Style Traversal:** Walk complex trees using native C++ `[]` operators (e.g., `root[FastFHIR::Fields::PATIENT::NAME][0]`).
+
+---
+
+# Quick Start
+
+## Prerequisites
+* Python 3.9+ (generator only)
+* Clang, GCC, or MSVC with C++20 support
+* CMake 3.20+
+* Network access (generator fetches FHIR bundles from HL7)
+
+## Build
+
+FastFHIR includes a root `CMakeLists.txt`. Configure and build:
+
+```bash
+cmake -S . -B build
+cmake --build build -j
+```
+
+### Production Profile
+
+The generator selects a curated set of FHIR resources based on a *production profile*. The profile is controlled by the CMake cache variable `FASTFHIR_PRODUCTION_PROFILE` (default: `us`) or the environment variable `FASTFHIR_PRODUCTION_PROFILE`.
+
+| Profile | Value | Resources |
+|---------|-------|----------|
+| US Core (default) | `us` | 27 resources matching the US Core IG (Epic MyChart, etc.) |
+| UK Core | `uk` | 22 resources matching the UK Core IG (NHS) |
+| All resources | `all` | All concrete FHIR resources discovered from HL7 bundles |
+
+To build with a different profile at configure time:
+
+```bash
+cmake -S . -B build -DFASTFHIR_PRODUCTION_PROFILE=uk
+cmake --build build -j
+```
+
+Or via environment variable when running the generator directly:
+
+```bash
+FASTFHIR_PRODUCTION_PROFILE=all python tools/generator/make_lib.py
+```
+
+The `fastfhir_generate` custom CMake target can be re-run manually at any time to regenerate sources with the current profile. By default, sources are only regenerated during CMake configure to avoid invalidating the precompiled header on every build. Set `FASTFHIR_GENERATE_ON_BUILD=ON` to rerun the generator before every build.
+
+### Version injection
+
+The library embeds `FASTFHIR_VERSION_MAJOR`, `FASTFHIR_VERSION_MINOR`, and `FASTFHIR_VERSION_BUILD` macros (available via `<FastFHIR.hpp>` as `FASTFHIR_VERSION_STRING`). CMake reads the values from environment variables of the same name before falling back to the version declared in `CMakeLists.txt`. This makes CI version stamping from a GitHub tag straightforward:
+
+```yaml
+# .github/workflows/release.yml (excerpt)
+- name: Set version from tag
+  run: |
+    TAG="${GITHUB_REF_NAME#v}"          # strip leading 'v' from e.g. v1.2.3
+    IFS='.' read MAJOR MINOR BUILD <<< "$TAG"
+    echo "FASTFHIR_VERSION_MAJOR=$MAJOR" >> $GITHUB_ENV
+    echo "FASTFHIR_VERSION_MINOR=$MINOR" >> $GITHUB_ENV
+    echo "FASTFHIR_VERSION_BUILD=$BUILD" >> $GITHUB_ENV
+```
+
+The same env vars are consumed by the Python bindings (`fastfhir.__version__`) and any other tool that reads them during the build.
+
+This will:
+1. Download and extract FHIR specs (R4/R5)
+2. Build the master dictionary (`generated_src/FF_Dictionary.hpp`)
+3. Build code system enums (`generated_src/FF_CodeSystems.hpp`)
+4. Generate data type and resource structs under `generated_src/`
+5. Clean temporary `fhir_specs/` downloads
+
+By default CMake runs the generator during configure (`FASTFHIR_RUN_GENERATOR=ON`). Generated `.cpp` files are discovered from `generated_src/` and compiled into `libfastfhir.a`.
 
 ---
 
@@ -638,49 +709,7 @@ FHIR_VERSION_R5   // HL7 FHIR R5 (default)
 
 ---
 
-# Quick Start
-
-## Prerequisites
-* Python 3.9+ (generator only)
-* Clang, GCC, or MSVC with C++20 support
-* CMake 3.20+
-* Network access (generator fetches FHIR bundles from HL7)
-
-## Build
-
-FastFHIR includes a root `CMakeLists.txt`. Configure and build:
-
-```bash
-cmake -S . -B build
-cmake --build build -j
-```
-
-### Version injection
-
-The library embeds `FASTFHIR_VERSION_MAJOR`, `FASTFHIR_VERSION_MINOR`, and `FASTFHIR_VERSION_BUILD` macros (available via `<FastFHIR.hpp>` as `FASTFHIR_VERSION_STRING`). CMake reads the values from environment variables of the same name before falling back to the version declared in `CMakeLists.txt`. This makes CI version stamping from a GitHub tag straightforward:
-
-```yaml
-# .github/workflows/release.yml (excerpt)
-- name: Set version from tag
-  run: |
-    TAG="${GITHUB_REF_NAME#v}"          # strip leading 'v' from e.g. v1.2.3
-    IFS='.' read MAJOR MINOR BUILD <<< "$TAG"
-    echo "FASTFHIR_VERSION_MAJOR=$MAJOR" >> $GITHUB_ENV
-    echo "FASTFHIR_VERSION_MINOR=$MINOR" >> $GITHUB_ENV
-    echo "FASTFHIR_VERSION_BUILD=$BUILD" >> $GITHUB_ENV
-```
-
-The same env vars are consumed by the Python bindings (`fastfhir.__version__`) and any other tool that reads them during the build.
-
-This will:
-1. Download and extract FHIR specs (R4/R5)
-2. Build the master dictionary (`generated_src/FF_Dictionary.hpp`)
-3. Build code system enums (`generated_src/FF_CodeSystems.hpp`)
-4. Generate data type and resource structs under `generated_src/`
-5. Clean temporary `fhir_specs/` downloads
-
-By default CMake runs the generator during configure (`FASTFHIR_RUN_GENERATOR=ON`). Generated `.cpp` files are discovered from `generated_src/` and compiled into `libfastfhir.a`.
-### Generator Architecture
+## Generator Architecture
 
 The generator lives in `tools/generator/` and is split by responsibility:
 
@@ -692,7 +721,15 @@ The generator lives in `tools/generator/` and is split by responsibility:
 | `ffc.py` | Emits C++ data/resource structs and read/write logic |
 | `make_lib.py` | Orchestrates the full generation pipeline |
 
-### Design Notes
+**Resource scope constants** in `ffc.py`:
+
+| Constant | Contents |
+|---|---|
+| `PRODUCTION_TYPES` | Core FHIR datatypes always generated (Coding, Quantity, Identifier, Age, Count, Availability, ExtendedContactDetail, …) |
+| `US_CORE_RESOURCES` | 27 resources for US Core IG interoperability |
+| `UK_CORE_RESOURCES` | 22 resources for UK Core IG interoperability |
+
+## Design Notes
 * Resource and datatype structs are generated from official HL7 StructureDefinitions.
 * Version-specific fields are guarded by generated version checks.
 * The top-level file container is `FF_HEADER`, which stores file magic, version, checksum offset, root offset, and payload size.
