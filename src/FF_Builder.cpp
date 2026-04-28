@@ -73,8 +73,12 @@ m_active_mutators(0)
         );
     }
 
-    // Fresh writable streams start with committed size 0. Reserve the serialized
-    // FF_HEADER region up front so appended objects begin after the header.
+    // Fresh writable streams start with committed size 0. Reserve exactly
+    // FF_HEADER::HEADER_SIZE bytes (currently 54) at offset 0 so that all
+    // appended blocks begin after the header. The header fields themselves are
+    // written lazily during finalize() via STORE_FF_HEADER. URL_DIR_OFFSET and
+    // MODULE_REG_OFFSET start as FF_NULL_OFFSET and are patched by
+    // FF_PredigestExtensionURLs / WASM subsystem before finalize() is called.
     if (m_memory.size() == 0) {
         m_memory.claim_space(FF_HEADER::HEADER_SIZE);
     }
@@ -254,15 +258,19 @@ Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &h
         algo = FF_CHECKSUM_NONE;
     }
     
-    // Write the FF_HEADER with the root resource info and checksum location, 
-    // which is needed for validation and recovery tools to find the root and checksum.
+    // Write the FF_HEADER with the root resource info and checksum location.
+    // FF_HEADER lives at offset 0. URL_DIR_OFFSET is populated by
+    // FF_PredigestExtensionURLs via set_url_dir_offset(); MODULE_REG_OFFSET is
+    // reserved for Phase 7 (WASM module binding) and defaults to FF_NULL_OFFSET.
     STORE_FF_HEADER(
-        m_base,             // BYTE *const __base
-        m_fhir_rev,         // uint16_t fhir_revision
-        m_memory.size(),    // Offset checksum_offset
-        m_root_offset,      // Offset root_offset
-        m_root_recovery,    // RECOVERY_TAG root_recovery
-        m_checksum_offset   // Size payload_size
+        m_base,
+        m_fhir_rev,
+        m_memory.size(),
+        m_root_offset,
+        m_root_recovery,
+        m_checksum_offset,
+        m_url_dir_offset,
+        m_module_reg_offset
     );
 
     // Writes the 12 bytes of metadata, returns a pointer to byte 12 (the 32-byte slot)

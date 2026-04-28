@@ -397,6 +397,8 @@ Memory::View Compactor::archive(const Parser& source, const Memory& destination,
         compact_root_off,
         static_cast<RECOVERY_TAG>(source.root_type()),
         checksum_off,
+        FF_NULL_OFFSET, // url_dir_offset — not preserved across compaction
+        FF_NULL_OFFSET, // module_reg_offset — not preserved across compaction
         FF_STREAM_LAYOUT_COMPACT
     );
     BYTE* hash_dst = STORE_FF_CHECKSUM_METADATA(base, checksum_off, algo);

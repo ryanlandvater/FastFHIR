@@ -14,8 +14,34 @@
 #include <thread>
 #include <atomic>
 #include <string>
+#include <unordered_map>
 
 namespace FastFHIR::Ingest {
+
+// =====================================================================
+// EXTENSION FILTER MODE
+// Controls which extension URLs are suppressed during predigestion.
+// =====================================================================
+enum class FF_ExtensionFilterMode {
+    FILTER_ALL_KNOWN,   // Suppress profile-native + HL7-known-safe (default)
+    FILTER_NATIVE_ONLY, // Suppress only profile-native extensions
+    FILTER_NONE,        // Store all extensions; dispatch everything to WASM
+};
+
+// =====================================================================
+// PREDIGESTION
+// Multi-threaded pass before resource ingestion begins.
+// For Bundle payloads, splits entry array across hardware threads so each
+// thread scans its entries and writes full-URL FF_STRING blocks directly
+// to the arena (lock-free via claim_space).  Main thread then merges,
+// deduplicates, builds the chained-segment trie, and writes the
+// FF_URL_DIRECTORY block + back-patches the stream preamble.
+// Returns an immutable FF_UrlInternState for ingest workers.
+// =====================================================================
+FF_UrlInternState FF_PredigestExtensionURLs(
+    std::string_view        json_payload,
+    Builder&                builder,
+    FF_ExtensionFilterMode  mode = FF_ExtensionFilterMode::FILTER_ALL_KNOWN);
 
 enum class SourceType {
     FHIR_JSON, // Standard FHIR JSON (R4/R5)

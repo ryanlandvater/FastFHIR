@@ -28,6 +28,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <limits>
+#include <unordered_map>
 
 #ifndef FF_EXPORT
 #define FF_EXPORT
@@ -356,6 +357,24 @@ struct FF_EXPORT DATA_BLOCK
 // =====================================================================
 // HEADER
 // =====================================================================
+// FF_HEADER is always written at arena offset 0. Layout as of the
+// URGENT-TODO header redesign (54 bytes total):
+//
+//   Byte  0– 3 : MAGIC        — 4-byte format stamp (FF_MAGIC_BYTES)
+//   Byte  4– 5 : RECOVERY     — recovery tag (RECOVER_FF_HEADER)
+//   Byte  6– 7 : FHIR_REV     — FHIR schema revision (R4/R5)
+//   Byte  8–15 : STREAM_SIZE  — total committed arena bytes
+//   Byte 16–23 : ROOT_OFFSET  — arena offset of the root resource block
+//   Byte 24–25 : ROOT_RECOVERY— recovery tag of the root resource type
+//   Byte 26–33 : CHECKSUM_OFFSET — arena offset of FF_CHECKSUM block
+//   Byte 34–41 : URL_DIR_OFFSET  — arena offset of FF_URL_DIRECTORY;
+//                                   FF_NULL_OFFSET when no directory present.
+//                                   Back-patched by FF_PredigestExtensionURLs
+//                                   after writing the directory block.
+//   Byte 42–49 : MODULE_REG_OFFSET — arena offset of FF_MODULE_REGISTRY;
+//                                   FF_NULL_OFFSET until Phase 7 WASM work.
+//   Byte 50–53 : VERSION      — encoded engine version + stream layout flag
+//
 struct FF_EXPORT FF_HEADER : DATA_BLOCK
 {
     static constexpr char type[] = "FF_HEADER";
@@ -363,27 +382,31 @@ struct FF_EXPORT FF_HEADER : DATA_BLOCK
 
     enum vtable_sizes
     {
-        MAGIC_S = TYPE_SIZE_UINT32,           // 4
-        RECOVERY_S = TYPE_SIZE_UINT16,        // 2
-        FHIR_REV_S = TYPE_SIZE_UINT16,        // 2
-        STREAM_SIZE_S = TYPE_SIZE_UINT64,     // 8
-        ROOT_OFFSET_S = TYPE_SIZE_UINT64,     // 8
-        ROOT_RECOVERY_S = TYPE_SIZE_UINT16,   // 2
-        CHECKSUM_OFFSET_S = TYPE_SIZE_UINT64, // 8
-        VERSION_S = TYPE_SIZE_UINT32,         // 4
+        MAGIC_S = TYPE_SIZE_UINT32,             // 4
+        RECOVERY_S = TYPE_SIZE_UINT16,          // 2
+        FHIR_REV_S = TYPE_SIZE_UINT16,          // 2
+        STREAM_SIZE_S = TYPE_SIZE_UINT64,       // 8
+        ROOT_OFFSET_S = TYPE_SIZE_UINT64,       // 8
+        ROOT_RECOVERY_S = TYPE_SIZE_UINT16,     // 2
+        CHECKSUM_OFFSET_S = TYPE_SIZE_UINT64,   // 8
+        URL_DIR_OFFSET_S = TYPE_SIZE_UINT64,    // 8
+        MODULE_REG_OFFSET_S = TYPE_SIZE_UINT64, // 8
+        VERSION_S = TYPE_SIZE_UINT32,           // 4
     };
 
     enum vtable_offsets
     {
-        MAGIC = 0,                                         // 4 bytes (0-3)
-        RECOVERY = MAGIC + MAGIC_S,                        // 2 bytes (4-5)
-        FHIR_REV = RECOVERY + RECOVERY_S,                  // 2 bytes (6-7)
-        STREAM_SIZE = FHIR_REV + FHIR_REV_S,               // 8 bytes (8-15)  -> Hardware Aligned
-        ROOT_OFFSET = STREAM_SIZE + STREAM_SIZE_S,         // 8 bytes (16-23) -> Hardware Aligned
-        ROOT_RECOVERY = ROOT_OFFSET + ROOT_OFFSET_S,       // 2 bytes (24-25)
-        CHECKSUM_OFFSET = ROOT_RECOVERY + ROOT_RECOVERY_S, // 8 bytes (26-33)
-        VERSION = CHECKSUM_OFFSET + CHECKSUM_OFFSET_S,     // 4 bytes (34-37)
-        HEADER_SIZE = VERSION + VERSION_S                  // 38 bytes total
+        MAGIC = 0,                                            // 4 bytes (0-3)
+        RECOVERY = MAGIC + MAGIC_S,                           // 2 bytes (4-5)
+        FHIR_REV = RECOVERY + RECOVERY_S,                     // 2 bytes (6-7)
+        STREAM_SIZE = FHIR_REV + FHIR_REV_S,                  // 8 bytes (8-15)  -> Hardware Aligned
+        ROOT_OFFSET = STREAM_SIZE + STREAM_SIZE_S,            // 8 bytes (16-23) -> Hardware Aligned
+        ROOT_RECOVERY = ROOT_OFFSET + ROOT_OFFSET_S,          // 2 bytes (24-25)
+        CHECKSUM_OFFSET = ROOT_RECOVERY + ROOT_RECOVERY_S,    // 8 bytes (26-33)
+        URL_DIR_OFFSET = CHECKSUM_OFFSET + CHECKSUM_OFFSET_S, // 8 bytes (34-41)
+        MODULE_REG_OFFSET = URL_DIR_OFFSET + URL_DIR_OFFSET_S, // 8 bytes (42-49)
+        VERSION = MODULE_REG_OFFSET + MODULE_REG_OFFSET_S,    // 4 bytes (50-53)
+        HEADER_SIZE = VERSION + VERSION_S                     // 54 bytes total
     };
 
     explicit FF_HEADER(Size file_size) noexcept;
@@ -395,10 +418,14 @@ struct FF_EXPORT FF_HEADER : DATA_BLOCK
     FF_CHECKSUM get_checksum(const BYTE *const __base) const;
     Offset get_root(const BYTE *const __base) const;
     RECOVERY_TAG get_root_type(const BYTE *const __base) const;
+    Offset get_url_dir_offset(const BYTE *const __base) const;
+    Offset get_module_reg_offset(const BYTE *const __base) const;
 };
 void FF_EXPORT STORE_FF_HEADER(BYTE *const __base, uint16_t fhir_revision,
-                               Offset checksum_offset, Offset root_offset,
-                               RECOVERY_TAG root_recovery, Size payload_size,
+                               Size payload_size, Offset root_offset,
+                               RECOVERY_TAG root_recovery, Offset checksum_offset,
+                               Offset url_dir_offset = FF_NULL_OFFSET,
+                               Offset module_reg_offset = FF_NULL_OFFSET,
                                FF_StreamLayout stream_layout = FF_STREAM_LAYOUT_STANDARD);
 
 // =====================================================================
@@ -516,6 +543,68 @@ struct FF_EXPORT FF_STRING : DATA_BLOCK
 
     // Fallback std::string allocation for dictionary parsers
     std::string read(const BYTE *const __base) const;
+};
+
+// =====================================================================
+// STREAM-LEVEL URL INTERN TABLE
+// =====================================================================
+// FF_URL_DIRECTORY deduplicates extension URLs across a stream using a
+// chained-segment model: each entry stores only its leaf segment plus the
+// index of its parent entry (or NO_PRIOR if it is a root segment).
+//
+// Binary layout:
+//   HEADER (16): VALIDATION(8) | RECOVERY(2) | PAD(2) | ENTRY_COUNT(4)
+//   ENTRY_TABLE:  ENTRY_COUNT × 16-byte URLEntry inline structs
+//     URLEntry: PRIOR_IDX(4, FF_NULL_UINT32=root) | PAD(4) | SEG_OFFSET(8→FF_STRING)
+//
+// Example for "hl7.org/fhir/test" and "hl7.org/fhir/example":
+//   Entry 0: prior=NONE, seg="hl7.org/fhir"
+//   Entry 1: prior=0,    seg="test"   → full URL: "hl7.org/fhir/test"
+//   Entry 2: prior=0,    seg="example"→ full URL: "hl7.org/fhir/example"
+//
+// get_url(idx): walks the prior chain, collects segments, joins with "/".
+struct FF_EXPORT FF_URL_DIRECTORY : DATA_BLOCK {
+    static constexpr char type[] = "FF_URL_DIRECTORY";
+    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_URL_DIRECTORY;
+    static constexpr uint32_t NO_PRIOR = FF_NULL_UINT32;
+
+    enum vtable_sizes {
+        VALIDATION_S  = TYPE_SIZE_UINT64,
+        RECOVERY_S    = TYPE_SIZE_UINT16,
+        PAD_S         = TYPE_SIZE_UINT16,
+        ENTRY_COUNT_S = TYPE_SIZE_UINT32,
+    };
+    enum vtable_offsets {
+        VALIDATION  = 0,
+        RECOVERY    = VALIDATION  + VALIDATION_S,  // 8
+        PAD         = RECOVERY    + RECOVERY_S,    // 10
+        ENTRY_COUNT = PAD         + PAD_S,         // 12
+        HEADER_SIZE = ENTRY_COUNT + ENTRY_COUNT_S, // 16
+    };
+
+    // Each URLEntry in the ENTRY_TABLE is 16 bytes:
+    //   prior_idx (uint32_t, 4) | pad (uint32_t, 4) | seg_offset (Offset, 8)
+    static constexpr Size URL_ENTRY_SIZE       = 16;
+    static constexpr Size URL_ENTRY_PRIOR_IDX  = 0;  // byte offset of prior_idx within entry
+    static constexpr Size URL_ENTRY_PAD        = 4;  // byte offset of pad
+    static constexpr Size URL_ENTRY_SEG_OFFSET = 8;  // byte offset of seg_offset within entry
+
+    explicit FF_URL_DIRECTORY(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
+
+    uint32_t         entry_count (const BYTE* base) const;
+    uint32_t         prior_idx   (const BYTE* base, uint32_t entry_idx) const;
+    std::string_view seg_string  (const BYTE* base, uint32_t entry_idx) const;
+    // Reconstructed full URL by walking the prior chain
+    std::string      get_url     (const BYTE* base, uint32_t entry_idx) const;
+};
+
+// =====================================================================
+// URL INTERN STATE
+// =====================================================================
+// Produced by FF_PredigestExtensionURLs(); consumed read-only by ingest
+// workers.  FF_NULL_UINT32 as value means "filtered/known — skip block".
+struct FF_UrlInternState {
+    std::unordered_map<std::string, uint32_t> url_to_index;
 };
 
 // =====================================================================

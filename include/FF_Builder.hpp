@@ -40,12 +40,15 @@ class Builder {
     Memory              m_memory;
     BYTE* const         m_base;
     Offset              m_checksum_offset;
+    Offset              m_url_dir_offset = FF_NULL_OFFSET;
+    Offset              m_module_reg_offset = FF_NULL_OFFSET;
     Offset              m_root_offset;
     RECOVERY_TAG        m_root_recovery;
     FHIR_VERSION        m_fhir_rev;
     uint32_t            m_ff_version;
     std::atomic<bool>   m_finalizing;
     std::atomic<uint64_t> m_active_mutators;
+    const FF_UrlInternState* m_intern_state = nullptr; // borrowed; set/cleared by Ingestor
 
     bool try_begin_mutation();
     void end_mutation();
@@ -57,6 +60,16 @@ public:
     Builder& operator=(Builder&&) = delete;
     const Memory& memory() const { return m_memory; }
     const FHIR_VERSION FhirVersion () const { return m_fhir_rev; }
+
+    // Borrowed pointer to the active predigestion intern state.
+    // Set by the Ingestor before dispatching resources; cleared after.
+    // Workers read this read-only — no locking needed.
+    void set_intern_state(const FF_UrlInternState* s)  { m_intern_state = s; }
+    const FF_UrlInternState* intern_state() const      { return m_intern_state; }
+
+    // Recorded by FF_PredigestExtensionURLs after writing the URL directory; consumed by finalize().
+    void set_url_dir_offset(Offset off)                { m_url_dir_offset = off; }
+    Offset url_dir_offset() const                      { return m_url_dir_offset; }
 
     /**
      * @brief Constructs a builder bound to an existing Virtual Memory Arena.

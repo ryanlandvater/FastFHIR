@@ -422,6 +422,11 @@ static const ParserOps* select_ops(FF_StreamLayout layout) {
 // =====================================================================
 // Parser implementation
 // =====================================================================
+// Both constructors follow identical logic: FF_HEADER is unconditionally at
+// offset 0 (no preamble detection required). After validate_full(), the two
+// optional block offsets (URL_DIR_OFFSET, MODULE_REG_OFFSET) are read from
+// the header. Both default to FF_NULL_OFFSET, meaning the corresponding
+// feature is absent in this stream.
 Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast<const BYTE*>(buffer)), m_size(size) {
     if (size < FF_HEADER::HEADER_SIZE) {
         throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
@@ -431,11 +436,13 @@ Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast
     if (validation_result != FF_SUCCESS) {
         throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with error " + validation_result.message);
     }
-    m_version = header.get_fhir_rev(m_base);
-    m_stream_layout = header.get_stream_layout(m_base);
-    m_ops = Reflective::select_ops(m_stream_layout);
-    m_root_offset = header.get_root(m_base);
-    m_root_recovery = header.get_root_type(m_base);
+    m_version            = header.get_fhir_rev(m_base);
+    m_stream_layout      = header.get_stream_layout(m_base);
+    m_ops                = Reflective::select_ops(m_stream_layout);
+    m_root_offset        = header.get_root(m_base);
+    m_root_recovery      = header.get_root_type(m_base);
+    m_url_dir_offset     = header.get_url_dir_offset(m_base);    // FF_NULL_OFFSET if no extension URLs
+    m_module_reg_offset  = header.get_module_reg_offset(m_base); // FF_NULL_OFFSET until Phase 7
 }
 
 Parser::Parser(const Memory& memory) : m_memory(memory), m_base(memory.base()), m_size(memory.size()) {
@@ -447,11 +454,13 @@ Parser::Parser(const Memory& memory) : m_memory(memory), m_base(memory.base()), 
     if (validation_result != FF_SUCCESS) {
         throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with code " + validation_result.message);
     }
-    m_version = header.get_fhir_rev(m_base);
-    m_stream_layout = header.get_stream_layout(m_base);
-    m_ops = Reflective::select_ops(m_stream_layout);
-    m_root_offset = header.get_root(m_base);
-    m_root_recovery = header.get_root_type(m_base);
+    m_version            = header.get_fhir_rev(m_base);
+    m_stream_layout      = header.get_stream_layout(m_base);
+    m_ops                = Reflective::select_ops(m_stream_layout);
+    m_root_offset        = header.get_root(m_base);
+    m_root_recovery      = header.get_root_type(m_base);
+    m_url_dir_offset     = header.get_url_dir_offset(m_base);
+    m_module_reg_offset  = header.get_module_reg_offset(m_base);
 }
 
 uint32_t Parser::version()   const { return m_version; }
@@ -476,6 +485,12 @@ Reflective::Node Parser::root() const {
     return Reflective::Node(m_base, m_size, m_version,
                 m_root_offset, m_root_recovery, FF_FIELD_BLOCK,
                 FF_RECOVER_UNDEFINED, false, m_ops);
+}
+
+FF_URL_DIRECTORY Parser::url_directory() const {
+    if (m_url_dir_offset == FF_NULL_OFFSET)
+        throw std::runtime_error("FastFHIR: Stream has no URL directory (legacy format or not yet written).");
+    return FF_URL_DIRECTORY(m_url_dir_offset, m_size, m_version);
 }
 
 } // namespace FastFHIR

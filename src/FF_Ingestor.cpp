@@ -1,20 +1,248 @@
 // ============================================================
-// Public ingest dispatcher
-// ============================================================
-
-// ============================================================
 // FF_Ingestor.cpp
 // Main Thread Ingestion Routing & Bundle Parsing
 // ============================================================
 #include "FF_Ingestor.hpp"
 #include "../include/FF_Queue.hpp"
+#include "../include/FF_Utilities.hpp"
 #include "../generated_src/FF_Bundle.hpp"
 #include "../generated_src/FF_IngestMappings.hpp"
 #include <cctype>
 #include <thread>
 #include <vector>
+#include <algorithm>
 
 namespace FastFHIR::Ingest {
+
+// =====================================================================
+// PREDIGESTION — multi-threaded Extension URL scan + chained builder
+// =====================================================================
+
+// Recursively collect all "url" string values found inside any
+// "extension" or "modifierExtension" array at any nesting depth.
+static void collect_extension_urls(simdjson::ondemand::object obj,
+                                   std::vector<std::string>& out)
+{
+    for (auto field : obj) {
+        std::string_view key = field.unescaped_key().value_unsafe();
+        if (key == "extension" || key == "modifierExtension") {
+            simdjson::ondemand::array arr;
+            if (field.value().get_array().get(arr) != simdjson::SUCCESS) continue;
+            for (auto item : arr) {
+                simdjson::ondemand::object ext_obj;
+                if (item.get_object().get(ext_obj) != simdjson::SUCCESS) continue;
+                for (auto ext_field : ext_obj) {
+                    std::string_view ext_key = ext_field.unescaped_key().value_unsafe();
+                    if (ext_key == "url") {
+                        std::string_view url_sv;
+                        if (ext_field.value().get_string().get(url_sv) == simdjson::SUCCESS)
+                            out.emplace_back(url_sv);
+                    } else {
+                        simdjson::ondemand::object nested;
+                        if (ext_field.value().get_object().get(nested) == simdjson::SUCCESS)
+                            collect_extension_urls(nested, out);
+                    }
+                }
+            }
+        } else {
+            simdjson::ondemand::object child_obj;
+            if (field.value().get_object().get(child_obj) == simdjson::SUCCESS) {
+                collect_extension_urls(child_obj, out);
+            } else {
+                simdjson::ondemand::array child_arr;
+                if (field.value().get_array().get(child_arr) == simdjson::SUCCESS) {
+                    for (auto item : child_arr) {
+                        simdjson::ondemand::object arr_obj;
+                        if (item.get_object().get(arr_obj) == simdjson::SUCCESS)
+                            collect_extension_urls(arr_obj, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Per-thread result: (full URL string, arena offset of its FF_STRING block).
+// Threads write FF_STRING blocks directly to the arena via claim_space (lock-free).
+struct ScanResult {
+    std::string url;
+    Offset      arena_off;
+};
+
+// Scan one JSON chunk for extension URLs, writing FF_STRING blocks inline to arena.
+static void scan_chunk_for_urls(
+    const std::string& json_chunk,
+    uint8_t*           base,
+    Memory&            mem,
+    std::vector<ScanResult>& out)
+{
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string padded(json_chunk.data(), json_chunk.size());
+    simdjson::ondemand::document doc = parser.iterate(padded);
+    simdjson::ondemand::object obj;
+    if (doc.get_object().get(obj) != simdjson::SUCCESS) return;
+
+    std::vector<std::string> urls;
+    collect_extension_urls(obj, urls);
+
+    for (const auto& url : urls) {
+        if (url.empty()) continue;
+        Offset off = mem.claim_space(SIZE_FF_STRING(url));
+        STORE_FF_STRING(base, off, url);
+        out.push_back({url, off});
+    }
+}
+
+FF_UrlInternState FF_PredigestExtensionURLs(
+    std::string_view       json_payload,
+    Builder&               builder,
+    FF_ExtensionFilterMode /*mode*/)
+{
+    FF_UrlInternState state;
+    uint8_t*      base = builder.memory().base();
+    const Memory& mem  = builder.memory();
+
+    // ── Phase 1: Split payload into independently-scannable chunks ────────
+    // Bundle: each entry array element becomes its own chunk (one per thread).
+    // Single resource: the entire payload is the single chunk.
+    std::vector<std::string> chunks;
+    {
+        simdjson::ondemand::parser splitter;
+        simdjson::padded_string padded(json_payload.data(), json_payload.size());
+        simdjson::ondemand::document doc = splitter.iterate(padded);
+        std::string_view rtype;
+        if (doc["resourceType"].get_string().get(rtype) == simdjson::SUCCESS &&
+            rtype == "Bundle") {
+            simdjson::ondemand::array entry_arr;
+            if (doc["entry"].get_array().get(entry_arr) == simdjson::SUCCESS) {
+                for (auto item : entry_arr) {
+                    std::string_view raw;
+                    if (item.raw_json().get(raw) == simdjson::SUCCESS)
+                        chunks.emplace_back(raw);  // copy — padded_string will be destroyed
+                }
+            }
+        }
+        if (chunks.empty())
+            chunks.emplace_back(json_payload);  // single resource
+    }
+
+    // ── Phase 2: Parallel scan + inline arena writes ──────────────────────
+    // Each thread writes FF_STRING blocks for the full URLs it finds.
+    // claim_space() is lock-free (atomic fetch_add on write head), so threads
+    // never contend on allocation.  Each thread writes only into its own
+    // claimed range, so no data races on the arena bytes themselves.
+    unsigned nthreads = std::min(
+        (unsigned)chunks.size(),
+        std::max(1u, std::thread::hardware_concurrency()));
+    std::vector<std::vector<ScanResult>> per_thread(nthreads);
+    {
+        std::vector<std::thread> workers;
+        workers.reserve(nthreads);
+        for (unsigned t = 0; t < nthreads; ++t) {
+            workers.emplace_back([&, t]() {
+                for (size_t i = t; i < chunks.size(); i += nthreads)
+                    scan_chunk_for_urls(chunks[i], base, mem, per_thread[t]);
+            });
+        }
+        for (auto& w : workers) w.join();
+    }
+
+    // ── Phase 3: Merge + deduplicate ─────────────────────────────────────
+    // Multiple threads may find the same URL; keep the first arena_off per URL.
+    // Duplicate FF_STRING blocks in the arena are harmless dead bytes.
+    std::unordered_map<std::string, Offset> url_to_full_str_off;
+    for (auto& results : per_thread)
+        for (auto& r : results)
+            url_to_full_str_off.try_emplace(r.url, r.arena_off);
+
+    if (url_to_full_str_off.empty())
+        return state;  // no extensions in this payload
+
+    // ── Phase 4: Build chained segment trie (sequential, main thread) ─────
+    // Sort unique URLs by byte length so parents are always processed
+    // before their children.
+    std::vector<std::string> sorted_urls;
+    sorted_urls.reserve(url_to_full_str_off.size());
+    for (auto& [url, _] : url_to_full_str_off)
+        sorted_urls.push_back(url);
+    std::sort(sorted_urls.begin(), sorted_urls.end(),
+              [](const std::string& a, const std::string& b) {
+                  return a.size() < b.size();
+              });
+
+    // entry_idx map: full URL → assigned index in the ENTRY_TABLE
+    std::unordered_map<std::string, uint32_t> url_to_entry_idx;
+
+    struct TrieEntry {
+        uint32_t prior;   // FF_URL_DIRECTORY::NO_PRIOR or parent entry index
+        Offset   seg_off; // arena offset of this entry's segment FF_STRING
+    };
+    std::vector<TrieEntry> entries;
+
+    for (const std::string& url : sorted_urls) {
+        // Walk right-to-left over '/' splits, looking for the longest known prefix.
+        uint32_t best_prior     = FF_URL_DIRECTORY::NO_PRIOR;
+        size_t   best_split_pos = std::string::npos;  // position of '/' where prefix ends
+        {
+            size_t pos = url.rfind('/');
+            while (pos != std::string::npos && pos > 0) {
+                auto it = url_to_entry_idx.find(url.substr(0, pos));
+                if (it != url_to_entry_idx.end()) {
+                    best_prior     = it->second;
+                    best_split_pos = pos;
+                    break;
+                }
+                pos = url.rfind('/', pos - 1);
+            }
+        }
+
+        Offset seg_off;
+        if (best_prior == FF_URL_DIRECTORY::NO_PRIOR) {
+            // Root entry: reuse the full-URL FF_STRING we already wrote in Phase 2.
+            seg_off = url_to_full_str_off[url];
+        } else {
+            // Leaf/branch segment is the suffix after the prior's path + '/'.
+            std::string segment = url.substr(best_split_pos + 1);
+            seg_off = mem.claim_space(SIZE_FF_STRING(segment));
+            STORE_FF_STRING(base, seg_off, segment);
+        }
+
+        uint32_t entry_idx = static_cast<uint32_t>(entries.size());
+        entries.push_back({best_prior, seg_off});
+        url_to_entry_idx[url] = entry_idx;
+        state.url_to_index[url] = entry_idx;
+    }
+
+    // ── Phase 5: Write ENTRY_TABLE block ─────────────────────────────────
+    uint32_t n_entries = static_cast<uint32_t>(entries.size());
+    Size dir_total = FF_URL_DIRECTORY::HEADER_SIZE +
+                     static_cast<Size>(n_entries) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
+    Offset dir_off = mem.claim_space(dir_total);
+    BYTE*  dir_ptr = base + dir_off;
+
+    STORE_U64(dir_ptr + FF_URL_DIRECTORY::VALIDATION,  dir_off);
+    STORE_U16(dir_ptr + FF_URL_DIRECTORY::RECOVERY,    RECOVER_FF_URL_DIRECTORY);
+    STORE_U16(dir_ptr + FF_URL_DIRECTORY::PAD,         0);
+    STORE_U32(dir_ptr + FF_URL_DIRECTORY::ENTRY_COUNT, n_entries);
+
+    BYTE* et = dir_ptr + FF_URL_DIRECTORY::HEADER_SIZE;
+    for (uint32_t i = 0; i < n_entries; ++i) {
+        BYTE* ep = et + static_cast<Size>(i) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
+        STORE_U32(ep + FF_URL_DIRECTORY::URL_ENTRY_PRIOR_IDX,  entries[i].prior);
+        STORE_U32(ep + FF_URL_DIRECTORY::URL_ENTRY_PAD,        0);
+        STORE_U64(ep + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET, entries[i].seg_off);
+    }
+
+    // ── Phase 6: Record URL directory offset in builder ──────────────────
+    // The directory's arena offset is recorded on the builder so that finalize()
+    // bakes it into FF_HEADER::URL_DIR_OFFSET. We also write it eagerly so
+    // mid-stream parsers see it before finalize.
+    STORE_U64(base + FF_HEADER::URL_DIR_OFFSET, dir_off);
+    builder.set_url_dir_offset(dir_off);
+
+    return state;
+}
+
 
 // =====================================================================
 // INGEST WORK QUEUE
@@ -174,7 +402,18 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
     try {
         auto& m_builder = request.builder;
         m_logger.log("[Info] FastFHIR: Allocating simdjson tape...");
-        
+
+        // =====================================================================
+        // PREDIGESTION: scan extension URLs and build FF_URL_DIRECTORY
+        // Must run before any resource data is written to the arena.
+        // =====================================================================
+        FF_UrlInternState intern_state = FF_PredigestExtensionURLs(
+            std::string_view(request.json_string.data(), request.json_string.size()),
+            m_builder);
+
+        // Make intern_state available to all ingest workers via the Builder.
+        m_builder.set_intern_state(&intern_state);
+
         // Create a local parser instance for the main thread to handle the initial routing and metadata extraction
         auto& parser = m_parser_pool[0];
 
@@ -196,8 +435,8 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
         if (root_type != "Bundle") {
             m_logger.log(std::string("[Info] FastFHIR: Ingesting single ") + std::string(root_type) + " resource...");
             
-            // Route directly to the generated C++ mapping function on the main thread
             out_root = dispatch_resource(root_type, root_obj, m_builder, &m_logger);
+            m_builder.set_intern_state(nullptr);
             if (out_root.offset() == FF_NULL_OFFSET) 
                 return FF_Result{FF_FAILURE, "Failed to parse root resource."};
             out_parsed_count = 1;
@@ -338,11 +577,14 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
         // 6. Return Root
         // =====================================================================
         out_root = root_handle;
+        m_builder.set_intern_state(nullptr);
         return FF_SUCCESS;
 
     } catch (const simdjson::simdjson_error& e) {
+        request.builder.set_intern_state(nullptr);
         return FF_Result{FF_FAILURE, std::string("simdjson Exception: ") + e.what()};
     } catch (const std::exception& e) {
+        request.builder.set_intern_state(nullptr);
         return FF_Result{FF_FAILURE, std::string("Standard Exception: ") + e.what()};
     }
 }

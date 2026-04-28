@@ -769,7 +769,30 @@ PYBIND11_MODULE(_core, m) {
                 };
             }
             return Compactor::archive(self.get().query(), destination.get(), algo, cpp_hasher);
-        }, py::arg("destination"), py::arg("algo") = FF_CHECKSUM_NONE, py::arg("hasher") = py::none());
+        }, py::arg("destination"), py::arg("algo") = FF_CHECKSUM_NONE, py::arg("hasher") = py::none())
+        .def_property_readonly("has_url_directory", [](const PyStream& self) {
+            return self.get().query().has_url_directory();
+        })
+        .def_property_readonly("url_directory", [](const PyStream& self) -> py::object {
+            Parser q = self.get().query();
+            if (!q.has_url_directory()) return py::none();
+            const BYTE* base = q.data();
+            FF_URL_DIRECTORY dir = q.url_directory();
+            uint32_t n = dir.entry_count(base);
+            py::dict d;
+            d["entry_count"] = n;
+            py::list entries;
+            for (uint32_t i = 0; i < n; ++i) {
+                py::dict e;
+                uint32_t prior = dir.prior_idx(base, i);
+                e["prior"] = (prior == FF_URL_DIRECTORY::NO_PRIOR) ? py::object(py::none()) : py::cast(prior);
+                e["seg"]   = std::string(dir.seg_string(base, i));
+                e["url"]   = dir.get_url(base, i);
+                entries.append(e);
+            }
+            d["entries"] = entries;
+            return d;
+        });
 
     // =====================================================================
     // 5. Ingestor

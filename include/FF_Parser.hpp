@@ -57,6 +57,8 @@ class Parser {
     const Reflective::ParserOps* m_ops = nullptr;
     Offset          m_root_offset = FF_NULL_OFFSET;
     RECOVERY_TAG    m_root_recovery = FF_RECOVER_UNDEFINED;
+    Offset          m_url_dir_offset = FF_NULL_OFFSET;    // FF_NULL_OFFSET if absent
+    Offset          m_module_reg_offset = FF_NULL_OFFSET; // FF_NULL_OFFSET if absent
 
 public:
     /**
@@ -100,6 +102,27 @@ public:
     * @return Standard or compact stream layout mode.
      */
     FF_StreamLayout stream_layout() const { return m_stream_layout; }
+
+    /**
+     * @brief Returns true if the stream has a URL directory.
+     */
+    bool has_url_directory() const { return m_url_dir_offset != FF_NULL_OFFSET; }
+
+    /**
+     * @brief Returns true if the stream has a WASM module registry binding.
+     */
+    bool has_module_registry() const { return m_module_reg_offset != FF_NULL_OFFSET; }
+
+    /**
+     * @brief Raw offset to the FF_MODULE_REGISTRY block (FF_NULL_OFFSET if none).
+     */
+    Offset module_registry_offset() const { return m_module_reg_offset; }
+
+    /**
+     * @brief Returns a zero-copy view of the stream-level FF_URL_DIRECTORY.
+     * @throws std::runtime_error if the stream has no URL directory.
+     */
+    FF_URL_DIRECTORY url_directory() const;
     
     /** 
     * @brief Get the root resource recovery/type tag from the header.

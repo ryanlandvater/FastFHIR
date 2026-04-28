@@ -102,6 +102,8 @@ uint16_t FF_HEADER::get_fhir_rev(const BYTE* const __base) const { return LOAD_U
 
 Offset FF_HEADER::get_root(const BYTE* const __base) const { return LOAD_U64(__base + ROOT_OFFSET); }
 RECOVERY_TAG FF_HEADER::get_root_type(const BYTE* const __base) const { return static_cast<RECOVERY_TAG>(LOAD_U16(__base + ROOT_RECOVERY)); }
+Offset FF_HEADER::get_url_dir_offset(const BYTE* const __base) const { return LOAD_U64(__base + URL_DIR_OFFSET); }
+Offset FF_HEADER::get_module_reg_offset(const BYTE* const __base) const { return LOAD_U64(__base + MODULE_REG_OFFSET); }
 
 FF_CHECKSUM FF_HEADER::get_checksum(const BYTE* const __base) const {
     // Pass the FHIR revision to the checksum block, not the engine version
@@ -121,6 +123,8 @@ void STORE_FF_HEADER (BYTE* const __base,
                             Offset root_offset,
                             RECOVERY_TAG root_recovery,
                             Offset checksum_offset,
+                            Offset url_dir_offset,
+                            Offset module_reg_offset,
                             FF_StreamLayout stream_layout) {
                             
     STORE_U32(__base + FF_HEADER::MAGIC, FF_MAGIC_BYTES);
@@ -133,6 +137,8 @@ void STORE_FF_HEADER (BYTE* const __base,
     
     STORE_U16(__base + FF_HEADER::ROOT_RECOVERY, root_recovery);
     STORE_U64(__base + FF_HEADER::CHECKSUM_OFFSET, checksum_offset);
+    STORE_U64(__base + FF_HEADER::URL_DIR_OFFSET, url_dir_offset);
+    STORE_U64(__base + FF_HEADER::MODULE_REG_OFFSET, module_reg_offset);
     
     // Bake engine version + stream layout into the 32-bit slot.
     uint32_t engine_version =
@@ -320,4 +326,38 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
         throw std::runtime_error("FastFHIR: Custom string relative offset exceeds 2GB.");
     }
     return static_cast<uint32_t>(relative_offset) | FF_CUSTOM_STRING_FLAG;
+}
+
+// =====================================================================
+// FF_URL_DIRECTORY — stream-level URL intern table (chained-segment model)
+// =====================================================================
+uint32_t FF_URL_DIRECTORY::entry_count(const BYTE* base) const {
+    return LOAD_U32(base + __offset + ENTRY_COUNT);
+}
+uint32_t FF_URL_DIRECTORY::prior_idx(const BYTE* base, uint32_t entry_idx) const {
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * URL_ENTRY_SIZE;
+    return LOAD_U32(base + ep + URL_ENTRY_PRIOR_IDX);
+}
+std::string_view FF_URL_DIRECTORY::seg_string(const BYTE* base, uint32_t entry_idx) const {
+    Offset ep      = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * URL_ENTRY_SIZE;
+    Offset seg_off = LOAD_U64(base + ep + URL_ENTRY_SEG_OFFSET);
+    if (seg_off == FF_NULL_OFFSET) return {};
+    return FF_STRING(seg_off, 0, __version).read_view(base);
+}
+std::string FF_URL_DIRECTORY::get_url(const BYTE* base, uint32_t entry_idx) const {
+    // Walk the prior chain, collecting segments from leaf → root.
+    // Reverse them and join with "/" between entries.
+    std::vector<std::string_view> segs;
+    uint32_t cur = entry_idx;
+    while (cur != NO_PRIOR) {
+        segs.push_back(seg_string(base, cur));
+        cur = prior_idx(base, cur);
+    }
+    // Reverse: segs[0] is leaf, segs.back() is root
+    std::string result;
+    for (auto it = segs.rbegin(); it != segs.rend(); ++it) {
+        if (it != segs.rbegin()) result += '/';
+        result.append(*it);
+    }
+    return result;
 }

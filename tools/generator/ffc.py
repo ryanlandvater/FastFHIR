@@ -61,6 +61,7 @@ TYPE_MAP = {
     'integer':      {'cpp': 'uint32_t', 'data_type': 'uint32_t', 'null': 'FF_NULL_UINT32',  'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'},
     'unsignedInt':  {'cpp': 'uint32_t', 'data_type': 'uint32_t', 'null': 'FF_NULL_UINT32',  'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'},
     'positiveInt':  {'cpp': 'uint32_t', 'data_type': 'uint32_t', 'null': 'FF_NULL_UINT32',  'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'},
+    'integer64':    {'cpp': 'uint64_t', 'data_type': 'uint64_t', 'null': 'FF_NULL_UINT64',  'size': 8, 'size_const': 'TYPE_SIZE_UINT64',  'macro': 'LOAD_U64'},
     'decimal':      {'cpp': 'double',   'data_type': 'double', 'null': 'FF_NULL_F64',       'size': 8, 'size_const': 'TYPE_SIZE_FLOAT64', 'macro': 'LOAD_F64'},
     'code':         {'cpp': 'uint32_t', 'data_type': 'std::string_view', 'null': '""',      'size': 4, 'size_const': 'TYPE_SIZE_UINT32',  'macro': 'LOAD_U32'}, 
     'Resource':     {'cpp': 'ResourceReference', 'data_type': 'ResourceReference', 'null': '{}', 'size': 10, 'size_const': 'TYPE_SIZE_RESOURCE', 'macro': 'LOAD_RESOURCE'},
@@ -70,13 +71,76 @@ TYPE_MAP = {
 
 BASE_BLOCK_HEADER_SIZE = 10
 
+# Per-(type_path, field_name) layout overrides applied at merge time.
+# Each entry fully replaces the field's name/size/type mapping so that
+# the generator emits the overridden layout instead of the spec-derived one.
+# Keys: (type_path, spec_field_name)
+# Values: dict of attrs to overlay on the field dict; 'name' overrides the
+#         vtable constant name; 'cpp_name' overrides the C++ member name.
+BLOCK_FIELD_OVERRIDES = {
+    # Extension.url: replace 8-byte Offset→FF_STRING with 4-byte uint32_t URL_IDX.
+    # The index points into the stream-level FF_URL_DIRECTORY.
+    ('Extension', 'url'): {
+        'name':       'URL_IDX',
+        'cpp_name':   'url_idx',
+        'fhir_type':  'uint32_t',   # sentinel — not a real FHIR type
+        'cpp_type':   'uint32_t',
+        'data_type':  'uint32_t',
+        'null':       'FF_NULL_UINT32',
+        'size':       4,
+        'size_const': 'TYPE_SIZE_UINT32',
+        'macro':      'LOAD_U32',
+        'raw_scalar': True,          # sentinel: emit direct LOAD_* in view getter
+        'is_array':   False,
+        'is_choice':  False,
+    },
+}
+
+# Extra methods injected into specific *View<> template bodies.
+# Key: FHIR type path (e.g. 'Extension').  Value: raw C++ method string.
+VIEW_EXTRA_METHODS = {
+    # Convenience wrapper: resolves the stored URL_IDX through the stream directory.
+    'Extension': (
+        "    // Resolve the full extension URL via the stream-level FF_URL_DIRECTORY.\n"
+        "    inline std::string get_url(const BYTE* url_base, const FF_URL_DIRECTORY& dir) const {\n"
+        "        uint32_t idx = LOAD_U32(url_base + offset + FF_EXTENSION::URL_IDX);\n"
+        "        if (idx == FF_NULL_UINT32) return {};\n"
+        "        return dir.get_url(url_base, idx);\n"
+        "    }\n"
+    ),
+}
+
+# Per-(type_path, field_name) custom ingest code snippets.
+# These override the auto-generated ingest branch for the named field.
+# Variables available in the snippet: field, data, builder, logger,
+#   concurrent_queue, err_log, cpp_name (the C++ member name).
+INGEST_FIELD_OVERRIDES = {
+    # Extension.url is a JSON string but is stored as a uint32_t index.
+    # Looks up the pre-built intern_state map via builder->intern_state().
+    ('Extension', 'url'): (
+        "            std::string_view url_sv;\n"
+        "            if (field.value().get_string().get(url_sv) == simdjson::SUCCESS) {{\n"
+        "                const auto* istate = builder ? builder->intern_state() : nullptr;\n"
+        "                if (istate) {{\n"
+        "                    auto it = istate->url_to_index.find(std::string(url_sv));\n"
+        "                    data.url_idx = (it != istate->url_to_index.end()) ? it->second : FF_NULL_UINT32;\n"
+        "                }} else {{\n"
+        "                    data.url_idx = FF_NULL_UINT32;\n"
+        "                }}\n"
+        "            }} else {{\n"
+        "                {err_log}\n"
+        "            }}\n"
+    ),
+}
+
 # Scalar FHIR types that are stored inline (fixed-size, no child block).
-SCALAR_PRIMITIVE_TYPES = {'boolean', 'integer', 'unsignedInt', 'positiveInt', 'decimal'}
+SCALAR_PRIMITIVE_TYPES = {'boolean', 'integer', 'unsignedInt', 'positiveInt', 'integer64', 'decimal'}
 
 def _scalar_recovery_tag(fhir_type):
     """Return the RECOVERY_TAG constant for a scalar primitive type used in arrays."""
     if fhir_type == 'boolean': return 'RECOVER_FF_BOOL'
     if fhir_type == 'decimal': return 'RECOVER_FF_FLOAT64'
+    if fhir_type == 'integer64': return 'RECOVER_FF_UINT64'
     return 'RECOVER_FF_UINT32'  # integer, unsignedInt, positiveInt
 
 STRING_TYPES = {
@@ -201,6 +265,8 @@ def _field_kind_expr(f):
         return 'FF_FIELD_FLOAT64'
     if f['data_type'] == 'uint32_t':
         return 'FF_FIELD_UINT32'
+    if f['data_type'] == 'uint64_t':
+        return 'FF_FIELD_UINT64'
     if f['fhir_type'] == 'Resource': 
         return 'FF_FIELD_RESOURCE'
     if f.get('is_choice'):
@@ -251,7 +317,7 @@ def _array_entries_are_offsets_expr(f):
         return '0'
     return '1' if f['fhir_type'] in ('string', 'code') else '0'
 
-def generate_lazy_view_struct(layout, block_struct_name):
+def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
     view_name = block_struct_name.replace("FF_", "") + "View"
     
     hpp = f"template <uint32_t VERSION = FHIR_VERSION_R5>\n"
@@ -265,6 +331,8 @@ def generate_lazy_view_struct(layout, block_struct_name):
             ret_type = 'FF_ARRAY'
         elif f.get('is_choice'):
             ret_type = 'ChoiceEntry'
+        elif f.get('raw_scalar'):
+            ret_type = f['cpp_type']  # raw scalar override (e.g. uint32_t URL_IDX)
         elif f['fhir_type'] in ('string', 'code'):
             ret_type = 'std::string_view'
         elif f['fhir_type'] in TYPE_MAP and f['fhir_type'] not in ('DEFAULT', 'Resource', 'CHOICE'):
@@ -280,11 +348,15 @@ def generate_lazy_view_struct(layout, block_struct_name):
         # Compile-time schema drift bounds
         if f['first_version_idx'] > 0:
             hpp += f"        if constexpr (VERSION < FHIR_VERSION_{f['first_version_name']}) {{\n"
-            if ret_type in ['FF_ARRAY', 'std::string_view', 'ResourceReference', 'FastFHIR::Reflective::Node', 'ChoiceEntry'] or ret_type in ['uint8_t', 'uint32_t', 'double', 'bool']:
+            scalar_types = ['FF_ARRAY', 'std::string_view', 'ResourceReference',
+                            'FastFHIR::Reflective::Node', 'ChoiceEntry',
+                            'uint8_t', 'uint16_t', 'uint32_t', 'uint64_t',
+                            'int32_t', 'int64_t', 'double', 'bool', 'Offset']
+            if ret_type in scalar_types or f.get('raw_scalar'):
                 if ret_type == 'FF_ARRAY':
                     hpp += f"            return FF_ARRAY(FF_NULL_OFFSET, 0, VERSION);\n"
                 else:
-                    hpp += f"            return {ret_type}{{}};\n"
+                    hpp += f"            return {f['cpp_type'] if f.get('raw_scalar') else ret_type}{{}};\n"
             else:
                 hpp += f"            return {ret_type}<VERSION>{{base, FF_NULL_OFFSET}};\n"
             hpp += f"        }}\n"
@@ -296,6 +368,8 @@ def generate_lazy_view_struct(layout, block_struct_name):
             hpp += f"        return FF_ARRAY(child_off, 0, VERSION);\n"
         elif f.get('is_choice'):
             hpp += f"        return FastFHIR::Decode::choice(base, offset + {vtable_off});\n"
+        elif f.get('raw_scalar'):
+            hpp += f"        return {f['macro']}(base + offset + {vtable_off});\n"
         elif f['fhir_type'] in TYPE_MAP and f['fhir_type'] not in ('string', 'code', 'DEFAULT', 'Resource', 'CHOICE'):
             hpp += f"        return FastFHIR::Decode::scalar<{f['cpp_type']}>(base, offset + {vtable_off}, {_child_recovery_expr(f, block_struct_name)});\n"
         elif f['fhir_type'] in ('string', 'code'):
@@ -311,6 +385,8 @@ def generate_lazy_view_struct(layout, block_struct_name):
             
         hpp += f"    }}\n"
         
+    if extra_methods:
+        hpp += extra_methods
     hpp += f"}};\n\n"
     return hpp
 
@@ -796,8 +872,8 @@ def merge_fhir_versions(schemas_by_version, root_resource):
                 # C++ Keyword Sanitization
                 cpp_safe_name = field_name.lower()
                 if cpp_safe_name in ["class", "template", "namespace", "operator", "new", "delete", "default", "struct", "enum", "concept", "requires", "export", "import", "module"]:
-                    cpp_safe_name += "_"     
-                blk['layout'].append({
+                    cpp_safe_name += "_"
+                field_entry = {
                     'name': field_name.upper(), 'cpp_name': cpp_safe_name, 'orig_name': field_name,
                     'is_choice': is_choice,             # Ensure these are passed
                     'choice_types': choice_types,       # for the generator
@@ -805,7 +881,14 @@ def merge_fhir_versions(schemas_by_version, root_resource):
                     'size_const': mapping['size_const'], 'cpp_type': mapping['cpp'],
                     'data_type': mapping['data_type'], 'macro': mapping['macro'],
                     'first_version_name': v_name, 'first_version_idx': v_idx, 'offset': off
-                })
+                }
+                # Apply per-field layout overrides (e.g. Extension.url → URL_IDX uint32_t)
+                override = BLOCK_FIELD_OVERRIDES.get((parent_path, field_name))
+                if override:
+                    field_entry.update(override)
+                    # Recalculate size from the override so the offset chain is correct
+                    field_entry['offset'] = off
+                blk['layout'].append(field_entry)
                 blk['seen'].add(field_name)
             blk['sizes'][v_name] = blk['layout'][-1]['offset'] + blk['layout'][-1]['size']
             
@@ -923,7 +1006,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
         internal_hpp += f"}};\n\n"
         
         # ── INTERNAL: Zero-copy View Template ───────────────────────────────
-        internal_hpp += generate_lazy_view_struct(layout, s_name)
+        internal_hpp += generate_lazy_view_struct(layout, s_name, extra_methods=VIEW_EXTRA_METHODS.get(path, ""))
 
         # ── INTERNAL: 3-arg STORE (requires layout knowledge of hdr_off/child_off split) ─
         internal_hpp += f"Offset STORE_{s_name}(BYTE* const __base, Offset hdr_off, Offset child_off, const {d_name}& data, uint32_t __version = FHIR_VERSION_R5);\n\n"
@@ -1058,6 +1141,11 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
         for i, path in enumerate(data_type_paths):
             tag_name = f"RECOVER_FF_{path.replace('.', '_').upper()}"
             lines.append(f"    {tag_name:<44}= 0x{0x0200 + i+1:04X},")
+
+    # Handwritten FastFHIR structural types that are not generated from FHIR specs
+    lines.append("")
+    lines.append("    // FastFHIR Internal Structures (0x021D+)")
+    lines.append("    RECOVER_FF_URL_DIRECTORY              = 0x021D, // Stream-level URL intern table")
 
     if resource_paths:
         lines.append("")
@@ -1240,7 +1328,11 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
 
             # --- 2. Standard Field Handling (Exclusive) ---
             else:
-                if f["is_array"]:
+                # Check for per-field ingest override first
+                ingest_override = INGEST_FIELD_OVERRIDES.get((path, json_key))
+                if ingest_override:
+                    cpp += ingest_override.format(err_log=err_log)
+                elif f["is_array"]:
                     cpp += (
                         f"            simdjson::ondemand::array arr;\n"
                         f"            if (field.value().get_array().get(arr) == simdjson::SUCCESS) {{\n"

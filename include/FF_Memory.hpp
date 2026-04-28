@@ -28,7 +28,7 @@ class Memory {
 public:
     constexpr static uint64_t   STREAM_LOCK_BIT = 1ULL << 63;
     constexpr static uint64_t   OFFSET_MASK = ~STREAM_LOCK_BIT;
-    constexpr static size_t     STREAM_HEADER_SIZE = 38;
+    constexpr static size_t     STREAM_HEADER_SIZE = FF_HEADER::HEADER_SIZE;
     constexpr static size_t     STREAM_CURSOR_OFFSET = 8;
     constexpr static size_t     STREAM_PAYLOAD_OFFSET = 16;
 
