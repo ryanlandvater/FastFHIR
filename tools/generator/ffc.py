@@ -263,14 +263,14 @@ def generate_lazy_view_struct(layout, block_struct_name):
     for f in layout:
         if f['is_array']:
             ret_type = 'FF_ARRAY'
+        elif f.get('is_choice'):
+            ret_type = 'ChoiceEntry'
         elif f['fhir_type'] in ('string', 'code'):
             ret_type = 'std::string_view'
         elif f['fhir_type'] in TYPE_MAP and f['fhir_type'] not in ('DEFAULT', 'Resource', 'CHOICE'):
             ret_type = f['cpp_type']
         elif f['fhir_type'] == 'Resource':
             ret_type = 'ResourceReference'
-        elif f.get('is_choice'):
-            ret_type = 'FastFHIR::Reflective::Node'
         else:
             child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
             ret_type = child_struct.replace("FF_", "") + "View"
@@ -291,17 +291,17 @@ def generate_lazy_view_struct(layout, block_struct_name):
             
         vtable_off = f"{block_struct_name}::{f['name']}"
         
-        if f['fhir_type'] in TYPE_MAP and f['fhir_type'] not in ('string', 'code', 'DEFAULT', 'Resource', 'CHOICE'):
+        if f['is_array']:
+            hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
+            hpp += f"        return FF_ARRAY(child_off, 0, VERSION);\n"
+        elif f.get('is_choice'):
+            hpp += f"        return FastFHIR::Decode::choice(base, offset + {vtable_off});\n"
+        elif f['fhir_type'] in TYPE_MAP and f['fhir_type'] not in ('string', 'code', 'DEFAULT', 'Resource', 'CHOICE'):
             hpp += f"        return FastFHIR::Decode::scalar<{f['cpp_type']}>(base, offset + {vtable_off}, {_child_recovery_expr(f, block_struct_name)});\n"
         elif f['fhir_type'] in ('string', 'code'):
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
             hpp += f"        if (child_off == FF_NULL_OFFSET) return std::string_view();\n"
             hpp += f"        return FF_STRING(child_off, 0, VERSION).read_view(base);\n"
-        elif f['is_array']:
-            hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
-            hpp += f"        return FF_ARRAY(child_off, 0, VERSION);\n"
-        elif f.get('is_choice'):
-            hpp += f"        return FastFHIR::Reflective::Entry{{base, offset + {vtable_off}}}.as_node(0, VERSION, FF_RECOVER_UNDEFINED, FF_FIELD_CHOICE);\n"
         elif f['fhir_type'] == 'Resource':
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
             hpp += f"        return ResourceReference{{child_off, static_cast<RECOVERY_TAG>(LOAD_U16(base + offset + {vtable_off} + DATA_BLOCK::RECOVERY))}};\n"

@@ -179,6 +179,31 @@ namespace FastFHIR::Decode {
         }
         throw std::runtime_error("FastFHIR: Unsupported scalar decode target.");
     }
+    /// Read a 10-byte inline ChoiceEntry from the arena.
+    /// Layout: [8-byte raw_bits | 2-byte RECOVERY_TAG]
+    inline ChoiceEntry choice(const BYTE* base, Offset absolute_offset) {
+        ChoiceEntry entry;
+        entry.tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + absolute_offset + 8));
+        if (entry.tag == FF_RECOVER_UNDEFINED) return entry;
+        if ((entry.tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) {
+            switch (entry.tag) {
+                case RECOVER_FF_BOOL:    entry.value = LOAD_U8(base + absolute_offset) != 0; break;
+                case RECOVER_FF_INT32:   entry.value = static_cast<int32_t>(LOAD_U32(base + absolute_offset)); break;
+                case RECOVER_FF_UINT32:  entry.value = LOAD_U32(base + absolute_offset); break;
+                case RECOVER_FF_INT64:   entry.value = static_cast<int64_t>(LOAD_U64(base + absolute_offset)); break;
+                case RECOVER_FF_UINT64:  entry.value = LOAD_U64(base + absolute_offset); break;
+                case RECOVER_FF_FLOAT64: entry.value = LOAD_F64(base + absolute_offset); break;
+                default: break;
+            }
+        } else {
+            Offset child_off = LOAD_U64(base + absolute_offset);
+            if (entry.tag == RECOVER_FF_STRING && child_off != FF_NULL_OFFSET)
+                entry.value = FF_STRING(child_off, 0, 0).read_view(base);
+            else
+                entry.value = child_off;
+        }
+        return entry;
+    }
 } // namespace FastFHIR::Decode
 
 namespace FastFHIR::Encode {
