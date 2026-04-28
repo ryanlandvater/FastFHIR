@@ -44,6 +44,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Toggle for running Python code generation from CMake. 
 option(FASTFHIR_RUN_GENERATOR "Run python code generation before building" ON)
 
+option(FASTFHIR_GENERATE_ON_BUILD "Regenerate generated sources on each build" OFF)
+
+
+# Production profile passed into the Python generator.
+# Supported values: us, uk, all
+set(FASTFHIR_PRODUCTION_PROFILE "us" CACHE STRING "FastFHIR production profile for generator (us|uk|all)")
+set_property(CACHE FASTFHIR_PRODUCTION_PROFILE PROPERTY STRINGS us uk all)
+if(NOT FASTFHIR_PRODUCTION_PROFILE MATCHES "^(us|uk|all)$")
+    message(FATAL_ERROR "Invalid FASTFHIR_PRODUCTION_PROFILE='${FASTFHIR_PRODUCTION_PROFILE}'. Use us, uk, or all.")
+endif()
+message(STATUS "FastFHIR production profile: ${FASTFHIR_PRODUCTION_PROFILE}")
+
 # Build shared library by default; set OFF to build a static library.
 option(FASTFHIR_BUILD_SHARED "Build FastFHIR as a shared library (dynamic linking)" ON)
 
@@ -96,7 +108,9 @@ if(FASTFHIR_RUN_GENERATOR)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)  
 
     execute_process(
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generator/make_lib.py
+        COMMAND ${CMAKE_COMMAND} -E env
+                FASTFHIR_PRODUCTION_PROFILE=${FASTFHIR_PRODUCTION_PROFILE}
+                ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generator/make_lib.py
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         RESULT_VARIABLE FASTFHIR_GENERATE_RESULT
     )
@@ -106,9 +120,11 @@ if(FASTFHIR_RUN_GENERATOR)
     endif()
 
     add_custom_target(fastfhir_generate
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generator/make_lib.py
+        COMMAND ${CMAKE_COMMAND} -E env
+                FASTFHIR_PRODUCTION_PROFILE=${FASTFHIR_PRODUCTION_PROFILE}
+                ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generator/make_lib.py
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        COMMENT "Generating FastFHIR C++ sources"
+        COMMENT "Generating FastFHIR C++ sources (${FASTFHIR_PRODUCTION_PROFILE} profile)"
         VERBATIM
     )
 endif()
@@ -174,8 +190,9 @@ target_precompile_headers(fastfhir_obj
         ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
 )
 
-# Ensure the generator runs before compiling the object library if enabled.
-if(FASTFHIR_RUN_GENERATOR)
+# Optional: rerun generator before each build (off by default to avoid
+# invalidating the precompiled header when generated headers change).
+if(FASTFHIR_RUN_GENERATOR AND FASTFHIR_GENERATE_ON_BUILD)
     add_dependencies(fastfhir_obj fastfhir_generate)
 endif()
 
@@ -191,7 +208,7 @@ endif()
 add_library(fastfhir ${FASTFHIR_LIBRARY_TYPE} $<TARGET_OBJECTS:fastfhir_obj>)
 add_library(FastFHIR::fastfhir ALIAS fastfhir)
 
-if(FASTFHIR_RUN_GENERATOR)
+if(FASTFHIR_RUN_GENERATOR AND FASTFHIR_GENERATE_ON_BUILD)
     add_dependencies(fastfhir fastfhir_generate)
 endif()
 

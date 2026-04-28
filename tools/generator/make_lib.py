@@ -23,15 +23,16 @@ def main():
 	if not versions:
 		raise RuntimeError("No FHIR versions found in fhir_specs after fetch.")
 	version_configs = [(v, os.path.join("fhir_specs", v)) for v in versions]
+	resources = ffc.resolve_production_resources(specs_dir="fhir_specs", versions=versions)
 
 	# 2. Build the dictionaries
 	ffd.generate_master_dictionary(version_configs)
 
 	# 3. Build the code system enums (FF_CodeSystems.hpp)
-	code_enum_map = ffcs.generate_code_systems(ffc.TARGET_TYPES, ffc.TARGET_RESOURCES, versions=versions)
+	code_enum_map = ffcs.generate_code_systems(ffc.PRODUCTION_TYPES, resources, versions=versions)
 
 	# 4. Build the domains/resources
-	ffc.compile_fhir_library(ffc.TARGET_RESOURCES, versions, code_enum_map=code_enum_map)
+	ffc.compile_fhir_library(resources, versions, code_enum_map=code_enum_map)
 
 	# 4. Cleanup downloaded specs after successful generation
 	specs_dir = "fhir_specs"

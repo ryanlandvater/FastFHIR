@@ -16,17 +16,42 @@ import os
 import json
 import re
 
-TARGET_TYPES = [
+PRODUCTION_TYPES = [
     "Extension", 
     "Coding", "CodeableConcept", "Quantity", "Identifier",
+    "Age", "Count", "Distance", "SimpleQuantity",
     "Range", "Period", "Reference", "Meta", "Narrative",
     "Annotation", "HumanName", "Address", "ContactPoint",
-    "Attachment", "Ratio", "SampledData", "Duration",
+    "Attachment", "Ratio", "SampledData", "Duration", "Availability", "ExtendedContactDetail",
     "Timing", "Dosage", "Signature", "CodeableReference", "VirtualServiceDetail"
 ]
-TARGET_RESOURCES = [
-    "Observation", "Patient", "Encounter", "DiagnosticReport", "Bundle"
+
+# US Core baseline resource set commonly used in Epic/US interoperability flows.
+# Keep this curated and update as your target US Core version evolves.
+US_CORE_RESOURCES = [
+    "AllergyIntolerance", "CarePlan", "CareTeam", "Condition", "Coverage",
+    "Device", "DiagnosticReport", "DocumentReference", "Encounter", "Goal",
+    "Immunization", "Location", "Medication", "MedicationDispense",
+    "MedicationRequest", "MedicationStatement", "Observation", "Organization",
+    "Patient", "Practitioner", "PractitionerRole", "Procedure", "Provenance",
+    "QuestionnaireResponse", "RelatedPerson", "ServiceRequest", "Specimen"
 ]
+
+# UK Core baseline resource set for typical NHS/UK profile implementations.
+# Keep this curated and update as your target UK Core version evolves.
+UK_CORE_RESOURCES = [
+    "AllergyIntolerance", "Appointment", "CarePlan", "CareTeam", "Condition",
+    "DiagnosticReport", "Encounter", "Immunization", "Location", "Medication",
+    "MedicationDispense", "MedicationRequest", "MedicationStatement", "Observation",
+    "Organization", "Patient", "Practitioner", "Procedure", "QuestionnaireResponse",
+    "RelatedPerson", "ServiceRequest", "Specimen"
+]
+
+# Production profile selector:
+# - us (default): use curated US Core resource set
+# - uk: use curated UK Core resource set
+# - all: discover all concrete FHIR resources from profiles-resources.json
+PRODUCTION_PROFILE_ENV = "FASTFHIR_PRODUCTION_PROFILE"
 
 # =====================================================================
 # 1. FASTFHIR TYPE MAPPING & NORMALIZATION
@@ -232,7 +257,7 @@ def generate_lazy_view_struct(layout, block_struct_name):
         elif f['fhir_type'] == 'Resource':
             ret_type = 'ResourceReference'
         elif f.get('is_choice'):
-            ret_type = 'Reflective::Node'
+            ret_type = 'FastFHIR::Reflective::Node'
         else:
             child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
             ret_type = child_struct.replace("FF_", "") + "View"
@@ -242,7 +267,7 @@ def generate_lazy_view_struct(layout, block_struct_name):
         # Compile-time schema drift bounds
         if f['first_version_idx'] > 0:
             hpp += f"        if constexpr (VERSION < FHIR_VERSION_{f['first_version_name']}) {{\n"
-            if ret_type in ['FF_ARRAY', 'std::string_view', 'ResourceReference', 'Reflective::Node'] or ret_type in ['uint8_t', 'uint32_t', 'double', 'bool']:
+            if ret_type in ['FF_ARRAY', 'std::string_view', 'ResourceReference', 'FastFHIR::Reflective::Node', 'ChoiceEntry'] or ret_type in ['uint8_t', 'uint32_t', 'double', 'bool']:
                 if ret_type == 'FF_ARRAY':
                     hpp += f"            return FF_ARRAY(FF_NULL_OFFSET, 0, VERSION);\n"
                 else:
@@ -774,6 +799,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
                      • FF_DESERIALIZE_{s_name}(...)                     — thin wrapper around ::deserialize
     """
     public_hpp, internal_hpp, cpp = "", "", ""
+    traits_hpp = ""
     block_data_names = sorted({path.replace('.', '') + "Data" for path in master_blocks})
     block_struct_names = sorted({"FF_" + path.replace('.', '_').upper() for path in master_blocks})
     block_view_names = sorted({s_name.replace("FF_", "") + "View" for s_name in block_struct_names})
@@ -876,14 +902,14 @@ def generate_cxx_for_blocks(master_blocks, versions):
         public_hpp += f"{d_name} FF_DESERIALIZE_{bridge_name}(const BYTE* const __base, Offset __offset, Size __size, uint32_t __version);\n\n"
 
         # ── PUBLIC: TypeTraits — references only RECOVER_* and bridge functions
-        public_hpp += f"namespace FastFHIR {{\n"
-        public_hpp += f"template<> struct TypeTraits<{d_name}> {{\n"
-        public_hpp += f"    static constexpr auto recovery = RECOVER_{s_name};\n"
-        public_hpp += f"    static Size size(const {d_name}& d, uint32_t v = FHIR_VERSION_R5) {{ return SIZE_{s_name}(d, v); }}\n"
-        public_hpp += f"    static void store(BYTE* const base, Offset off, const {d_name}& d, uint32_t v = FHIR_VERSION_R5) {{ STORE_{s_name}(base, off, d, v); }}\n"
-        public_hpp += f"    static {d_name} read(const BYTE* const base, Offset off, Size size, uint32_t v) {{ return FF_DESERIALIZE_{bridge_name}(base, off, size, v); }}\n"
-        public_hpp += f"}};\n"
-        public_hpp += f"}} // namespace FastFHIR\n\n"
+        traits_hpp += f"namespace FastFHIR {{\n"
+        traits_hpp += f"template<> struct TypeTraits<{d_name}> {{\n"
+        traits_hpp += f"    static constexpr auto recovery = RECOVER_{s_name};\n"
+        traits_hpp += f"    static Size size(const {d_name}& d, uint32_t v = FHIR_VERSION_R5) {{ return SIZE_{s_name}(d, v); }}\n"
+        traits_hpp += f"    static void store(BYTE* const base, Offset off, const {d_name}& d, uint32_t v = FHIR_VERSION_R5) {{ STORE_{s_name}(base, off, d, v); }}\n"
+        traits_hpp += f"    static {d_name} read(const BYTE* const base, Offset off, Size size, uint32_t v) {{ return FF_DESERIALIZE_{bridge_name}(base, off, size, v); }}\n"
+        traits_hpp += f"}};\n"
+        traits_hpp += f"}} // namespace FastFHIR\n\n"
 
         # ── CPP: Implementations ─────────────────────────────────────────────
         cpp += f"FF_Result {s_name}::validate_full(const BYTE *const __base) const noexcept {{ return validate_offset(__base, type, recovery); }}\n"
@@ -909,6 +935,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
         cpp += f"    return {s_name}::deserialize(__base, __offset, __size, __version);\n"
         cpp += f"}}\n\n"
 
+    public_hpp += traits_hpp
     return public_hpp, internal_hpp, cpp
 
 # =====================================================================
@@ -927,7 +954,19 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
     resource_paths = []
     backbone_paths = []
 
-    for path in all_block_paths:
+    candidate_paths = set(all_block_paths)
+
+    # Some profiled datatypes (e.g., Availability in R5 profiles-types) can be
+    # materialized in generated code while missing from all_block_paths in some
+    # spec bundle shapes. Ensure their recovery tags are always present.
+    if "Availability" in type_set:
+        candidate_paths.update({
+            "Availability",
+            "Availability.availableTime",
+            "Availability.notAvailableTime",
+        })
+
+    for path in candidate_paths:
         root = path.split('.')[0]
         is_nested = '.' in path
         if not is_nested and root in type_set:
@@ -937,7 +976,7 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
         else:
             backbone_paths.append(path)
 
-    # Preserve TARGET_TYPES / RESOURCES ordering for stable ABI
+    # Preserve type/resource ordering for stable ABI
     dt_order = {t: i for i, t in enumerate(target_types)}
     res_order = {r: i for i, r in enumerate(resources)}
     data_type_paths.sort(key=lambda p: dt_order.get(p, len(target_types)))
@@ -1821,7 +1860,7 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
         if os.path.exists(p): 
             with open(p, 'r', encoding='utf-8') as f: type_bundles.append((v, json.load(f)))
     
-    fwd_decls = set([t + "Data" for t in TARGET_TYPES])
+    fwd_decls = set([t + "Data" for t in PRODUCTION_TYPES])
     hpp_head = f"{auto_header}// MARK: - Universal Data Types\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n#include \"../include/FF_Utilities.hpp\"\n#include \"../include/FF_Builder.hpp\"\n#include \"FF_CodeSystems.hpp\"\n#include <vector>\n#include <string_view>\n#include <memory>\n\n"
     hpp_head += "namespace FastFHIR { template<typename T> struct TypeTraits; \n\n"
     hpp_head += "template<> struct TypeTraits<std::string_view> {\n"
@@ -1852,7 +1891,7 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     cpp_head = f"{auto_header}\n#include \"../include/FF_Utilities.hpp\"\n#include \"FF_DataTypes_internal.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n"
     
     all_blocks = {}
-    for t in TARGET_TYPES:
+    for t in PRODUCTION_TYPES:
         sch = []
         for v, bun in type_bundles:
             try: sch.append((v, extract_structure_definition(bun, t)))
@@ -2010,7 +2049,7 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     with open(os.path.join(output_dir, "FF_AllTypes.hpp"), "w") as f: f.write(all_types_hpp)
 
     # Generate the RECOVERY enum from all discovered block paths
-    generate_recovery_header(TARGET_TYPES, resources, all_block_paths, output_dir)
+    generate_recovery_header(PRODUCTION_TYPES, resources, all_block_paths, output_dir)
 
     # Generate the simdjson ingestion mappings for all discovered blocks
     generate_ingest_mappings(all_blocks, resources, output_dir)
@@ -2035,14 +2074,74 @@ def _discover_versions(specs_dir="fhir_specs"):
 			versions.append(name)
 	return sorted(set(versions), key=_version_sort_key)
 
+
+def _discover_resource_names(specs_dir="fhir_specs", versions=None, include_abstract=False):
+    """Discover resource StructureDefinition names from profiles-resources.json."""
+    versions = versions or _discover_versions(specs_dir)
+    discovered = set()
+    for v in versions:
+        p = os.path.join(specs_dir, v, "profiles-resources.json")
+        if not os.path.exists(p):
+            continue
+        with open(p, "r", encoding="utf-8") as f:
+            bundle = json.load(f)
+        for entry in bundle.get("entry", []):
+            resource = entry.get("resource", {})
+            if resource.get("resourceType") != "StructureDefinition":
+                continue
+            if resource.get("kind") != "resource":
+                continue
+            if not include_abstract and resource.get("abstract", False):
+                continue
+            name = resource.get("name")
+            if name:
+                discovered.add(name)
+    return sorted(discovered)
+
+
+def resolve_production_resources(specs_dir="fhir_specs", versions=None, profile=None):
+    """
+    Resolve production resource scope.
+    profile values:
+      - us (default): use curated US Core resources
+      - uk: use curated UK Core resources
+      - all: discover all concrete FHIR resources
+    Defaults to env FASTFHIR_PRODUCTION_PROFILE, then "us".
+    """
+    selected_profile = (profile or os.getenv(PRODUCTION_PROFILE_ENV, "us")).strip().lower()
+    if selected_profile == "us":
+        resources = list(US_CORE_RESOURCES)
+    elif selected_profile == "uk":
+        resources = list(UK_CORE_RESOURCES)
+    elif selected_profile == "all":
+        resources = _discover_resource_names(specs_dir=specs_dir, versions=versions, include_abstract=False)
+        if not resources:
+            raise RuntimeError(
+                "FASTFHIR_PRODUCTION_PROFILE=all requested, but no resources were discovered. "
+                "Ensure fhir_specs/<version>/profiles-resources.json exists."
+            )
+    else:
+        raise ValueError(
+            f"Unsupported {PRODUCTION_PROFILE_ENV}='{selected_profile}'. "
+            "Use one of: us|uk|all"
+        )
+
+    print(f"Production profile: {selected_profile} ({len(resources)} resources)")
+    if resources:
+        print("Resolved resources:")
+        for name in resources:
+            print(f"  - {name}")
+    return resources
+
 def main (spec_dir="fhir_specs", output_dir="generated_src"):
     versions = _discover_versions(spec_dir)
     print(f"Discovered FHIR Versions: {', '.join(versions)}")
+    resources = resolve_production_resources(specs_dir=spec_dir, versions=versions)
     enum_map = {}
     if versions:
         from generator.ffcs import generate_code_systems
-        enum_map = generate_code_systems(TARGET_TYPES, TARGET_RESOURCES, versions)
-    compile_fhir_library(TARGET_RESOURCES, versions, code_enum_map=enum_map, output_dir=output_dir)
+        enum_map = generate_code_systems(PRODUCTION_TYPES, resources, versions)
+    compile_fhir_library(resources, versions, code_enum_map=enum_map, output_dir=output_dir)
     print("\n[Success] Build Complete: generated_src/ contains all FastFHIR artifacts."
 )
     
