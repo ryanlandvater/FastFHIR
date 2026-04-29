@@ -169,11 +169,18 @@ type.
 
 ### 2.2 Lock-Free Claiming — `claim_space()`
 
-The arena's first eight bytes are a `uint64_t` write-head, accessed via
-`std::atomic_ref<uint64_t>` against `*m_head_ptr`. The "payload arena" (the
-region whose offsets the V-Tables address) starts at byte 8 — i.e.
-`Memory::base()` returns `m_base + 8`. (See `STREAM_PAYLOAD_OFFSET = 16`,
-which accounts for both the cursor and the 8-byte stream-size slot.)
+The atomic write-head is a `uint64_t` co-located inside the `FF_HEADER`
+region of the arena, accessed via `std::atomic_ref<uint64_t>` against
+`*m_head_ptr`. Specifically, it occupies the eight bytes at
+`STREAM_CURSOR_OFFSET = 8` — the same byte range that `FF_HEADER::STREAM_SIZE`
+occupies in the sealed file. During building, those bytes carry the live
+cursor; on `finalize()`, the cursor is replaced by the canonical
+`STREAM_SIZE` value. The remainder of the header (bytes 0–7 carrying
+`MAGIC + RECOVERY + FHIR_REV`, and bytes 16 onwards carrying
+`ROOT_OFFSET`, `ROOT_RECOVERY`, etc.) is staged separately during raw
+ingest — see `STREAM_PAYLOAD_OFFSET = 16` and the `StreamHead` discussion in
+§2.4. `Memory::base()` returns `m_base` directly; arena offsets stored in
+V-Tables are relative to `m_base` (offset 0 = start of `FF_HEADER`).
 
 `claim_space(bytes)` performs a single `fetch_add(bytes,
 memory_order_acq_rel)` on the write-head, returning the offset the caller now
@@ -247,15 +254,16 @@ caller is responsible for keeping the parent View alive.
 #### The staged-header trick
 
 The first `STREAM_HEADER_SIZE` bytes of an incoming raw stream contain the
-`FF_HEADER`. Those bytes cannot be written directly to offset 0 because
-offsets 0–7 hold the live atomic write-head — overwriting them would corrupt
-in-progress concurrent allocations. `StreamHead` therefore stages the header
-in a private `m_staged_header[STREAM_HEADER_SIZE]` buffer, and on `release()`
-copies the staged bytes back into the arena *around* the cursor word
-(`FF_Memory.hpp:362–373`):
+`FF_HEADER`. The bytes at offsets 8–15 of that header (`STREAM_SIZE` in the
+sealed-file layout) cannot be written directly to the arena because those
+same bytes hold the live atomic write-head during building — overwriting them
+would corrupt in-progress concurrent allocations. `StreamHead` therefore
+stages the header in a private `m_staged_header[STREAM_HEADER_SIZE]` buffer,
+and on `release()` copies the staged bytes back into the arena *around* the
+cursor word (`FF_Memory.hpp:362–373`):
 
 ```
-memcpy(m_base, m_staged_header, STREAM_CURSOR_OFFSET);                     // bytes 0..7  → MAGIC + RECOVERY + FHIR_REV
+memcpy(m_base, m_staged_header, STREAM_CURSOR_OFFSET);                     // bytes 0..7  → MAGIC + RECOVERY + FHIR_REV (FF_HEADER's own layout)
 memcpy(m_base + STREAM_PAYLOAD_OFFSET,
        m_staged_header + STREAM_PAYLOAD_OFFSET,
        STREAM_HEADER_SIZE - STREAM_PAYLOAD_OFFSET);                        // bytes 16..  → ROOT_OFFSET, …
@@ -263,6 +271,16 @@ memcpy(m_base + STREAM_PAYLOAD_OFFSET,
 
 Bytes 8–15 (the cursor itself) are deliberately *not* copied; the live
 atomic head value already occupies those bytes and is the source of truth.
+
+> **Note.** `FF_HEADER` is a special block: it inherits from `DATA_BLOCK`
+> for the C++ runtime descriptor (`__offset`, `__size`, `__version`) but
+> deliberately **shadows** `DATA_BLOCK`'s `vtable_offsets`. Its first eight
+> bytes are *not* the universal `VALIDATION` field of §4.1 — they are
+> `MAGIC (4) + RECOVERY (2) + FHIR_REV (2)`. The universal 10-byte
+> `[VALIDATION | RECOVERY]` header applies to every other block in the
+> arena; `FF_HEADER` is the sole, intentional exception, because it must be
+> identifiable by file-magic alone before any structural assumptions can be
+> made.
 
 ---
 
@@ -326,9 +344,12 @@ The tag space is partitioned by high byte:
 
 - `RECOVER_FF_SCALAR_BLOCK = 0x0100` — primitive-block tags
   (`RECOVER_FF_BOOL`, `RECOVER_FF_INT32`, …).
-- `RECOVER_FF_DATA_TYPE_BLOCK = 0x0200` — generic FHIR data-type blocks
-  (`RECOVER_FF_STRING`, complex datatypes).
-- `>= 0x0200` — concrete FHIR resources and structures.
+- `RECOVER_FF_DATA_TYPE_BLOCK = 0x0200` — the inclusive lower bound for
+  generic FHIR data-type blocks (e.g. `RECOVER_FF_STRING`, complex
+  datatypes). The runtime check `base >= RECOVER_FF_DATA_TYPE_BLOCK`
+  (`FF_Primitives.hpp:221`) groups data-types and concrete resources
+  together as the `FF_FIELD_BLOCK` family; specific resources occupy values
+  above the data-type range allocated by the generator.
 
 The runtime tag dispatcher `Recovery_to_Kind` (`FF_Primitives.hpp:203–223`)
 implements exactly this partition.
@@ -564,7 +585,7 @@ allocated.
 ```
 HEADER (16 bytes):
   VALIDATION    (8)   bytes 0..7
-  RECOVERY      (2)   bytes 8..9   — array recovery tag (high bit always 1; low 15 = element type)
+  RECOVERY      (2)   bytes 8..9   — array recovery tag (bit 15 / `RECOVER_ARRAY_BIT` always set; low 15 bits = element type)
   KIND_AND_STEP (2)   bytes 10..11 — packed: bits 15..14 = EntryKind, bits 13..0 = stride bytes
   ENTRY_COUNT   (4)   bytes 12..15
 ENTRIES:
