@@ -1103,6 +1103,12 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
             "Availability.notAvailableTime",
         })
 
+    # Ensure all resource top-level names are always present as candidates.
+    # merge_fhir_versions only adds parent paths derived from child elements, so
+    # if schema extraction silently fails (except: pass) for a resource, its name
+    # never enters all_block_paths and resource_paths stays empty.
+    candidate_paths.update(resources)
+
     for path in candidate_paths:
         root = path.split('.')[0]
         is_nested = '.' in path
@@ -2127,7 +2133,10 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
         sch = []
         for v, bun in type_bundles:
             try: sch.append((v, extract_structure_definition(bun, t)))
-            except: pass
+            except Exception as e: print(f"  [Warning] Type '{t}' not found in version '{v}': {e}")
+        if not sch:
+            raise RuntimeError(f"PRODUCTION_TYPE '{t}' was not found in any version's profiles-types.json. "
+                               "Ensure fhir_specs are fully downloaded and the type name is correct.")
         if sch:
             blocks = merge_fhir_versions(sch, t)
             _annotate_code_enums(blocks, code_enums)
@@ -2150,16 +2159,28 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     with open(os.path.join(output_dir, "FF_DataTypes_internal.hpp"), "w") as f: f.write(int_head)
     with open(os.path.join(output_dir, "FF_DataTypes.cpp"), "w") as f: f.write(cpp_head)
 
+    # Pre-load all resource bundles once (once per version, not once per resource)
+    resource_bundles = []
+    for v in versions:
+        p = os.path.join(input_dir, v, "profiles-resources.json")
+        if os.path.exists(p):
+            try:
+                with open(p, 'r', encoding='utf-8') as f:
+                    resource_bundles.append((v, json.load(f)))
+                print(f"  [Info] Loaded {p}")
+            except Exception as e:
+                print(f"  [Warning] Could not load {p}: {e}")
+
     generated_resources = []
     for res in resources:
         print(f"Generating FF_{res}...")
         sch = []
-        for v in versions:
-            p = os.path.join(input_dir, v, "profiles-resources.json")
-            if os.path.exists(p):
-                with open(p, 'r') as f:
-                    try: sch.append((v, extract_structure_definition(json.load(f), res)))
-                    except: pass
+        for v, bun in resource_bundles:
+            try: sch.append((v, extract_structure_definition(bun, res)))
+            except Exception as e: print(f"  [Warning] {res} not found in {v}: {e}")
+        if not sch:
+            raise RuntimeError(f"Resource '{res}' was not found in any version's profiles-resources.json. "
+                               "Ensure fhir_specs are fully downloaded and the resource name is correct.")
         if sch:
             generated_resources.append(res)
             blocks = merge_fhir_versions(sch, res)

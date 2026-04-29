@@ -11,7 +11,7 @@
 
 #include <FastFHIR.hpp>
 #include <FF_Ingestor.hpp>
-#include "FF_AllTypes.hpp"     // PatientData, BundleData, ObservationData, …
+#include "FF_AllTypes.hpp" // PatientData, BundleData, ObservationData, …
 
 #include <openssl/evp.h>
 
@@ -37,22 +37,25 @@ using namespace FastFHIR;
 // Assertion helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-#define REQUIRE(expr, msg)                                          \
-    do {                                                            \
-        if (!(expr)) {                                              \
+#define REQUIRE(expr, msg)                                                     \
+    do                                                                         \
+    {                                                                          \
+        if (!(expr))                                                           \
+        {                                                                      \
             throw std::runtime_error(std::string("REQUIRE failed: ") + (msg)); \
-        }                                                           \
+        }                                                                      \
     } while (false)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SHA-256 hasher — passed as the Builder::finalize() callback
 // ─────────────────────────────────────────────────────────────────────────────
 
-static std::vector<uint8_t> sha256(const unsigned char* data, size_t len) {
+static std::vector<uint8_t> sha256(const unsigned char *data, size_t len)
+{
     std::vector<uint8_t> hash(EVP_MAX_MD_SIZE);
     unsigned int out_len = 0;
 
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
     EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
     EVP_DigestUpdate(ctx, data, len);
     EVP_DigestFinal_ex(ctx, hash.data(), &out_len);
@@ -66,9 +69,11 @@ static std::vector<uint8_t> sha256(const unsigned char* data, size_t len) {
 // File utilities
 // ─────────────────────────────────────────────────────────────────────────────
 
-static std::string slurp(const fs::path& p) {
+static std::string slurp(const fs::path &p)
+{
     std::ifstream f(p, std::ios::binary);
-    if (!f) throw std::runtime_error("cannot open: " + p.string());
+    if (!f)
+        throw std::runtime_error("cannot open: " + p.string());
     return {std::istreambuf_iterator<char>(f), {}};
 }
 
@@ -79,7 +84,8 @@ static std::string slurp(const fs::path& p) {
 // In-process loopback transport pair built with standalone Asio.
 // This gives socket semantics on every platform (Windows/macOS/Linux) without
 // keeping separate POSIX vs Winsock test implementations.
-struct LoopbackSocketPair {
+struct LoopbackSocketPair
+{
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor;
     asio::ip::tcp::socket client;
@@ -88,7 +94,8 @@ struct LoopbackSocketPair {
     LoopbackSocketPair()
         : acceptor(io, asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0)),
           client(io),
-          server(io) {
+          server(io)
+    {
         acceptor.listen();
         const auto ep = acceptor.local_endpoint();
         client.connect(ep);
@@ -98,10 +105,12 @@ struct LoopbackSocketPair {
 
 // Send the full sealed archive over a stream socket.
 // Asio's write() loops until the full buffer is transferred or an error occurs.
-static void socket_send_all(asio::ip::tcp::socket& out_sock, const char* data, size_t len) {
+static void socket_send_all(asio::ip::tcp::socket &out_sock, const char *data, size_t len)
+{
     asio::error_code ec;
     const size_t sent = asio::write(out_sock, asio::buffer(data, len), ec);
-    if (ec) {
+    if (ec)
+    {
         throw std::runtime_error("asio write failed: " + ec.message());
     }
     REQUIRE(sent == len, "asio write transferred fewer bytes than expected");
@@ -110,21 +119,24 @@ static void socket_send_all(asio::ip::tcp::socket& out_sock, const char* data, s
 // Receive exactly expected bytes from a socket straight into a FastFHIR arena.
 // This exercises Memory::StreamHead, which is the intended NIC->arena ingress
 // path for framed protocols.
-static void socket_recv_exact_to_memory(asio::ip::tcp::socket& in_sock, Memory& dst, size_t expected) {
+static void socket_recv_exact_to_memory(asio::ip::tcp::socket &in_sock, Memory &dst, size_t expected)
+{
     dst.reset(0); // Start the stream at absolute offset 0 for a full archive copy.
 
     auto head_opt = dst.try_acquire_stream();
     REQUIRE(head_opt.has_value(), "failed to acquire stream lock on destination Memory");
-    auto& head = *head_opt;
+    auto &head = *head_opt;
 
     size_t received = 0;
-    while (received < expected) {
+    while (received < expected)
+    {
         size_t want = std::min(head.available_space(), expected - received);
         REQUIRE(want > 0, "destination arena has no space left during socket receive");
 
         asio::error_code ec;
         const size_t n = in_sock.read_some(asio::buffer(head.write_ptr(), want), ec);
-        if (ec) {
+        if (ec)
+        {
             throw std::runtime_error("asio read_some failed: " + ec.message());
         }
         REQUIRE(n > 0, "socket closed before full archive was received");
@@ -139,39 +151,94 @@ static void socket_recv_exact_to_memory(asio::ip::tcp::socket& in_sock, Memory& 
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef FASTFHIR_TEST_ARTIFACT_DIR
-#define FASTFHIR_TEST_ARTIFACT_DIR "."
+// When built outside CMake (e.g. standalone compile) fall back to the OS temp
+// directory so artifact files never land in the source tree.
+#define FASTFHIR_TEST_ARTIFACT_DIR ""
 #endif
 
 static const fs::path TEST_SOURCE_DIR = fs::path(__FILE__).parent_path();
-static const fs::path TEST_ARTIFACT_DIR = [] {
+static const fs::path TEST_ARTIFACT_DIR = []
+{
     fs::path p(FASTFHIR_TEST_ARTIFACT_DIR);
+    // Empty string means the macro was not set by CMake — use the OS temp dir
+    // so artifact files never land in the source tree when built standalone.
+    if (p.empty())
+        p = fs::temp_directory_path() / "fastfhir_test_artifacts";
     std::error_code ec;
     fs::create_directories(p, ec);
     return p;
 }();
 
 static const fs::path PATIENT_FFHR = TEST_ARTIFACT_DIR / "patient.ffhr";
-static const fs::path BUNDLE_FFHR  = TEST_ARTIFACT_DIR / "bundle.ffhr";
+static const fs::path BUNDLE_FFHR = TEST_ARTIFACT_DIR / "bundle.ffhr";
 static const fs::path PATIENT_COMPACT_FFHR = TEST_ARTIFACT_DIR / "patient.compact.ffhr";
 static const fs::path BUNDLE_COMPLEX_FFHR = TEST_ARTIFACT_DIR / "bundle.complex.ffhr";
 static const fs::path BUNDLE_COMPLEX_COMPACT_FFHR = TEST_ARTIFACT_DIR / "bundle.complex.compact.ffhr";
 
-static fs::path find_patient_json() {
+static fs::path create_runtime_patient_json_fixture()
+{
+    static constexpr std::string_view kPatientJson = R"({
+    "resourceType": "Patient",
+    "id": "patient-1",
+    "active": true,
+    "gender": "male",
+    "name": [
+        {
+            "use": "usual",
+            "family": "Landvater",
+            "given": ["Ryan", "Eric"]
+        }
+    ],
+    "telecom": [],
+    "address": [
+        {
+            "use": "home",
+            "line": ["123 Main St"],
+            "city": "Springfield",
+            "state": "IL",
+            "postalCode": "62701",
+            "country": "US"
+        }
+    ],
+    "identifier": [
+        {
+            "system": "http://example.org/fhir/ids",
+            "value": "12345"
+        }
+    ]
+})";
+
+    const fs::path fixture = TEST_ARTIFACT_DIR / "patient.generated.json";
+    std::ofstream out(fixture, std::ios::binary | std::ios::trunc);
+    if (!out)
+    {
+        throw std::runtime_error("unable to create runtime patient fixture at: " + fixture.string());
+    }
+    out.write(kPatientJson.data(), static_cast<std::streamsize>(kPatientJson.size()));
+    out.close();
+    return fixture;
+}
+
+static fs::path find_patient_json()
+{
     const std::vector<fs::path> candidates = {
         TEST_SOURCE_DIR / "patient.json",
         // sibling FastFHIR_Python repo (common development layout)
         fs::path(__FILE__).parent_path() / "../../../FastFHIR_Python/test/patient.json",
     };
-    for (auto& c : candidates) {
-        if (fs::exists(c)) return fs::canonical(c);
+    for (auto &c : candidates)
+    {
+        if (fs::exists(c))
+            return fs::canonical(c);
     }
-    throw std::runtime_error(
-        "patient.json fixture not found. Place it in tests/cpp/ or alongside FastFHIR_Python/test/");
+    return create_runtime_patient_json_fixture();
 }
 
-static void cleanup_artifacts() {
-    for (auto& p : {PATIENT_FFHR, BUNDLE_FFHR, PATIENT_COMPACT_FFHR,
-                    BUNDLE_COMPLEX_FFHR, BUNDLE_COMPLEX_COMPACT_FFHR}) {
+static void cleanup_artifacts()
+{
+    for (auto &p : {PATIENT_FFHR, BUNDLE_FFHR, PATIENT_COMPACT_FFHR,
+                    BUNDLE_COMPLEX_FFHR, BUNDLE_COMPLEX_COMPACT_FFHR})
+    {
         std::error_code ec;
         fs::remove(p, ec);
     }
@@ -181,19 +248,29 @@ static void cleanup_artifacts() {
 // Test runner
 // ─────────────────────────────────────────────────────────────────────────────
 
-struct Result { std::string name; bool passed; std::string error; };
+struct Result
+{
+    std::string name;
+    bool passed;
+    std::string error;
+};
 static std::vector<Result> g_results;
 
 template <typename Fn>
-static void run(const char* name, Fn fn) {
-    std::cout << "\n" << std::string(60, '=') << "\n"
+static void run(const char *name, Fn fn)
+{
+    std::cout << "\n"
+              << std::string(60, '=') << "\n"
               << "  " << name << "\n"
               << std::string(60, '=') << "\n";
-    try {
+    try
+    {
         fn();
         g_results.push_back({name, true, {}});
         std::cout << "\n  \033[32mPASS\033[0m\n";
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception &e)
+    {
         g_results.push_back({name, false, e.what()});
         std::cout << "\n  \033[31mFAIL\033[0m: " << e.what() << "\n";
     }
@@ -286,7 +363,8 @@ static constexpr std::string_view BUNDLE_COMPLEX_JSON = R"({
 // Getting Started — run in practical order: Step 2 -> Step 3 -> Step 1
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void test_getting_started_231() {
+static void test_getting_started_231()
+{
     // Step 2: Create a file-backed Memory arena so we can persist patient.ffhr.
     auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
 
@@ -322,7 +400,7 @@ static void test_getting_started_231() {
     REQUIRE(!view.empty(), "getting-started finalize returned empty view");
 
     // Step 1: Open patient.ffhr read-only, parse bytes, and read fields only if present.
-    std::FILE* fp = std::fopen(PATIENT_FFHR.string().c_str(), "rb");
+    std::FILE *fp = std::fopen(PATIENT_FFHR.string().c_str(), "rb");
     REQUIRE(fp != nullptr, "fopen(patient.ffhr, rb) failed");
 
     REQUIRE(std::fseek(fp, 0, SEEK_END) == 0, "fseek failed");
@@ -341,59 +419,100 @@ static void test_getting_started_231() {
 
     PatientData patient = root;
 
-    if (!patient.id.empty()) {
+    if (!patient.id.empty())
+    {
         std::cout << "  id=" << patient.id << "\n";
         REQUIRE(patient.id == "patient-1", "unexpected id in getting-started parse");
-    } else {
+    }
+    else
+    {
         throw std::runtime_error("expected id field to exist");
     }
 
-    if (patient.active == 1) {
+    if (patient.active == 1)
+    {
         const bool active = patient.active == 1;
         std::cout << "  active=" << std::boolalpha << active << "\n";
         REQUIRE(active, "active should be true after typed key enrichment");
     }
 
-    if (patient.gender != AdministrativeGender::Unknown) {
+    if (patient.gender != AdministrativeGender::Unknown)
+    {
         auto gender = FF_AdministrativeGenderToString(patient.gender);
         std::cout << "  gender=" << gender << "\n";
         REQUIRE(std::string_view(gender) == "male", "unexpected gender in getting-started parse");
     }
 
-    if (!patient.birthdate.empty()) {
+    if (!patient.birthdate.empty())
+    {
         std::cout << "  birthDate=" << patient.birthdate << "\n";
         REQUIRE(patient.birthdate == "1990-03-21", "unexpected birthDate after typed key enrichment");
     }
 
-    if (!patient.name.empty()) {
+    if (!patient.name.empty())
+    {
         bool saw_family = false;
         bool saw_given = false;
-        for (auto& name : patient.name) {
-            if (!name.family.empty()) {
+        for (auto &name : patient.name)
+        {
+            if (!name.family.empty())
+            {
                 auto family = name.family;
                 std::cout << "  family=" << family << "\n";
                 REQUIRE(family == "Smith", "unexpected family in getting-started parse");
                 saw_family = true;
             }
-            for (auto& given : name.given) {
+            for (auto &given : name.given)
+            {
                 auto g = given;
                 std::cout << "  given=" << g << "\n";
                 REQUIRE(g == "John", "unexpected given in getting-started parse");
-                    saw_given = true;
+                saw_given = true;
             }
         }
         REQUIRE(saw_family, "expected at least one family name");
         REQUIRE(saw_given, "expected at least one given name");
-    } else {
+    }
+    else
+    {
         throw std::runtime_error("expected name array to exist");
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Example 10 — Reuse patient.ffhr for another surgical edit (no JSON round-trip)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void test_10()
+{
+    // Re-open the sealed patient.ffhr from previous tests and apply a second
+    // surgical mutation without going through JSON — set deceased to false.
+    auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
+    Builder builder(mem, FHIR_VERSION_R5);
+
+    auto patient = builder.root_handle();
+    REQUIRE(patient, "root_handle is null — archive must be sealed before second edit");
+
+    patient[FastFHIR::Fields::PATIENT::DECEASED] = false;
+
+    builder.finalize(FF_CHECKSUM_SHA256, sha256);
+
+    // Re-open and verify the mutation persisted
+    auto mem2 = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
+    auto root = Parser(mem2).root();
+    REQUIRE(root, "root is null after second re-seal");
+
+    auto deceased_node = root[FastFHIR::Fields::PATIENT::DECEASED];
+    REQUIRE(deceased_node, "deceased field should be present after surgical edit");
+    std::cout << "  deceased verified in re-sealed archive\n";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Example 1 — Ingest patient.json and save as patient.ffhr
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void test_1(const fs::path& patient_json) {
+static void test_1(const fs::path &patient_json)
+{
     std::string json_str = slurp(patient_json);
 
     // Map the arena straight to a file — every write goes directly to disk
@@ -417,14 +536,15 @@ static void test_1(const fs::path& patient_json) {
     std::cout << "  gender : " << FF_AdministrativeGenderToString(data.gender) << "\n";
     std::cout << "  active : " << (data.active == 1 ? "true" : "false") << "\n";
 
-    REQUIRE(data.id == "patient-1",                   "unexpected patient id");
-    REQUIRE(data.gender == AdministrativeGender::Male,"unexpected gender");
-    REQUIRE(data.active == 1,                         "expected active=true");
-    REQUIRE(!data.name.empty(),                       "name array is empty");
+    REQUIRE(data.id == "patient-1", "unexpected patient id");
+    REQUIRE(data.gender == AdministrativeGender::Male, "unexpected gender");
+    REQUIRE(data.active == 1, "expected active=true");
+    REQUIRE(!data.name.empty(), "name array is empty");
 
-    auto& first_name = data.name.front();
+    auto &first_name = data.name.front();
     std::cout << "  name   : [";
-    for (auto& g : first_name.given) std::cout << g << " ";
+    for (auto &g : first_name.given)
+        std::cout << g << " ";
     std::cout << "] " << first_name.family << "\n";
 
     REQUIRE(first_name.family == "Landvater", "unexpected family name");
@@ -440,27 +560,30 @@ static void test_1(const fs::path& patient_json) {
 // Example 2 — Open and read patient.ffhr
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void test_2() {
+static void test_2()
+{
     // Mount the existing archive and traverse directly via Parser::root()
-    auto mem    = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
+    auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
     auto parser = Parser(mem);
-    auto root   = parser.root();
+    auto root = parser.root();
     REQUIRE(root, "root node is null — is patient.ffhr sealed?");
 
     PatientData data = root;
-    std::cout << "  id       : " << data.id     << "\n";
+    std::cout << "  id       : " << data.id << "\n";
     std::cout << "  gender   : " << FF_AdministrativeGenderToString(data.gender) << "\n";
-    std::cout << "  active   : " << (data.active == 1 ? "true" : "false")        << "\n";
+    std::cout << "  active   : " << (data.active == 1 ? "true" : "false") << "\n";
     std::cout << "  birthDate: " << data.birthdate << "\n";
 
-    REQUIRE(data.id == "patient-1",                   "unexpected patient id");
-    REQUIRE(data.gender == AdministrativeGender::Male,"unexpected gender");
-    REQUIRE(data.active == 1,                         "expected active=true");
-    REQUIRE(!data.name.empty(),                       "name array is empty");
+    REQUIRE(data.id == "patient-1", "unexpected patient id");
+    REQUIRE(data.gender == AdministrativeGender::Male, "unexpected gender");
+    REQUIRE(data.active == 1, "expected active=true");
+    REQUIRE(!data.name.empty(), "name array is empty");
 
-    for (auto& name : data.name) {
+    for (auto &name : data.name)
+    {
         std::cout << "  name   : [";
-        for (auto& g : name.given) std::cout << g << " ";
+        for (auto &g : name.given)
+            std::cout << g << " ";
         std::cout << "] " << name.family << "\n";
         REQUIRE(name.family == "Landvater", "unexpected family name");
     }
@@ -478,7 +601,8 @@ static void test_2() {
 // Example 3 — Re-open patient.ffhr and enrich it in place
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void test_3() {
+static void test_3()
+{
     // Mount the existing archive — stays mapped to the same file
     auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
     Builder builder(mem, FHIR_VERSION_R5);
@@ -496,7 +620,7 @@ static void test_3() {
 
     // Re-open and verify the enriched record
     auto mem2 = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
-    auto root  = Parser(mem2).root();
+    auto root = Parser(mem2).root();
     REQUIRE(root, "root is null after re-seal");
 
     PatientData data = root;
@@ -517,7 +641,8 @@ static void test_3() {
 //             (validates real socket transport semantics end-to-end)
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void test_4(const fs::path& patient_json) {
+static void test_4(const fs::path &patient_json)
+{
     std::string json_str = slurp(patient_json);
 
     // Anonymous arena — no file backing
@@ -548,12 +673,12 @@ static void test_4(const fs::path& patient_json) {
     REQUIRE(root, "re-parsed root is null");
 
     PatientData data = root;
-    REQUIRE(data.id == "patient-1",         "unexpected patient id after re-parse");
-    REQUIRE(!data.birthdate.empty(),        "birthDate should be present after enrich");
-    REQUIRE(data.active == 1,               "active should be true");
-    std::cout << "  re-parsed id        : " << data.id         << "\n";
+    REQUIRE(data.id == "patient-1", "unexpected patient id after re-parse");
+    REQUIRE(!data.birthdate.empty(), "birthDate should be present after enrich");
+    REQUIRE(data.active == 1, "active should be true");
+    std::cout << "  re-parsed id        : " << data.id << "\n";
     std::cout << "  re-parsed active    : " << (data.active == 1) << "\n";
-    std::cout << "  re-parsed birthDate : " << data.birthdate   << "\n";
+    std::cout << "  re-parsed birthDate : " << data.birthdate << "\n";
 
     // Real socket test:
     // 1) send sealed archive bytes over a stream socket
@@ -584,7 +709,8 @@ static void test_4(const fs::path& patient_json) {
 // Example 5 — Surgically edit one patient in a bundle and reseal
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void test_5() {
+static void test_5()
+{
     // ── Step A: ingest the bundle ──
     auto mem = Memory::createFromFile(BUNDLE_FFHR, 64 * 1024 * 1024);
     Builder builder(mem, FHIR_VERSION_R5);
@@ -604,9 +730,9 @@ static void test_5() {
     builder.finalize(FF_CHECKSUM_SHA256, sha256);
 
     // ── Step B: re-open and find patient-1 ──
-    auto mem2    = Memory::createFromFile(BUNDLE_FFHR, 64 * 1024 * 1024);
+    auto mem2 = Memory::createFromFile(BUNDLE_FFHR, 64 * 1024 * 1024);
     Builder builder2(mem2, FHIR_VERSION_R5);
-    auto root2   = Parser(mem2).root();
+    auto root2 = Parser(mem2).root();
     REQUIRE(root2, "bundle root is null after seal");
 
     BundleData bundle_data = root2;
@@ -614,8 +740,10 @@ static void test_5() {
 
     // Walk entries; the OS faults in only the pages we read
     Reflective::ObjectHandle target_patient;
-    for (auto& entry : bundle_data.entry) {
-        if (entry.resource.recovery != FF_PATIENT::recovery) continue;
+    for (auto &entry : bundle_data.entry)
+    {
+        if (entry.resource.recovery != FF_PATIENT::recovery)
+            continue;
 
         // Deserialize this patient directly from the arena to read its id
         auto patient_data = FF_PATIENT::deserialize(
@@ -624,7 +752,8 @@ static void test_5() {
             mem2.capacity(),
             FHIR_VERSION_R5);
 
-        if (patient_data.id == "patient-1") {
+        if (patient_data.id == "patient-1")
+        {
             target_patient = Reflective::ObjectHandle(
                 &builder2,
                 entry.resource.offset,
@@ -648,24 +777,29 @@ static void test_5() {
     builder2.finalize(FF_CHECKSUM_SHA256, sha256);
 
     // ── Step E: verify ──
-    auto mem3   = Memory::createFromFile(BUNDLE_FFHR, 64 * 1024 * 1024);
-    auto root3  = Parser(mem3).root();
+    auto mem3 = Memory::createFromFile(BUNDLE_FFHR, 64 * 1024 * 1024);
+    auto root3 = Parser(mem3).root();
     REQUIRE(root3, "bundle root is null after reseal");
 
     // Find patient-1 in the re-parsed bundle and verify telecom was appended
     BundleData final_bundle = root3;
     bool found_enriched = false;
-    for (auto& entry : final_bundle.entry) {
-        if (entry.resource.recovery != FF_PATIENT::recovery) continue;
+    for (auto &entry : final_bundle.entry)
+    {
+        if (entry.resource.recovery != FF_PATIENT::recovery)
+            continue;
         auto p = FF_PATIENT::deserialize(
             mem3.base(), entry.resource.offset, mem3.capacity(), FHIR_VERSION_R5);
-        if (p.id == "patient-1") {
+        if (p.id == "patient-1")
+        {
             REQUIRE(!p.telecom.empty(), "patient-1 telecom empty after surgical edit");
             std::cout << "  patient-1 telecom[0] : " << p.telecom.front().value << "\n";
             REQUIRE(p.telecom.front().value == "555-0199",
                     "unexpected telecom value after surgical edit");
             found_enriched = true;
-        } else if (p.id == "patient-2") {
+        }
+        else if (p.id == "patient-2")
+        {
             // Ensure the other patient was not touched
             REQUIRE(p.telecom.empty(), "patient-2 telecom should still be empty");
             std::cout << "  patient-2 untouched (telecom empty as expected)\n";
@@ -678,7 +812,8 @@ static void test_5() {
 // Example 6 — Lock-free concurrent generation (thread-safety smoke test)
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void test_6() {
+static void test_6()
+{
     constexpr int NUM_THREADS = 8;
 
     auto mem = Memory::create(256 * 1024 * 1024);
@@ -688,21 +823,24 @@ static void test_6() {
     std::vector<Reflective::ObjectHandle> handles(NUM_THREADS);
     std::atomic<int> completed{0};
 
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        pool.emplace_back([&builder, &handles, &completed, i]() {
+    for (int i = 0; i < NUM_THREADS; ++i)
+    {
+        pool.emplace_back([&builder, &handles, &completed, i]()
+                          {
             ObservationData obs;
             obs.status = ObservationStatus::Preliminary;
 
             // Single atomic claim — no mutex, no heap allocation, no pointer invalidation
             handles[i] = builder.append_obj(obs);
-            ++completed;
-        });
+            ++completed; });
     }
 
-    for (auto& t : pool) t.join();
+    for (auto &t : pool)
+        t.join();
 
     REQUIRE(completed == NUM_THREADS, "not all threads completed");
-    for (int i = 0; i < NUM_THREADS; ++i) {
+    for (int i = 0; i < NUM_THREADS; ++i)
+    {
         REQUIRE(handles[i], "handle from thread " + std::to_string(i) + " is null");
     }
     std::cout << "  " << NUM_THREADS << " threads completed lock-free writes\n";
@@ -713,7 +851,8 @@ static void test_6() {
 // Example 7 — Post-finalize archival compaction
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void test_7() {
+static void test_7()
+{
     auto src_mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
     Parser src_parser(src_mem);
 
@@ -732,9 +871,11 @@ static void test_7() {
 
     bool found_name = false;
     auto compact_names = root[FastFHIR::Fields::PATIENT::NAME].entries();
-    for (auto& name_node : compact_names) {
+    for (auto &name_node : compact_names)
+    {
         std::string_view family = name_node[FastFHIR::Fields::HUMANNAME::FAMILY];
-        if (family == "Landvater") {
+        if (family == "Landvater")
+        {
             found_name = true;
             break;
         }
@@ -750,7 +891,8 @@ static void test_7() {
 // Example 8 — Array-tagged field key coverage on standard streams
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void test_8() {
+static void test_8()
+{
     auto patient_mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
     Parser patient_parser(patient_mem);
     auto patient_root = patient_parser.root();
@@ -786,7 +928,8 @@ static void test_8() {
 // Example 9 — Compact nested choice/resource coverage (Bundle + Observation)
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void test_9() {
+static void test_9()
+{
     auto mem = Memory::createFromFile(BUNDLE_COMPLEX_FFHR, 64 * 1024 * 1024);
     Builder builder(mem, FHIR_VERSION_R5);
     Ingest::Ingestor ingestor;
@@ -808,12 +951,15 @@ static void test_9() {
     REQUIRE(source_root, "complex bundle source root is null");
 
     bool found_observation_source = false;
-    for (auto& entry_node : source_root[FastFHIR::Fields::BUNDLE::ENTRY].entries()) {
+    for (auto &entry_node : source_root[FastFHIR::Fields::BUNDLE::ENTRY].entries())
+    {
         auto resource_entry = entry_node[FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE];
-        if (!resource_entry) continue;
+        if (!resource_entry)
+            continue;
 
         auto resource_node = resource_entry.as_node();
-        if (!resource_node || resource_node.recovery() != RECOVER_FF_OBSERVATION) continue;
+        if (!resource_node || resource_node.recovery() != RECOVER_FF_OBSERVATION)
+            continue;
 
         found_observation_source = true;
         std::string_view obs_value = resource_node[FastFHIR::Fields::OBSERVATION::VALUE];
@@ -835,12 +981,15 @@ static void test_9() {
     REQUIRE(compact_root, "complex compact root is null");
 
     bool found_observation_compact = false;
-    for (auto& entry_node : compact_root[FastFHIR::Fields::BUNDLE::ENTRY].entries()) {
+    for (auto &entry_node : compact_root[FastFHIR::Fields::BUNDLE::ENTRY].entries())
+    {
         auto resource_entry = entry_node[FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE];
-        if (!resource_entry) continue;
+        if (!resource_entry)
+            continue;
 
         auto resource_node = resource_entry.as_node();
-        if (!resource_node || resource_node.recovery() != RECOVER_FF_OBSERVATION) continue;
+        if (!resource_node || resource_node.recovery() != RECOVER_FF_OBSERVATION)
+            continue;
 
         found_observation_compact = true;
         std::string_view obs_value = resource_node[FastFHIR::Fields::OBSERVATION::VALUE];
@@ -861,44 +1010,80 @@ static void test_9() {
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 
-int main() {
+int main(int argc, char **argv)
+{
+    // Optional: --filter <test-name> runs only that test (used by CTest).
+    std::string filter;
+    for (int i = 1; i < argc - 1; ++i)
+    {
+        if (std::string_view(argv[i]) == "--filter")
+        {
+            filter = argv[i + 1];
+            break;
+        }
+    }
+
     cleanup_artifacts();
 
     fs::path patient_json;
-    try {
+    try
+    {
         patient_json = find_patient_json();
         std::cout << "Using fixture: " << patient_json << "\n";
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception &e)
+    {
         std::cerr << "ERROR: " << e.what() << "\n";
         return 1;
     }
 
-    run("Getting Started — Step 2 -> Step 3 -> Step 1",
-        [] { test_getting_started_231(); });
+    // Helper: run only if no filter is set, or name matches the filter.
+    auto maybe_run = [&](const char *name, auto fn)
+    {
+        if (filter.empty() || filter == name)
+            run(name, fn);
+    };
 
-    run("Example 1 — Ingest patient.json → save patient.ffhr",
-        [&] { test_1(patient_json); });
-    run("Example 2 — Open and read patient.ffhr",
-        [] { test_2(); });
-    run("Example 3 — Re-open patient.ffhr and enrich in place",
-        [] { test_3(); });
-    run("Example 4 — In-memory ingest, enrich, finalize, re-parse",
-        [&] { test_4(patient_json); });
-    run("Example 5 — Surgically edit patient in a bundle and reseal",
-        [] { test_5(); });
-    run("Example 6 — Lock-free concurrent generation",
-        [] { test_6(); });
-    run("Example 7 — Post-finalize archival compaction",
-        [] { test_7(); });
-    run("Example 8 — Standard array-tagged field key coverage",
-        [] { test_8(); });
-    run("Example 9 — Compact nested choice/resource coverage",
-        [] { test_9(); });
+    maybe_run("Getting Started — Step 2 -> Step 3 -> Step 1",
+              []
+              { test_getting_started_231(); });
+    maybe_run("Example 1 — Ingest patient.json → save patient.ffhr",
+              [&]
+              { test_1(patient_json); });
+    maybe_run("Example 2 — Open and read patient.ffhr",
+              []
+              { test_2(); });
+    maybe_run("Example 3 — Re-open patient.ffhr and enrich in place",
+              []
+              { test_3(); });
+    maybe_run("Example 4 — In-memory ingest, enrich, finalize, re-parse",
+              [&]
+              { test_4(patient_json); });
+    maybe_run("Example 5 — Surgically edit patient in a bundle and reseal",
+              []
+              { test_5(); });
+    maybe_run("Example 6 — Lock-free concurrent generation",
+              []
+              { test_6(); });
+    maybe_run("Example 7 — Post-finalize archival compaction",
+              []
+              { test_7(); });
+    maybe_run("Example 8 — Standard array-tagged field key coverage",
+              []
+              { test_8(); });
+    maybe_run("Example 9 — Compact nested choice/resource coverage",
+              []
+              { test_9(); });
+    maybe_run("Example 10 — Reuse patient.ffhr for another surgical edit",
+              []
+              { test_10(); });
 
     // Summary
-    std::cout << "\n" << std::string(60, '=') << "\n";
+    std::cout << "\n"
+              << std::string(60, '=') << "\n";
     int passed = 0, failed = 0;
-    for (auto& r : g_results) {
+    for (auto &r : g_results)
+    {
         std::cout << "  [" << (r.passed ? "\033[32mPASS\033[0m" : "\033[31mFAIL\033[0m")
                   << "] " << r.name << "\n";
         r.passed ? ++passed : ++failed;
@@ -906,6 +1091,7 @@ int main() {
     std::cout << std::string(60, '=') << "\n";
     std::cout << "  " << passed << "/" << g_results.size() << " passed\n\n";
 
-    cleanup_artifacts();
+    if (filter.empty())
+        cleanup_artifacts();
     return failed > 0 ? 1 : 0;
 }

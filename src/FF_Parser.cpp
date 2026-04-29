@@ -24,6 +24,19 @@
 #include <arm_neon.h>
 #endif
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+// MSVC does not provide __builtin_ctz.  _BitScanForward is undefined when v==0
+// (index result is unspecified).  All call sites guard with `while (v != 0)`
+// before invoking this macro, so v==0 is never passed in practice.
+static inline unsigned ff_ctz_u32(uint32_t v) {
+    unsigned long idx;
+    _BitScanForward(&idx, v);
+    return static_cast<unsigned>(idx);
+}
+#define __builtin_ctz(v) ff_ctz_u32(static_cast<uint32_t>(v))
+#endif
+
 namespace FastFHIR {
 namespace Reflective {
 class Node;

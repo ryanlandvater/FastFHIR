@@ -60,6 +60,9 @@ message(STATUS "FastFHIR production profile: ${FASTFHIR_PRODUCTION_PROFILE}")
 # Build shared library by default; set OFF to build a static library.
 option(FASTFHIR_BUILD_SHARED "Build FastFHIR as a shared library (dynamic linking)" ON)
 
+# Safety guard: prevent accidentally installing artifacts into the source tree.
+option(FASTFHIR_ALLOW_SOURCE_INSTALL "Allow CMAKE_INSTALL_PREFIX to point at the repo root" OFF)
+
 # Toggle for building the high-speed JSON Ingestor module
 option(FASTFHIR_BUILD_INGESTOR "Build the FastFHIR Ingestor (requires simdjson)" OFF)
 
@@ -87,6 +90,15 @@ endif()
 
 # Enable position-independent code globally for shared libs and ASLR-enabled EXEs.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Block accidental installs into the repository root unless explicitly allowed.
+get_filename_component(_FASTFHIR_INSTALL_PREFIX_ABS "${CMAKE_INSTALL_PREFIX}" ABSOLUTE)
+get_filename_component(_FASTFHIR_SOURCE_DIR_ABS "${CMAKE_CURRENT_SOURCE_DIR}" ABSOLUTE)
+if((_FASTFHIR_INSTALL_PREFIX_ABS STREQUAL _FASTFHIR_SOURCE_DIR_ABS) AND (NOT FASTFHIR_ALLOW_SOURCE_INSTALL))
+    message(FATAL_ERROR
+        "Refusing to install into source tree: CMAKE_INSTALL_PREFIX='${CMAKE_INSTALL_PREFIX}'. "
+        "Set -DFASTFHIR_ALLOW_SOURCE_INSTALL=ON to override, or choose a different install prefix.")
+endif()
 
 # Canonical include directory for hand-written public headers.
 set(FASTFHIR_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -224,6 +236,15 @@ if(FASTFHIR_RUN_GENERATOR AND FASTFHIR_GENERATE_ON_BUILD)
     add_dependencies(fastfhir_obj fastfhir_generate)
 endif()
 
+# When building a shared library, compile source files with FF_BUILDING_DLL so
+# FF_EXPORT expands to __declspec(dllexport) / visibility("default").  This
+# causes MSVC to emit an import library (fastfhir.lib) that other DLLs and
+# executables can link against.  Consumers that include FF_Primitives.hpp
+# without FF_BUILDING_DLL see an empty FF_EXPORT and link via the import lib.
+if(FASTFHIR_BUILD_SHARED)
+    target_compile_definitions(fastfhir_obj PRIVATE FF_BUILDING_DLL)
+endif()
+
 # ---------------------------------------------------------------------
 # Core Library (fastfhir)
 # ---------------------------------------------------------------------
@@ -235,6 +256,14 @@ endif()
 
 add_library(fastfhir ${FASTFHIR_LIBRARY_TYPE} $<TARGET_OBJECTS:fastfhir_obj>)
 add_library(FastFHIR::fastfhir ALIAS fastfhir)
+
+# On Windows, export all non-inline symbols so MSVC generates fastfhir.lib.
+# The generated STORE_FF_* / SIZE_FF_* functions are not individually annotated
+# with FF_EXPORT, so WINDOWS_EXPORT_ALL_SYMBOLS is needed to include them in
+# the import library (alongside the explicitly-annotated FF_EXPORT symbols).
+if(WIN32 AND FASTFHIR_BUILD_SHARED)
+    set_target_properties(fastfhir PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
 
 if(FASTFHIR_RUN_GENERATOR AND FASTFHIR_GENERATE_ON_BUILD)
     add_dependencies(fastfhir fastfhir_generate)
@@ -288,13 +317,18 @@ if(FASTFHIR_BUILD_INGESTOR)
     endif()
 
     # Ingestor Library Target
-    add_library(fastfhir_ingestor 
-        ${FASTFHIR_LIBRARY_TYPE} 
+    # Links against fastfhir rather than embedding fastfhir_obj TUs.  Now that
+    # FF_BUILDING_DLL causes fastfhir.dll to export its symbols (and MSVC emits
+    # fastfhir.lib), fastfhir_ingestor.dll can link against that import library.
+    # This eliminates the ODR hazard: there is exactly one copy of the core
+    # globals/statics in memory regardless of how many DLLs are loaded.
+    add_library(fastfhir_ingestor
+        ${FASTFHIR_LIBRARY_TYPE}
             $<TARGET_OBJECTS:fastfhir_ingest_obj>
     )
-    target_link_libraries(fastfhir_ingestor 
-        PUBLIC 
-            fastfhir 
+    target_link_libraries(fastfhir_ingestor
+        PUBLIC
+            fastfhir
             simdjson::simdjson
     )
     add_library(FastFHIR::ingestor ALIAS fastfhir_ingestor)
@@ -395,7 +429,137 @@ if(FASTFHIR_BUILD_TESTS)
         target_link_libraries(ff_test_readme PRIVATE ws2_32)
     endif()
 
-    add_test(NAME readme_cpp COMMAND ff_test_readme)
+    # Individual C++ test entries — each calls the binary with --filter <name>
+    # so tests run in isolation and can be identified separately by CTest.
+    add_test(NAME "cpp_getting_started"
+        COMMAND ff_test_readme --filter "Getting Started — Step 2 -> Step 3 -> Step 1")
+    add_test(NAME "cpp_test_1"
+        COMMAND ff_test_readme --filter "Example 1 — Ingest patient.json → save patient.ffhr")
+    add_test(NAME "cpp_test_2"
+        COMMAND ff_test_readme --filter "Example 2 — Open and read patient.ffhr")
+    add_test(NAME "cpp_test_3"
+        COMMAND ff_test_readme --filter "Example 3 — Re-open patient.ffhr and enrich in place")
+    add_test(NAME "cpp_test_4"
+        COMMAND ff_test_readme --filter "Example 4 — In-memory ingest, enrich, finalize, re-parse")
+    add_test(NAME "cpp_test_5"
+        COMMAND ff_test_readme --filter "Example 5 — Surgically edit patient in a bundle and reseal")
+    add_test(NAME "cpp_test_6"
+        COMMAND ff_test_readme --filter "Example 6 — Lock-free concurrent generation")
+    add_test(NAME "cpp_test_7"
+        COMMAND ff_test_readme --filter "Example 7 — Post-finalize archival compaction")
+    add_test(NAME "cpp_test_8"
+        COMMAND ff_test_readme --filter "Example 8 — Standard array-tagged field key coverage")
+    add_test(NAME "cpp_test_9"
+        COMMAND ff_test_readme --filter "Example 9 — Compact nested choice/resource coverage")
+    add_test(NAME "cpp_test_10"
+        COMMAND ff_test_readme --filter "Example 10 — Reuse patient.ffhr for another surgical edit")
+
+    # Sequential ordering: each test depends on state written by earlier ones
+    set_tests_properties(cpp_test_2  PROPERTIES DEPENDS cpp_test_1)
+    set_tests_properties(cpp_test_3  PROPERTIES DEPENDS cpp_test_2)
+    set_tests_properties(cpp_test_7  PROPERTIES DEPENDS cpp_test_3)
+    set_tests_properties(cpp_test_8  PROPERTIES DEPENDS cpp_test_1)
+    set_tests_properties(cpp_test_9  PROPERTIES DEPENDS cpp_test_5)
+    set_tests_properties(cpp_test_10 PROPERTIES DEPENDS cpp_test_3)
+
+    # RESOURCE_LOCK enforces mutual exclusion even under ctest -jN.
+    # DEPENDS only skips on failure; it does NOT serialize concurrent execution.
+    # Tests that write/read the same artifact files must share a lock name.
+    set_tests_properties(
+        cpp_getting_started
+        cpp_test_1 cpp_test_2 cpp_test_3 cpp_test_7 cpp_test_8 cpp_test_9 cpp_test_10
+        PROPERTIES RESOURCE_LOCK ff_cpp_patient_ffhr)
+    set_tests_properties(
+        cpp_test_5 cpp_test_6
+        PROPERTIES RESOURCE_LOCK ff_cpp_bundle_ffhr)
+
+    # Python tests — requires Python 3 and the fastfhir venv
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_FOUND)
+        set(_PY_TEST_DIR "${CMAKE_SOURCE_DIR}/tests/python")
+        # venv interpreter layout differs between Windows (Scripts/) and POSIX (bin/)
+        if(WIN32)
+            set(_PY_INTERP "${CMAKE_SOURCE_DIR}/.venv/Scripts/python.exe")
+        else()
+            set(_PY_INTERP "${CMAKE_SOURCE_DIR}/.venv/bin/python")
+        endif()
+        if(NOT EXISTS "${_PY_INTERP}")
+            # Venv not present — fall back to the cmake-discovered system interpreter.
+            # Note: the system Python may not have fastfhir installed; tests will fail
+            # with ModuleNotFoundError unless the package is installed system-wide.
+            message(WARNING "FastFHIR: venv interpreter not found at '${_PY_INTERP}'; "
+                            "falling back to system Python3 (${Python3_EXECUTABLE}). "
+                            "Python tests may fail if fastfhir is not installed system-wide.")
+            set(_PY_INTERP "${Python3_EXECUTABLE}")
+        endif()
+
+        # Cleanup step — wipes *.ffhr artifacts before the suite so each run starts fresh.
+        # All py_test_* entries depend on this (via py_getting_started or py_test_1).
+        add_test(NAME "py_setup"
+            COMMAND "${_PY_INTERP}" -c
+                "import glob, os, tempfile; here=os.path.join(tempfile.gettempdir(),'fastfhir_test_artifacts'); os.makedirs(here, exist_ok=True); [os.remove(p) for p in glob.glob(os.path.join(here,'*.ffhr')) if os.path.isfile(p)]; print('cleaned python test artifacts in', here)"
+        )
+
+        add_test(NAME "py_getting_started"
+            COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_getting_started" -v)
+        # test_1 creates patient.ffhr with Landvater data (overwrites getting_started output)
+        add_test(NAME "py_test_1"
+            COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_1" -v)
+        # test_2 reads patient.ffhr written by test_1
+        add_test(NAME "py_test_2"
+            COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_2" -v)
+        # test_3 enriches patient.ffhr (needs test_1's output)
+        add_test(NAME "py_test_3"
+            COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_3" -v)
+        # test_4 uses PATIENT_JSON for HTTP round-trip (independent of .ffhr state)
+        add_test(NAME "py_test_4"
+            COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_4" -v)
+        # test_5 reads and mutates patient.ffhr (needs test_3's enriched output)
+        add_test(NAME "py_test_5"
+            COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_5" -v)
+        # test_6 creates bundle.ffhr (needs py_setup, otherwise independent)
+        add_test(NAME "py_test_6"
+            COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_6" -v)
+        # test_7 is fully in-memory (independent)
+        add_test(NAME "py_test_7"
+            COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_7" -v)
+        # test_8 compacts patient.ffhr (needs test_5's output)
+        add_test(NAME "py_test_8"
+            COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_8" -v)
+        # test_9 reads patient.ffhr and bundle.ffhr (needs test_3 + test_6)
+        add_test(NAME "py_test_9"
+            COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_9" -v)
+        # test_10 creates bundle.complex.ffhr (independent except for py_setup)
+        add_test(NAME "py_test_10"
+            COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_10" -v)
+
+        # Sequential dependency chain — CTest skips a test if its dependency failed
+        set_tests_properties(py_getting_started PROPERTIES DEPENDS py_setup)
+        set_tests_properties(py_test_1          PROPERTIES DEPENDS py_setup)
+        set_tests_properties(py_test_2          PROPERTIES DEPENDS py_test_1)
+        set_tests_properties(py_test_3          PROPERTIES DEPENDS py_test_2)
+        set_tests_properties(py_test_4          PROPERTIES DEPENDS py_test_1)
+        set_tests_properties(py_test_5          PROPERTIES DEPENDS py_test_3)
+        set_tests_properties(py_test_6          PROPERTIES DEPENDS py_test_1)
+        set_tests_properties(py_test_7          PROPERTIES DEPENDS py_setup)
+        set_tests_properties(py_test_8          PROPERTIES DEPENDS py_test_5)
+        set_tests_properties(py_test_9          PROPERTIES DEPENDS "py_test_3;py_test_6")
+        set_tests_properties(py_test_10         PROPERTIES DEPENDS py_setup)
+
+        # RESOURCE_LOCK: serialize concurrent ctest -jN runs over shared artifact files.
+        # py_setup must also hold both locks so it cannot run while any test is active.
+        set_tests_properties(
+            py_setup
+            py_getting_started
+            py_test_1 py_test_2 py_test_3 py_test_4 py_test_5 py_test_7 py_test_8 py_test_9
+            PROPERTIES RESOURCE_LOCK ff_py_patient_ffhr)
+        set_tests_properties(
+            py_setup
+            py_test_6 py_test_9 py_test_10
+            PROPERTIES RESOURCE_LOCK ff_py_bundle_ffhr)
+    else()
+        message(STATUS "FastFHIR: Python3 not found — skipping Python test registration")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------

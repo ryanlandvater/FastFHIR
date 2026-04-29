@@ -43,17 +43,37 @@ PATIENT_JSON_CANDIDATES = [
     os.path.normpath(os.path.join(HERE, "..", "..", "..", "FastFHIR_Python", "test", "patient.json")),
 ]
 PATIENT_JSON = next((p for p in PATIENT_JSON_CANDIDATES if os.path.exists(p)), None)
+PATIENT_JSON_GENERATED = None
 if PATIENT_JSON is None:
-    raise RuntimeError(
-        "patient.json fixture not found. Checked: " + ", ".join(PATIENT_JSON_CANDIDATES)
-    )
-PATIENT_FFHR              = os.path.join(HERE, "patient.ffhr")
-BUNDLE_FFHR               = os.path.join(HERE, "bundle.ffhr")
-PATIENT_COMPACT_FFHR      = os.path.join(HERE, "patient.compact.ffhr")
-BUNDLE_COMPLEX_FFHR       = os.path.join(HERE, "bundle.complex.ffhr")
-BUNDLE_COMPLEX_COMPACT_FFHR = os.path.join(HERE, "bundle.complex.compact.ffhr")
+    PATIENT_JSON_GENERATED = os.path.join(tempfile.gettempdir(), "fastfhir_patient.generated.json")
+    with open(PATIENT_JSON_GENERATED, "w", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "resourceType": "Patient",
+            "id": "patient-1",
+            "active": True,
+            "gender": "male",
+            "name": [{"use": "usual", "family": "Landvater", "given": ["Ryan", "Eric"]}],
+            "telecom": [],
+            "address": [{
+                "use": "home",
+                "line": ["123 Main St"],
+                "city": "Springfield",
+                "state": "IL",
+                "postalCode": "62701",
+                "country": "US"
+            }],
+            "identifier": [{"system": "http://example.org/fhir/ids", "value": "12345"}],
+        }))
+    PATIENT_JSON = PATIENT_JSON_GENERATED
+_FF_ARTIFACTS_DIR = os.path.join(tempfile.gettempdir(), "fastfhir_test_artifacts")
+os.makedirs(_FF_ARTIFACTS_DIR, exist_ok=True)
+PATIENT_FFHR              = os.path.join(_FF_ARTIFACTS_DIR, "patient.ffhr")
+BUNDLE_FFHR               = os.path.join(_FF_ARTIFACTS_DIR, "bundle.ffhr")
+PATIENT_COMPACT_FFHR      = os.path.join(_FF_ARTIFACTS_DIR, "patient.compact.ffhr")
+BUNDLE_COMPLEX_FFHR       = os.path.join(_FF_ARTIFACTS_DIR, "bundle.complex.ffhr")
+BUNDLE_COMPLEX_COMPACT_FFHR = os.path.join(_FF_ARTIFACTS_DIR, "bundle.complex.compact.ffhr")
 ARTIFACT_GLOBS = [
-    os.path.join(HERE, "*.ffhr"),
+    os.path.join(_FF_ARTIFACTS_DIR, "*.ffhr"),
 ]
 
 PASS = "\033[32mPASS\033[0m"
@@ -70,6 +90,14 @@ def cleanup_artifacts():
                 except OSError:
                     pass
 
+
+def cleanup_generated_patient_fixture():
+    if PATIENT_JSON_GENERATED and os.path.isfile(PATIENT_JSON_GENERATED):
+        try:
+            os.remove(PATIENT_JSON_GENERATED)
+        except OSError:
+            pass
+
 def run(name, fn):
     print(f"\n{'='*60}")
     print(f"  {name}")
@@ -84,8 +112,6 @@ def run(name, fn):
         print(f"\n  → {FAIL}")
     finally:
         gc.collect()
-
-cleanup_artifacts()
 
 # Inline fixture used by the Getting Started test and the bundle tests.
 GETTING_STARTED_JSON = json.dumps({
@@ -182,7 +208,9 @@ def test_getting_started():
             assert "John" in given,    f"'John' not in {given!r}"
     mem2.close()
 
-run("Getting Started — Step 2 → Step 3 → Step 1", test_getting_started)
+if __name__ == "__main__":
+    cleanup_artifacts()
+    run("Getting Started — Step 2 → Step 3 → Step 1", test_getting_started)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Example 1 — Ingest patient.json and save as patient.ffhr
@@ -226,7 +254,7 @@ def test_1():
     print(f"  file size : {sz:,} bytes")
     assert sz > 0, "patient.ffhr is empty"
 
-run("Example 1 — Ingest patient.json → save patient.ffhr", test_1)
+if __name__ == "__main__": run("Example 1 — Ingest patient.json → save patient.ffhr", test_1)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Example 2 — Open and read patient.ffhr
@@ -270,7 +298,7 @@ def test_2():
 
     mem.close()
 
-run("Example 2 — Open and read patient.ffhr", test_2)
+if __name__ == "__main__": run("Example 2 — Open and read patient.ffhr", test_2)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Example 3 — Re-open patient.ffhr and enrich in place
@@ -310,7 +338,7 @@ def test_3():
         assert active is True, "expected True after enrich"
     mem2.close()
 
-run("Example 3 — Re-open patient.ffhr and enrich in place", test_3)
+if __name__ == "__main__": run("Example 3 — Re-open patient.ffhr and enrich in place", test_3)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Example 4 — Static HTTP file server GET/PUT with patient.ffhr
@@ -441,7 +469,7 @@ def test_4():
             server.shutdown()
             server.server_close()
 
-run("Example 4 — Static HTTP GET/PUT with patient.ffhr", test_4)
+if __name__ == "__main__": run("Example 4 — Static HTTP GET/PUT with patient.ffhr", test_4)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Example 5 — Re-open the same patient.ffhr and reseal another surgical edit
@@ -475,7 +503,7 @@ def test_5():
     assert deceased is False, "deceased not updated in Example 5"
     print(f"  patient.ffhr final size : {os.path.getsize(PATIENT_FFHR):,} bytes")
 
-run("Example 5 — Reuse patient.ffhr for another surgical edit", test_5)
+if __name__ == "__main__": run("Example 5 — Reuse patient.ffhr for another surgical edit", test_5)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Example 6 — Surgically edit one patient in a bundle and reseal
@@ -551,7 +579,7 @@ def test_6():
         assert found_enriched, "patient-1 not found in re-sealed bundle"
     mem3.close()
 
-run("Example 6 — Surgically edit one patient in a bundle and reseal", test_6)
+if __name__ == "__main__": run("Example 6 — Surgically edit one patient in a bundle and reseal", test_6)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Example 7 — Lock-free concurrent generation (thread-safety smoke test)
@@ -597,7 +625,7 @@ def test_7():
     print(f"  {N} threads completed lock-free writes")
     print(f"  all {N} StreamNode handles valid")
 
-run("Example 7 — Lock-free concurrent generation", test_7)
+if __name__ == "__main__": run("Example 7 — Lock-free concurrent generation", test_7)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Example 8 — Post-finalize archival compaction
@@ -623,7 +651,7 @@ def test_8():
     assert b"male"      in compact_bytes,  "gender not found in compact archive"
     compact_mem.close()
 
-run("Example 8 — Post-finalize archival compaction", test_8)
+if __name__ == "__main__": run("Example 8 — Post-finalize archival compaction", test_8)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Example 9 — Standard array-tagged field key coverage
@@ -667,7 +695,7 @@ def test_9():
 
     print("  standard array-tagged keys verified for patient.name and bundle.entry")
 
-run("Example 9 — Standard array-tagged field key coverage", test_9)
+if __name__ == "__main__": run("Example 9 — Standard array-tagged field key coverage", test_9)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Example 10 — Compact nested choice/resource (Bundle + Observation)
@@ -712,24 +740,27 @@ def test_10():
         compact_mem.close()
     mem.close()
 
-run("Example 10 — Compact nested choice/resource (Bundle + Observation)", test_10)
+if __name__ == "__main__":
+    run("Example 10 — Compact nested choice/resource (Bundle + Observation)", test_10)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Summary
-# ═════════════════════════════════════════════════════════════════════════════
-print(f"\n{'='*60}")
-print("  RESULTS")
-print(f"{'='*60}")
-passed = sum(v for v in results.values())
-total  = len(results)
-for name, ok in results.items():
-    status = PASS if ok else FAIL
-    print(f"  [{status}] {name}")
-print(f"\n  {passed}/{total} passed")
-print(f"{'='*60}\n")
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Summary
+    # ═══════════════════════════════════════════════════════════════════════════
+    print(f"\n{'='*60}")
+    print("  RESULTS")
+    print(f"{'='*60}")
+    passed = sum(v for v in results.values())
+    total  = len(results)
+    for name, ok in results.items():
+        status = PASS if ok else FAIL
+        print(f"  [{status}] {name}")
+    print(f"\n  {passed}/{total} passed")
+    print(f"{'='*60}\n")
 
-if passed < total:
+    if passed < total:
+        cleanup_artifacts()
+        cleanup_generated_patient_fixture()
+        sys.exit(1)
+
     cleanup_artifacts()
-    sys.exit(1)
-
-cleanup_artifacts()
+    cleanup_generated_patient_fixture()

@@ -26,7 +26,11 @@ from pathlib import Path
 
 try:
     import fastfhir as ff
-    from fastfhir.fields import Appointment, Bundle, BundleEntry, Patient
+    from fastfhir.fields import Bundle, BundleEntry, Patient
+    try:
+        from fastfhir.fields import Appointment
+    except ImportError:
+        Appointment = None  # Not generated in this build profile (e.g. US Core)
 except ModuleNotFoundError as exc:
     raise RuntimeError(
         "fastfhir is not importable. Build/install bindings first."

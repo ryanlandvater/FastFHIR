@@ -29,9 +29,20 @@
 #include <stdexcept>
 #include <limits>
 #include <unordered_map>
+#include <variant>
 
 #ifndef FF_EXPORT
+#if defined(_WIN32) || defined(_WIN64)
+#if defined(FF_BUILDING_DLL)
+#define FF_EXPORT __declspec(dllexport)
+#else
+#define FF_EXPORT // consumers: link against the import lib; no annotation needed
+#endif
+#elif defined(__GNUC__) || defined(__clang__)
+#define FF_EXPORT __attribute__((visibility("default")))
+#else
 #define FF_EXPORT
+#endif
 #endif
 
 // =====================================================================
@@ -42,24 +53,25 @@ typedef uint64_t Offset;
 typedef uint64_t Size;
 
 // Standard Integer MAX Nulls
-constexpr uint8_t FF_NULL_UINT8          = 0xFF;
-constexpr uint16_t FF_NULL_UINT16        = 0xFFFF;
-constexpr uint32_t FF_NULL_UINT32        = 0xFFFFFFFF;
-constexpr uint64_t FF_NULL_UINT64        = 0xFFFFFFFFFFFFFFFF;
+constexpr uint8_t FF_NULL_UINT8 = 0xFF;
+constexpr uint16_t FF_NULL_UINT16 = 0xFFFF;
+constexpr uint32_t FF_NULL_UINT32 = 0xFFFFFFFF;
+constexpr uint64_t FF_NULL_UINT64 = 0xFFFFFFFFFFFFFFFF;
 
 // Code Null (Safely traps 0xFFFFFFFF before custom string masking)
-constexpr uint32_t FF_CODE_NULL          = FF_NULL_UINT32;
+constexpr uint32_t FF_CODE_NULL = FF_NULL_UINT32;
 
 // Float Nulls (Using max to adhere to the rule, though NaN is also an option)
-constexpr float FF_NULL_F32              = FF_NULL_UINT32;
-constexpr double FF_NULL_F64             = FF_NULL_UINT64;
-constexpr Offset FF_NULL_OFFSET          = FF_NULL_UINT64;
+constexpr float FF_NULL_F32 = FF_NULL_UINT32;
+constexpr double FF_NULL_F64 = FF_NULL_UINT64;
+constexpr Offset FF_NULL_OFFSET = FF_NULL_UINT64;
 constexpr uint32_t FF_CUSTOM_STRING_FLAG = 0x80000000;
 
 // FastFHIR magic bytes: "FFHR" in little-endian
-constexpr uint32_t FF_MAGIC_BYTES        = 0x52484646;
+constexpr uint32_t FF_MAGIC_BYTES = 0x52484646;
 
-enum FHIR_VERSION : uint16_t {
+enum FHIR_VERSION : uint16_t
+{
     FHIR_VERSION_R4 = 0x0400,
     FHIR_VERSION_R5 = 0x0500,
 };
@@ -67,7 +79,8 @@ enum FHIR_VERSION : uint16_t {
 // =====================================================================
 // STREAM LAYOUT MODE (encoded in FF_HEADER::VERSION high bits)
 // =====================================================================
-enum FF_StreamLayout : uint8_t {
+enum FF_StreamLayout : uint8_t
+{
     FF_STREAM_LAYOUT_STANDARD = 0,
     FF_STREAM_LAYOUT_COMPACT = 1,
 };
@@ -77,30 +90,34 @@ constexpr uint32_t FF_STREAM_LAYOUT_SHIFT = 32 - FF_STREAM_LAYOUT_BITS;
 constexpr uint32_t FF_STREAM_LAYOUT_MASK = (0x3u << FF_STREAM_LAYOUT_SHIFT);
 constexpr uint32_t FF_ENGINE_VERSION_MASK = ~FF_STREAM_LAYOUT_MASK;
 
-inline constexpr uint32_t FF_ENCODE_HEADER_VERSION(uint32_t engine_version, FF_StreamLayout layout) {
+inline constexpr uint32_t FF_ENCODE_HEADER_VERSION(uint32_t engine_version, FF_StreamLayout layout)
+{
     return (engine_version & FF_ENGINE_VERSION_MASK) |
            ((static_cast<uint32_t>(layout) << FF_STREAM_LAYOUT_SHIFT) & FF_STREAM_LAYOUT_MASK);
 }
 
-inline constexpr uint32_t FF_HEADER_ENGINE_VERSION(uint32_t encoded_version) {
+inline constexpr uint32_t FF_HEADER_ENGINE_VERSION(uint32_t encoded_version)
+{
     return encoded_version & FF_ENGINE_VERSION_MASK;
 }
 
 /// Extract the MAJOR component from a 30-bit engine version word produced by
 /// FF_HEADER_ENGINE_VERSION().  MAJOR occupies bits 29–16 (14 usable bits).
-inline constexpr uint16_t FF_ENGINE_MAJOR(uint32_t engine_version) noexcept {
+inline constexpr uint16_t FF_ENGINE_MAJOR(uint32_t engine_version) noexcept
+{
     return static_cast<uint16_t>((engine_version >> 16) & 0x3FFFu);
 }
 
 /// Extract the MINOR component (bits 15–0) from an engine version word.
-inline constexpr uint16_t FF_ENGINE_MINOR(uint32_t engine_version) noexcept {
+inline constexpr uint16_t FF_ENGINE_MINOR(uint32_t engine_version) noexcept
+{
     return static_cast<uint16_t>(engine_version & 0xFFFFu);
 }
 
-inline constexpr FF_StreamLayout FF_HEADER_STREAM_LAYOUT(uint32_t encoded_version) {
+inline constexpr FF_StreamLayout FF_HEADER_STREAM_LAYOUT(uint32_t encoded_version)
+{
     return static_cast<FF_StreamLayout>((encoded_version & FF_STREAM_LAYOUT_MASK) >> FF_STREAM_LAYOUT_SHIFT);
 }
-
 
 // =====================================================================
 // RESULT TYPE
@@ -183,53 +200,116 @@ enum FF_FieldKind : uint16_t
 
 inline RECOVERY_TAG Kind_to_Recovery(const FF_FieldKind kind)
 {
-    switch (kind) {
-        case FF_FIELD_STRING:  return RECOVER_FF_STRING;
-        case FF_FIELD_BOOL:    return RECOVER_FF_BOOL;
-        case FF_FIELD_INT32:   return RECOVER_FF_INT32;
-        case FF_FIELD_UINT32:  return RECOVER_FF_UINT32;
-        case FF_FIELD_INT64:   return RECOVER_FF_INT64;
-        case FF_FIELD_UINT64:  return RECOVER_FF_UINT64;
-        case FF_FIELD_FLOAT64: return RECOVER_FF_FLOAT64;
-        case FF_FIELD_CODE:    return RECOVER_FF_CODE;
-        default:               return FF_RECOVER_UNDEFINED;
-        }
+    switch (kind)
+    {
+    case FF_FIELD_STRING:
+        return RECOVER_FF_STRING;
+    case FF_FIELD_BOOL:
+        return RECOVER_FF_BOOL;
+    case FF_FIELD_INT32:
+        return RECOVER_FF_INT32;
+    case FF_FIELD_UINT32:
+        return RECOVER_FF_UINT32;
+    case FF_FIELD_INT64:
+        return RECOVER_FF_INT64;
+    case FF_FIELD_UINT64:
+        return RECOVER_FF_UINT64;
+    case FF_FIELD_FLOAT64:
+        return RECOVER_FF_FLOAT64;
+    case FF_FIELD_CODE:
+        return RECOVER_FF_CODE;
+    default:
+        return FF_RECOVER_UNDEFINED;
+    }
 }
 // Compile-time trait dispatch for C++ API
-template<RECOVERY_TAG T_Tag>
-struct RecoveryTraits {
+template <RECOVERY_TAG T_Tag>
+struct RecoveryTraits
+{
     static constexpr FF_FieldKind kind = (T_Tag >= 0x0200) ? FF_FIELD_BLOCK : FF_FIELD_UNKNOWN;
 };
-template<> struct RecoveryTraits<RECOVER_FF_BOOL> { static constexpr FF_FieldKind kind = FF_FIELD_BOOL; };
-template<> struct RecoveryTraits<RECOVER_FF_INT32> { static constexpr FF_FieldKind kind = FF_FIELD_INT32; };
-template<> struct RecoveryTraits<RECOVER_FF_UINT32> { static constexpr FF_FieldKind kind = FF_FIELD_UINT32; };
-template<> struct RecoveryTraits<RECOVER_FF_INT64> { static constexpr FF_FieldKind kind = FF_FIELD_INT64; };
-template<> struct RecoveryTraits<RECOVER_FF_UINT64> { static constexpr FF_FieldKind kind = FF_FIELD_UINT64; };
-template<> struct RecoveryTraits<RECOVER_FF_FLOAT64> { static constexpr FF_FieldKind kind = FF_FIELD_FLOAT64; };
-template<> struct RecoveryTraits<RECOVER_FF_CODE> { static constexpr FF_FieldKind kind = FF_FIELD_CODE; };
-template<> struct RecoveryTraits<RECOVER_FF_STRING> { static constexpr FF_FieldKind kind = FF_FIELD_STRING; };
-template<> struct RecoveryTraits<RECOVER_FF_RESOURCE> { static constexpr FF_FieldKind kind = FF_FIELD_RESOURCE; };
+template <>
+struct RecoveryTraits<RECOVER_FF_BOOL>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_BOOL;
+};
+template <>
+struct RecoveryTraits<RECOVER_FF_INT32>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_INT32;
+};
+template <>
+struct RecoveryTraits<RECOVER_FF_UINT32>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_UINT32;
+};
+template <>
+struct RecoveryTraits<RECOVER_FF_INT64>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_INT64;
+};
+template <>
+struct RecoveryTraits<RECOVER_FF_UINT64>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_UINT64;
+};
+template <>
+struct RecoveryTraits<RECOVER_FF_FLOAT64>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_FLOAT64;
+};
+template <>
+struct RecoveryTraits<RECOVER_FF_CODE>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_CODE;
+};
+template <>
+struct RecoveryTraits<RECOVER_FF_STRING>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_STRING;
+};
+template <>
+struct RecoveryTraits<RECOVER_FF_RESOURCE>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_RESOURCE;
+};
 
 // Exhaustive runtime mapping for dynamic bindings (Python/JSON)
-inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag) {
-    RECOVERY_TAG base = GetTypeFromTag(tag); 
-    if ((base & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) {
-        switch (base) {
-            case RECOVER_FF_BOOL:    return FF_FIELD_BOOL;
-            case RECOVER_FF_INT32:   return FF_FIELD_INT32;
-            case RECOVER_FF_UINT32:  return FF_FIELD_UINT32;
-            case RECOVER_FF_INT64:   return FF_FIELD_INT64;
-            case RECOVER_FF_UINT64:  return FF_FIELD_UINT64;
-            case RECOVER_FF_FLOAT64: return FF_FIELD_FLOAT64;
-            case RECOVER_FF_CODE:    return FF_FIELD_CODE;
-            default:                 return FF_FIELD_UNKNOWN;
+inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag)
+{
+    RECOVERY_TAG base = GetTypeFromTag(tag);
+    if ((base & 0xFF00) == RECOVER_FF_SCALAR_BLOCK)
+    {
+        switch (base)
+        {
+        case RECOVER_FF_BOOL:
+            return FF_FIELD_BOOL;
+        case RECOVER_FF_INT32:
+            return FF_FIELD_INT32;
+        case RECOVER_FF_UINT32:
+            return FF_FIELD_UINT32;
+        case RECOVER_FF_INT64:
+            return FF_FIELD_INT64;
+        case RECOVER_FF_UINT64:
+            return FF_FIELD_UINT64;
+        case RECOVER_FF_FLOAT64:
+            return FF_FIELD_FLOAT64;
+        case RECOVER_FF_CODE:
+            return FF_FIELD_CODE;
+        default:
+            return FF_FIELD_UNKNOWN;
         }
     }
-    switch (base) {
-        case RECOVER_FF_CODE:    return FF_FIELD_CODE;
-        case RECOVER_FF_STRING:  return FF_FIELD_STRING;
-        case RECOVER_FF_RESOURCE:return FF_FIELD_RESOURCE;
-        default:                 return (base >= RECOVER_FF_DATA_TYPE_BLOCK) ? FF_FIELD_BLOCK : FF_FIELD_UNKNOWN;
+    switch (base)
+    {
+    case RECOVER_FF_CODE:
+        return FF_FIELD_CODE;
+    case RECOVER_FF_STRING:
+        return FF_FIELD_STRING;
+    case RECOVER_FF_RESOURCE:
+        return FF_FIELD_RESOURCE;
+    default:
+        return (base >= RECOVER_FF_DATA_TYPE_BLOCK) ? FF_FIELD_BLOCK : FF_FIELD_UNKNOWN;
     }
 }
 
@@ -242,83 +322,83 @@ struct FF_FieldInfo
     uint8_t array_entries_are_offsets = 0;
     uint8_t compact_size = 0; // pre-baked compact slot size (bytes); 0 = use default
 };
- struct FF_FieldKey
- {
-     RECOVERY_TAG owner_recovery = FF_RECOVER_UNDEFINED;
-     FF_FieldKind kind = FF_FIELD_UNKNOWN;
-     uint16_t field_offset = 0;
-     RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED;
-     uint8_t array_entries_are_offsets = 0;
-     const char *name = nullptr;
-     std::size_t name_len = 0;
+struct FF_FieldKey
+{
+    RECOVERY_TAG owner_recovery = FF_RECOVER_UNDEFINED;
+    FF_FieldKind kind = FF_FIELD_UNKNOWN;
+    uint16_t field_offset = 0;
+    RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED;
+    uint8_t array_entries_are_offsets = 0;
+    const char *name = nullptr;
+    std::size_t name_len = 0;
 
-     constexpr FF_FieldKey() = default;
+    constexpr FF_FieldKey() = default;
 
-     template <std::size_t N>
-     constexpr FF_FieldKey(const char (&literal)[N]) noexcept : name(literal), name_len(N - 1) {}
+    template <std::size_t N>
+    constexpr FF_FieldKey(const char (&literal)[N]) noexcept : name(literal), name_len(N - 1) {}
 
-     template <std::size_t N>
-     constexpr FF_FieldKey(RECOVERY_TAG owner,
-                           FF_FieldKind field_kind,
-                           uint16_t offset,
-                           RECOVERY_TAG child,
-                           uint8_t array_offsets,
-                           const char (&field_name)[N]) noexcept
-         : owner_recovery(owner),
-           kind(field_kind),
-           field_offset(offset),
-           child_recovery(child),
-           array_entries_are_offsets(array_offsets),
-           name(field_name),
-           name_len(N - 1) {}
+    template <std::size_t N>
+    constexpr FF_FieldKey(RECOVERY_TAG owner,
+                          FF_FieldKind field_kind,
+                          uint16_t offset,
+                          RECOVERY_TAG child,
+                          uint8_t array_offsets,
+                          const char (&field_name)[N]) noexcept
+        : owner_recovery(owner),
+          kind(field_kind),
+          field_offset(offset),
+          child_recovery(child),
+          array_entries_are_offsets(array_offsets),
+          name(field_name),
+          name_len(N - 1) {}
 
-     constexpr FF_FieldKey(RECOVERY_TAG owner,
-                           FF_FieldKind field_kind,
-                           uint16_t offset,
-                           RECOVERY_TAG child,
-                           uint8_t array_offsets,
-                           const char *field_name,
-                           std::size_t field_name_len) noexcept
-         : owner_recovery(owner),
-           kind(field_kind),
-           field_offset(offset),
-           child_recovery(child),
-           array_entries_are_offsets(array_offsets),
-           name(field_name),
-           name_len(field_name_len) {}
+    constexpr FF_FieldKey(RECOVERY_TAG owner,
+                          FF_FieldKind field_kind,
+                          uint16_t offset,
+                          RECOVERY_TAG child,
+                          uint8_t array_offsets,
+                          const char *field_name,
+                          std::size_t field_name_len) noexcept
+        : owner_recovery(owner),
+          kind(field_kind),
+          field_offset(offset),
+          child_recovery(child),
+          array_entries_are_offsets(array_offsets),
+          name(field_name),
+          name_len(field_name_len) {}
 
-     constexpr FF_FieldKey(const char *key_name, std::size_t key_name_len) noexcept
-         : name(key_name),
-           name_len(key_name_len) {}
+    constexpr FF_FieldKey(const char *key_name, std::size_t key_name_len) noexcept
+        : name(key_name),
+          name_len(key_name_len) {}
 
-     static FF_FieldKey from_cstr(const char *key_name) noexcept
-     {
-         return FF_FieldKey(key_name, key_name ? std::char_traits<char>::length(key_name) : 0);
-     }
+    static FF_FieldKey from_cstr(const char *key_name) noexcept
+    {
+        return FF_FieldKey(key_name, key_name ? std::char_traits<char>::length(key_name) : 0);
+    }
 
-     static FF_FieldKey from_cstr(RECOVERY_TAG owner,
-                                  FF_FieldKind field_kind,
-                                  uint16_t offset,
-                                  RECOVERY_TAG child,
-                                  uint8_t array_offsets,
-                                  const char *field_name) noexcept
-     {
-         return FF_FieldKey(owner,
-                            field_kind,
-                            offset,
-                            child,
-                            array_offsets,
-                            field_name,
-                            field_name ? std::char_traits<char>::length(field_name) : 0);
-     }
+    static FF_FieldKey from_cstr(RECOVERY_TAG owner,
+                                 FF_FieldKind field_kind,
+                                 uint16_t offset,
+                                 RECOVERY_TAG child,
+                                 uint8_t array_offsets,
+                                 const char *field_name) noexcept
+    {
+        return FF_FieldKey(owner,
+                           field_kind,
+                           offset,
+                           child,
+                           array_offsets,
+                           field_name,
+                           field_name ? std::char_traits<char>::length(field_name) : 0);
+    }
 
-     constexpr std::string_view view() const noexcept
-     {
-         return (name && name_len > 0) ? std::string_view{name, name_len} : std::string_view{};
-     }
+    constexpr std::string_view view() const noexcept
+    {
+        return (name && name_len > 0) ? std::string_view{name, name_len} : std::string_view{};
+    }
 
-     constexpr operator std::string_view() const noexcept { return view(); }
- };
+    constexpr operator std::string_view() const noexcept { return view(); }
+};
 
 struct DATA_BLOCK;  // Base structure for all data blocks
 struct FF_HEADER;   // Stream header block
@@ -350,8 +430,8 @@ struct FF_EXPORT DATA_BLOCK
 
     Offset __offset = FF_NULL_OFFSET;
     Size __size = 0;
-    uint32_t __version = 0;         // FHIR revision (for generated FHIR resource blocks)
-    uint32_t __engine_version = 0;  // FastFHIR engine version (for primitive blocks)
+    uint32_t __version = 0;        // FHIR revision (for generated FHIR resource blocks)
+    uint32_t __engine_version = 0; // FastFHIR engine version (for primitive blocks)
 
     explicit DATA_BLOCK() = default;
     explicit DATA_BLOCK(Offset off, Size total_size, uint32_t fhir_rev, uint32_t engine_ver = 0)
@@ -408,17 +488,17 @@ struct FF_EXPORT FF_HEADER : DATA_BLOCK
 
     enum vtable_offsets
     {
-        MAGIC = 0,                                            // 4 bytes (0-3)
-        RECOVERY = MAGIC + MAGIC_S,                           // 2 bytes (4-5)
-        FHIR_REV = RECOVERY + RECOVERY_S,                     // 2 bytes (6-7)
-        STREAM_SIZE = FHIR_REV + FHIR_REV_S,                  // 8 bytes (8-15)  -> Hardware Aligned
-        ROOT_OFFSET = STREAM_SIZE + STREAM_SIZE_S,            // 8 bytes (16-23) -> Hardware Aligned
-        ROOT_RECOVERY = ROOT_OFFSET + ROOT_OFFSET_S,          // 2 bytes (24-25)
-        CHECKSUM_OFFSET = ROOT_RECOVERY + ROOT_RECOVERY_S,    // 8 bytes (26-33)
-        URL_DIR_OFFSET = CHECKSUM_OFFSET + CHECKSUM_OFFSET_S, // 8 bytes (34-41)
+        MAGIC = 0,                                             // 4 bytes (0-3)
+        RECOVERY = MAGIC + MAGIC_S,                            // 2 bytes (4-5)
+        FHIR_REV = RECOVERY + RECOVERY_S,                      // 2 bytes (6-7)
+        STREAM_SIZE = FHIR_REV + FHIR_REV_S,                   // 8 bytes (8-15)  -> Hardware Aligned
+        ROOT_OFFSET = STREAM_SIZE + STREAM_SIZE_S,             // 8 bytes (16-23) -> Hardware Aligned
+        ROOT_RECOVERY = ROOT_OFFSET + ROOT_OFFSET_S,           // 2 bytes (24-25)
+        CHECKSUM_OFFSET = ROOT_RECOVERY + ROOT_RECOVERY_S,     // 8 bytes (26-33)
+        URL_DIR_OFFSET = CHECKSUM_OFFSET + CHECKSUM_OFFSET_S,  // 8 bytes (34-41)
         MODULE_REG_OFFSET = URL_DIR_OFFSET + URL_DIR_OFFSET_S, // 8 bytes (42-49)
-        VERSION = MODULE_REG_OFFSET + MODULE_REG_OFFSET_S,    // 4 bytes (50-53)
-        HEADER_SIZE = VERSION + VERSION_S                     // 54 bytes total
+        VERSION = MODULE_REG_OFFSET + MODULE_REG_OFFSET_S,     // 4 bytes (50-53)
+        HEADER_SIZE = VERSION + VERSION_S                      // 54 bytes total
     };
 
     // Baseline header size for engine MAJOR 2026 (the first versioned engine).
@@ -428,9 +508,11 @@ struct FF_EXPORT FF_HEADER : DATA_BLOCK
     // while still reaching the payload (root block, checksum, etc.).  All known
     // fields (MAGIC…VERSION) lie within HEADER_V2026_SIZE, so the bootstrapping
     // path always reads at least HEADER_SIZE bytes regardless.
-    inline Size get_header_size() const noexcept {
+    inline Size get_header_size() const noexcept
+    {
         const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
-        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        if (major == 0 || major <= 2026)
+            return HEADER_V2026_SIZE;
         return HEADER_SIZE;
     }
 
@@ -479,9 +561,11 @@ struct FF_EXPORT FF_CHECKSUM : DATA_BLOCK
 
     // Baseline header size for engine MAJOR 2026 (the first versioned engine).
     static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
-    inline Size get_header_size() const noexcept {
+    inline Size get_header_size() const noexcept
+    {
         const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
-        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        if (major == 0 || major <= 2026)
+            return HEADER_V2026_SIZE;
         return HEADER_SIZE;
     }
     explicit FF_CHECKSUM(Offset off, Size size, uint32_t fhir_rev, uint32_t engine_ver = 0)
@@ -493,7 +577,7 @@ struct FF_EXPORT FF_CHECKSUM : DATA_BLOCK
 };
 
 // Allocates the block, writes the metadata, and returns a pointer to the 32-byte hash buffer
-BYTE *FF_EXPORT STORE_FF_CHECKSUM_METADATA(BYTE *const __base, Offset start_offset, FF_Checksum_Algorithm algo);
+FF_EXPORT BYTE *STORE_FF_CHECKSUM_METADATA(BYTE *const __base, Offset start_offset, FF_Checksum_Algorithm algo);
 
 // =====================================================================
 // ZERO-COPY ARRAY BLOCK
@@ -507,10 +591,11 @@ struct FF_EXPORT FF_ARRAY : DATA_BLOCK
     static constexpr uint16_t STEP_MASK = 0x3FFF; // Bits 13-0
 
     // High-bit flags identifying the physical layout of the elements
-    enum EntryKind : uint16_t {
-        SCALAR       = 0x0000, // 00... (e.g., bool, double, uint32)
-        OFFSET       = 0x4000, // 01... (64-bit pointers to blocks)
-        INLINE_BLOCK = 0x8000  // 10... (Contiguous structured blocks)
+    enum EntryKind : uint16_t
+    {
+        SCALAR = 0x0000,      // 00... (e.g., bool, double, uint32)
+        OFFSET = 0x4000,      // 01... (64-bit pointers to blocks)
+        INLINE_BLOCK = 0x8000 // 10... (Contiguous structured blocks)
     };
 
     enum vtable_sizes
@@ -520,7 +605,7 @@ struct FF_EXPORT FF_ARRAY : DATA_BLOCK
         KIND_AND_STEP_S = TYPE_SIZE_UINT16, // 2 (Packed Kind & Step)
         ENTRY_COUNT_S = TYPE_SIZE_UINT32,   // 4
     };
-    
+
     enum vtable_offsets
     {
         VALIDATION = 0,
@@ -532,9 +617,11 @@ struct FF_EXPORT FF_ARRAY : DATA_BLOCK
 
     // Baseline header size for engine MAJOR 2026 (the first versioned engine).
     static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
-    inline Size get_header_size() const noexcept {
+    inline Size get_header_size() const noexcept
+    {
         const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
-        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        if (major == 0 || major <= 2026)
+            return HEADER_V2026_SIZE;
         return HEADER_SIZE;
     }
     explicit FF_ARRAY(Offset off, Size size, uint32_t fhir_rev, uint32_t engine_ver = 0)
@@ -550,7 +637,7 @@ struct FF_EXPORT FF_ARRAY : DATA_BLOCK
 
 void FF_EXPORT STORE_FF_ARRAY_HEADER(BYTE *const __base, Offset &write_head,
                                      FF_ARRAY::EntryKind kind,
-                                     uint32_t entry_step, uint32_t entry_count, 
+                                     uint32_t entry_step, uint32_t entry_count,
                                      RECOVERY_TAG entry_recovery_tag);
 
 // =====================================================================
@@ -577,9 +664,11 @@ struct FF_EXPORT FF_STRING : DATA_BLOCK
 
     // Baseline header size for engine MAJOR 2026 (the first versioned engine).
     static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
-    inline Size get_header_size() const noexcept {
+    inline Size get_header_size() const noexcept
+    {
         const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
-        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        if (major == 0 || major <= 2026)
+            return HEADER_V2026_SIZE;
         return HEADER_SIZE;
     }
     explicit FF_STRING(Offset off, Size size, uint32_t fhir_rev, uint32_t engine_ver = 0)
@@ -612,47 +701,52 @@ struct FF_EXPORT FF_STRING : DATA_BLOCK
 //   Entry 2: prior=0,    seg="example"→ full URL: "hl7.org/fhir/example"
 //
 // get_url(idx): walks the prior chain, collects segments, joins with "/".
-struct FF_EXPORT FF_URL_DIRECTORY : DATA_BLOCK {
+struct FF_EXPORT FF_URL_DIRECTORY : DATA_BLOCK
+{
     static constexpr char type[] = "FF_URL_DIRECTORY";
     static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_URL_DIRECTORY;
     static constexpr uint32_t NO_PRIOR = FF_NULL_UINT32;
 
-    enum vtable_sizes {
-        VALIDATION_S  = TYPE_SIZE_UINT64,
-        RECOVERY_S    = TYPE_SIZE_UINT16,
-        PAD_S         = TYPE_SIZE_UINT16,
+    enum vtable_sizes
+    {
+        VALIDATION_S = TYPE_SIZE_UINT64,
+        RECOVERY_S = TYPE_SIZE_UINT16,
+        PAD_S = TYPE_SIZE_UINT16,
         ENTRY_COUNT_S = TYPE_SIZE_UINT32,
     };
-    enum vtable_offsets {
-        VALIDATION  = 0,
-        RECOVERY    = VALIDATION  + VALIDATION_S,  // 8
-        PAD         = RECOVERY    + RECOVERY_S,    // 10
-        ENTRY_COUNT = PAD         + PAD_S,         // 12
+    enum vtable_offsets
+    {
+        VALIDATION = 0,
+        RECOVERY = VALIDATION + VALIDATION_S,      // 8
+        PAD = RECOVERY + RECOVERY_S,               // 10
+        ENTRY_COUNT = PAD + PAD_S,                 // 12
         HEADER_SIZE = ENTRY_COUNT + ENTRY_COUNT_S, // 16
     };
 
     // Each URLEntry in the ENTRY_TABLE is 16 bytes:
     //   prior_idx (uint32_t, 4) | pad (uint32_t, 4) | seg_offset (Offset, 8)
-    static constexpr Size URL_ENTRY_SIZE       = 16;
-    static constexpr Size URL_ENTRY_PRIOR_IDX  = 0;  // byte offset of prior_idx within entry
-    static constexpr Size URL_ENTRY_PAD        = 4;  // byte offset of pad
-    static constexpr Size URL_ENTRY_SEG_OFFSET = 8;  // byte offset of seg_offset within entry
+    static constexpr Size URL_ENTRY_SIZE = 16;
+    static constexpr Size URL_ENTRY_PRIOR_IDX = 0;  // byte offset of prior_idx within entry
+    static constexpr Size URL_ENTRY_PAD = 4;        // byte offset of pad
+    static constexpr Size URL_ENTRY_SEG_OFFSET = 8; // byte offset of seg_offset within entry
 
     // Baseline header size for engine MAJOR 2026 (the first versioned engine).
     static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
-    inline Size get_header_size() const noexcept {
+    inline Size get_header_size() const noexcept
+    {
         const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
-        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        if (major == 0 || major <= 2026)
+            return HEADER_V2026_SIZE;
         return HEADER_SIZE;
     }
     explicit FF_URL_DIRECTORY(Offset off, Size size, uint32_t fhir_rev, uint32_t engine_ver = 0)
         : DATA_BLOCK(off, size, fhir_rev, engine_ver) {}
 
-    uint32_t         entry_count (const BYTE* base) const;
-    uint32_t         prior_idx   (const BYTE* base, uint32_t entry_idx) const;
-    std::string_view seg_string  (const BYTE* base, uint32_t entry_idx) const;
+    uint32_t entry_count(const BYTE *base) const;
+    uint32_t prior_idx(const BYTE *base, uint32_t entry_idx) const;
+    std::string_view seg_string(const BYTE *base, uint32_t entry_idx) const;
     // Reconstructed full URL by walking the prior chain
-    std::string      get_url     (const BYTE* base, uint32_t entry_idx) const;
+    std::string get_url(const BYTE *base, uint32_t entry_idx) const;
 };
 
 // =====================================================================
@@ -665,8 +759,9 @@ struct FF_EXPORT FF_URL_DIRECTORY : DATA_BLOCK {
 //   MSB=0 → URL_IDX  → FF_URL_DIRECTORY    (Path B, passive raw-JSON blob)
 //   MSB=1 → MODULE_IDX → FF_MODULE_REGISTRY (Path A, active WASM codec)
 // Use ff_ext_ref_is_module() / ff_ext_ref_index() helpers below.
-struct FF_UrlInternState {
-    std::unordered_map<std::string, uint32_t> url_to_index;       // alias: url → ext_ref
+struct FF_UrlInternState
+{
+    std::unordered_map<std::string, uint32_t> url_to_index; // alias: url → ext_ref
     // Side table (Path B): for each URL whose ext_ref has MSB=0, the verbatim
     // JSON bytes of the original extension sub-tree.  Concurrent ingest
     // workers, when handed a Path B FF_EXTENSION, allocate an FF_STRING
@@ -682,15 +777,15 @@ struct FF_UrlInternState {
 // lower 31 bits = index payload.
 //   MSB=0 → URL_IDX  → FF_URL_DIRECTORY
 //   MSB=1 → MODULE_IDX → FF_MODULE_REGISTRY
-constexpr uint32_t FF_EXT_REF_MSB        = 0x80000000u;
+constexpr uint32_t FF_EXT_REF_MSB = 0x80000000u;
 constexpr uint32_t FF_EXT_REF_INDEX_MASK = 0x7FFFFFFFu;
-constexpr uint32_t FF_EXT_REF_NULL       = FF_NULL_UINT32;
+constexpr uint32_t FF_EXT_REF_NULL = FF_NULL_UINT32;
 
-inline bool     ff_ext_ref_is_module(uint32_t r) noexcept { return r != FF_EXT_REF_NULL && (r & FF_EXT_REF_MSB) != 0; }
-inline bool     ff_ext_ref_is_url   (uint32_t r) noexcept { return r != FF_EXT_REF_NULL && (r & FF_EXT_REF_MSB) == 0; }
-inline uint32_t ff_ext_ref_index    (uint32_t r) noexcept { return r & FF_EXT_REF_INDEX_MASK; }
-inline uint32_t ff_make_module_ref  (uint32_t i) noexcept { return (i & FF_EXT_REF_INDEX_MASK) | FF_EXT_REF_MSB; }
-inline uint32_t ff_make_url_ref     (uint32_t i) noexcept { return  i & FF_EXT_REF_INDEX_MASK; }
+inline bool ff_ext_ref_is_module(uint32_t r) noexcept { return r != FF_EXT_REF_NULL && (r & FF_EXT_REF_MSB) != 0; }
+inline bool ff_ext_ref_is_url(uint32_t r) noexcept { return r != FF_EXT_REF_NULL && (r & FF_EXT_REF_MSB) == 0; }
+inline uint32_t ff_ext_ref_index(uint32_t r) noexcept { return r & FF_EXT_REF_INDEX_MASK; }
+inline uint32_t ff_make_module_ref(uint32_t i) noexcept { return (i & FF_EXT_REF_INDEX_MASK) | FF_EXT_REF_MSB; }
+inline uint32_t ff_make_url_ref(uint32_t i) noexcept { return i & FF_EXT_REF_INDEX_MASK; }
 
 // =====================================================================
 // STREAM-LEVEL MODULE REGISTRY
@@ -714,21 +809,24 @@ inline uint32_t ff_make_url_ref     (uint32_t i) noexcept { return  i & FF_EXT_R
 // a content-addressed key that changes exactly when the binary changes.
 // Readers can use it to detect staleness, verify integrity, and key the
 // on-disk cache without re-hashing the bytes.
-struct FF_EXPORT FF_MODULE_REGISTRY : DATA_BLOCK {
-    static constexpr char type[]  = "FF_MODULE_REGISTRY";
+struct FF_EXPORT FF_MODULE_REGISTRY : DATA_BLOCK
+{
+    static constexpr char type[] = "FF_MODULE_REGISTRY";
     static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_MODULE_REGISTRY;
 
-    enum vtable_sizes {
-        VALIDATION_S  = TYPE_SIZE_UINT64,
-        RECOVERY_S    = TYPE_SIZE_UINT16,
-        PAD_S         = TYPE_SIZE_UINT16,
+    enum vtable_sizes
+    {
+        VALIDATION_S = TYPE_SIZE_UINT64,
+        RECOVERY_S = TYPE_SIZE_UINT16,
+        PAD_S = TYPE_SIZE_UINT16,
         ENTRY_COUNT_S = TYPE_SIZE_UINT32,
     };
-    enum vtable_offsets {
-        VALIDATION  = 0,
-        RECOVERY    = VALIDATION  + VALIDATION_S,  // 8
-        PAD         = RECOVERY    + RECOVERY_S,    // 10
-        ENTRY_COUNT = PAD         + PAD_S,         // 12
+    enum vtable_offsets
+    {
+        VALIDATION = 0,
+        RECOVERY = VALIDATION + VALIDATION_S,      // 8
+        PAD = RECOVERY + RECOVERY_S,               // 10
+        ENTRY_COUNT = PAD + PAD_S,                 // 12
         HEADER_SIZE = ENTRY_COUNT + ENTRY_COUNT_S, // 16
     };
 
@@ -736,41 +834,44 @@ struct FF_EXPORT FF_MODULE_REGISTRY : DATA_BLOCK {
     //   url_idx         (uint32_t,    4) | pad          (uint32_t,   4) |
     //   wasm_blob_offset(Offset,      8) | wasm_blob_size(uint32_t,  4) |
     //   pad2            (uint32_t,    4) | module_hash  (uint8_t[32])
-    static constexpr Size REG_ENTRY_SIZE             = 56;
-    static constexpr Size REG_ENTRY_URL_IDX          = 0;
-    static constexpr Size REG_ENTRY_PAD              = 4;
+    static constexpr Size REG_ENTRY_SIZE = 56;
+    static constexpr Size REG_ENTRY_URL_IDX = 0;
+    static constexpr Size REG_ENTRY_PAD = 4;
     static constexpr Size REG_ENTRY_WASM_BLOB_OFFSET = 8;
-    static constexpr Size REG_ENTRY_WASM_BLOB_SIZE   = 16;
-    static constexpr Size REG_ENTRY_PAD2             = 20;
-    static constexpr Size REG_ENTRY_MODULE_HASH      = 24; // 32 bytes
-    static constexpr Size REG_ENTRY_HASH_SIZE        = 32;
+    static constexpr Size REG_ENTRY_WASM_BLOB_SIZE = 16;
+    static constexpr Size REG_ENTRY_PAD2 = 20;
+    static constexpr Size REG_ENTRY_MODULE_HASH = 24; // 32 bytes
+    static constexpr Size REG_ENTRY_HASH_SIZE = 32;
 
     // Baseline header size for engine MAJOR 2026 (the first versioned engine).
     static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
-    inline Size get_header_size() const noexcept {
+    inline Size get_header_size() const noexcept
+    {
         const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
-        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        if (major == 0 || major <= 2026)
+            return HEADER_V2026_SIZE;
         return HEADER_SIZE;
     }
     explicit FF_MODULE_REGISTRY(Offset off, Size size, uint32_t fhir_rev, uint32_t engine_ver = 0)
         : DATA_BLOCK(off, size, fhir_rev, engine_ver) {}
 
-    uint32_t         entry_count     (const BYTE* base) const;
-    uint32_t         url_idx         (const BYTE* base, uint32_t entry_idx) const;
-    Offset           wasm_blob_offset(const BYTE* base, uint32_t entry_idx) const;
-    uint32_t         wasm_blob_size  (const BYTE* base, uint32_t entry_idx) const;
+    uint32_t entry_count(const BYTE *base) const;
+    uint32_t url_idx(const BYTE *base, uint32_t entry_idx) const;
+    Offset wasm_blob_offset(const BYTE *base, uint32_t entry_idx) const;
+    uint32_t wasm_blob_size(const BYTE *base, uint32_t entry_idx) const;
     /// Returns a view of the 32-byte SHA-256 content hash for this entry.
-    std::string_view module_hash     (const BYTE* base, uint32_t entry_idx) const;
+    std::string_view module_hash(const BYTE *base, uint32_t entry_idx) const;
 
     /// Binary-search for entry with @p url_idx.  Returns FF_NULL_UINT32 if absent.
-    uint32_t find_entry              (const BYTE* base, uint32_t url_idx) const;
+    uint32_t find_entry(const BYTE *base, uint32_t url_idx) const;
 };
 
 // =====================================================================
 // GENERIC RESOURCE WRAPPER
 // =====================================================================
 // A passive coordinate for polymorphic resources (ie Bundle.Entry.Resource)
-struct ResourceReference {
+struct ResourceReference
+{
     Offset offset = FF_NULL_OFFSET;
     RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED;
 
@@ -779,7 +880,8 @@ struct ResourceReference {
 };
 
 // Slim staging structure for polymorphic FHIR choice [x] fields
-struct ChoiceEntry {
+struct ChoiceEntry
+{
     RECOVERY_TAG tag = FF_RECOVER_UNDEFINED;
     std::variant<
         std::monostate,
@@ -789,8 +891,8 @@ struct ChoiceEntry {
         int64_t,
         uint64_t,
         double,
-        std::string_view
-    > value;
+        std::string_view>
+        value;
 
     bool is_empty() const { return tag == FF_RECOVER_UNDEFINED; }
 };
