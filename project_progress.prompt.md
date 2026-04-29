@@ -60,6 +60,13 @@
 - Location: `src/FF_Builder.cpp` recovery gates and future `recover_archive(...)` implementation.
 - Goal: traceability for production incidents and recovery quality.
 
+## Code Quality Backlog
+
+### Switch-Case Audit
+- [ ] Deep review: replace all chained `if (node.is_kind())` / `if (tag == X) ... else if (tag == Y)` patterns with `switch` statements throughout the codebase.
+- Locations to audit: `src/FF_Parser.cpp` (`print_json`, `standard_node_entries`, `node_lookup_field`, `standard_entry_as_node`), `src/FF_Compactor.cpp` (now fixed in `archive_node`; check remaining helpers), `include/FF_Parser.hpp` (`Node::as<T>()`), `include/FF_Utilities.hpp` (`FF_IsFieldEmpty`), `src/FF_Builder.cpp` (MutableEntry operator= overloads), generated `_from_json` / `STORE_` functions in `generated_src/`.
+- Goal: exhaustiveness checking at compile time, elimination of silent fall-through bugs (like the `is_choice` misclassification and the missing `FF_FIELD_CODE` branch in `archive_node`).
+
 ## Verification Todo
 - [ ] Add focused tests for corrupted header, missing root, mismatched recovery tag, and checksum footer corruption.
 - [ ] Add tests for strict fail mode vs attempted repair mode.
@@ -72,3 +79,47 @@
 - Import-mode API behavior: when stream size is `0` at acquisition, `StreamHead` stages the first header block (`38` bytes), then continues direct writes to arena memory.
 - Release behavior: staged bytes are restored for non-cursor header regions; cursor/lock bytes are finalized atomically by lock release.
 - Current risk status: edited Memory files are clean; full CMake build currently fails due to unrelated pre-existing/generated issues outside `FF_Memory` changes.
+
+---
+
+## WASM Extension Subsystem — Status & Backlog
+
+### Completed Phases ✅
+
+| Phase | Description |
+|---|---|
+| Phase 1 | Binary structures: `FF_EXTENSION` vtable, `FF_URL_DIRECTORY`, `FF_MODULE_REGISTRY` |
+| Phase 2 | `ffc.py` generator: `EXT_REF` discriminated-union field, `EXTENSIONView` accessors |
+| Phase 3 | Predigestion pass + ingest integration (`FF_PredigestExtensionURLs`) |
+| Phase 4 | Parser read path: `has_url_directory()`, `has_module_registry()`, `url_directory()` |
+| Phase 5 | `FF_KnownExtensions` generator — spec-driven, dynamic profile-native URL detection |
+| Phase 6 | WAMR host integration (`FF_WasmExtensionHost`, staging ping-pong wrappers) |
+| Phase 7 | Registry fetch + version-aware binary-hash caching (content-addressed disk cache + TTL) |
+| Phase 8 | `ffc.py --wasm` mode (codec triple generator) |
+| Phase 9 | EXT_REF MSB routing, async AOT worker, Path B passive storage |
+| Phase 10 | Binary hash in `FF_MODULE_REGISTRY` (56-byte entries, version identity) |
+
+### Hashing Architecture (Key Design Decision)
+
+Two separate SHA-256 roles — never conflate them:
+
+- **URL Hash (Role 1):** `sha256(url_string)` → used only as the sidecar metadata filename on disk (`meta/<url_hash_hex>.meta`). Never written to any FF binary stream. Never used as an in-memory lookup key.
+- **Binary Hash (Role 2):** `sha256(wasm_bytes)` → module version identity. Written to every `FF_MODULE_REGISTRY` entry at `REG_ENTRY_MODULE_HASH` (offset 24, 32 bytes). Also names the content-addressed binary file on disk (`<binary_hash_hex>.wasm`). Changes only when the binary changes.
+
+### Open TODOs
+
+| # | Item | Priority |
+|---|---|---|
+| 1 | Implement `http_get_manifest()` — real TLS HTTP GET to `registry.fastfhir.org/v1/modules/<url_hash_hex>/latest` | High |
+| 2 | Implement `http_get_wasm()` — real TLS HTTP download of binary by content hash | High |
+| 3 | TLS support for HTTP fetch (replace plain TCP stub in `FF_Extensions.cpp`) | High |
+| 4 | `FF_IsKnownExtension()` / `FF_IsNativeExtension()` — implement string binary search in predigestion | High |
+| 5 | `FF_ExtensionFilterMode` enum — apply in predigestion hot path | High |
+| 6 | `Parser::unresolved_extensions()` list — collect offline-fallback skip log | Medium |
+| 7 | Path A ingest dispatch — implement in concurrent workers (`FF_WasmExtension{Size,Store}`) | Medium |
+| 8 | Path B round-trip export — emit stored raw JSON verbatim from `VALUE` ChoiceEntry | Medium |
+| 9 | Ingest Synthea bundle end-to-end — verify URL directory, zero known-ext blocks, binary hash in registry | Medium |
+| 10 | Phase 9 verification tests — MSB=0/1 correct, AOT enqueue, Path A/B round-trip | Medium |
+| 11 | Write first real WASM codec module — geolocation extension test case (wasi-sdk) | Low |
+| 12 | Binary file GC — evict old `.wasm` files from disk cache when superseded by new binary hash | Low |
+| 13 | `generated_src/` regeneration — re-run `ffc.py` once FHIR spec downloads are available | Low |

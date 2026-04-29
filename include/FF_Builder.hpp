@@ -71,6 +71,10 @@ public:
     void set_url_dir_offset(Offset off)                { m_url_dir_offset = off; }
     Offset url_dir_offset() const                      { return m_url_dir_offset; }
 
+    // Recorded by FF_WasmExtensionHost::write_module_registry; consumed by finalize().
+    void set_module_reg_offset(Offset off)             { m_module_reg_offset = off; }
+    Offset module_reg_offset() const                   { return m_module_reg_offset; }
+
     /**
      * @brief Constructs a builder bound to an existing Virtual Memory Arena.
      * 

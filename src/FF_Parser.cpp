@@ -860,23 +860,20 @@ std::vector<Node> ParserOps::standard_node_entries(const Node& n) {
                 continue;
             }
 
-            // Schema provides the concrete element type. Validate it against the
-            // DATA_BLOCK header in debug builds; use the schema type directly in release.
+            // Use the actual recovery tag stored in the block — the schema's child_recovery
+            // may differ (e.g., code arrays store FF_STRING blocks with RECOVER_FF_STRING,
+            // even though the schema marks child_recovery as RECOVER_FF_CODE).
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
                 LOAD_U16(n.m_base + child_off + DATA_BLOCK::RECOVERY)
             );
-            assert((n.m_child_recovery == FF_RECOVER_UNDEFINED || actual_tag == n.m_child_recovery)
-                   && "Node::entries() pointer-array element tag mismatch with schema child_recovery");
 
             FF_FieldKind child_kind = FF_FIELD_BLOCK;
-            switch (n.m_child_recovery) {
+            switch (actual_tag) {
             case RECOVER_FF_STRING: child_kind = FF_FIELD_STRING; break;
-            case RECOVER_FF_CODE:   child_kind = FF_FIELD_CODE;   break;
             default: break;
             }
 
-            RECOVERY_TAG use_tag = (n.m_child_recovery != FF_RECOVER_UNDEFINED) ? n.m_child_recovery : actual_tag;
-            out.push_back(Node(n.m_base, n.m_size, n.m_version, child_off, use_tag, child_kind,
+            out.push_back(Node(n.m_base, n.m_size, n.m_version, child_off, actual_tag, child_kind,
                                FF_RECOVER_UNDEFINED, false, n.m_ops));
             continue;
         }

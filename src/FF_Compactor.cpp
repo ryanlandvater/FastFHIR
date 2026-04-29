@@ -309,11 +309,15 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
 static Offset archive_node(const Reflective::Node& node, ArchiveContext& context) {
     if (!node) return FF_NULL_OFFSET;
 
-    if (node.is_object()) return archive_object(node, context);
-    if (node.is_array()) return archive_array(node, context);
-    if (node.is_string()) return archive_string(node.as<std::string_view>(), context.destination);
-
-    throw std::runtime_error("FastFHIR Compactor Error: standalone scalar nodes are not supported in archive_node().");
+    switch (node.kind()) {
+        case FF_FIELD_BLOCK:  return archive_object(node, context);
+        case FF_FIELD_ARRAY:  return archive_array(node, context);
+        case FF_FIELD_STRING: return archive_string(node.as<std::string_view>(), context.destination);
+        default:
+            throw std::runtime_error(
+                std::string("FastFHIR Compactor Error: unsupported node kind in archive_node(): ") +
+                std::to_string(static_cast<int>(node.kind())));
+    }
 }
 
 static void process_pending_write(ArchiveContext& context, const PendingWrite& pending) {

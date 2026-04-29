@@ -65,6 +65,9 @@ option(FASTFHIR_BUILD_INGESTOR "Build the FastFHIR Ingestor (requires simdjson)"
 # Toggle for building Python bindings using pybind11
 option(FASTFHIR_BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 
+# Toggle for WASM extension subsystem (requires WAMR)
+option(FASTFHIR_ENABLE_EXTENSIONS "Enable WASM extension codec subsystem (requires WAMR)" OFF)
+
 # Toggle for building the C++ test suite
 option(FASTFHIR_BUILD_TESTS "Build the FastFHIR C++ test suite (requires FASTFHIR_BUILD_INGESTOR)" OFF)
 
@@ -102,6 +105,24 @@ file(GLOB FASTFHIR_CORE_HEADERS CONFIGURE_DEPENDS
 
 # Exclude the Ingestor from the pure serialization package
 list(REMOVE_ITEM FASTFHIR_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/FF_Ingestor.cpp")
+
+# Conditionally include FF_Extensions.cpp (WAMR host) when extensions are enabled.
+if(FASTFHIR_ENABLE_EXTENSIONS)
+    message(STATUS "FastFHIR: Fetching WAMR via FetchContent...")
+    include(FetchContent)
+    FetchContent_Declare(wamr
+        GIT_REPOSITORY https://github.com/bytecodealliance/wasm-micro-runtime.git
+        GIT_TAG        WAMR-2.2.0
+        GIT_SHALLOW    ON
+    )
+    set(WAMR_BUILD_INTERP    ON  CACHE BOOL "" FORCE)
+    set(WAMR_BUILD_AOT       ON  CACHE BOOL "" FORCE)
+    set(WAMR_BUILD_LIBC_BUILTIN ON CACHE BOOL "" FORCE)
+    set(WAMR_BUILD_LIBC_WASI OFF CACHE BOOL "" FORCE)
+    set(WAMR_BUILD_FAST_JIT  OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(wamr)
+    list(APPEND FASTFHIR_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/FF_Extensions.cpp")
+endif()
 
 # Optionally run generator logic when configuring the project.  
 if(FASTFHIR_RUN_GENERATOR)
@@ -179,6 +200,12 @@ target_compile_definitions(fastfhir_obj
         FASTFHIR_VERSION_MINOR=${FASTFHIR_VERSION_MINOR}
         FASTFHIR_VERSION_BUILD=${FASTFHIR_VERSION_BUILD}
 )
+
+if(FASTFHIR_ENABLE_EXTENSIONS)
+    target_compile_definitions(fastfhir_obj PUBLIC FASTFHIR_ENABLE_EXTENSIONS)
+    target_include_directories(fastfhir_obj PRIVATE ${wamr_SOURCE_DIR}/core/iwasm/include)
+    target_link_libraries(fastfhir_obj PUBLIC vmlib)
+endif()
 
 target_precompile_headers(fastfhir_obj 
     PRIVATE

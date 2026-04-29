@@ -603,8 +603,103 @@ struct FF_EXPORT FF_URL_DIRECTORY : DATA_BLOCK {
 // =====================================================================
 // Produced by FF_PredigestExtensionURLs(); consumed read-only by ingest
 // workers.  FF_NULL_UINT32 as value means "filtered/known — skip block".
+//
+// The mapped value is an FF_EXTENSION::EXT_REF discriminated-union word:
+//   MSB=0 → URL_IDX  → FF_URL_DIRECTORY    (Path B, passive raw-JSON blob)
+//   MSB=1 → MODULE_IDX → FF_MODULE_REGISTRY (Path A, active WASM codec)
+// Use ff_ext_ref_is_module() / ff_ext_ref_index() helpers below.
 struct FF_UrlInternState {
-    std::unordered_map<std::string, uint32_t> url_to_index;
+    std::unordered_map<std::string, uint32_t> url_to_index;       // alias: url → ext_ref
+    // Side table (Path B): for each URL whose ext_ref has MSB=0, the verbatim
+    // JSON bytes of the original extension sub-tree.  Concurrent ingest
+    // workers, when handed a Path B FF_EXTENSION, allocate an FF_STRING
+    // containing this slice and store its Offset under the FF_EXTENSION VALUE
+    // choice slot tagged RECOVER_FF_OPAQUE_JSON, preserving round-trip export.
+    std::unordered_map<std::string, std::string> passive_payload;
+};
+
+// =====================================================================
+// EXT_REF (FF_EXTENSION discriminated-union routing word)
+// =====================================================================
+// 4-byte field stored at FF_EXTENSION::EXT_REF.  Bit 31 = routing flag;
+// lower 31 bits = index payload.
+//   MSB=0 → URL_IDX  → FF_URL_DIRECTORY
+//   MSB=1 → MODULE_IDX → FF_MODULE_REGISTRY
+constexpr uint32_t FF_EXT_REF_MSB        = 0x80000000u;
+constexpr uint32_t FF_EXT_REF_INDEX_MASK = 0x7FFFFFFFu;
+constexpr uint32_t FF_EXT_REF_NULL       = FF_NULL_UINT32;
+
+inline bool     ff_ext_ref_is_module(uint32_t r) noexcept { return r != FF_EXT_REF_NULL && (r & FF_EXT_REF_MSB) != 0; }
+inline bool     ff_ext_ref_is_url   (uint32_t r) noexcept { return r != FF_EXT_REF_NULL && (r & FF_EXT_REF_MSB) == 0; }
+inline uint32_t ff_ext_ref_index    (uint32_t r) noexcept { return r & FF_EXT_REF_INDEX_MASK; }
+inline uint32_t ff_make_module_ref  (uint32_t i) noexcept { return (i & FF_EXT_REF_INDEX_MASK) | FF_EXT_REF_MSB; }
+inline uint32_t ff_make_url_ref     (uint32_t i) noexcept { return  i & FF_EXT_REF_INDEX_MASK; }
+
+// =====================================================================
+// STREAM-LEVEL MODULE REGISTRY
+// =====================================================================
+// FF_MODULE_REGISTRY maps extension URL_IDX values to .wasm blob offsets
+// in the arena so a parser can locate and load WASM codecs for all
+// extension URLs present in a given stream.
+//
+// Binary layout:
+//   HEADER (16): VALIDATION(8) | RECOVERY(2) | PAD(2) | ENTRY_COUNT(4)
+//   ENTRY_TABLE:  ENTRY_COUNT × 56-byte RegistryEntry inline structs
+//     RegistryEntry: URL_IDX(4) | PAD(4) | WASM_BLOB_OFFSET(8) |
+//                    WASM_BLOB_SIZE(4) | PAD2(4) | MODULE_HASH(32)
+//
+// WASM_BLOB_OFFSET points to the raw .wasm bytes stored in the arena as
+// a flat byte sequence (no FF_STRING header).  WASM_BLOB_SIZE is the byte
+// count of that sequence.  Entries are sorted by URL_IDX for O(log n) lookup.
+//
+// MODULE_HASH is the SHA-256 digest of the raw .wasm binary bytes at the
+// time of ingest.  It is the canonical version identity of the module:
+// a content-addressed key that changes exactly when the binary changes.
+// Readers can use it to detect staleness, verify integrity, and key the
+// on-disk cache without re-hashing the bytes.
+struct FF_EXPORT FF_MODULE_REGISTRY : DATA_BLOCK {
+    static constexpr char type[]  = "FF_MODULE_REGISTRY";
+    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_MODULE_REGISTRY;
+
+    enum vtable_sizes {
+        VALIDATION_S  = TYPE_SIZE_UINT64,
+        RECOVERY_S    = TYPE_SIZE_UINT16,
+        PAD_S         = TYPE_SIZE_UINT16,
+        ENTRY_COUNT_S = TYPE_SIZE_UINT32,
+    };
+    enum vtable_offsets {
+        VALIDATION  = 0,
+        RECOVERY    = VALIDATION  + VALIDATION_S,  // 8
+        PAD         = RECOVERY    + RECOVERY_S,    // 10
+        ENTRY_COUNT = PAD         + PAD_S,         // 12
+        HEADER_SIZE = ENTRY_COUNT + ENTRY_COUNT_S, // 16
+    };
+
+    // Each RegistryEntry in the ENTRY_TABLE is 56 bytes:
+    //   url_idx         (uint32_t,    4) | pad          (uint32_t,   4) |
+    //   wasm_blob_offset(Offset,      8) | wasm_blob_size(uint32_t,  4) |
+    //   pad2            (uint32_t,    4) | module_hash  (uint8_t[32])
+    static constexpr Size REG_ENTRY_SIZE             = 56;
+    static constexpr Size REG_ENTRY_URL_IDX          = 0;
+    static constexpr Size REG_ENTRY_PAD              = 4;
+    static constexpr Size REG_ENTRY_WASM_BLOB_OFFSET = 8;
+    static constexpr Size REG_ENTRY_WASM_BLOB_SIZE   = 16;
+    static constexpr Size REG_ENTRY_PAD2             = 20;
+    static constexpr Size REG_ENTRY_MODULE_HASH      = 24; // 32 bytes
+    static constexpr Size REG_ENTRY_HASH_SIZE        = 32;
+
+    explicit FF_MODULE_REGISTRY(Offset off, Size size, uint32_t ver)
+        : DATA_BLOCK(off, size, ver) {}
+
+    uint32_t         entry_count     (const BYTE* base) const;
+    uint32_t         url_idx         (const BYTE* base, uint32_t entry_idx) const;
+    Offset           wasm_blob_offset(const BYTE* base, uint32_t entry_idx) const;
+    uint32_t         wasm_blob_size  (const BYTE* base, uint32_t entry_idx) const;
+    /// Returns a view of the 32-byte SHA-256 content hash for this entry.
+    std::string_view module_hash     (const BYTE* base, uint32_t entry_idx) const;
+
+    /// Binary-search for entry with @p url_idx.  Returns FF_NULL_UINT32 if absent.
+    uint32_t find_entry              (const BYTE* base, uint32_t url_idx) const;
 };
 
 // =====================================================================

@@ -78,11 +78,14 @@ BASE_BLOCK_HEADER_SIZE = 10
 # Values: dict of attrs to overlay on the field dict; 'name' overrides the
 #         vtable constant name; 'cpp_name' overrides the C++ member name.
 BLOCK_FIELD_OVERRIDES = {
-    # Extension.url: replace 8-byte Offset→FF_STRING with 4-byte uint32_t URL_IDX.
-    # The index points into the stream-level FF_URL_DIRECTORY.
+    # Extension.url: replace 8-byte Offset→FF_STRING with 4-byte uint32_t EXT_REF.
+    # EXT_REF is a discriminated-union routing word:
+    #   MSB=0 → URL_IDX   → FF_URL_DIRECTORY    (Path B, passive raw-JSON blob)
+    #   MSB=1 → MODULE_IDX → FF_MODULE_REGISTRY (Path A, active WASM codec)
+    # See FF_Primitives.hpp for FF_EXT_REF_MSB / ff_ext_ref_is_module() helpers.
     ('Extension', 'url'): {
-        'name':       'URL_IDX',
-        'cpp_name':   'url_idx',
+        'name':       'EXT_REF',
+        'cpp_name':   'ext_ref',
         'fhir_type':  'uint32_t',   # sentinel — not a real FHIR type
         'cpp_type':   'uint32_t',
         'data_type':  'uint32_t',
@@ -99,13 +102,23 @@ BLOCK_FIELD_OVERRIDES = {
 # Extra methods injected into specific *View<> template bodies.
 # Key: FHIR type path (e.g. 'Extension').  Value: raw C++ method string.
 VIEW_EXTRA_METHODS = {
-    # Convenience wrapper: resolves the stored URL_IDX through the stream directory.
+    # Resolve the full extension URL via the stream-level FF_URL_DIRECTORY.
+    # Honours the EXT_REF MSB: a module ref still has a URL recoverable from
+    # the FF_MODULE_REGISTRY's url_idx field, but the simple form here only
+    # handles Path B; Path A callers should use FF_WasmExtensionHost.
     'Extension': (
-        "    // Resolve the full extension URL via the stream-level FF_URL_DIRECTORY.\n"
+        "    // Path-B URL accessor (MSB=0).  Returns empty string for module refs (MSB=1).\n"
         "    inline std::string get_url(const BYTE* url_base, const FF_URL_DIRECTORY& dir) const {\n"
-        "        uint32_t idx = LOAD_U32(url_base + offset + FF_EXTENSION::URL_IDX);\n"
-        "        if (idx == FF_NULL_UINT32) return {};\n"
-        "        return dir.get_url(url_base, idx);\n"
+        "        uint32_t ref = LOAD_U32(url_base + offset + FF_EXTENSION::EXT_REF);\n"
+        "        if (ref == FF_EXT_REF_NULL || ff_ext_ref_is_module(ref)) return {};\n"
+        "        return dir.get_url(url_base, ff_ext_ref_index(ref));\n"
+        "    }\n"
+        "    inline bool     is_active_module() const {\n"
+        "        return ff_ext_ref_is_module(LOAD_U32(base + offset + FF_EXTENSION::EXT_REF));\n"
+        "    }\n"
+        "    inline uint32_t module_idx() const {\n"
+        "        uint32_t ref = LOAD_U32(base + offset + FF_EXTENSION::EXT_REF);\n"
+        "        return ff_ext_ref_is_module(ref) ? ff_ext_ref_index(ref) : FF_NULL_UINT32;\n"
         "    }\n"
     ),
 }
@@ -115,17 +128,19 @@ VIEW_EXTRA_METHODS = {
 # Variables available in the snippet: field, data, builder, logger,
 #   concurrent_queue, err_log, cpp_name (the C++ member name).
 INGEST_FIELD_OVERRIDES = {
-    # Extension.url is a JSON string but is stored as a uint32_t index.
-    # Looks up the pre-built intern_state map via builder->intern_state().
+    # Extension.url is a JSON string but is stored as a 4-byte EXT_REF word.
+    # Predigestion has already populated url_to_index with either a URL_IDX
+    # (MSB=0, Path B) or a MODULE_IDX with the MSB pre-set (Path A).  The
+    # ingest worker just reads the precomputed value — no branching here.
     ('Extension', 'url'): (
         "            std::string_view url_sv;\n"
         "            if (field.value().get_string().get(url_sv) == simdjson::SUCCESS) {{\n"
         "                const auto* istate = builder ? builder->intern_state() : nullptr;\n"
         "                if (istate) {{\n"
         "                    auto it = istate->url_to_index.find(std::string(url_sv));\n"
-        "                    data.url_idx = (it != istate->url_to_index.end()) ? it->second : FF_NULL_UINT32;\n"
+        "                    data.ext_ref = (it != istate->url_to_index.end()) ? it->second : FF_EXT_REF_NULL;\n"
         "                }} else {{\n"
-        "                    data.url_idx = FF_NULL_UINT32;\n"
+        "                    data.ext_ref = FF_EXT_REF_NULL;\n"
         "                }}\n"
         "            }} else {{\n"
         "                {err_log}\n"
@@ -251,6 +266,10 @@ def _getter_return_type(f, block_struct_name):
         return _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
 
 def _field_kind_expr(f):
+    # Choice must be checked first — a choice field may have a fallback fhir_type
+    # (e.g. 'string') that would otherwise match an earlier branch incorrectly.
+    if f.get('is_choice'):
+        return 'FF_FIELD_CHOICE'
     if f['is_array']:
         return 'FF_FIELD_ARRAY'
     if f['fhir_type'] == 'string':
@@ -267,10 +286,8 @@ def _field_kind_expr(f):
         return 'FF_FIELD_UINT32'
     if f['data_type'] == 'uint64_t':
         return 'FF_FIELD_UINT64'
-    if f['fhir_type'] == 'Resource': 
+    if f['fhir_type'] == 'Resource':
         return 'FF_FIELD_RESOURCE'
-    if f.get('is_choice'):
-        return 'FF_FIELD_CHOICE'
     return 'FF_FIELD_UNKNOWN'
 
 def _compact_slot_size(f):
@@ -1119,6 +1136,9 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
     lines.append("    RECOVER_FF_CODE                       = 0x0003,")
     lines.append("    RECOVER_FF_RESOURCE                   = 0x0004,")
     lines.append("    RECOVER_FF_CHECKSUM                   = 0x0005,")
+    lines.append("    RECOVER_FF_URL_DIRECTORY              = 0x0006, // Stream-level URL intern table")
+    lines.append("    RECOVER_FF_MODULE_REGISTRY            = 0x0007, // WASM extension module registry")
+    lines.append("    RECOVER_FF_OPAQUE_JSON                = 0x0008, // Path B passive raw-JSON extension blob")
     
     lines.append("")
     lines.append("    // --- Inline Scalars (0x0100 Block) ---")
@@ -1142,11 +1162,7 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
             tag_name = f"RECOVER_FF_{path.replace('.', '_').upper()}"
             lines.append(f"    {tag_name:<44}= 0x{0x0200 + i+1:04X},")
 
-    # Handwritten FastFHIR structural types that are not generated from FHIR specs
-    lines.append("")
-    lines.append("    // FastFHIR Internal Structures (0x021D+)")
-    lines.append("    RECOVER_FF_URL_DIRECTORY              = 0x021D, // Stream-level URL intern table")
-
+    # Handwritten FastFHIR structural types are emitted in the Core Primitives block above
     if resource_paths:
         lines.append("")
         lines.append("    // Resources (0x0300 Block)")
@@ -2360,6 +2376,237 @@ def main (spec_dir="fhir_specs", output_dir="generated_src"):
     compile_fhir_library(resources, versions, code_enum_map=enum_map, output_dir=output_dir)
     print("\n[Success] Build Complete: generated_src/ contains all FastFHIR artifacts."
 )
-    
+
+
+# =====================================================================
+# 9. WASM CODEC GENERATOR (--wasm mode)
+# =====================================================================
+# For each extension StructureDefinition, emits a self-contained C source
+# file that can be compiled to a .wasm codec module mirroring the three
+# exports:  ext_size / ext_encode / ext_decode.
+#
+# The emitted file uses:
+#   - Only fixed-size stack structs (no std::vector, no std::string).
+#   - Direct LOAD_U*/STORE_U* macros against the staging buffer pointer.
+#   - Three exported functions with the ABI documented in FF_Extensions.hpp.
+#
+# Compile with:
+#   wasi-sdk clang --target=wasm32-wasi -O3 -fno-exceptions -fno-rtti
+#       -nostdlib++ -Wl,--no-entry -o <ext_hash>.wasm <ext_name>_codec.c
+# =====================================================================
+
+# Maximum number of fields supported in the stack-only staging layout.
+_WASM_MAX_FIELDS = 64
+
+# WASM-safe C type mapping (no heap allocation).
+_WASM_CTYPE = {
+    'boolean':     ('uint8_t',  1, 'uint8'),
+    'integer':     ('uint32_t', 4, 'uint32'),
+    'unsignedInt': ('uint32_t', 4, 'uint32'),
+    'positiveInt': ('uint32_t', 4, 'uint32'),
+    'integer64':   ('uint64_t', 8, 'uint64'),
+    'decimal':     ('double',   8, 'f64'),
+}
+
+# String fields are represented as a fixed-length char[] in the staging layout.
+_WASM_MAX_STRING_BYTES = 512
+
+
+def _wasm_field_ctype(fhir_type):
+    """Return (c_type_str, byte_size) for a WASM-staging-compatible field type."""
+    if fhir_type in _WASM_CTYPE:
+        ct, sz, _ = _WASM_CTYPE[fhir_type]
+        return ct, sz
+    # Strings, codes, all reference types → fixed char array
+    return 'char', _WASM_MAX_STRING_BYTES
+
+
+def emit_wasm_codec(ext_url, master_blocks, ext_path, output_dir):
+    """Emit a WASM codec .c file for the Extension at @p ext_path.
+
+    Parameters
+    ----------
+    ext_url   : canonical URL of the extension (used in file-level comment).
+    master_blocks : dict of path → block info from merge_fhir_versions.
+    ext_path  : the root StructureDefinition path (e.g. 'Extension').
+    output_dir : where to write the .c file.
+    """
+    if ext_path not in master_blocks:
+        return
+
+    blk = master_blocks[ext_path]
+    layout = blk['layout']
+    # Sanitise extension URL to a C identifier for the file name.
+    safe_name = re.sub(r'[^A-Za-z0-9]', '_', ext_url.rstrip('/').split('/')[-1])
+    if not safe_name:
+        safe_name = 'extension'
+
+    # ── Staging payload struct ────────────────────────────────────────────
+    struct_lines = ['typedef struct {']
+    for f in layout[:_WASM_MAX_FIELDS]:
+        ctype, sz = _wasm_field_ctype(f['fhir_type'])
+        if sz == _WASM_MAX_STRING_BYTES:
+            struct_lines.append(f'    {ctype} {f["cpp_name"]}[{sz}];')
+        else:
+            struct_lines.append(f'    {ctype} {f["cpp_name"]};')
+    struct_lines.append(f'}} {safe_name}_payload_t;')
+
+    payload_struct = '\n'.join(struct_lines)
+
+    # Fixed vtable layout (mirrors the generated C++ HEADER_SIZE).
+    vtable_total = blk.get('sizes', {})
+    # Use the last version's size if available, else compute from layout.
+    if vtable_total:
+        vtable_size = max(vtable_total.values())
+    else:
+        vtable_size = (layout[-1]['offset'] + layout[-1]['size']) if layout else 10
+
+    c_src = (
+        "// =================================================================\n"
+        f"// FastFHIR WASM Extension Codec — {ext_url}\n"
+        "// AUTO-GENERATED by ffc.py --wasm. DO NOT EDIT.\n"
+        "// Compile:\n"
+        "//   wasi-sdk clang --target=wasm32-wasi -O3 -fno-exceptions\n"
+        "//     -fno-rtti -nostdlib++ -Wl,--no-entry \\\n"
+        f"//     -o {safe_name}.wasm {safe_name}_codec.c\n"
+        "// =================================================================\n"
+        "#include <stdint.h>\n"
+        "#include <string.h>\n\n"
+        "// ── Load/store helpers (little-endian, WASM native) ──────────────\n"
+        "static inline uint8_t  ld_u8 (const uint8_t* p) { return *p; }\n"
+        "static inline uint16_t ld_u16(const uint8_t* p) { uint16_t v; memcpy(&v,p,2); return v; }\n"
+        "static inline uint32_t ld_u32(const uint8_t* p) { uint32_t v; memcpy(&v,p,4); return v; }\n"
+        "static inline uint64_t ld_u64(const uint8_t* p) { uint64_t v; memcpy(&v,p,8); return v; }\n"
+        "static inline void st_u8 (uint8_t* p, uint8_t  v) { *p = v; }\n"
+        "static inline void st_u16(uint8_t* p, uint16_t v) { memcpy(p,&v,2); }\n"
+        "static inline void st_u32(uint8_t* p, uint32_t v) { memcpy(p,&v,4); }\n"
+        "static inline void st_u64(uint8_t* p, uint64_t v) { memcpy(p,&v,8); }\n\n"
+        f"#define VTABLE_SIZE {vtable_size}u\n\n"
+        f"{payload_struct}\n\n"
+        "// ── ext_size ─────────────────────────────────────────────────────\n"
+        "__attribute__((export_name(\"ext_size\")))\n"
+        "uint32_t ext_size(uint32_t staging_ptr, uint32_t version) {\n"
+        "    (void)version;\n"
+        "    // The encoded vtable is always a fixed VTABLE_SIZE bytes for this type.\n"
+        "    (void)staging_ptr;\n"
+        "    return VTABLE_SIZE;\n"
+        "}\n\n"
+        "// ── ext_encode ───────────────────────────────────────────────────\n"
+        "__attribute__((export_name(\"ext_encode\")))\n"
+        "uint32_t ext_encode(uint32_t staging_ptr, uint32_t version) {\n"
+        "    (void)version;\n"
+        f"    {safe_name}_payload_t src;\n"
+        "    memcpy(&src, (const void*)staging_ptr, sizeof(src));\n"
+        "    uint8_t* dst = (uint8_t*)staging_ptr;\n"
+        "    memset(dst, 0, VTABLE_SIZE);\n"
+    )
+
+    # Emit per-field encode logic.
+    for f in layout[:_WASM_MAX_FIELDS]:
+        ctype, sz = _wasm_field_ctype(f['fhir_type'])
+        off = f['offset']
+        name = f['cpp_name']
+        if sz == _WASM_MAX_STRING_BYTES:
+            # String: store first 4 bytes of length + up to sz chars inline.
+            # Simple fixed-slot: encode as NUL-padded char array in vtable.
+            c_src += f"    memcpy(dst + {off}, src.{name}, {min(sz, f['size'])});\n"
+        elif sz == 1:
+            c_src += f"    st_u8(dst + {off}, src.{name});\n"
+        elif sz == 2:
+            c_src += f"    st_u16(dst + {off}, (uint16_t)src.{name});\n"
+        elif sz == 4:
+            c_src += f"    st_u32(dst + {off}, (uint32_t)src.{name});\n"
+        elif sz == 8:
+            c_src += f"    st_u64(dst + {off}, (uint64_t)src.{name});\n"
+
+    c_src += (
+        "    return VTABLE_SIZE;\n"
+        "}\n\n"
+        "// ── ext_decode ───────────────────────────────────────────────────\n"
+        "__attribute__((export_name(\"ext_decode\")))\n"
+        "uint32_t ext_decode(uint32_t staging_ptr, uint32_t version) {\n"
+        "    (void)version;\n"
+        "    const uint8_t* src = (const uint8_t*)staging_ptr;\n"
+        f"    {safe_name}_payload_t dst;\n"
+        "    memset(&dst, 0, sizeof(dst));\n"
+    )
+
+    for f in layout[:_WASM_MAX_FIELDS]:
+        ctype, sz = _wasm_field_ctype(f['fhir_type'])
+        off = f['offset']
+        name = f['cpp_name']
+        if sz == _WASM_MAX_STRING_BYTES:
+            c_src += f"    memcpy(dst.{name}, src + {off}, {min(sz, f['size'])});\n"
+        elif sz == 1:
+            c_src += f"    dst.{name} = ld_u8(src + {off});\n"
+        elif sz == 2:
+            c_src += f"    dst.{name} = ({ctype})ld_u16(src + {off});\n"
+        elif sz == 4:
+            c_src += f"    dst.{name} = ({ctype})ld_u32(src + {off});\n"
+        elif sz == 8:
+            c_src += f"    dst.{name} = ({ctype})ld_u64(src + {off});\n"
+
+    c_src += (
+        "    memcpy((void*)staging_ptr, &dst, sizeof(dst));\n"
+        "    return (uint32_t)sizeof(dst);\n"
+        "}\n"
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, f"{safe_name}_codec.c")
+    with open(out_path, "w", encoding="utf-8") as fh:
+        fh.write(c_src)
+    print(f"-- [wasm] Emitted {out_path}")
+
+
+def compile_fhir_library_wasm(
+    resources,
+    versions,
+    extension_urls,          # list of (url, path) tuples
+    input_dir="fhir_specs",
+    output_dir="generated_src/wasm",
+):
+    """Emit WASM codec sources for each entry in @p extension_urls.
+
+    @p extension_urls  list of (canonical_url, fhir_type_path) e.g.
+                       [("http://hl7.org/fhir/StructureDefinition/geolocation", "Extension")]
+    """
+    # Build the type bundles and master_blocks for the Extension type so we
+    # can access the layout of each extension's StructureDefinition.
+    type_bundles = []
+    for v in versions:
+        p = os.path.join(input_dir, v, "profiles-types.json")
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                type_bundles.append((v, json.load(f)))
+
+    for url, fhir_path in extension_urls:
+        # Attempt to locate the StructureDefinition for this extension URL.
+        # For well-known hl7.org extensions, look in profiles-types first.
+        master_blocks = None
+        for v_name, bundle in type_bundles:
+            try:
+                elements = extract_structure_definition(bundle, fhir_path.split('.')[-1])
+                schemas  = [(v_name, elements)]
+                master_blocks = merge_fhir_versions(schemas, fhir_path.split('.')[0])
+                break
+            except ValueError:
+                continue
+
+        if master_blocks is None:
+            # Fall back to a minimal single-field layout.
+            master_blocks = {
+                fhir_path: {
+                    'layout': [],
+                    'seen':   set(),
+                    'sizes':  {},
+                }
+            }
+
+        emit_wasm_codec(url, master_blocks, fhir_path, output_dir)
+
+    print(f"[wasm] Emitted {len(extension_urls)} codec source(s) → {output_dir}/")
+
+
 if __name__ == "__main__":
     main()

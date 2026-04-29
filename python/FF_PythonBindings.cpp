@@ -4,13 +4,13 @@
 #include <pybind11/eval.h>
 #include <pybind11/stl/filesystem.h>
 
+#include "FF_Primitives.hpp"
 #include "FF_Memory.hpp"
 #include "FF_Builder.hpp"
 #include "FF_Parser.hpp"
 #include "FF_Compactor.hpp"
 #include "FF_Ingestor.hpp"
 #include "FastFHIR.hpp"
-#include "FF_Primitives.hpp"
 #include "FF_Utilities.hpp" 
 
 // The auto-generated Registry

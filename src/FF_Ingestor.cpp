@@ -7,6 +7,10 @@
 #include "../include/FF_Utilities.hpp"
 #include "../generated_src/FF_Bundle.hpp"
 #include "../generated_src/FF_IngestMappings.hpp"
+#include "../generated_src/FF_KnownExtensions.hpp"
+#ifdef FASTFHIR_ENABLE_EXTENSIONS
+#include "FF_Extensions.hpp"
+#endif
 #include <cctype>
 #include <thread>
 #include <vector>
@@ -20,8 +24,16 @@ namespace FastFHIR::Ingest {
 
 // Recursively collect all "url" string values found inside any
 // "extension" or "modifierExtension" array at any nesting depth.
+// Also captures the raw JSON sub-tree byte range of each containing
+// extension object — used by Path B passive storage so unresolved
+// extensions can round-trip verbatim through the arena.
+struct UrlAndSlice {
+    std::string url;
+    std::string_view raw_json;   // points into the chunk's padded_string buffer
+};
+
 static void collect_extension_urls(simdjson::ondemand::object obj,
-                                   std::vector<std::string>& out)
+                                   std::vector<UrlAndSlice>& out)
 {
     for (auto field : obj) {
         std::string_view key = field.unescaped_key().value_unsafe();
@@ -29,20 +41,28 @@ static void collect_extension_urls(simdjson::ondemand::object obj,
             simdjson::ondemand::array arr;
             if (field.value().get_array().get(arr) != simdjson::SUCCESS) continue;
             for (auto item : arr) {
+                // simdjson ondemand is a single-pass API: raw_json() advances the
+                // parser past the value, making a subsequent get_object() fail.
+                // Iterate the object first to extract the URL, then capture raw_json
+                // for WASM Path B passive payloads (only when extensions are enabled).
                 simdjson::ondemand::object ext_obj;
                 if (item.get_object().get(ext_obj) != simdjson::SUCCESS) continue;
+
+                std::string_view found_url;
                 for (auto ext_field : ext_obj) {
                     std::string_view ext_key = ext_field.unescaped_key().value_unsafe();
                     if (ext_key == "url") {
                         std::string_view url_sv;
                         if (ext_field.value().get_string().get(url_sv) == simdjson::SUCCESS)
-                            out.emplace_back(url_sv);
+                            found_url = url_sv;
                     } else {
                         simdjson::ondemand::object nested;
                         if (ext_field.value().get_object().get(nested) == simdjson::SUCCESS)
                             collect_extension_urls(nested, out);
                     }
                 }
+                if (!found_url.empty())
+                    out.push_back({std::string(found_url), {}});
             }
         } else {
             simdjson::ondemand::object child_obj;
@@ -62,18 +82,23 @@ static void collect_extension_urls(simdjson::ondemand::object obj,
     }
 }
 
-// Per-thread result: (full URL string, arena offset of its FF_STRING block).
+// Per-thread result: (full URL string, arena offset of its FF_STRING block,
+// optional raw-JSON sub-tree slice for Path B passive storage).
 // Threads write FF_STRING blocks directly to the arena via claim_space (lock-free).
+// raw_json memory is owned by the chunk's std::string and stays alive for the
+// duration of predigestion; the side-table copies it into a stable owned buffer
+// at merge time (Phase 3).
 struct ScanResult {
     std::string url;
     Offset      arena_off;
+    std::string raw_json_copy;   // owned copy of the extension JSON sub-tree
 };
 
 // Scan one JSON chunk for extension URLs, writing FF_STRING blocks inline to arena.
 static void scan_chunk_for_urls(
     const std::string& json_chunk,
     uint8_t*           base,
-    Memory&            mem,
+    const Memory&      mem,
     std::vector<ScanResult>& out)
 {
     simdjson::ondemand::parser parser;
@@ -82,21 +107,23 @@ static void scan_chunk_for_urls(
     simdjson::ondemand::object obj;
     if (doc.get_object().get(obj) != simdjson::SUCCESS) return;
 
-    std::vector<std::string> urls;
+    std::vector<UrlAndSlice> urls;
     collect_extension_urls(obj, urls);
 
-    for (const auto& url : urls) {
-        if (url.empty()) continue;
-        Offset off = mem.claim_space(SIZE_FF_STRING(url));
-        STORE_FF_STRING(base, off, url);
-        out.push_back({url, off});
+    for (const auto& u : urls) {
+        if (u.url.empty()) continue;
+        Offset off = mem.claim_space(SIZE_FF_STRING(u.url));
+        STORE_FF_STRING(base, off, u.url);
+        // raw_json points into `padded`, which is destroyed at end of this
+        // function; copy into the ScanResult so it survives merge.
+        out.push_back({u.url, off, std::string(u.raw_json)});
     }
 }
 
 FF_UrlInternState FF_PredigestExtensionURLs(
     std::string_view       json_payload,
     Builder&               builder,
-    FF_ExtensionFilterMode /*mode*/)
+    FF_ExtensionFilterMode mode)
 {
     FF_UrlInternState state;
     uint8_t*      base = builder.memory().base();
@@ -147,16 +174,45 @@ FF_UrlInternState FF_PredigestExtensionURLs(
         for (auto& w : workers) w.join();
     }
 
-    // ── Phase 3: Merge + deduplicate ─────────────────────────────────────
+    // ── Phase 3: Merge + deduplicate + filter ────────────────────────────
     // Multiple threads may find the same URL; keep the first arena_off per URL.
     // Duplicate FF_STRING blocks in the arena are harmless dead bytes.
+    // Apply the known-extension filter here so filtered URLs never enter the
+    // chained-segment trie and never get a URL_DIRECTORY entry.
+    // url_to_index maps filtered URLs to FF_NULL_UINT32 (sentinel: skip block).
     std::unordered_map<std::string, Offset> url_to_full_str_off;
-    for (auto& results : per_thread)
-        for (auto& r : results)
+    for (auto& results : per_thread) {
+        for (auto& r : results) {
+            // Apply the filter before inserting into the trie.
+            bool suppress = false;
+            switch (mode) {
+                case FF_ExtensionFilterMode::FILTER_ALL_KNOWN:
+                    suppress = FF_IsKnownExtension(r.url);
+                    break;
+                case FF_ExtensionFilterMode::FILTER_NATIVE_ONLY:
+                    suppress = FF_IsNativeExtension(r.url);
+                    break;
+                case FF_ExtensionFilterMode::FILTER_NONE:
+                    break;
+            }
+            if (suppress) {
+                // Record as filtered: FF_NULL_UINT32 sentinel tells ingest workers
+                // to silently drop the extension block for this URL.
+                state.url_to_index.try_emplace(r.url, FF_NULL_UINT32);
+                continue;
+            }
             url_to_full_str_off.try_emplace(r.url, r.arena_off);
 
+            // Path B passive payload: keep the raw extension JSON sub-tree
+            // for verbatim round-trip if this URL doesn't get a WASM module
+            // promoted in Phase 7.  try_emplace preserves first occurrence.
+            if (!r.raw_json_copy.empty())
+                state.passive_payload.try_emplace(r.url, std::move(r.raw_json_copy));
+        }
+    }
+
     if (url_to_full_str_off.empty())
-        return state;  // no extensions in this payload
+        return state;  // all extensions filtered or no extensions in payload
 
     // ── Phase 4: Build chained segment trie (sequential, main thread) ─────
     // Sort unique URLs by byte length so parents are always processed
@@ -239,6 +295,53 @@ FF_UrlInternState FF_PredigestExtensionURLs(
     // mid-stream parsers see it before finalize.
     STORE_U64(base + FF_HEADER::URL_DIR_OFFSET, dir_off);
     builder.set_url_dir_offset(dir_off);
+
+    // ── Phase 7: Promote cached URLs to MODULE_IDX (EXT_REF MSB=1) ───────
+    // For each interned URL, probe the WAMR host's local module cache (memory
+    // + disk).  Hits become Path A: state.url_to_index[url] is rewritten with
+    // ff_make_module_ref(module_idx) and a registry entry is queued.
+    // Misses stay Path B (MSB=0) and fire an async AOT fetch so the *next*
+    // ingestion of this URL takes Path A.  This entire phase is
+    // non-blocking and compiled out when extensions are disabled.
+#ifdef FASTFHIR_ENABLE_EXTENSIONS
+    {
+        auto& host = FF_WasmExtensionHost::instance();
+        struct Pending { uint32_t url_idx; std::string url; };
+        std::vector<Pending> active;   // hits → registry entries (Path A)
+        std::vector<Pending> pending;  // misses → async fetches  (Path B)
+
+        for (auto& [url, ref] : state.url_to_index) {
+            if (ref == FF_NULL_UINT32) continue;            // filtered
+            const uint32_t url_idx = ff_ext_ref_index(ref); // MSB still 0 here
+            if (host.has_module_cached(url)) {
+                active.push_back({url_idx, url});
+            } else {
+                pending.push_back({url_idx, url});
+            }
+        }
+
+        if (!active.empty()) {
+            // Build the per-stream FF_MODULE_REGISTRY in arena-stable order
+            // and rewrite each Path A URL's ext_ref to MSB=1 | module_idx,
+            // where module_idx is the entry's row in the registry table.
+            std::sort(active.begin(), active.end(),
+                      [](const Pending& a, const Pending& b){ return a.url_idx < b.url_idx; });
+            std::vector<std::pair<uint32_t, std::string>> reg_entries;
+            reg_entries.reserve(active.size());
+            for (uint32_t module_idx = 0; module_idx < active.size(); ++module_idx) {
+                const auto& a = active[module_idx];
+                state.url_to_index[a.url] = ff_make_module_ref(module_idx);
+                reg_entries.emplace_back(a.url_idx, a.url);
+                // Path A wins — drop the passive JSON copy to save memory.
+                state.passive_payload.erase(a.url);
+            }
+            host.write_module_registry(builder, reg_entries);
+        }
+
+        // Fire-and-forget async resolution of cache misses.
+        for (auto& p : pending) host.enqueue_resolve(p.url);
+    }
+#endif
 
     return state;
 }

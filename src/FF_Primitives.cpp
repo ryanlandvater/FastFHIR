@@ -361,3 +361,42 @@ std::string FF_URL_DIRECTORY::get_url(const BYTE* base, uint32_t entry_idx) cons
     }
     return result;
 }
+
+// =====================================================================
+// FF_MODULE_REGISTRY — stream-level WASM codec module registry
+// =====================================================================
+uint32_t FF_MODULE_REGISTRY::entry_count(const BYTE* base) const {
+    return LOAD_U32(base + __offset + ENTRY_COUNT);
+}
+uint32_t FF_MODULE_REGISTRY::url_idx(const BYTE* base, uint32_t entry_idx) const {
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * REG_ENTRY_SIZE;
+    return LOAD_U32(base + ep + REG_ENTRY_URL_IDX);
+}
+Offset FF_MODULE_REGISTRY::wasm_blob_offset(const BYTE* base, uint32_t entry_idx) const {
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * REG_ENTRY_SIZE;
+    return LOAD_U64(base + ep + REG_ENTRY_WASM_BLOB_OFFSET);
+}
+uint32_t FF_MODULE_REGISTRY::wasm_blob_size(const BYTE* base, uint32_t entry_idx) const {
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * REG_ENTRY_SIZE;
+    return LOAD_U32(base + ep + REG_ENTRY_WASM_BLOB_SIZE);
+}
+std::string_view FF_MODULE_REGISTRY::module_hash(const BYTE* base, uint32_t entry_idx) const {
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * REG_ENTRY_SIZE;
+    return std::string_view(
+        reinterpret_cast<const char*>(base + ep + REG_ENTRY_MODULE_HASH),
+        REG_ENTRY_HASH_SIZE);
+}
+uint32_t FF_MODULE_REGISTRY::find_entry(const BYTE* base, uint32_t search_url_idx) const {
+    uint32_t n = entry_count(base);
+    if (n == 0) return FF_NULL_UINT32;
+    // Binary search on url_idx; entries are written sorted ascending.
+    uint32_t lo = 0, hi = n;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        uint32_t mid_idx = url_idx(base, mid);
+        if (mid_idx == search_url_idx) return mid;
+        if (mid_idx < search_url_idx) lo = mid + 1;
+        else                          hi = mid;
+    }
+    return FF_NULL_UINT32;
+}
