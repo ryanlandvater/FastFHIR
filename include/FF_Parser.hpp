@@ -52,7 +52,8 @@ class Parser {
     const Memory m_memory;
     const BYTE*     m_base = nullptr;
     Size            m_size = 0;
-    uint32_t        m_version = 0;
+    uint32_t        m_version = 0;         // FHIR revision extracted from FF_HEADER::FHIR_REV
+    uint32_t        m_engine_version = 0;  // engine version extracted from FF_HEADER::VERSION
     FF_StreamLayout m_stream_layout = FF_STREAM_LAYOUT_STANDARD;
     const Reflective::ParserOps* m_ops = nullptr;
     Offset          m_root_offset = FF_NULL_OFFSET;
@@ -186,7 +187,8 @@ struct Entry {
     RECOVERY_TAG target_recovery = FF_RECOVER_UNDEFINED;
     FF_FieldKind kind            = FF_FIELD_UNKNOWN;
     Size         m_size          = 0;
-    uint32_t     m_version       = 0;
+    uint32_t     m_version       = 0;         // FHIR revision
+    uint32_t     m_engine_version = 0;        // FastFHIR engine version
     const ParserOps* m_ops       = nullptr;
 
     Entry() = default;
@@ -195,9 +197,9 @@ struct Entry {
         : base(b), parent_offset(parent), vtable_offset(vtable), target_recovery(recovery), kind(field_kind) {}
     // 7-arg constructor — bakes in size/version for self-contained chaining.
     Entry(const BYTE* b, Offset parent, uint32_t vtable, RECOVERY_TAG recovery, FF_FieldKind field_kind,
-            Size size, uint32_t version, const ParserOps* ops = nullptr)
+            Size size, uint32_t version, const ParserOps* ops = nullptr, uint32_t engine_ver = 0)
         : base(b), parent_offset(parent), vtable_offset(vtable), target_recovery(recovery), kind(field_kind),
-            m_size(size), m_version(version), m_ops(ops) {}
+            m_size(size), m_version(version), m_engine_version(engine_ver), m_ops(ops) {}
 
     Offset absolute_offset() const {
         if (parent_offset == FF_NULL_OFFSET) return FF_NULL_OFFSET;
@@ -271,7 +273,8 @@ protected:
     const BYTE* m_base = nullptr;
     Offset m_node_offset = FF_NULL_OFFSET;
     Size m_size = 0;
-    uint32_t m_version = 0;
+    uint32_t m_version = 0;         // FHIR revision
+    uint32_t m_engine_version = 0;  // FastFHIR engine version
     RECOVERY_TAG m_recovery = FF_RECOVER_UNDEFINED;
     RECOVERY_TAG m_child_recovery = FF_RECOVER_UNDEFINED;
     FF_FieldKind m_kind = FF_FIELD_UNKNOWN;
@@ -286,7 +289,7 @@ public:
     Node(const BYTE* base, Size size, uint32_t version, Offset offset,
          RECOVERY_TAG recovery, FF_FieldKind kind,
             RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED, bool array_entries_are_offsets = false,
-            const ParserOps* ops = nullptr);
+            const ParserOps* ops = nullptr, uint32_t engine_ver = 0);
 
     /** @brief Check whether this node contains a value */
     bool is_empty() const;
@@ -394,7 +397,7 @@ public:
 
                 if (raw_code & FF_CUSTOM_STRING_FLAG) {
                     Offset relative_off = (raw_code & ~FF_CUSTOM_STRING_FLAG);
-                    return FF_STRING(m_node_offset + relative_off, m_size, m_version).read_view(m_base);
+                    return FF_STRING(m_node_offset + relative_off, m_size, m_version, m_engine_version).read_view(m_base);
                 }
                 return "";
             }
@@ -402,7 +405,7 @@ public:
             if (m_recovery != RECOVER_FF_STRING) {
                 throw std::runtime_error("FastFHIR: Node is not a string or code.");
             }
-            return FF_STRING(m_node_offset, m_size, m_version).read_view(m_base);
+            return FF_STRING(m_node_offset, m_size, m_version, m_engine_version).read_view(m_base);
         } else if constexpr (
             std::is_same_v<T, bool> ||
             std::is_same_v<T, int32_t> ||
@@ -455,7 +458,7 @@ inline Entry::operator std::string_view() const {
 
         if (raw_code & FF_CUSTOM_STRING_FLAG) {
             Offset relative_off = static_cast<Offset>(raw_code & ~FF_CUSTOM_STRING_FLAG);
-            return FF_STRING(parent_offset + relative_off, m_size, m_version).read_view(base);
+            return FF_STRING(parent_offset + relative_off, m_size, m_version, m_engine_version).read_view(base);
         }
 
         return "";

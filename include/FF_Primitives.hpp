@@ -86,6 +86,17 @@ inline constexpr uint32_t FF_HEADER_ENGINE_VERSION(uint32_t encoded_version) {
     return encoded_version & FF_ENGINE_VERSION_MASK;
 }
 
+/// Extract the MAJOR component from a 30-bit engine version word produced by
+/// FF_HEADER_ENGINE_VERSION().  MAJOR occupies bits 29–16 (14 usable bits).
+inline constexpr uint16_t FF_ENGINE_MAJOR(uint32_t engine_version) noexcept {
+    return static_cast<uint16_t>((engine_version >> 16) & 0x3FFFu);
+}
+
+/// Extract the MINOR component (bits 15–0) from an engine version word.
+inline constexpr uint16_t FF_ENGINE_MINOR(uint32_t engine_version) noexcept {
+    return static_cast<uint16_t>(engine_version & 0xFFFFu);
+}
+
 inline constexpr FF_StreamLayout FF_HEADER_STREAM_LAYOUT(uint32_t encoded_version) {
     return static_cast<FF_StreamLayout>((encoded_version & FF_STREAM_LAYOUT_MASK) >> FF_STREAM_LAYOUT_SHIFT);
 }
@@ -339,11 +350,12 @@ struct FF_EXPORT DATA_BLOCK
 
     Offset __offset = FF_NULL_OFFSET;
     Size __size = 0;
-    uint32_t __version = 0;
+    uint32_t __version = 0;         // FHIR revision (for generated FHIR resource blocks)
+    uint32_t __engine_version = 0;  // FastFHIR engine version (for primitive blocks)
 
     explicit DATA_BLOCK() = default;
-    explicit DATA_BLOCK(Offset off, Size total_size, uint32_t ver)
-        : __offset(off), __size(total_size), __version(ver) {}
+    explicit DATA_BLOCK(Offset off, Size total_size, uint32_t fhir_rev, uint32_t engine_ver = 0)
+        : __offset(off), __size(total_size), __version(fhir_rev), __engine_version(engine_ver) {}
 
     operator bool() const { return __offset != FF_NULL_OFFSET; }
 
@@ -409,6 +421,19 @@ struct FF_EXPORT FF_HEADER : DATA_BLOCK
         HEADER_SIZE = VERSION + VERSION_S                     // 54 bytes total
     };
 
+    // Baseline header size for engine MAJOR 2026 (the first versioned engine).
+    static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
+    // Returns the portion of this header that was valid at write time.  The
+    // reader can use this to skip unknown trailing fields added by a newer engine
+    // while still reaching the payload (root block, checksum, etc.).  All known
+    // fields (MAGIC…VERSION) lie within HEADER_V2026_SIZE, so the bootstrapping
+    // path always reads at least HEADER_SIZE bytes regardless.
+    inline Size get_header_size() const noexcept {
+        const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
+        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        return HEADER_SIZE;
+    }
+
     explicit FF_HEADER(Size file_size) noexcept;
 
     FF_Result validate_full(const BYTE *const __base) const noexcept;
@@ -452,7 +477,15 @@ struct FF_EXPORT FF_CHECKSUM : DATA_BLOCK
         HEADER_SIZE = HASH_DATA + HASH_DATA_S, // 44 bytes exactly
     };
 
-    explicit FF_CHECKSUM(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
+    // Baseline header size for engine MAJOR 2026 (the first versioned engine).
+    static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
+    inline Size get_header_size() const noexcept {
+        const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
+        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        return HEADER_SIZE;
+    }
+    explicit FF_CHECKSUM(Offset off, Size size, uint32_t fhir_rev, uint32_t engine_ver = 0)
+        : DATA_BLOCK(off, size, fhir_rev, engine_ver) {}
 
     FF_Result validate_full(const BYTE *const __base) const noexcept;
     FF_Checksum_Algorithm get_algorithm(const BYTE *const __base) const;
@@ -497,7 +530,15 @@ struct FF_EXPORT FF_ARRAY : DATA_BLOCK
         HEADER_SIZE = ENTRY_COUNT + ENTRY_COUNT_S,     // 16 bytes exactly
     };
 
-    explicit FF_ARRAY(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
+    // Baseline header size for engine MAJOR 2026 (the first versioned engine).
+    static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
+    inline Size get_header_size() const noexcept {
+        const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
+        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        return HEADER_SIZE;
+    }
+    explicit FF_ARRAY(Offset off, Size size, uint32_t fhir_rev, uint32_t engine_ver = 0)
+        : DATA_BLOCK(off, size, fhir_rev, engine_ver) {}
 
     FF_Result validate_full(const BYTE *const __base) const noexcept;
     uint16_t entry_step(const BYTE *const __base) const;
@@ -534,7 +575,15 @@ struct FF_EXPORT FF_STRING : DATA_BLOCK
         HEADER_SIZE = STRING_DATA,            // 14 bytes exactly
     };
 
-    explicit FF_STRING(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
+    // Baseline header size for engine MAJOR 2026 (the first versioned engine).
+    static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
+    inline Size get_header_size() const noexcept {
+        const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
+        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        return HEADER_SIZE;
+    }
+    explicit FF_STRING(Offset off, Size size, uint32_t fhir_rev, uint32_t engine_ver = 0)
+        : DATA_BLOCK(off, size, fhir_rev, engine_ver) {}
 
     FF_Result validate_full(const BYTE *const __base) const noexcept;
 
@@ -589,7 +638,15 @@ struct FF_EXPORT FF_URL_DIRECTORY : DATA_BLOCK {
     static constexpr Size URL_ENTRY_PAD        = 4;  // byte offset of pad
     static constexpr Size URL_ENTRY_SEG_OFFSET = 8;  // byte offset of seg_offset within entry
 
-    explicit FF_URL_DIRECTORY(Offset off, Size size, uint32_t ver) : DATA_BLOCK(off, size, ver) {}
+    // Baseline header size for engine MAJOR 2026 (the first versioned engine).
+    static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
+    inline Size get_header_size() const noexcept {
+        const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
+        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        return HEADER_SIZE;
+    }
+    explicit FF_URL_DIRECTORY(Offset off, Size size, uint32_t fhir_rev, uint32_t engine_ver = 0)
+        : DATA_BLOCK(off, size, fhir_rev, engine_ver) {}
 
     uint32_t         entry_count (const BYTE* base) const;
     uint32_t         prior_idx   (const BYTE* base, uint32_t entry_idx) const;
@@ -688,8 +745,15 @@ struct FF_EXPORT FF_MODULE_REGISTRY : DATA_BLOCK {
     static constexpr Size REG_ENTRY_MODULE_HASH      = 24; // 32 bytes
     static constexpr Size REG_ENTRY_HASH_SIZE        = 32;
 
-    explicit FF_MODULE_REGISTRY(Offset off, Size size, uint32_t ver)
-        : DATA_BLOCK(off, size, ver) {}
+    // Baseline header size for engine MAJOR 2026 (the first versioned engine).
+    static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
+    inline Size get_header_size() const noexcept {
+        const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
+        if (major == 0 || major <= 2026) return HEADER_V2026_SIZE;
+        return HEADER_SIZE;
+    }
+    explicit FF_MODULE_REGISTRY(Offset off, Size size, uint32_t fhir_rev, uint32_t engine_ver = 0)
+        : DATA_BLOCK(off, size, fhir_rev, engine_ver) {}
 
     uint32_t         entry_count     (const BYTE* base) const;
     uint32_t         url_idx         (const BYTE* base, uint32_t entry_idx) const;

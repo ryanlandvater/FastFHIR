@@ -83,11 +83,14 @@ FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
     // 4. Footer Checksum Validation
     Offset checksum_off = LOAD_U64(__base + CHECKSUM_OFFSET);
     if (checksum_off != FF_NULL_OFFSET) {
-        FF_CHECKSUM checksum(checksum_off, __size, engine_ver);
+        FF_CHECKSUM checksum(checksum_off, __size, fhir_rev, engine_ver);
         auto checksum_result = checksum.validate_full(__base);
         if (checksum_result != FF_SUCCESS) return checksum_result;
     }
-    
+
+    // 5. Cache the decoded engine version for downstream get_header_size() calls.
+    const_cast<FF_HEADER*>(this)->__engine_version = engine_ver;
+
     return {FF_SUCCESS, ""};
 }
 
@@ -106,8 +109,8 @@ Offset FF_HEADER::get_url_dir_offset(const BYTE* const __base) const { return LO
 Offset FF_HEADER::get_module_reg_offset(const BYTE* const __base) const { return LOAD_U64(__base + MODULE_REG_OFFSET); }
 
 FF_CHECKSUM FF_HEADER::get_checksum(const BYTE* const __base) const {
-    // Pass the FHIR revision to the checksum block, not the engine version
-    auto checksum = FF_CHECKSUM(LOAD_U64(__base + CHECKSUM_OFFSET), __size, get_fhir_rev(__base));
+    auto checksum = FF_CHECKSUM(LOAD_U64(__base + CHECKSUM_OFFSET), __size,
+                                get_fhir_rev(__base), get_engine_version(__base));
     if (!checksum) return checksum;
     
     auto result = checksum.validate_offset(__base, FF_CHECKSUM::type, FF_CHECKSUM::recovery);
@@ -141,9 +144,15 @@ void STORE_FF_HEADER (BYTE* const __base,
     STORE_U64(__base + FF_HEADER::MODULE_REG_OFFSET, module_reg_offset);
     
     // Bake engine version + stream layout into the 32-bit slot.
+    // MAJOR is explicitly masked to 14 bits (0x3FFF) before shifting into bits 29..16
+    // so that it can never set bits 31..30, which are reserved for FF_STREAM_LAYOUT flags.
+    // MINOR is masked to 16 bits (0xFFFF) for symmetry.
+    // FF_ENCODE_HEADER_VERSION also applies FF_ENGINE_VERSION_MASK as a second line of defence.
+    static_assert(FASTFHIR_VERSION_MAJOR <= 0x3FFF,
+        "FASTFHIR_VERSION_MAJOR exceeds 14 bits and would corrupt FF_HEADER::VERSION stream-layout flags");
     uint32_t engine_version =
-        (static_cast<uint32_t>(FASTFHIR_VERSION_MAJOR) << 16) |
-        (static_cast<uint32_t>(FASTFHIR_VERSION_MINOR) & 0xFFFF);
+        ((static_cast<uint32_t>(FASTFHIR_VERSION_MAJOR) & 0x3FFFu) << 16) |
+         (static_cast<uint32_t>(FASTFHIR_VERSION_MINOR) & 0xFFFFu);
     STORE_U32(__base + FF_HEADER::VERSION, FF_ENCODE_HEADER_VERSION(engine_version, stream_layout));
 }
 
@@ -155,7 +164,7 @@ FF_Result FF_CHECKSUM::validate_full(const BYTE* const __base) const noexcept {
     if (!result) return result;
     
     // Since it's a fixed-size block, we just ensure it doesn't overflow the file buffer
-    if (__offset + HEADER_SIZE > __size) {
+    if (__offset + get_header_size() > __size) {
         return {FF_VALIDATION_FAILURE, "FF_CHECKSUM block truncated."};
     }
     return {FF_SUCCESS, ""};
@@ -223,7 +232,7 @@ FF_Result FF_ARRAY::validate_full(const BYTE* const __base) const noexcept {
     }
     
     uint32_t count = LOAD_U32(__base + __offset + ENTRY_COUNT);
-    if (__offset + HEADER_SIZE + static_cast<uint64_t>(step) * count > __size) {
+    if (__offset + get_header_size() + static_cast<uint64_t>(step) * count > __size) {
         return {FF_VALIDATION_FAILURE, "FF_ARRAY entries exceed file boundaries."};
     }
     return FF_SUCCESS;
@@ -242,7 +251,7 @@ uint32_t FF_ARRAY::entry_count(const BYTE* const __base) const
 { return LOAD_U32(__base + __offset + ENTRY_COUNT); }
 
 const BYTE* FF_ARRAY::entries(const BYTE* const __base) const
-{ return __base + __offset + HEADER_SIZE; }
+{ return __base + __offset + get_header_size(); }
 
 void STORE_FF_ARRAY_HEADER(BYTE* const __base, Offset& write_head, FF_ARRAY::EntryKind kind, uint32_t entry_step, uint32_t entry_count, RECOVERY_TAG entry_recovery_tag) {    // Validate that the step size doesn't overflow into the kind bits (max 16.38kb)
     if (entry_step > FF_ARRAY::STEP_MASK) {
@@ -268,7 +277,7 @@ FF_Result FF_STRING::validate_full(const BYTE* const __base) const noexcept {
     auto result = validate_offset(__base, type, recovery);
     if (result != FF_SUCCESS) return result;
     uint32_t len = LOAD_U32(__base + __offset + LENGTH);
-    if (__offset + HEADER_SIZE + len > __size) {
+    if (__offset + get_header_size() + len > __size) {
         return {FF_VALIDATION_FAILURE, "FF_STRING length exceeds file boundaries."};
     }
     return {FF_SUCCESS, ""};

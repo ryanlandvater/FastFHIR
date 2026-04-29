@@ -416,6 +416,35 @@ target_link_libraries(ff_export
 )
 
 # ---------------------------------------------------------------------
+# CLI Compactor Executable (Standalone)
+# ---------------------------------------------------------------------
+add_executable(ff_compact tools/compactor/FF_Compact.cpp)
+
+target_include_directories(ff_compact
+    PRIVATE
+        ${FASTFHIR_INCLUDE_DIR}
+        ${FASTFHIR_GENERATED_DIR}
+)
+
+# Link directly to the intermediate object library for a standalone binary
+target_link_libraries(ff_compact
+    PRIVATE
+        $<TARGET_OBJECTS:fastfhir_obj>
+)
+
+# OpenSSL is optional — enables SHA-256 re-sealing of the compact archive.
+# find_package is idempotent; if the ingestor block already located OpenSSL,
+# the imported target OpenSSL::Crypto is already in scope.
+find_package(OpenSSL QUIET)
+if(OpenSSL_FOUND OR OPENSSL_FOUND)
+    target_link_libraries(ff_compact PRIVATE OpenSSL::Crypto)
+    target_compile_definitions(ff_compact PRIVATE FASTFHIR_HAS_OPENSSL)
+    message(STATUS "FastFHIR ff_compact: OpenSSL found — SHA-256 re-seal enabled.")
+else()
+    message(STATUS "FastFHIR ff_compact: OpenSSL not found — compact archives will not include a checksum.")
+endif()
+
+# ---------------------------------------------------------------------
 # Python Bindings (fastfhir)
 # ---------------------------------------------------------------------
 if (FASTFHIR_BUILD_PYTHON_BINDINGS)

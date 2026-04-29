@@ -127,17 +127,41 @@ them as out-of-bounds null sentinels.
 
 - `FF_HEADER::FHIR_REV` (bytes 6–7) — the FHIR revision tag (`FHIR_VERSION_R4
   = 0x0400`, `FHIR_VERSION_R5 = 0x0500`).
-- `FF_HEADER::VERSION` (bytes 50–53) — encoded engine version. The top
-  `FF_STREAM_LAYOUT_BITS` (=2) bits are reserved for stream-layout flags
-  (`FF_STREAM_LAYOUT_STANDARD`, `FF_STREAM_LAYOUT_COMPACT`); the remaining
-  bits are the engine version. Encoding/decoding are
-  `FF_ENCODE_HEADER_VERSION` / `FF_HEADER_ENGINE_VERSION` /
-  `FF_HEADER_STREAM_LAYOUT` (`FF_Primitives.hpp:80–91`).
+- `FF_HEADER::VERSION` (bytes 50–53) — a 32-bit word with two packed
+  sub-fields:
+  - **Bits 31–30 — stream-layout flags** (`FF_STREAM_LAYOUT_BITS = 2`).
+    Currently `FF_STREAM_LAYOUT_STANDARD` or `FF_STREAM_LAYOUT_COMPACT`.
+  - **Bits 29–0 — engine version**, encoded as
+    `((FASTFHIR_VERSION_MAJOR & 0x3FFF) << 16) | (FASTFHIR_VERSION_MINOR & 0xFFFF)`
+    (`src/FF_Primitives.cpp`). `FASTFHIR_VERSION_MAJOR` is explicitly masked
+    to 14 bits before shifting into bits 29–16, ensuring it can never reach
+    bits 31–30 and corrupt the stream-layout flags. `FASTFHIR_VERSION_MINOR`
+    occupies bits 15–0, masked to 16 bits. A `static_assert` at the encoding
+    site enforces the MAJOR bound at compile time. Both values are injected
+    from the CI release tag via `FastFHIR.hpp:84–88`; `#ifndef` guards keep
+    offline builds functional. `FF_ENCODE_HEADER_VERSION` additionally applies
+    `FF_ENGINE_VERSION_MASK` as a second line of defence. Encoding/decoding
+    helpers: `FF_ENCODE_HEADER_VERSION` / `FF_HEADER_ENGINE_VERSION` /
+    `FF_HEADER_STREAM_LAYOUT` (`FF_Primitives.hpp:80–91`).
 
-**Why.** FHIR is a moving target. The cost of breaking on-disk compatibility
-on every R-bump is unacceptable for any system with persisted data. The
-version-aware V-Table is the explicit mechanism that makes the on-disk shape
-invariant under FHIR revision drift.
+**Why.** FHIR is a moving target, but so is the FastFHIR engine itself. The
+same bidirectional compatibility contract that governs FHIR revision drift
+applies to engine version drift:
+
+- **Newer reader, older stream.** Optional header fields added in later engine
+  versions (e.g. `URL_DIR_OFFSET`, `MODULE_REG_OFFSET`) are initialised to
+  `FF_NULL_OFFSET` in older streams. A newer reader checks the engine MAJOR
+  version and treats any field beyond the writer's schema as absent — the same
+  null-sentinel contract used for FHIR R4/R5 V-Table fields.
+- **Older reader, newer stream.** A reader whose compiled MAJOR is less than
+  the stream's MAJOR can detect the mismatch via
+  `FF_HEADER_ENGINE_VERSION()` and reject or degrade gracefully. MINOR-only
+  increments signal additive-only changes (new optional fields, new block
+  types) that an older reader can safely ignore.
+
+The version-aware `FF_HEADER` and V-Table are therefore the unified
+mechanism for both FHIR revision compatibility and engine version
+compatibility.
 
 ---
 
@@ -434,16 +458,16 @@ enum vtable_offsets {
 };
 ```
 
-- **Bytes 0–7 — `VALIDATION`.** A 64-bit value carrying the *canonical block
-  size* (i.e. the number of bytes in the entire block including its V-Table
-  and trailing payload). This serves three purposes simultaneously:
-  1. **Bounds checking.** Any read against the block masks the read offset
-     against this value before hitting the arena.
-  2. **Recovery from corruption.** A scanner walking the arena can advance by
-     `VALIDATION` bytes per block, re-synchronising after a damaged region.
-  3. **Cheap structural validation.** `validate_offset` (declared at
-     `FF_Primitives.hpp:350`) verifies that `__offset + __size` lies within
-     the arena and that the bytes at `RECOVERY` match the expected tag.
+- **Bytes 0–7 — `VALIDATION`.** A 64-bit value carrying the *absolute arena
+  offset of the block itself* — i.e. the byte position of this block relative
+  to the arena base. This serves two purposes simultaneously:
+  1. **Recovery from corruption.** A scanner can locate a block by searching
+     for a 64-bit word whose value equals the current scan position,
+     re-synchronising after a damaged region.
+  2. **Cheap structural validation.** `validate_offset` (declared at
+     `FF_Primitives.hpp:350`) verifies that the stored offset matches the
+     expected `__offset` and that the bytes at `RECOVERY` match the expected
+     tag (`src/FF_Primitives.cpp:33`).
 
 - **Bytes 8–9 — `RECOVERY`.** The block's `RECOVERY_TAG` (§3.2). This is the
   semantic discriminant on which polymorphic dispatch hangs.
@@ -454,8 +478,8 @@ enum vtable_offsets {
 runtime descriptor:
 
 ```
-Offset   __offset  = FF_NULL_OFFSET;   // arena offset of the block
-Size     __size    = 0;                // canonical size (mirror of VALIDATION)
+Offset   __offset  = FF_NULL_OFFSET;   // arena offset of the block (mirrored in VALIDATION)
+Size     __size    = 0;                // total byte size of the block (not stored in VALIDATION)
 uint32_t __version = 0;                // engine version (for V-Table sizing)
 ```
 

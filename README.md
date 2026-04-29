@@ -31,6 +31,10 @@ A Python binding is available — see [`The Python Readme`](python/README.md) fo
   - [5 — Surgically edit one patient in a 5 GB bundle and reseal](#5--surgically-edit-one-patient-in-a-5-gb-bundle-and-reseal)
   - [6 — Lock-Free Concurrent Generation](#6--lock-free-concurrent-generation)
   - [7 — Compact Archives](#7--compact-archives)
+- [CLI Tools](#command-line-interface-tools)
+  - [ff\_ingest](#ff_ingest)
+  - [ff\_export](#ff_export)
+  - [ff\_compact](#ff_compact)
 - [Reference](#reference)
   - [Typed Resource Keys](#typed-resource-keys--fastfhirfieldsresourcefield)
   - [Checksum Algorithms](#checksum-algorithms)
@@ -84,7 +88,7 @@ cmake --build build --target build_all -j
 
 On first configure, CMake automatically runs the code generator — downloading FHIR R4/R5 specification bundles from HL7 and emitting strongly-typed C++ source into `generated_src/`. No manual generator step is needed.
 
-The `build_all` target builds every enabled component: the core library (`libfastfhir`), the ingestor, the `ff_export` CLI tool, and the C++ test suite. Omit `--target build_all` to build only `libfastfhir` and `ff_export`.
+The `build_all` target builds every enabled component: the core library (`libfastfhir`), the ingestor, the `ff_export` and `ff_compact` CLI tools, and the C++ test suite. Omit `--target build_all` to build only `libfastfhir`, `ff_export`, and `ff_compact`.
 
 ### CMake Options
 
@@ -639,6 +643,113 @@ for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
 
 > **Note:** Compact archives are immutable. To append or modify fields, open the original
 > standard stream, enrich it, re-finalize, and re-compact.
+
+---
+
+# Command Line Interface Tools
+
+FastFHIR ships three standalone command-line tools. They are **not** built by default — enable them with the CMake options below:
+
+| Tool | CMake option required | Binary name |
+|---|---|---|
+| Ingestor | `-DFASTFHIR_BUILD_INGESTOR=ON` | `ff_ingest` |
+| Exporter | _(always built)_ | `ff_export` |
+| Compactor | `-DFASTFHIR_BUILD_INGESTOR=ON` _(for OpenSSL)_ | `ff_compact` |
+
+> `ff_export` and `ff_compact` are always included in the build. `ff_ingest` requires
+> `-DFASTFHIR_BUILD_INGESTOR=ON` because it depends on **simdjson**. `ff_compact` links
+> against OpenSSL for SHA-256 re-sealing when OpenSSL is available — the same dependency
+> pulled in by the ingestor.
+
+```bash
+# Build all three tools (recommended)
+cmake -S . -B build -DFASTFHIR_BUILD_INGESTOR=ON
+cmake --build build --target ff_ingest ff_export ff_compact -j
+
+# Or build everything at once
+cmake --build build --target build_all -j
+```
+
+---
+
+## `ff_ingest`
+
+Converts a FHIR JSON record into a sealed FastFHIR binary stream.
+
+```
+Usage: ff_ingest [input | -]  [-o output.ffhr]
+```
+
+| Argument | Description |
+|---|---|
+| `input` | Path to a FHIR JSON file. Use `-` or omit to read from stdin. |
+| `-o output` | Path to write the `.ffhr` binary. Omit to write to stdout. |
+| `-h, --help` | Show help. |
+
+```bash
+# Ingest from a file
+./ff_ingest patient.json -o patient.ffhr
+
+# Pipeline: download → ingest → store
+curl -s https://example.com/bundle.json | ./ff_ingest -o bundle.ffhr
+```
+
+---
+
+## `ff_export`
+
+Converts a sealed FastFHIR stream back to minified JSON.
+
+```
+Usage: ff_export [-i input.ffhr]  [-o output.json]
+```
+
+| Argument | Description |
+|---|---|
+| `-i input` | Path to a `.ffhr` file. Omit to read from stdin. |
+| `-o output` | Path to write JSON output. Omit to write to stdout. |
+| `-h` | Show help. |
+
+```bash
+# Export to a file
+./ff_export -i patient.ffhr -o patient.json
+
+# Pipeline: ingest → export round-trip
+cat patient.json | ./ff_ingest | ./ff_export
+```
+
+---
+
+## `ff_compact`
+
+Compacts a sealed FastFHIR standard stream into a dense presence-bitmap compact archive and re-seals it. The input file is never modified.
+
+```
+Usage: ff_compact [input.ffhr | -]  [-o output | -o -]  [--no-checksum]
+```
+
+| Argument | Description |
+|---|---|
+| `input` | Path to a sealed `.ffhr` stream. Use `-` or omit to read from stdin. |
+| `-o output` | Output path. Omit to auto-derive `<stem>.compact.ffhr`. Use `-o -` to force stdout. |
+| `--no-checksum` | Skip SHA-256 re-seal (checksum field left zero). |
+| `-h, --help` | Show help. |
+
+When OpenSSL is present at build time, the compact archive is automatically re-sealed with a SHA-256 checksum. Pass `--no-checksum` to suppress this.
+
+```bash
+# Compact a file — writes patient.compact.ffhr
+./ff_compact patient.ffhr
+
+# Explicit output path
+./ff_compact patient.ffhr -o archive.compact.ffhr
+
+# Full pipeline: ingest → compact → export
+cat bundle.json | ./ff_ingest | ./ff_compact | ./ff_export > bundle.json
+```
+
+> Compact archives are immutable. To modify a compact archive, open the original standard
+> stream, enrich it, re-finalize, and re-compact.
 
 ---
 

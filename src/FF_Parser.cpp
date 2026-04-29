@@ -324,7 +324,8 @@ Entry ParserOps::compact_node_lookup_field(const Node& n, FF_FieldKey key) {
         out_kind,
         n.m_size,
         n.m_version,
-        child_ops
+        child_ops,
+        n.m_engine_version
     );
 }
 
@@ -345,7 +346,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
         case FF_FIELD_FLOAT64:
         case FF_FIELD_CODE:
             return Node(e.base, size, version, slot_offset, expected_tag, schema_kind,
-                        FF_RECOVER_UNDEFINED, false, compact_ops);
+                        FF_RECOVER_UNDEFINED, false, compact_ops, e.m_engine_version);
 
         case FF_FIELD_CHOICE:
             return Node::resolve_choice(e.base, size, version, slot_offset, slot_offset, schema_kind, compact_ops);
@@ -355,23 +356,23 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
             if (child_offset == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + slot_offset + DATA_BLOCK::RECOVERY));
             return Node(e.base, size, version, child_offset, actual_tag, FF_FIELD_BLOCK,
-                        FF_RECOVER_UNDEFINED, false, compact_ops);
+                        FF_RECOVER_UNDEFINED, false, compact_ops, e.m_engine_version);
         }
 
         case FF_FIELD_ARRAY: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
-            FF_ARRAY arr_hdr(child_offset, size, version);
+            FF_ARRAY arr_hdr(child_offset, size, version, e.m_engine_version);
             bool entries_are_offsets = arr_hdr.entries_are_pointers(e.base);
             return Node(e.base, size, version, child_offset, expected_tag, schema_kind,
-                        expected_tag, entries_are_offsets, compact_ops);
+                        expected_tag, entries_are_offsets, compact_ops, e.m_engine_version);
         }
 
         case FF_FIELD_STRING: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
             return Node(e.base, size, version, child_offset, RECOVER_FF_STRING, schema_kind,
-                        FF_RECOVER_UNDEFINED, false, standard_ops_ptr());
+                        FF_RECOVER_UNDEFINED, false, standard_ops_ptr(), e.m_engine_version);
         }
 
         default: {
@@ -379,7 +380,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
             if (child_offset == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + child_offset + DATA_BLOCK::RECOVERY));
             return Node(e.base, size, version, child_offset, actual_tag, schema_kind,
-                        FF_RECOVER_UNDEFINED, false, compact_ops);
+                        FF_RECOVER_UNDEFINED, false, compact_ops, e.m_engine_version);
         }
     }
 }
@@ -437,6 +438,7 @@ Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast
         throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with error " + validation_result.message);
     }
     m_version            = header.get_fhir_rev(m_base);
+    m_engine_version     = header.get_engine_version(m_base);
     m_stream_layout      = header.get_stream_layout(m_base);
     m_ops                = Reflective::select_ops(m_stream_layout);
     m_root_offset        = header.get_root(m_base);
@@ -455,6 +457,7 @@ Parser::Parser(const Memory& memory) : m_memory(memory), m_base(memory.base()), 
         throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with code " + validation_result.message);
     }
     m_version            = header.get_fhir_rev(m_base);
+    m_engine_version     = header.get_engine_version(m_base);
     m_stream_layout      = header.get_stream_layout(m_base);
     m_ops                = Reflective::select_ops(m_stream_layout);
     m_root_offset        = header.get_root(m_base);
@@ -484,13 +487,13 @@ Parser::ChecksumValidation Parser::checksum() const {
 Reflective::Node Parser::root() const {
     return Reflective::Node(m_base, m_size, m_version,
                 m_root_offset, m_root_recovery, FF_FIELD_BLOCK,
-                FF_RECOVER_UNDEFINED, false, m_ops);
+                FF_RECOVER_UNDEFINED, false, m_ops, m_engine_version);
 }
 
 FF_URL_DIRECTORY Parser::url_directory() const {
     if (m_url_dir_offset == FF_NULL_OFFSET)
         throw std::runtime_error("FastFHIR: Stream has no URL directory (legacy format or not yet written).");
-    return FF_URL_DIRECTORY(m_url_dir_offset, m_size, m_version);
+    return FF_URL_DIRECTORY(m_url_dir_offset, m_size, m_version, m_engine_version);
 }
 
 } // namespace FastFHIR
@@ -694,10 +697,11 @@ namespace Reflective {
 Node::Node(const BYTE* base, Size size, uint32_t version, Offset offset,
            RECOVERY_TAG recovery, FF_FieldKind kind,
                      RECOVERY_TAG child_recovery, bool array_entries_are_offsets,
-                     const ParserOps* ops)
+                     const ParserOps* ops, uint32_t engine_ver)
     : m_base(base),
       m_size(size),
       m_version(version),
+      m_engine_version(engine_ver),
       m_node_offset(offset),
       m_recovery(recovery),
       m_child_recovery(child_recovery),
@@ -816,7 +820,7 @@ std::vector<Node> Node::entries() const {
 
 size_t ParserOps::standard_node_size(const Node& n) {
     if (n.is_array()) {
-        FF_ARRAY array(n.m_node_offset, n.m_size, n.m_version);
+        FF_ARRAY array(n.m_node_offset, n.m_size, n.m_version, n.m_engine_version);
         return array.entry_count(n.m_base);
     }
     if (n.is_object()) {
@@ -829,12 +833,12 @@ std::vector<Node> ParserOps::standard_node_entries(const Node& n) {
     std::vector<Node> out;
     if (!n.is_array()) return out;
 
-    FF_ARRAY array(n.m_node_offset, n.m_size, n.m_version);
+    FF_ARRAY array(n.m_node_offset, n.m_size, n.m_version, n.m_engine_version);
     uint32_t count = array.entry_count(n.m_base);
     uint16_t step  = array.entry_step(n.m_base);
 
     out.reserve(count);
-    Offset entries_start = n.m_node_offset + FF_ARRAY::HEADER_SIZE;
+    Offset entries_start = n.m_node_offset + array.get_header_size();
 
     for (uint32_t i = 0; i < count; ++i) {
         Offset item_ptr = entries_start + (i * step);
@@ -855,7 +859,7 @@ std::vector<Node> ParserOps::standard_node_entries(const Node& n) {
                 ("Node::entries() Inline polymorphic tuple array (RECOVERY_FF_RESOURCE) mismatch with actual type");
             
             out.push_back(Node(n.m_base, n.m_size, n.m_version, actual_off, tuple_tag, FF_FIELD_BLOCK,
-                               FF_RECOVER_UNDEFINED, false, n.m_ops));
+                               FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version));
             continue;
         }
 
@@ -881,13 +885,13 @@ std::vector<Node> ParserOps::standard_node_entries(const Node& n) {
             }
 
             out.push_back(Node(n.m_base, n.m_size, n.m_version, child_off, actual_tag, child_kind,
-                               FF_RECOVER_UNDEFINED, false, n.m_ops));
+                               FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version));
             continue;
         }
         
         // --- FAST PATH: INLINE ARRAY (Structs) ---
         out.push_back(Node(n.m_base, n.m_size, n.m_version, item_ptr, n.m_child_recovery, FF_FIELD_BLOCK,
-                           FF_RECOVER_UNDEFINED, false, n.m_ops));
+                           FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version));
     }
     
     return out;
@@ -920,7 +924,7 @@ Entry ParserOps::standard_node_lookup_field(const Node& n, FF_FieldKey key) {
     if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN) {
         target_tag = Kind_to_Recovery(key.kind);
     }
-    return {n.m_base, n.m_node_offset, key.field_offset, target_tag, key.kind, n.m_size, n.m_version, n.m_ops};
+    return {n.m_base, n.m_node_offset, key.field_offset, target_tag, key.kind, n.m_size, n.m_version, n.m_ops, n.m_engine_version};
 }
 
 Node Node::operator[](size_t index) const {
@@ -931,7 +935,7 @@ Node Node::operator[](size_t index) const {
 Node ParserOps::standard_node_lookup_index(const Node& n, size_t index) {
     if (!n.is_array()) return {};
 
-    FF_ARRAY arr(n.m_node_offset, n.m_size, n.m_version);
+    FF_ARRAY arr(n.m_node_offset, n.m_size, n.m_version, n.m_engine_version);
     uint32_t count = arr.entry_count(n.m_base);
     if (index >= count) return {};
 
@@ -941,9 +945,9 @@ Node ParserOps::standard_node_lookup_index(const Node& n, size_t index) {
 
     switch (ekind) {
         case FF_ARRAY::SCALAR: {
-            Offset item_off = n.m_node_offset + FF_ARRAY::HEADER_SIZE + index * step;
+            Offset item_off = n.m_node_offset + arr.get_header_size() + index * step;
             return Node(n.m_base, n.m_size, n.m_version, item_off, n.m_child_recovery, n.m_kind,
-                        FF_RECOVER_UNDEFINED, false, n.m_ops);
+                        FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
         }
         case FF_ARRAY::OFFSET: {
             Offset ptr_off = static_cast<Offset>(entries_start - n.m_base) + index * step;
@@ -951,13 +955,13 @@ Node ParserOps::standard_node_lookup_index(const Node& n, size_t index) {
             if (item_off == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(n.m_base + item_off + DATA_BLOCK::RECOVERY));
             return Node(n.m_base, n.m_size, n.m_version, item_off, actual_tag, FF_FIELD_BLOCK,
-                        FF_RECOVER_UNDEFINED, false, n.m_ops);
+                        FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
         }
         case FF_ARRAY::INLINE_BLOCK: {
             Offset item_off = static_cast<Offset>(entries_start - n.m_base) + index * step;
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(n.m_base + item_off + DATA_BLOCK::RECOVERY));
             return Node(n.m_base, n.m_size, n.m_version, item_off, actual_tag, FF_FIELD_BLOCK,
-                        FF_RECOVER_UNDEFINED, false, n.m_ops);
+                        FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
         }
     }
     return {};
@@ -986,7 +990,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
         case FF_FIELD_CODE:
             // Scalar slots are inline values at slot_offset.
             return Node(e.base, size, version, slot_offset, expected_tag, schema_kind,
-                        FF_RECOVER_UNDEFINED, false, ops);
+                        FF_RECOVER_UNDEFINED, false, ops, e.m_engine_version);
 
         case FF_FIELD_CHOICE: 
             return Node::resolve_choice(e.base, size, version, slot_offset, slot_offset, schema_kind, ops);
@@ -996,7 +1000,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
             if (actual_off == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + slot_offset + DATA_BLOCK::RECOVERY));
             return Node(e.base, size, version, actual_off, actual_tag, FF_FIELD_BLOCK,
-                        FF_RECOVER_UNDEFINED, false, ops);
+                        FF_RECOVER_UNDEFINED, false, ops, e.m_engine_version);
         }
 
         case FF_FIELD_ARRAY: {
@@ -1004,10 +1008,10 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
             if (child_offset == FF_NULL_OFFSET) return {};
             // m_recovery is unused on array Nodes (fields() returns {} for non-objects).
             // expected_tag already encodes the element type exactly — no memory read needed.
-            FF_ARRAY arr_hdr(child_offset, size, version);
+            FF_ARRAY arr_hdr(child_offset, size, version, e.m_engine_version);
             bool entries_are_offsets = arr_hdr.entries_are_pointers(e.base);
             return Node(e.base, size, version, child_offset, expected_tag, schema_kind,
-                        expected_tag, entries_are_offsets, ops);
+                        expected_tag, entries_are_offsets, ops, e.m_engine_version);
         }
 
         default: {
@@ -1016,7 +1020,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
             if (child_offset == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + child_offset + DATA_BLOCK::RECOVERY));
             return Node(e.base, size, version, child_offset, actual_tag, schema_kind,
-                        FF_RECOVER_UNDEFINED, false, ops);
+                        FF_RECOVER_UNDEFINED, false, ops, e.m_engine_version);
         }
     }
 }
