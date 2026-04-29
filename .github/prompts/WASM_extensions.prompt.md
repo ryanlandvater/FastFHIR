@@ -161,6 +161,43 @@ Because field append is monotone, `get_header_size(v_old) ≤ get_header_size(v_
 
 The manifest gains a `codec_version` field (MAJOR.MINOR). Re-publishes that increment MINOR keep the same URL slot; MAJOR bumps require a new URL or are rejected by `register_module()` to enforce the append-only invariant locally as well as in the registry.
 
+### Asymmetric resolver — newer hashes pull, older hashes reuse
+
+Because MAJOR identity is encoded by `SCHEMA_HASH` (any non-append change forces a new descriptor identity), and MINOR evolution within a MAJOR is **strictly append-only**, a cached codec at MINOR `M_cache` is guaranteed to correctly decode any in-stream instance whose `EXT_VERSION` MINOR is `≤ M_cache` — the older instance simply uses a prefix of the field table the cached descriptor describes. This permits an asymmetric resolver policy that eliminates redundant downloads for backfill / archival / replay workloads:
+
+| In-stream `(SCHEMA_HASH, EXT_VERSION_minor)` vs cached `(SCHEMA_HASH_cache, MINOR_HIGH_cache)` | Action                                                                                                 | Rationale                                                                                  |
+|--------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
+| `SCHEMA_HASH == SCHEMA_HASH_cache` and `minor ≤ MINOR_HIGH_cache`                                | **Use cache.** No network. Decode at native speed.                                                     | Same MAJOR lineage, instance is at or behind cache. Append-only guarantees correctness.    |
+| `SCHEMA_HASH == SCHEMA_HASH_cache` and `minor >  MINOR_HIGH_cache`                                | **Pull upgrade**, refresh `MINOR_HIGH`, then prune superseded same-lineage cache artefacts.           | Same MAJOR but instance was written by a newer codec; old same-lineage blobs are redundant.|
+| `SCHEMA_HASH != SCHEMA_HASH_cache` and the unknown hash advertises a manifest                    | **Pull new lineage** as a parallel cache slot (does not evict other lineages).                         | Different MAJOR identity; lineages may legitimately coexist for different streams.         |
+| `SCHEMA_HASH != SCHEMA_HASH_cache`, no manifest reachable                                        | **Downgrade** to opaque-payload passthrough; record in `Parser::unresolved_extensions()`.             | Identity unverifiable; refuse to silently substitute a different lineage's codec.          |
+
+Key invariant: the resolver **never** trades a known-good cached lineage for a different `SCHEMA_HASH`. Different lineages remain side-by-side. Within one lineage, however, a successful MINOR upgrade triggers in-place GC of superseded artefacts (old `.ffd`, old `.wasm`, stale sidecar pointer) after the new module has been validated and committed.
+
+Implementation lives in `resolve_or_fetch_module()` (`src/FF_Extensions.cpp`):
+
+```cpp
+ResolveResult FF_WasmExtensionHost::resolve_or_fetch_module(
+    std::string_view url,
+    std::span<const uint8_t, 32> in_stream_schema_hash,   // from FF_MODULE_REGISTRY
+    uint16_t                     in_stream_minor)         // from FF_EXTENSION::EXT_VERSION (highest seen across instances)
+{
+    // 1. In-memory hit on the SAME lineage (SCHEMA_HASH match).
+    if (auto* m = m_modules.find_by_schema_hash(in_stream_schema_hash)) {
+        if (in_stream_minor <= m->schema->minor_high)
+            return { m, ResolveResult::CACHE_HIT_SUFFICIENT };       // ← cheap fast path
+        auto r = fetch_descriptor_upgrade(m, in_stream_schema_hash); // same lineage, newer descriptor
+        if (r.ok())
+            gc_superseded_same_lineage(*r.module);                   // delete old same-lineage cache artefacts
+        return r;
+    }
+    // 2. New lineage — install side-by-side, never evict.
+    return fetch_new_lineage(url, in_stream_schema_hash);
+}
+```
+
+This policy means a fleet that has *ever* loaded the latest MINOR of a codec can subsequently re-ingest, re-export, or surgically read any historical stream produced by any earlier MINOR of the same lineage, fully offline, while keeping cache footprint bounded to the newest artefacts per lineage.
+
 ---
 
 ## 3. Three-Layer Recovery Model
@@ -410,9 +447,9 @@ Write: `builder.extend(handle, url).set("clinical_stage", "T2N0M0").set("staged_
 
 - **Old streams** (Phase 10, 56-byte registry entries) load read-only; the reader detects the older entry size from the registry header and treats `SCHEMA_HASH` as 32 zero bytes (forces manifest fetch by URL, same as a fresh install).
 - **Cached `.ffd` matches in-stream `SCHEMA_HASH`** → typed access at native speed.
-- **Mismatch** → typed access refused for that extension; downgraded to opaque-payload passthrough; logged via `FF_Logger`; appended to `Parser::unresolved_extensions()`.
-- **Per-instance `EXT_VERSION` newer than loaded descriptor's `SCHEMA_VERSION_HIGH`** → reader recognises the descriptor on disk is stale, refetches by `SCHEMA_HASH`, and on success retries the typed read. On failure, downgrades to opaque-payload passthrough as above.
-- **Per-instance `EXT_VERSION` older than descriptor's `SCHEMA_VERSION_HIGH`** → typed read proceeds; fields with `intro_version > EXT_VERSION` are reported as absent (`has()` returns false). This is the common case for streams ingested before a MINOR bump.
+- **Mismatch on `SCHEMA_HASH`** (different lineage) → typed access refused for that extension; downgraded to opaque-payload passthrough; logged via `FF_Logger`; appended to `Parser::unresolved_extensions()`. **The cache is never overwritten** — a different `SCHEMA_HASH` is a different lineage and is installed side-by-side if its manifest resolves (§ 2a *Asymmetric resolver*).
+- **Same `SCHEMA_HASH`, instance MINOR newer than cached `MINOR_HIGH`** → reader recognises the descriptor on disk is stale, refetches the descriptor by `SCHEMA_HASH`, advances `MINOR_HIGH`, retries the typed read, then deletes superseded same-lineage artefacts from disk cache (`.ffd`, and `.wasm` when not referenced by the refreshed sidecar).
+- **Same `SCHEMA_HASH`, instance MINOR older than cached `MINOR_HIGH`** → **no network**, typed read proceeds against the cached (newer) descriptor; fields with `intro_version > EXT_VERSION` are reported as absent (`has()` returns false). This is the dominant case for archival / replay workloads.
 - **`ff_export`** of an active extension uses `DynamicExtensionView` to reconstruct JSON field-by-field through the schema, never via ad-hoc string formatting; emits only fields visible at the instance's `EXT_VERSION`.
 
 #### 11.8 IDE Support — Generated Field-Name Headers
@@ -473,6 +510,33 @@ auto stage = v.get_clinical_stage();
 
 **What this is *not*:** not a `TypeTraits<>` binding (that's `--emit-cpp`); not load-bearing (stripping the include dir only regresses to Level 0); not a substitute for `SCHEMA_HASH` verification.
 
+#### 11.9 Registry CLI — `ffhr_registry install` / `ffhr_registry upgrade`
+
+To make module lifecycle explicit outside ingest, add a dedicated CLI:
+
+```bash
+ffhr_registry install <url>
+ffhr_registry upgrade
+```
+
+`install <url>` workflow:
+
+1. Resolve latest manifest for `<url>` (`/v1/modules/<url_fnv64_hex>/latest`).
+2. Download/verify `<binary_hash>.wasm` and `<binary_hash>.ffd` (SHA-256 must match manifest).
+3. Register module in local cache (same path as runtime `register_module()`), including `SCHEMA_HASH`, `MINOR_HIGH`, and `codec_version` metadata.
+4. Emit IDE glue header through `ff_extbind::emit_header()`.
+5. Update URL sidecar atomically to point at the installed hashes.
+
+`upgrade` workflow:
+
+1. Enumerate all URL sidecars under `~/.cache/fastfhir/modules/meta/`.
+2. For each URL, resolve latest manifest.
+3. If manifest is unchanged, no-op.
+4. If same-lineage (`SCHEMA_HASH` unchanged) and newer MINOR, pull upgrade then run `gc_superseded_same_lineage()` (delete old `.ffd`; delete old `.wasm` only when no sidecar references its `MODULE_HASH`).
+5. If lineage changed (`SCHEMA_HASH` differs), install as a parallel lineage slot; do not evict the existing lineage.
+
+CLI exits non-zero on any failed verify or failed atomic sidecar write; partial success is reported per URL in a machine-readable summary (`--json`) and a human summary by default.
+
 ---
 
 ## 9. Affected Files
@@ -488,8 +552,9 @@ auto stage = v.get_clinical_stage();
 | `include/FF_ExtensionView.hpp` / `.cpp`                      | NEW — `DynamicExtensionView`, `MutableExtensionView` (Phase 11.6)                                        |
 | `include/FF_Node.hpp` / `include/FF_Builder.hpp`             | `Node::extension(url)`, `Builder::extend(handle, url)` (Phase 11.6)                                      |
 | `tools/extbind/FF_ExtBind.cpp`                               | NEW — `ff_extbind` CLI; pull + sweep modes (Phase 11.8)                                                  |
+| `tools/registry/FF_Registry.cpp`                             | NEW — `ffhr_registry` CLI (`install <url>`, `upgrade`, optional `--json`)                                 |
 | `~/.cache/fastfhir/modules/include/<safe_name>.hpp`          | NEW (auto-generated per cached `.ffd`) (Phase 11.8)                                                      |
-| `CMakeLists.txt`                                             | `FASTFHIR_ENABLE_EXTENSIONS` flag, WAMR `FetchContent`; `ff_extbind` target; exported `FASTFHIR_EXT_INCLUDE_DIR` |
+| `CMakeLists.txt`                                             | `FASTFHIR_ENABLE_EXTENSIONS` flag, WAMR `FetchContent`; `ff_extbind` + `ffhr_registry` targets; exported `FASTFHIR_EXT_INCLUDE_DIR` |
 
 ---
 
@@ -554,6 +619,11 @@ auto stage = v.get_clinical_stage();
 | 32 | § 2a — Manifest `codec_version` field round-tripped through the registry; downloads carrying older MINOR than cached are accepted (rollback allowed); MAJOR mismatch hard-fails | Medium |
 | 33 | § 2a — `DynamicExtensionView::has(field)` returns `false` for fields whose `intro_version > m_ext_version`; `MutableExtensionView::set(field, …)` rejects same | Medium |
 | 34 | § 2a — `ffc.py --wasm` derives `intro_version` per field from `StructureDefinition` revision metadata (or an explicit `--codec-version MAJOR.MINOR` flag for hand-authored codecs); refuses to publish a schema that removes / reorders / retypes / re-tags an existing field | High |
+| 35 | § 2a — `resolve_or_fetch_module()` keyed on `SCHEMA_HASH` (not URL); maintains `m_modules.find_by_schema_hash()` index alongside the URL→module map; different lineages live side-by-side | High |
+| 36 | § 2a — Asymmetric resolver fast path: if `in_stream_minor <= cached.minor_high` for matching `SCHEMA_HASH`, return cache hit without touching the manifest endpoint or the network | High |
+| 37 | § 2a — `fetch_descriptor_upgrade(SCHEMA_HASH)` — pulls only the newer `.ffd` for an existing lineage; binary may be reused if `MODULE_HASH` unchanged or refetched if the manifest reports a new `MODULE_HASH` for the same `SCHEMA_HASH` | Medium |
+| 38 | § 2a — Predigestion threads `(SCHEMA_HASH, max EXT_VERSION_minor)` per URL through to the resolver so the asymmetric decision is made once per stream, not once per instance | Medium |
+| 39 | § 2a — `gc_superseded_same_lineage()` removes old MINOR artefacts after successful upgrade: write new sidecar atomically, then unlink superseded `.ffd`; unlink old `.wasm` only if no sidecar still references its `MODULE_HASH`; keep in-memory handles until stream end | Medium |
 
 ### Phase 11.8 — IDE Support
 
@@ -562,6 +632,16 @@ auto stage = v.get_clinical_stage();
 | 24 | `ff_extbind` CLI — emit IDE glue header from `.ffd`; pull mode in `register_module()`, sweep mode for cache rebuild          | High     |
 | 25 | Publish `FASTFHIR_EXT_INCLUDE_DIR` (default `~/.cache/fastfhir/modules/include/`); document clangd / `compile_commands.json` wiring | Medium |
 | 26 | Naming/collision rules — shared `safe_name` sanitiser; reserved-keyword field suffix; URL-hash disambiguation suffix         | Medium   |
+
+### Phase 11.9 — Registry CLI
+
+| #  | Item                                                                                                                          | Priority |
+|----|-------------------------------------------------------------------------------------------------------------------------------|----------|
+| 40 | Add `ffhr_registry install <url>` command: manifest resolve, wasm/ffd fetch, SHA-256 verify, atomic sidecar write          | High     |
+| 41 | Add `ffhr_registry upgrade` command: iterate URL sidecars, compare manifest hashes, apply same-lineage upgrade policy       | High     |
+| 42 | Integrate CLI path with `register_module()` to share validation, parsing, and cache write logic (single implementation path) | High     |
+| 43 | CLI output contract: default human summary + `--json` machine output (`status`, `url`, `old_hash`, `new_hash`, `action`)    | Medium   |
+| 44 | Upgrade cleanup integration: invoke `gc_superseded_same_lineage()` after successful same-lineage MINOR upgrade              | Medium   |
 
 ---
 
@@ -587,10 +667,21 @@ auto stage = v.get_clinical_stage();
 15. Append-only enforcement: simulate a v1.1 codec that *removes* a v1.0 field; `register_module()` (or the `--wasm` emitter) rejects with a typed error before anything is written to the cache or stream.
 16. MAJOR bump rejection: simulate a publish that increments MAJOR with the same URL; `register_module()` refuses to update the cache; `Parser::unresolved_extensions()` records the conflict; existing streams remain readable against the cached MAJOR.
 17. Cross-version export: a stream containing a mix of v1.0 and v1.1 instances of the same extension exports correctly via `ff_export` — each instance emits exactly the fields visible at its own `EXT_VERSION`.
+18. Asymmetric resolver — older instance against newer cache: pre-load codec at MINOR 1.2, disconnect network, ingest a stream whose instances were written at MINOR 1.0 of the same `SCHEMA_HASH`. Expect zero network calls, typed access succeeds, fields introduced after MINOR 1.0 report `has()==false`.
+19. Asymmetric resolver — newer instance against older cache: pre-load codec at MINOR 1.0, ingest a stream whose instances were written at MINOR 1.2 of the same `SCHEMA_HASH`. Expect exactly one descriptor refetch (the `.ffd`, not the `.wasm` unless `MODULE_HASH` changed); cached `MINOR_HIGH` advances to 1.2; superseded same-lineage cache artefacts are deleted; subsequent same-lineage streams require zero further network calls.
+20. Asymmetric resolver — different lineage: ingest a stream whose `SCHEMA_HASH` differs from the cached one. Expect side-by-side install (cache now holds two entries for the same URL, keyed by `SCHEMA_HASH`); the previously cached lineage remains usable for streams that reference it.
+21. Upgrade GC safety: run two parses concurrently while one triggers a MINOR upgrade; verify GC only unlinks on-disk superseded artefacts after atomic sidecar swap and never invalidates in-memory module handles used by the active parse.
 
 **Phase 11.8:**
 11. After `register_module()` lands a fresh `.ffd`, `~/.cache/fastfhir/modules/include/<safe_name>.hpp` exists with `URL`, `SCHEMA_HASH`, and one `string_view` per field. `ff_extbind --sweep` is byte-idempotent.
 12. A TU using `ff::ext::<safe_name>::clinical_stage` as the subscript key compiles; clangd offers go-to-definition into the generated header; rename refactors propagate.
+
+**Phase 11.9:**
+22. `ffhr_registry install https://hospital.org/onco-stage` on an empty cache downloads `.wasm` + `.ffd`, verifies hashes, writes sidecar atomically, and emits the glue header.
+23. Re-running `ffhr_registry install` for the same URL when manifest is unchanged is a no-op (no redundant download, exit status indicates unchanged).
+24. `ffhr_registry upgrade` upgrades URLs with newer same-lineage MINOR, deletes superseded same-lineage artefacts, and leaves unchanged URLs untouched.
+25. `ffhr_registry upgrade` encountering a new lineage (`SCHEMA_HASH` changed) installs in parallel without evicting the existing lineage.
+26. `ffhr_registry upgrade --json` emits one record per URL with deterministic keys and values suitable for CI policy checks.
 
 ---
 
