@@ -792,6 +792,37 @@ PYBIND11_MODULE(_core, m) {
             }
             d["entries"] = entries;
             return d;
+        })
+        .def_property_readonly("has_module_registry", [](const PyStream& self) {
+            return self.get().query().has_module_registry();
+        })
+        .def_property_readonly("module_registry", [](const PyStream& self) -> py::object {
+            Parser q = self.get().query();
+            if (!q.has_module_registry()) return py::none();
+            const BYTE* base = q.data();
+            FF_MODULE_REGISTRY reg(q.module_registry_offset(), q.size_bytes(), q.version());
+            uint32_t n = reg.entry_count(base);
+            py::dict d;
+            d["entry_count"] = n;
+            py::list entries;
+            constexpr char hex_digits[] = "0123456789abcdef";
+            for (uint32_t i = 0; i < n; ++i) {
+                py::dict e;
+                e["url_idx"]          = reg.url_idx(base, i);
+                e["wasm_blob_offset"] = reg.wasm_blob_offset(base, i);
+                e["wasm_blob_size"]   = reg.wasm_blob_size(base, i);
+                std::string_view hash = reg.module_hash(base, i);
+                std::string hex;
+                hex.reserve(hash.size() * 2);
+                for (unsigned char c : hash) {
+                    hex.push_back(hex_digits[c >> 4]);
+                    hex.push_back(hex_digits[c & 0xF]);
+                }
+                e["module_hash"] = hex;
+                entries.append(e);
+            }
+            d["entries"] = entries;
+            return d;
         });
 
     // =====================================================================

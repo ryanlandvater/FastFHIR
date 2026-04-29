@@ -7,12 +7,6 @@
 ## - Optional building of a high-speed JSON Ingestor module that depends on simdjson.
 cmake_minimum_required(VERSION 3.20) 
 
-# Define the project name, semantic version, and enabled language(s). 
-project(FastFHIR
-    VERSION 0.1.0
-    LANGUAGES CXX
-)
-
 # =====================================================================
 # Version Resolution
 # =====================================================================
@@ -22,19 +16,26 @@ project(FastFHIR
 if(DEFINED ENV{FASTFHIR_VERSION_MAJOR})
     set(FASTFHIR_VERSION_MAJOR "$ENV{FASTFHIR_VERSION_MAJOR}")
 else()
-    set(FASTFHIR_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
+    set(FASTFHIR_VERSION_MAJOR "2026")  # Default major version for local builds
 endif()
 if(DEFINED ENV{FASTFHIR_VERSION_MINOR})
     set(FASTFHIR_VERSION_MINOR "$ENV{FASTFHIR_VERSION_MINOR}")
 else()
-    set(FASTFHIR_VERSION_MINOR "${PROJECT_VERSION_MINOR}")
+    set(FASTFHIR_VERSION_MINOR "0")  # Default minor version for local builds
 endif()
 if(DEFINED ENV{FASTFHIR_VERSION_BUILD})
     set(FASTFHIR_VERSION_BUILD "$ENV{FASTFHIR_VERSION_BUILD}")
 else()
-    set(FASTFHIR_VERSION_BUILD "${PROJECT_VERSION_PATCH}")
+    set(FASTFHIR_VERSION_BUILD "0")  # Default build version for local builds
 endif()
 message(STATUS "FastFHIR version: ${FASTFHIR_VERSION_MAJOR}.${FASTFHIR_VERSION_MINOR}.${FASTFHIR_VERSION_BUILD}")
+
+
+# Define the project name, semantic version, and enabled language(s). 
+project(FastFHIR
+    VERSION ${FASTFHIR_VERSION_MAJOR}.${FASTFHIR_VERSION_MINOR}.${FASTFHIR_VERSION_BUILD}
+    LANGUAGES CXX
+)
 
 # Make the language mode explicit for build tools and editor integrations.
 set(CMAKE_CXX_STANDARD 20)
