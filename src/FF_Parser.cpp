@@ -526,91 +526,95 @@ static void escape_json_string(std::ostream& out, std::string_view str) {
 }
 
 static std::string_view get_choice_suffix(RECOVERY_TAG tag) {
-    if (tag == RECOVER_FF_BOOL) return "Boolean";
-    if (tag == RECOVER_FF_FLOAT64) return "Decimal";
-    if (tag == RECOVER_FF_INT32) return "Integer";
-    if (tag == RECOVER_FF_UINT32) return "UnsignedInt";
-    if (tag == RECOVER_FF_INT64 || tag == RECOVER_FF_UINT64) return "Integer64";
-    if (tag == RECOVER_FF_STRING) return "String";
-    
-    // For complex types, pull the capitalized resource/data type name
-    std::string_view name = FastFHIR::reflected_resource_type(tag);
-    return name;
+    switch (tag) {
+        case RECOVER_FF_BOOL:    return "Boolean";
+        case RECOVER_FF_FLOAT64: return "Decimal";
+        case RECOVER_FF_INT32:   return "Integer";
+        case RECOVER_FF_UINT32:  return "UnsignedInt";
+        case RECOVER_FF_INT64:
+        case RECOVER_FF_UINT64:  return "Integer64";
+        case RECOVER_FF_STRING:  return "String";
+        default:
+            // For complex types, pull the capitalized resource/data type name
+            return FastFHIR::reflected_resource_type(tag);
+    }
 }
 
 void Reflective::Node::print_json(std::ostream& out) const {
     if (is_empty()) return;
 
-    if (is_object()) {
-        out << "{";
-        auto f_list = fields();
-        bool first = true;
+    switch (m_kind) {
+        case FF_FIELD_BLOCK: {
+            out << "{";
+            auto f_list = fields();
+            bool first = true;
 
-        if (FF_IsResourceTag(m_recovery)) {
-            out << "\"resourceType\":\"" << reflected_resource_type(m_recovery) << "\"";
-            first = false;
-        }
-
-        for (size_t i = 0; i < f_list.size(); ++i) {
-            const auto& f = f_list[i];
-
-            // 2. Construct the O(1) field key blueprint
-            FF_FieldKey key = FF_FieldKey::from_cstr(
-                m_recovery, f.kind, f.field_offset, 
-                f.child_recovery, f.array_entries_are_offsets, f.name
-            );
-
-            // 3. Pure pointer-math lookup (Zero loops)
-            auto child_entry = (*this)[key];
-            if (!child_entry) {
-                continue;
-            }
-            
-            if (!first) out << ",";
-            out << "\"" << f.name;
-            
-            // Utilize Entry's native target_recovery metadata
-            if (f.kind == FF_FIELD_CHOICE) out << get_choice_suffix(child_entry.target_recovery);
-            out << "\":";
-            
-            // Scalars are inline values, not DATA_BLOCKs — serialize directly from Entry.
-            // Everything else is a DATA_BLOCK and goes through Node.
-            switch (f.kind)
-            {
-            case FF_FIELD_BOOL:
-            case FF_FIELD_INT32:
-            case FF_FIELD_UINT32:
-            case FF_FIELD_INT64:
-            case FF_FIELD_UINT64:
-            case FF_FIELD_FLOAT64:
-            case FF_FIELD_CODE:
-                child_entry.print_scalar_json(out, m_version);
-                break;
-            
-            default:
-                child_entry.as_node().print_json(out);
-                break;
-            }
-            first = false;
-        }
-        out << "}";
-    }
-    else if (is_array()) {
-        out << "[";
-        auto arr = entries();
-        bool first = true;
-        for (size_t i = 0; i < arr.size(); ++i) {
-            if (!arr[i].is_empty()) {
-                if (!first) out << ",";
-                arr[i].print_json(out);
+            if (FF_IsResourceTag(m_recovery)) {
+                out << "\"resourceType\":\"" << reflected_resource_type(m_recovery) << "\"";
                 first = false;
             }
+
+            for (size_t i = 0; i < f_list.size(); ++i) {
+                const auto& f = f_list[i];
+
+                // Construct the O(1) field key blueprint
+                FF_FieldKey key = FF_FieldKey::from_cstr(
+                    m_recovery, f.kind, f.field_offset,
+                    f.child_recovery, f.array_entries_are_offsets, f.name
+                );
+
+                // Pure pointer-math lookup (Zero loops)
+                auto child_entry = (*this)[key];
+                if (!child_entry) continue;
+
+                if (!first) out << ",";
+                out << "\"" << f.name;
+
+                // Utilize Entry's native target_recovery metadata
+                if (f.kind == FF_FIELD_CHOICE) out << get_choice_suffix(child_entry.target_recovery);
+                out << "\":";
+
+                // Scalars are inline values, not DATA_BLOCKs — serialize directly from Entry.
+                // Everything else is a DATA_BLOCK and goes through Node.
+                switch (f.kind) {
+                    case FF_FIELD_BOOL:
+                    case FF_FIELD_INT32:
+                    case FF_FIELD_UINT32:
+                    case FF_FIELD_INT64:
+                    case FF_FIELD_UINT64:
+                    case FF_FIELD_FLOAT64:
+                    case FF_FIELD_CODE:
+                        child_entry.print_scalar_json(out, m_version);
+                        break;
+                    default:
+                        child_entry.as_node().print_json(out);
+                        break;
+                }
+                first = false;
+            }
+            out << "}";
+            break;
         }
-        out << "]";
-    }
-    // Scalar leaf: only reachable for choice[x] nodes resolved to an inline scalar value.
-    else if (is_scalar()) {
-        switch (m_kind) {
+        case FF_FIELD_ARRAY: {
+            out << "[";
+            auto arr = entries();
+            bool first = true;
+            for (size_t i = 0; i < arr.size(); ++i) {
+                if (!arr[i].is_empty()) {
+                    if (!first) out << ",";
+                    arr[i].print_json(out);
+                    first = false;
+                }
+            }
+            out << "]";
+            break;
+        }
+        case FF_FIELD_STRING:
+            out << "\"";
+            escape_json_string(out, as<std::string_view>());
+            out << "\"";
+            break;
+        // Scalar leaf: only reachable for choice[x] nodes resolved to an inline scalar value.
         case FF_FIELD_BOOL:    out << (as<bool>() ? "true" : "false"); break;
         case FF_FIELD_INT32:   out << as<int32_t>(); break;
         case FF_FIELD_UINT32:  out << as<uint32_t>(); break;
@@ -622,13 +626,7 @@ void Reflective::Node::print_json(std::ostream& out) const {
             escape_json_string(out, as<std::string_view>());
             out << "\"";
             break;
-        default: out << "null"; break;
-        }
-    }
-    else if (is_string()) {
-        out << "\"";
-        escape_json_string(out, as<std::string_view>());
-        out << "\"";
+        default: break;
     }
 }
 
@@ -735,37 +733,46 @@ Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version,
 
 bool Node::is_empty() const {
     if (!*this) return true;
-    
-    if (is_array()) return size() == 0;
 
-    // Strings are empty when their decoded view is empty.
-    if (is_string())
-        return as<std::string_view>().empty();
+    switch (m_kind) {
+        case FF_FIELD_ARRAY:
+            return size() == 0;
 
-    // Codes are empty only when the raw slot is the explicit FF_CODE_NULL sentinel.
-    // Do not treat unresolved dictionary codes as empty, otherwise print_json can emit
-    // invalid key/value pairs like "type":,
-    if (kind() == FF_FIELD_CODE)
-        return FF_IsFieldEmpty(m_base, m_node_offset, FF_FIELD_CODE);
-    
-    if (is_scalar())
-        return FF_IsFieldEmpty(m_base, m_node_offset, m_kind);
-    
-    if (is_object()) { 
-        auto f_list = fields(); 
-        for (size_t i = 0; i < f_list.size(); ++i) {
-            const auto& f = f_list[i];
-            FF_FieldKey key = FF_FieldKey::from_cstr(
-                m_recovery, f.kind, f.field_offset,
-                f.child_recovery, f.array_entries_are_offsets, f.name
-            );
-            if ((*this)[key])
-                return false;
+        case FF_FIELD_STRING:
+            // Strings are empty when their decoded view is empty.
+            return as<std::string_view>().empty();
+
+        case FF_FIELD_CODE:
+            // Codes are empty only when the raw slot is the explicit FF_CODE_NULL sentinel.
+            // Do not treat unresolved dictionary codes as empty, otherwise print_json can emit
+            // invalid key/value pairs like "type":,
+            return FF_IsFieldEmpty(m_base, m_node_offset, FF_FIELD_CODE);
+
+        case FF_FIELD_BOOL:
+        case FF_FIELD_INT32:
+        case FF_FIELD_UINT32:
+        case FF_FIELD_INT64:
+        case FF_FIELD_UINT64:
+        case FF_FIELD_FLOAT64:
+            return FF_IsFieldEmpty(m_base, m_node_offset, m_kind);
+
+        case FF_FIELD_BLOCK: {
+            auto f_list = fields();
+            for (size_t i = 0; i < f_list.size(); ++i) {
+                const auto& f = f_list[i];
+                FF_FieldKey key = FF_FieldKey::from_cstr(
+                    m_recovery, f.kind, f.field_offset,
+                    f.child_recovery, f.array_entries_are_offsets, f.name
+                );
+                if ((*this)[key])
+                    return false;
+            }
+            return true;
         }
-        return true;
+
+        default:
+            return true;
     }
-    
-    return true;
 }
 
 // =====================================================================

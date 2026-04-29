@@ -84,9 +84,9 @@ inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_of
 
         case FF_FIELD_RESOURCE:
         case FF_FIELD_CHOICE:
-        if (LOAD_U16(base + field_absolute_offset + DATA_BLOCK::RECOVERY) 
-                == FF_RECOVER_UNDEFINED) return true;
-            
+            if (LOAD_U16(base + field_absolute_offset + DATA_BLOCK::RECOVERY)
+                    == FF_RECOVER_UNDEFINED) return true;
+            [[fallthrough]];
         case FF_FIELD_STRING:
         case FF_FIELD_ARRAY:
         case FF_FIELD_BLOCK:
