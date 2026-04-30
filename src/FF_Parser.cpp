@@ -12,30 +12,10 @@
 
 #include "../include/FF_Utilities.hpp"
 #include "../include/FF_Parser.hpp"
+#include "../include/FF_SIMD.hpp"
 #include "../generated_src/FF_Dictionary.hpp"
 #include "../generated_src/FF_Reflection.hpp"
 #include <assert.h>
-
-#if defined(__AVX2__) || defined(__BMI2__)
-#include <immintrin.h>
-#endif
-
-#if defined(__ARM_NEON)
-#include <arm_neon.h>
-#endif
-
-#if defined(_MSC_VER) && !defined(__clang__)
-#include <intrin.h>
-// MSVC does not provide __builtin_ctz.  _BitScanForward is undefined when v==0
-// (index result is unspecified).  All call sites guard with `while (v != 0)`
-// before invoking this macro, so v==0 is never passed in practice.
-static inline unsigned ff_ctz_u32(uint32_t v) {
-    unsigned long idx;
-    _BitScanForward(&idx, v);
-    return static_cast<unsigned>(idx);
-}
-#define __builtin_ctz(v) ff_ctz_u32(static_cast<uint32_t>(v))
-#endif
 
 namespace FastFHIR {
 namespace Reflective {
@@ -103,174 +83,6 @@ static inline bool compact_presence_contains(const BYTE* presence, size_t field_
     return (presence[byte_index] & bit_mask) != 0;
 }
 
-static inline Offset compact_dense_relative_offset_scalar(const BYTE* presence,
-                                                          const uint8_t* sizes_table,
-                                                          size_t target_index) {
-    Offset rel = 0;
-    const size_t full_bytes = target_index / 8;
-
-    for (size_t byte_index = 0; byte_index < full_bytes; ++byte_index) {
-        uint8_t mask = presence[byte_index];
-        while (mask != 0) {
-            const unsigned bit_index = static_cast<unsigned>(__builtin_ctz(mask));
-            rel += sizes_table[byte_index * 8 + bit_index];
-            mask &= mask - 1u;
-        }
-    }
-
-    const size_t tail_bits = target_index % 8;
-    if (tail_bits == 0) return rel;
-
-    const uint8_t tail_mask = static_cast<uint8_t>((1u << tail_bits) - 1u);
-    uint8_t mask = static_cast<uint8_t>(presence[full_bytes] & tail_mask);
-    while (mask != 0) {
-        const unsigned bit_index = static_cast<unsigned>(__builtin_ctz(mask));
-        rel += sizes_table[full_bytes * 8 + bit_index];
-        mask &= mask - 1u;
-    }
-
-    return rel;
-}
-
-// compact_sum_sizes_masked_scalar: iterate only set bits in mask — no switch, no lane loop.
-static inline uint32_t compact_sum_sizes_masked_scalar(const uint8_t* sizes, uint8_t mask) {
-    uint32_t sum = 0;
-    uint8_t m = mask;
-    while (m != 0) {
-        const unsigned idx = static_cast<unsigned>(__builtin_ctz(m));
-        sum += sizes[idx];
-        m &= m - 1u;  // clear lowest set bit
-    }
-    return sum;
-}
-
-#if defined(__AVX2__)
-// compact_sum_sizes_masked_avx2:
-//   Single-shot load of 8 pre-computed uint8 sizes via _mm_loadl_epi64 + zero-extend.
-//   Pure vector mask expansion: broadcast mask byte, AND with per-lane bit selectors,
-//   compare to zero, invert — all without scalar branches or setup loops.
-static inline uint32_t compact_sum_sizes_masked_avx2(const uint8_t* sizes, uint8_t mask) {
-    // Single-shot load: 8 bytes → zero-extend to 8 x int32
-    const __m128i xmm_sizes  = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(sizes));
-    const __m256i sizes_epi32 = _mm256_cvtepu8_epi32(xmm_sizes);
-
-    // Pure vector mask expansion — zero scalar branches
-    const __m256i mask_broad = _mm256_set1_epi32(static_cast<int>(mask));
-    const __m256i bit_ids    = _mm256_setr_epi32(1, 2, 4, 8, 16, 32, 64, 128);
-    const __m256i selected   = _mm256_and_si256(mask_broad, bit_ids);
-    const __m256i is_zero    = _mm256_cmpeq_epi32(selected, _mm256_setzero_si256());
-    const __m256i keep       = _mm256_xor_si256(is_zero, _mm256_set1_epi32(-1)); // ~is_zero
-
-    // Mask and horizontal sum
-    const __m256i active = _mm256_and_si256(sizes_epi32, keep);
-    __m128i lo = _mm256_castsi256_si128(active);
-    __m128i hi = _mm256_extracti128_si256(active, 1);
-    __m128i s  = _mm_add_epi32(lo, hi);
-    s = _mm_hadd_epi32(s, s);
-    s = _mm_hadd_epi32(s, s);
-    return static_cast<uint32_t>(_mm_cvtsi128_si32(s));
-}
-#endif
-
-#if defined(__ARM_NEON)
-// compact_sum_sizes_masked_neon:
-//   Single-shot vld1_u8 load of 8 pre-computed sizes; pure vtst_u8 mask expansion
-//   with sign-extend widening chain (int8→int16→int32) to produce 0xFFFFFFFF / 0x00000000
-//   masks — no scalar branches, no setup loops.
-static inline uint32_t compact_sum_sizes_masked_neon(const uint8_t* sizes, uint8_t mask) {
-    // Single-shot load and zero-extend to uint32x4 x2
-    const uint8x8_t  sizes_u8  = vld1_u8(sizes);
-    const uint16x8_t sizes_u16 = vmovl_u8(sizes_u8);
-    const uint32x4_t sizes_lo  = vmovl_u16(vget_low_u16(sizes_u16));
-    const uint32x4_t sizes_hi  = vmovl_u16(vget_high_u16(sizes_u16));
-
-    // Pure vector mask expansion: vtst returns 0xFF where bit set, 0x00 where clear.
-    // Sign-extend 0xFF(-1)→0xFFFF→0xFFFFFFFF, 0x00→0x0000→0x00000000.
-    static const uint8_t bit_ids[8] = {1, 2, 4, 8, 16, 32, 64, 128};
-    const uint8x8_t  keep_u8  = vtst_u8(vdup_n_u8(mask), vld1_u8(bit_ids));
-    const int8x8_t   keep_s8  = vreinterpret_s8_u8(keep_u8);     // 0xFF→-1, 0x00→0
-    const int16x8_t  keep_s16 = vmovl_s8(keep_s8);               // -1→0xFFFF, 0→0x0000
-    const uint32x4_t keep_lo  = vreinterpretq_u32_s32(vmovl_s16(vget_low_s16(keep_s16)));
-    const uint32x4_t keep_hi  = vreinterpretq_u32_s32(vmovl_s16(vget_high_s16(keep_s16)));
-
-    // Mask sizes and reduce
-    const uint32x4_t active_lo = vandq_u32(sizes_lo, keep_lo);
-    const uint32x4_t active_hi = vandq_u32(sizes_hi, keep_hi);
-    return static_cast<uint32_t>(vaddvq_u32(active_lo) + vaddvq_u32(active_hi));
-}
-#endif
-
-static inline uint32_t compact_sum_sizes_masked_simd(const uint8_t* sizes, uint8_t mask) {
-#if defined(__AVX2__)
-    return compact_sum_sizes_masked_avx2(sizes, mask);
-#elif defined(__ARM_NEON)
-    return compact_sum_sizes_masked_neon(sizes, mask);
-#else
-    return compact_sum_sizes_masked_scalar(sizes, mask);
-#endif
-}
-
-// compact_dense_relative_offset_bmi2:
-//   BMI2 fast-path for target_index <= 32. Assembles a 32-bit presence word, uses
-//   _bzhi_u32 to mask to the prefix, then iterates set bits — each lookup is a direct
-//   table read (no switch/type-check).
-static inline Offset compact_dense_relative_offset_bmi2(const BYTE* presence,
-                                                        const uint8_t* sizes_table,
-                                                        size_t target_index,
-                                                        bool& used_fast_path) {
-    used_fast_path = false;
-
-#if defined(__BMI2__)
-    if (target_index <= 32) {
-        uint32_t present_word = 0;
-        const size_t bytes = (target_index + 7) / 8;
-        for (size_t i = 0; i < bytes; ++i) {
-            present_word |= (static_cast<uint32_t>(presence[i]) << (8 * i));
-        }
-
-        const uint32_t masked = _bzhi_u32(present_word, static_cast<unsigned>(target_index));
-        Offset rel = 0;
-        uint32_t bits = masked;
-        while (bits != 0) {
-            const unsigned idx = static_cast<unsigned>(__builtin_ctz(bits));
-            rel += sizes_table[idx];  // direct table read — no switch, no type-check
-            bits &= (bits - 1);
-        }
-
-        used_fast_path = true;
-        return rel;
-    }
-#endif
-
-    return 0;
-}
-
-static inline Offset compact_dense_relative_offset_simd(const BYTE* presence,
-                                                        const uint8_t* sizes_table,
-                                                        size_t target_index) {
-    bool used_bmi2 = false;
-    const Offset bmi2_rel = compact_dense_relative_offset_bmi2(presence, sizes_table, target_index, used_bmi2);
-    if (used_bmi2) return bmi2_rel;
-
-    Offset rel = 0;
-
-    const size_t full_chunks = target_index / 8;
-    for (size_t chunk = 0; chunk < full_chunks; ++chunk) {
-        const uint8_t mask = presence[chunk];
-        if (mask == 0) continue;
-        rel += compact_sum_sizes_masked_simd(&sizes_table[chunk * 8], mask);
-    }
-
-    const size_t tail_bits = target_index % 8;
-    if (tail_bits == 0) return rel;
-
-    const size_t tail_base = full_chunks * 8;
-    const uint8_t tail_mask = static_cast<uint8_t>(presence[full_chunks] & static_cast<uint8_t>((1u << tail_bits) - 1u));
-    if (tail_mask != 0)
-        rel += compact_sum_sizes_masked_simd(&sizes_table[tail_base], tail_mask);
-    return rel;
-}
-
 size_t ParserOps::compact_node_size(const Node& n) {
     // Arrays keep the existing FF_ARRAY layout in compact mode for now.
     return standard_node_size(n);
@@ -318,7 +130,7 @@ Entry ParserOps::compact_node_lookup_field(const Node& n, FF_FieldKey key) {
     if (!compact_presence_contains(presence, target_index)) return NULL_ENTRY;
 
     const Offset dense_start = presence_start + compact_presence_bytes(f_list.size());
-    const Offset rel = compact_dense_relative_offset_simd(presence, sizes_table, target_index);
+    const Offset rel = ff_compact_dense_offset(presence, sizes_table, target_index);
 
     const Offset slot_offset = dense_start + rel;
     RECOVERY_TAG target_tag = key.child_recovery;

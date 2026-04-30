@@ -4,6 +4,7 @@
 // ============================================================
 #include "FF_Ingestor.hpp"
 #include "../include/FF_Queue.hpp"
+#include "../include/FF_SIMD.hpp"
 #include "../include/FF_Utilities.hpp"
 #include "../generated_src/FF_Bundle.hpp"
 #include "../generated_src/FF_IngestMappings.hpp"
@@ -19,21 +20,149 @@
 namespace FastFHIR::Ingest {
 
 // =====================================================================
-// PREDIGESTION — multi-threaded Extension URL scan + chained builder
+// PREDIGESTION — pipelined Extension URL scan + concurrent trie builder
 // =====================================================================
+//
+// Architecture overview
+// ─────────────────────
+//  Phase 1  Main thread: split the payload into one chunk per Bundle entry
+//           (or the whole payload for a single resource).  Chunks are stored
+//           as simdjson::padded_string in `chunk_storage`.  Their lifetime
+//           spans the full predigestion, keeping every string_view in the
+//           queue valid until the consumer thread has finished.
+//
+//  Phase 2  N producer threads (one per CPU core, capped at chunk count):
+//           each thread scans its share of chunks with simdjson ondemand,
+//           collects extension URLs as string_views (zero-copy into the
+//           padded_string buffers), applies a 64-slot thread-local direct-
+//           mapped dedup cache, and pushes UrlBatch structs to the shared
+//           MPSC queue.  No arena writes and no heap allocation on the hot
+//           path — producers own only stack-allocated state.
+//
+//  Phase 3  One consumer thread starts *before* the producers and drains the
+//           queue concurrently.  For each URL it:
+//             a) checks the global url_to_index map (dedup),
+//             b) applies the FF_ExtensionFilterMode filter,
+//             c) inserts the URL into a per-'/' radix trie whose nodes live
+//                in a bump-allocated vector (scratch, not the FF arena),
+//             d) claims arena space for each new segment via claim_space
+//                (lock-free) and writes an FF_STRING block,
+//             e) appends a TrieEntry{prior_idx, seg_off} to the entries vector.
+//           All trie mutations happen on the single consumer thread — no
+//           locking needed.
+//
+//  Barrier  Main thread joins all producers, sets `producers_done`, joins the
+//           consumer.  At this point `entries` is complete.
+//
+//  Phase 4  Main thread writes the FF_URL_DIRECTORY block from `entries`
+//           (identical to the old Phase 5), records the offset, builds the
+//           flat Robin Hood URL hash table, and returns.
+//
+// Trie node layout
+// ────────────────
+//  Each TrieNode represents one '/'-delimited URL segment.  The virtual root
+//  (index 0) is the common ancestor of all segments; it carries no URL of its
+//  own.  Each real node has an entry_idx in the `entries` vector (the row in
+//  FF_URL_DIRECTORY for that segment) and a seg_arena_off pointing to the
+//  FF_STRING already written in the arena.
+//
+//  Children are stored inline (TRIE_FANOUT = 8 slots per node).  When a node
+//  overflows, a chain of overflow TrieNodes is allocated — the last non-empty
+//  slot of the original node is linked via `overflow_idx`.  Overflow nodes
+//  carry no segment themselves; they just extend the child array.
+//
+//  SIMD-accelerated child lookup: ff_match_mask_u64x8 compares all 8 child
+//  hashes in parallel (AVX2 / SSE4.1 / NEON / scalar) and returns a bitmask.
+//  Each matching slot is then verified with memcmp to guard against the
+//  (astronomically rare) 64-bit FNV-1a collision.
+//
+// Prior-chain reconstruction
+// ──────────────────────────
+//  FF_URL_DIRECTORY::get_url() collects segments from leaf to root, reverses,
+//  and joins with '/'.  With the per-'/' trie:
+//
+//    "http://hl7.org/fhir/test" splits into segments:
+//      ["http:", "", "hl7.org", "fhir", "test"]
+//    Entries: 0→"http:", 1→"" (prior=0), 2→"hl7.org" (prior=1),
+//             3→"fhir" (prior=2), 4→"test" (prior=3)
+//    get_url(4) → "http:" + "/" + "" + "/" + "hl7.org" + "/" + "fhir"
+//                        + "/" + "test" = "http://hl7.org/fhir/test" ✓
+//
+//  Interior nodes (shared URL prefixes not themselves complete URLs) are
+//  included in `entries` so prior chains are always well-formed.  They are
+//  *not* added to url_to_index.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Recursively collect all "url" string values found inside any
-// "extension" or "modifierExtension" array at any nesting depth.
-// Also captures the raw JSON sub-tree byte range of each containing
-// extension object — used by Path B passive storage so unresolved
-// extensions can round-trip verbatim through the arena.
-struct UrlAndSlice {
-    std::string url;
-    std::string_view raw_json;   // points into the chunk's padded_string buffer
+// ─── FNV-1a 64-bit hash — identical to FF_UrlHashTable::hash_url ─────────────
+static constexpr uint64_t FNV1A_OFFSET = 14695981039346656037ULL;
+static constexpr uint64_t FNV1A_PRIME  = 1099511628211ULL;
+
+static inline uint64_t fnv1a(std::string_view s) noexcept {
+    uint64_t h = FNV1A_OFFSET;
+    for (const unsigned char c : s) { h ^= c; h *= FNV1A_PRIME; }
+    return h;
+}
+
+// ─── Producer-side batch types ───────────────────────────────────────────────
+
+static constexpr uint32_t URL_BATCH_SIZE = 64;   // UrlBatchEntries per push
+static constexpr uint32_t BATCH_Q_CAP   = 256;   // queue node capacity (pow-2)
+static constexpr uint32_t DEDUP_SLOTS   = 64;    // thread-local LRU direct-mapped cache
+
+struct UrlBatchEntry {
+    std::string_view url;       // points into a chunk_storage padded_string
+    uint64_t         hash;      // FNV-1a hash of url (pre-computed by producer)
 };
 
-static void collect_extension_urls(simdjson::ondemand::object obj,
-                                   std::vector<UrlAndSlice>& out)
+struct UrlBatch {
+    std::array<UrlBatchEntry, URL_BATCH_SIZE> entries;
+    uint32_t                                  count = 0;
+};
+
+using UrlBatchQueue = FIFO::Queue<UrlBatch, BATCH_Q_CAP>;
+
+// ─── ProducerCtx ─────────────────────────────────────────────────────────────
+// Stack-allocated per producer thread.  Holds the current in-flight UrlBatch,
+// a thread-local dedup cache, and the queue Injector.
+struct ProducerCtx {
+    UrlBatch                          batch;
+    std::array<uint64_t, DEDUP_SLOTS> dedup_cache;
+    UrlBatchQueue::Injector           injector;
+
+    explicit ProducerCtx(UrlBatchQueue& q) : injector(q.get_injector()) {
+        dedup_cache.fill(0);
+    }
+
+    // Add a URL to the current batch, flushing when full.
+    // Zero heap allocation on the hot path.
+    void push_url(std::string_view url) noexcept {
+        if (url.empty()) return;
+        const uint64_t h    = fnv1a(url);
+        const uint64_t slot = h & (DEDUP_SLOTS - 1u);
+        if (dedup_cache[slot] == h) return; // thread-local cache hit — skip
+        dedup_cache[slot] = h;
+        batch.entries[batch.count++] = {url, h};
+        if (batch.count == URL_BATCH_SIZE) {
+            injector.push(batch);
+            batch.count = 0;
+        }
+    }
+
+    // Flush any partial batch remaining after chunk scanning.
+    void flush() {
+        if (batch.count > 0) {
+            injector.push(batch);
+            batch.count = 0;
+        }
+    }
+};
+
+// ─── URL collection (producer, recursive) ────────────────────────────────────
+// Mirrors collect_extension_urls() but pushes to ProducerCtx instead of a
+// vector — no std::string copies, no arena writes on the producer side.
+static void collect_extension_urls_pipeline(simdjson::ondemand::object obj,
+                                             ProducerCtx& ctx)
 {
     for (auto field : obj) {
         std::string_view key = field.unescaped_key().value_unsafe();
@@ -41,13 +170,8 @@ static void collect_extension_urls(simdjson::ondemand::object obj,
             simdjson::ondemand::array arr;
             if (field.value().get_array().get(arr) != simdjson::SUCCESS) continue;
             for (auto item : arr) {
-                // simdjson ondemand is a single-pass API: raw_json() advances the
-                // parser past the value, making a subsequent get_object() fail.
-                // Iterate the object first to extract the URL, then capture raw_json
-                // for WASM Path B passive payloads (only when extensions are enabled).
                 simdjson::ondemand::object ext_obj;
                 if (item.get_object().get(ext_obj) != simdjson::SUCCESS) continue;
-
                 std::string_view found_url;
                 for (auto ext_field : ext_obj) {
                     std::string_view ext_key = ext_field.unescaped_key().value_unsafe();
@@ -58,23 +182,23 @@ static void collect_extension_urls(simdjson::ondemand::object obj,
                     } else {
                         simdjson::ondemand::object nested;
                         if (ext_field.value().get_object().get(nested) == simdjson::SUCCESS)
-                            collect_extension_urls(nested, out);
+                            collect_extension_urls_pipeline(nested, ctx);
                     }
                 }
                 if (!found_url.empty())
-                    out.push_back({std::string(found_url), {}});
+                    ctx.push_url(found_url);
             }
         } else {
             simdjson::ondemand::object child_obj;
             if (field.value().get_object().get(child_obj) == simdjson::SUCCESS) {
-                collect_extension_urls(child_obj, out);
+                collect_extension_urls_pipeline(child_obj, ctx);
             } else {
                 simdjson::ondemand::array child_arr;
                 if (field.value().get_array().get(child_arr) == simdjson::SUCCESS) {
                     for (auto item : child_arr) {
                         simdjson::ondemand::object arr_obj;
                         if (item.get_object().get(arr_obj) == simdjson::SUCCESS)
-                            collect_extension_urls(arr_obj, out);
+                            collect_extension_urls_pipeline(arr_obj, ctx);
                     }
                 }
             }
@@ -82,43 +206,238 @@ static void collect_extension_urls(simdjson::ondemand::object obj,
     }
 }
 
-// Per-thread result: (full URL string, arena offset of its FF_STRING block,
-// optional raw-JSON sub-tree slice for Path B passive storage).
-// Threads write FF_STRING blocks directly to the arena via claim_space (lock-free).
-// raw_json memory is owned by the chunk's std::string and stays alive for the
-// duration of predigestion; the side-table copies it into a stable owned buffer
-// at merge time (Phase 3).
-struct ScanResult {
-    std::string url;
-    Offset      arena_off;
-    std::string raw_json_copy;   // owned copy of the extension JSON sub-tree
-};
-
-// Scan one JSON chunk for extension URLs, writing FF_STRING blocks inline to arena.
-static void scan_chunk_for_urls(
-    const std::string& json_chunk,
-    uint8_t*           base,
-    const Memory&      mem,
-    std::vector<ScanResult>& out)
+// Scan one padded_string chunk for extension URLs and push them to the queue.
+static void scan_chunk_producer(const simdjson::padded_string& chunk,
+                                 ProducerCtx& ctx)
 {
     simdjson::ondemand::parser parser;
-    simdjson::padded_string padded(json_chunk.data(), json_chunk.size());
-    simdjson::ondemand::document doc = parser.iterate(padded);
+    simdjson::ondemand::document doc = parser.iterate(chunk);
     simdjson::ondemand::object obj;
     if (doc.get_object().get(obj) != simdjson::SUCCESS) return;
+    collect_extension_urls_pipeline(obj, ctx);
+}
 
-    std::vector<UrlAndSlice> urls;
-    collect_extension_urls(obj, urls);
+// ─── Consumer-side trie types ─────────────────────────────────────────────────
 
-    for (const auto& u : urls) {
-        if (u.url.empty()) continue;
-        Offset off = mem.claim_space(SIZE_FF_STRING(u.url));
-        STORE_FF_STRING(base, off, u.url);
-        // raw_json points into `padded`, which is destroyed at end of this
-        // function; copy into the ScanResult so it survives merge.
-        out.push_back({u.url, off, std::string(u.raw_json)});
+static constexpr uint32_t TRIE_FANOUT = 8;
+static constexpr uint32_t TRIE_NULL   = 0xFFFFFFFFu;
+
+// One node in the arena-backed radix trie.  FANOUT=8 inline child slots;
+// overflow nodes (overflow_idx != TRIE_NULL) extend the child array.
+struct TrieNode {
+    uint32_t entry_idx     = TRIE_NULL;       // row in `entries`; TRIE_NULL = interior
+    Offset   seg_arena_off = FF_NULL_OFFSET;  // arena offset of FF_STRING for this segment
+    uint32_t overflow_idx  = TRIE_NULL;       // index of overflow TrieNode; TRIE_NULL = none
+    uint16_t child_count   = 0;               // populated children in THIS node (≤ FANOUT)
+    uint64_t child_hashes[TRIE_FANOUT]  = {}; // FNV-1a hash of each child's segment
+    uint32_t child_idx    [TRIE_FANOUT] = {}; // index in trie_nodes vector; TRIE_NULL = unused
+};
+
+// Flat entry appended for every trie node (interior or leaf) — provides the
+// prior-chain data written into FF_URL_DIRECTORY.
+struct TrieEntry {
+    uint32_t prior;   // parent's entry_idx, or FF_URL_DIRECTORY::NO_PRIOR for roots
+    Offset   seg_off; // arena offset of this segment's FF_STRING (FF_NULL_OFFSET for "")
+};
+
+// ─── Trie helper: find child ─────────────────────────────────────────────────
+// Searches node `start_idx` and its overflow chain for a child whose hash
+// matches `seg_hash` AND whose stored segment bytes match `seg`.
+// Returns the child node index, or TRIE_NULL if not found.
+static uint32_t trie_find_child(
+    const std::vector<TrieNode>& nodes,
+    uint32_t                     start_idx,
+    uint64_t                     seg_hash,
+    std::string_view             seg,
+    const uint8_t*               base) noexcept
+{
+    uint32_t nidx = start_idx;
+    while (nidx != TRIE_NULL) {
+        const TrieNode& n = nodes[nidx];
+
+        // SIMD match mask restricted to valid children.
+        const uint8_t valid_mask = (n.child_count >= TRIE_FANOUT)
+                                 ? static_cast<uint8_t>(0xFFu)
+                                 : static_cast<uint8_t>((1u << n.child_count) - 1u);
+        uint8_t mask = ff_match_mask_u64x8(n.child_hashes, seg_hash) & valid_mask;
+
+        while (mask != 0) {
+            const uint32_t i   = static_cast<uint32_t>(__builtin_ctz(mask));
+            mask &= mask - 1u;
+            const uint32_t cid = n.child_idx[i];
+            const TrieNode& child = nodes[cid];
+
+            // Verify: handle empty segment (stored as FF_NULL_OFFSET)
+            if (child.seg_arena_off == FF_NULL_OFFSET) {
+                if (seg.empty()) return cid;
+                continue;
+            }
+            const uint32_t slen = LOAD_U32(base + child.seg_arena_off + FF_STRING::LENGTH);
+            if (slen == static_cast<uint32_t>(seg.size())) {
+                const char* sdata = reinterpret_cast<const char*>(
+                    base + child.seg_arena_off + FF_STRING::STRING_DATA);
+                if (std::memcmp(sdata, seg.data(), slen) == 0) return cid;
+            }
+        }
+        nidx = n.overflow_idx;
+    }
+    return TRIE_NULL;
+}
+
+// ─── Trie helper: add child ───────────────────────────────────────────────────
+// Appends (seg_hash, child_node_idx) to the node's child list, creating
+// overflow nodes as needed.  Safe to call after nodes.push_back() since
+// all access is by index (not pointer/reference).
+static void trie_add_child(std::vector<TrieNode>& nodes,
+                            uint32_t               node_idx,
+                            uint64_t               seg_hash,
+                            uint32_t               child_node_idx)
+{
+    while (true) {
+        if (nodes[node_idx].child_count < TRIE_FANOUT) {
+            const uint16_t cnt = nodes[node_idx].child_count;
+            nodes[node_idx].child_hashes[cnt] = seg_hash;
+            nodes[node_idx].child_idx   [cnt] = child_node_idx;
+            nodes[node_idx].child_count++;
+            return;
+        }
+        if (nodes[node_idx].overflow_idx == TRIE_NULL) {
+            const uint32_t ov_idx = static_cast<uint32_t>(nodes.size());
+            nodes.push_back({}); // new overflow node (no segment, no entry)
+            nodes[node_idx].overflow_idx = ov_idx; // re-index after push_back is safe
+        }
+        node_idx = nodes[node_idx].overflow_idx;
     }
 }
+
+// ─── Trie helper: get or create child ────────────────────────────────────────
+// Finds an existing child for `seg` under `parent_node_idx`, or creates one.
+// `parent_entry_idx` is the prior_idx to record for any newly-created entry.
+// Returns the (possibly new) child node index.
+static uint32_t trie_get_or_create_child(
+    std::vector<TrieNode>&  nodes,
+    std::vector<TrieEntry>& entries,
+    const Memory&           mem,
+    uint8_t*                base,
+    uint32_t                parent_node_idx,
+    uint32_t                parent_entry_idx, // TRIE_NULL == NO_PRIOR for root children
+    std::string_view        seg,
+    uint64_t                seg_hash)
+{
+    // Fast path: existing child.
+    const uint32_t found = trie_find_child(nodes, parent_node_idx, seg_hash, seg, base);
+    if (found != TRIE_NULL) return found;
+
+    // Allocate FF_STRING for this segment.  Empty segments (from "http://…")
+    // use FF_NULL_OFFSET so no bytes are written — seg_string() returns "" for them.
+    Offset seg_off = FF_NULL_OFFSET;
+    if (!seg.empty()) {
+        seg_off = mem.claim_space(SIZE_FF_STRING(seg));
+        STORE_FF_STRING(base, seg_off, seg);
+    }
+
+    // Allocate an entry (prior chain).
+    const uint32_t new_entry_idx = static_cast<uint32_t>(entries.size());
+    entries.push_back({parent_entry_idx, seg_off});
+
+    // Create and register the trie node.
+    TrieNode new_node;
+    new_node.entry_idx    = new_entry_idx;
+    new_node.seg_arena_off = seg_off;
+    const uint32_t new_node_idx = static_cast<uint32_t>(nodes.size());
+    nodes.push_back(new_node); // may reallocate; index-based access remains valid
+
+    trie_add_child(nodes, parent_node_idx, seg_hash, new_node_idx);
+    return new_node_idx;
+}
+
+// ─── Trie helper: insert URL ─────────────────────────────────────────────────
+// Traverse/insert all '/' segments of `url` into the trie.
+// Returns the entry_idx of the leaf node corresponding to the full URL.
+static uint32_t insert_url_to_trie(
+    std::vector<TrieNode>&  nodes,
+    std::vector<TrieEntry>& entries,
+    const Memory&           mem,
+    uint8_t*                base,
+    std::string_view        url)
+{
+    uint32_t node_idx  = 0;       // virtual root (no segment, no entry)
+    uint32_t entry_idx = TRIE_NULL; // NO_PRIOR for root-level children
+
+    size_t pos = 0;
+    while (true) {
+        const size_t next = url.find('/', pos);
+        const bool   last = (next == std::string_view::npos);
+        std::string_view seg = url.substr(pos, last ? std::string_view::npos : next - pos);
+
+        node_idx  = trie_get_or_create_child(nodes, entries, mem, base,
+                                              node_idx, entry_idx, seg, fnv1a(seg));
+        entry_idx = nodes[node_idx].entry_idx;
+
+        if (last) break;
+        pos = next + 1;
+    }
+    return nodes[node_idx].entry_idx;
+}
+
+// ─── Consumer state ───────────────────────────────────────────────────────────
+struct ConsumerState {
+    std::vector<TrieNode>  trie_nodes; // scratch trie (not FF arena)
+    std::vector<TrieEntry> entries;    // parallel to FF_URL_DIRECTORY ENTRY_TABLE
+    FF_UrlInternState&     state;
+    const Memory&          mem;
+    uint8_t*               base;
+    FF_ExtensionFilterMode mode;
+
+    ConsumerState(FF_UrlInternState& s, const Memory& m, FF_ExtensionFilterMode md)
+        : state(s), mem(m), base(m.base()), mode(md)
+    {
+        trie_nodes.reserve(256);
+        trie_nodes.push_back({}); // virtual root at index 0
+        entries.reserve(64);
+    }
+};
+
+// Process one batch of URL entries on the consumer thread.
+static void consumer_process_batch(ConsumerState& cs, const UrlBatch& batch) {
+    for (uint32_t i = 0; i < batch.count; ++i) {
+        const UrlBatchEntry& e = batch.entries[i];
+        if (e.url.empty()) continue;
+
+        // Allocate owned key once; used for dedup check and map insert.
+        std::string url_str(e.url);
+
+        // Dedup: skip URLs already in the map.
+        if (cs.state.url_to_index.count(url_str)) continue;
+
+        // Apply extension filter.
+        bool suppress = false;
+        switch (cs.mode) {
+            case FF_ExtensionFilterMode::FILTER_ALL_KNOWN:
+                suppress = FF_IsKnownExtension(e.url); break;
+            case FF_ExtensionFilterMode::FILTER_NATIVE_ONLY:
+                suppress = FF_IsNativeExtension(e.url); break;
+            case FF_ExtensionFilterMode::FILTER_NONE:
+                break;
+        }
+
+        if (suppress) {
+            cs.state.url_to_index.emplace(std::move(url_str), FF_NULL_UINT32);
+            continue;
+        }
+
+        // Insert into trie and record in url_to_index.
+        const uint32_t idx = insert_url_to_trie(cs.trie_nodes, cs.entries,
+                                                  cs.mem, cs.base, e.url);
+        cs.state.url_to_index.emplace(std::move(url_str), idx);
+        // passive_payload: not captured in pipeline mode
+        // (WASM Path B feature is not yet fully implemented upstream)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FF_PredigestExtensionURLs  —  public entry point
+// ─────────────────────────────────────────────────────────────────────────────
 
 FF_UrlInternState FF_PredigestExtensionURLs(
     std::string_view       json_payload,
@@ -126,13 +445,16 @@ FF_UrlInternState FF_PredigestExtensionURLs(
     FF_ExtensionFilterMode mode)
 {
     FF_UrlInternState state;
-    uint8_t*      base = builder.memory().base();
-    const Memory& mem  = builder.memory();
+    const Memory& mem = builder.memory();
+    uint8_t*      base = mem.base();
 
-    // ── Phase 1: Split payload into independently-scannable chunks ────────
-    // Bundle: each entry array element becomes its own chunk (one per thread).
-    // Single resource: the entire payload is the single chunk.
-    std::vector<std::string> chunks;
+    // ── Phase 1: Split payload into independently-scannable chunks ────────────
+    // Bundle: each "entry" array element becomes its own padded_string (one per
+    // thread).  Single resource: the whole payload is the single chunk.
+    //
+    // chunk_storage MUST outlive the consumer thread, because producer
+    // string_views point into these padded_strings.
+    std::vector<simdjson::padded_string> chunk_storage;
     {
         simdjson::ondemand::parser splitter;
         simdjson::padded_string padded(json_payload.data(), json_payload.size());
@@ -145,136 +467,78 @@ FF_UrlInternState FF_PredigestExtensionURLs(
                 for (auto item : entry_arr) {
                     std::string_view raw;
                     if (item.raw_json().get(raw) == simdjson::SUCCESS)
-                        chunks.emplace_back(raw);  // copy — padded_string will be destroyed
+                        chunk_storage.emplace_back(raw.data(), raw.size());
                 }
             }
         }
-        if (chunks.empty())
-            chunks.emplace_back(json_payload);  // single resource
+        if (chunk_storage.empty())
+            chunk_storage.emplace_back(json_payload.data(), json_payload.size());
     }
+    const size_t num_chunks = chunk_storage.size();
 
-    // ── Phase 2: Parallel scan + inline arena writes ──────────────────────
-    // Each thread writes FF_STRING blocks for the full URLs it finds.
-    // claim_space() is lock-free (atomic fetch_add on write head), so threads
-    // never contend on allocation.  Each thread writes only into its own
-    // claimed range, so no data races on the arena bytes themselves.
-    unsigned nthreads = std::min(
-        (unsigned)chunks.size(),
+    // ── Phase 2 + 3: Pipeline — producers scan, consumer builds trie ─────────
+    // The consumer thread starts *before* the producers to begin draining as
+    // soon as the first batch arrives.  Producers push UrlBatch items to the
+    // shared MPSC queue; the consumer pops and inserts into the radix trie.
+
+    UrlBatchQueue       batch_queue;
+    std::atomic<bool>   producers_done{false};
+    ConsumerState       cs(state, mem, mode);
+
+    // Acquire Consumer before any Injectors (gets head node reference).
+    auto consumer_handle = batch_queue.get_consumer();
+
+    std::thread consumer_thread(
+        [c = std::move(consumer_handle), &producers_done, &cs]() mutable {
+            UrlBatch batch;
+            while (true) {
+                if (c.pop(batch)) {
+                    consumer_process_batch(cs, batch);
+                    continue;
+                }
+                if (producers_done.load(std::memory_order_acquire)) {
+                    // Producers done: drain any remaining in-flight batches.
+                    while (c.pop(batch)) consumer_process_batch(cs, batch);
+                    break;
+                }
+                std::this_thread::yield();
+            }
+        });
+
+    // Producer threads: each scans its assigned chunks.
+    const unsigned nthreads = std::min(
+        static_cast<unsigned>(num_chunks),
         std::max(1u, std::thread::hardware_concurrency()));
-    std::vector<std::vector<ScanResult>> per_thread(nthreads);
+
     {
         std::vector<std::thread> workers;
         workers.reserve(nthreads);
         for (unsigned t = 0; t < nthreads; ++t) {
             workers.emplace_back([&, t]() {
-                for (size_t i = t; i < chunks.size(); i += nthreads)
-                    scan_chunk_for_urls(chunks[i], base, mem, per_thread[t]);
+                ProducerCtx ctx(batch_queue);
+                for (size_t i = t; i < num_chunks; i += nthreads)
+                    scan_chunk_producer(chunk_storage[i], ctx);
+                ctx.flush(); // push partial tail batch
             });
         }
         for (auto& w : workers) w.join();
     }
 
-    // ── Phase 3: Merge + deduplicate + filter ────────────────────────────
-    // Multiple threads may find the same URL; keep the first arena_off per URL.
-    // Duplicate FF_STRING blocks in the arena are harmless dead bytes.
-    // Apply the known-extension filter here so filtered URLs never enter the
-    // chained-segment trie and never get a URL_DIRECTORY entry.
-    // url_to_index maps filtered URLs to FF_NULL_UINT32 (sentinel: skip block).
-    std::unordered_map<std::string, Offset> url_to_full_str_off;
-    for (auto& results : per_thread) {
-        for (auto& r : results) {
-            // Apply the filter before inserting into the trie.
-            bool suppress = false;
-            switch (mode) {
-                case FF_ExtensionFilterMode::FILTER_ALL_KNOWN:
-                    suppress = FF_IsKnownExtension(r.url);
-                    break;
-                case FF_ExtensionFilterMode::FILTER_NATIVE_ONLY:
-                    suppress = FF_IsNativeExtension(r.url);
-                    break;
-                case FF_ExtensionFilterMode::FILTER_NONE:
-                    break;
-            }
-            if (suppress) {
-                // Record as filtered: FF_NULL_UINT32 sentinel tells ingest workers
-                // to silently drop the extension block for this URL.
-                state.url_to_index.try_emplace(r.url, FF_NULL_UINT32);
-                continue;
-            }
-            url_to_full_str_off.try_emplace(r.url, r.arena_off);
+    // Signal consumer that no more batches will arrive.
+    producers_done.store(true, std::memory_order_release);
+    consumer_thread.join();
 
-            // Path B passive payload: keep the raw extension JSON sub-tree
-            // for verbatim round-trip if this URL doesn't get a WASM module
-            // promoted in Phase 7.  try_emplace preserves first occurrence.
-            if (!r.raw_json_copy.empty())
-                state.passive_payload.try_emplace(r.url, std::move(r.raw_json_copy));
-        }
-    }
+    // chunk_storage goes out of scope here — all string_views are no longer needed.
 
-    if (url_to_full_str_off.empty())
-        return state;  // all extensions filtered or no extensions in payload
+    // ── Phase 4: Early-exit if no URLs were interned ──────────────────────────
+    if (cs.entries.empty()) return state;
 
-    // ── Phase 4: Build chained segment trie (sequential, main thread) ─────
-    // Sort unique URLs by byte length so parents are always processed
-    // before their children.
-    std::vector<std::string> sorted_urls;
-    sorted_urls.reserve(url_to_full_str_off.size());
-    for (auto& [url, _] : url_to_full_str_off)
-        sorted_urls.push_back(url);
-    std::sort(sorted_urls.begin(), sorted_urls.end(),
-              [](const std::string& a, const std::string& b) {
-                  return a.size() < b.size();
-              });
-
-    // entry_idx map: full URL → assigned index in the ENTRY_TABLE
-    std::unordered_map<std::string, uint32_t> url_to_entry_idx;
-
-    struct TrieEntry {
-        uint32_t prior;   // FF_URL_DIRECTORY::NO_PRIOR or parent entry index
-        Offset   seg_off; // arena offset of this entry's segment FF_STRING
-    };
-    std::vector<TrieEntry> entries;
-
-    for (const std::string& url : sorted_urls) {
-        // Walk right-to-left over '/' splits, looking for the longest known prefix.
-        uint32_t best_prior     = FF_URL_DIRECTORY::NO_PRIOR;
-        size_t   best_split_pos = std::string::npos;  // position of '/' where prefix ends
-        {
-            size_t pos = url.rfind('/');
-            while (pos != std::string::npos && pos > 0) {
-                auto it = url_to_entry_idx.find(url.substr(0, pos));
-                if (it != url_to_entry_idx.end()) {
-                    best_prior     = it->second;
-                    best_split_pos = pos;
-                    break;
-                }
-                pos = url.rfind('/', pos - 1);
-            }
-        }
-
-        Offset seg_off;
-        if (best_prior == FF_URL_DIRECTORY::NO_PRIOR) {
-            // Root entry: reuse the full-URL FF_STRING we already wrote in Phase 2.
-            seg_off = url_to_full_str_off[url];
-        } else {
-            // Leaf/branch segment is the suffix after the prior's path + '/'.
-            std::string segment = url.substr(best_split_pos + 1);
-            seg_off = mem.claim_space(SIZE_FF_STRING(segment));
-            STORE_FF_STRING(base, seg_off, segment);
-        }
-
-        uint32_t entry_idx = static_cast<uint32_t>(entries.size());
-        entries.push_back({best_prior, seg_off});
-        url_to_entry_idx[url] = entry_idx;
-        state.url_to_index[url] = entry_idx;
-    }
-
-    // ── Phase 5: Write ENTRY_TABLE block ─────────────────────────────────
-    uint32_t n_entries = static_cast<uint32_t>(entries.size());
-    Size dir_total = FF_URL_DIRECTORY::HEADER_SIZE +
-                     static_cast<Size>(n_entries) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
-    Offset dir_off = mem.claim_space(dir_total);
-    BYTE*  dir_ptr = base + dir_off;
+    // ── Phase 5: Write FF_URL_DIRECTORY block ─────────────────────────────────
+    const uint32_t n_entries = static_cast<uint32_t>(cs.entries.size());
+    const Size dir_total = FF_URL_DIRECTORY::HEADER_SIZE +
+                           static_cast<Size>(n_entries) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
+    const Offset dir_off = mem.claim_space(dir_total);
+    BYTE* dir_ptr = base + dir_off;
 
     STORE_U64(dir_ptr + FF_URL_DIRECTORY::VALIDATION,  dir_off);
     STORE_U16(dir_ptr + FF_URL_DIRECTORY::RECOVERY,    RECOVER_FF_URL_DIRECTORY);
@@ -284,35 +548,31 @@ FF_UrlInternState FF_PredigestExtensionURLs(
     BYTE* et = dir_ptr + FF_URL_DIRECTORY::HEADER_SIZE;
     for (uint32_t i = 0; i < n_entries; ++i) {
         BYTE* ep = et + static_cast<Size>(i) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
-        STORE_U32(ep + FF_URL_DIRECTORY::URL_ENTRY_PRIOR_IDX,  entries[i].prior);
+        STORE_U32(ep + FF_URL_DIRECTORY::URL_ENTRY_PRIOR_IDX,  cs.entries[i].prior);
         STORE_U32(ep + FF_URL_DIRECTORY::URL_ENTRY_PAD,        0);
-        STORE_U64(ep + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET, entries[i].seg_off);
+        STORE_U64(ep + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET, cs.entries[i].seg_off);
     }
 
-    // ── Phase 6: Record URL directory offset in builder ──────────────────
-    // The directory's arena offset is recorded on the builder so that finalize()
-    // bakes it into FF_HEADER::URL_DIR_OFFSET. We also write it eagerly so
-    // mid-stream parsers see it before finalize.
+    // ── Phase 6: Record URL directory offset in builder ───────────────────────
     STORE_U64(base + FF_HEADER::URL_DIR_OFFSET, dir_off);
     builder.set_url_dir_offset(dir_off);
 
-    // ── Phase 7: Promote cached URLs to MODULE_IDX (EXT_REF MSB=1) ───────
-    // For each interned URL, probe the WAMR host's local module cache (memory
-    // + disk).  Hits become Path A: state.url_to_index[url] is rewritten with
-    // ff_make_module_ref(module_idx) and a registry entry is queued.
-    // Misses stay Path B (MSB=0) and fire an async AOT fetch so the *next*
-    // ingestion of this URL takes Path A.  This entire phase is
-    // non-blocking and compiled out when extensions are disabled.
+    // ── Phase 6.5: Build flat Robin Hood hash table ───────────────────────────
+    // Provides O(1) URL→entry_idx lookup for ingest workers.
+    // Currently parallel to url_to_index (Phase A); see FF_UrlHash.hpp.
+    state.url_hash_table.build(state.url_to_index);
+
+    // ── Phase 7: Promote cached URLs to MODULE_IDX (EXT_REF MSB=1) ───────────
 #ifdef FASTFHIR_ENABLE_EXTENSIONS
     {
         auto& host = FF_WasmExtensionHost::instance();
         struct Pending { uint32_t url_idx; std::string url; };
-        std::vector<Pending> active;   // hits → registry entries (Path A)
-        std::vector<Pending> pending;  // misses → async fetches  (Path B)
+        std::vector<Pending> active;
+        std::vector<Pending> pending;
 
         for (auto& [url, ref] : state.url_to_index) {
-            if (ref == FF_NULL_UINT32) continue;            // filtered
-            const uint32_t url_idx = ff_ext_ref_index(ref); // MSB still 0 here
+            if (ref == FF_NULL_UINT32) continue;
+            const uint32_t url_idx = ff_ext_ref_index(ref);
             if (host.has_module_cached(url)) {
                 active.push_back({url_idx, url});
             } else {
@@ -321,9 +581,6 @@ FF_UrlInternState FF_PredigestExtensionURLs(
         }
 
         if (!active.empty()) {
-            // Build the per-stream FF_MODULE_REGISTRY in arena-stable order
-            // and rewrite each Path A URL's ext_ref to MSB=1 | module_idx,
-            // where module_idx is the entry's row in the registry table.
             std::sort(active.begin(), active.end(),
                       [](const Pending& a, const Pending& b){ return a.url_idx < b.url_idx; });
             std::vector<std::pair<uint32_t, std::string>> reg_entries;
@@ -332,13 +589,11 @@ FF_UrlInternState FF_PredigestExtensionURLs(
                 const auto& a = active[module_idx];
                 state.url_to_index[a.url] = ff_make_module_ref(module_idx);
                 reg_entries.emplace_back(a.url_idx, a.url);
-                // Path A wins — drop the passive JSON copy to save memory.
                 state.passive_payload.erase(a.url);
             }
             host.write_module_registry(builder, reg_entries);
         }
 
-        // Fire-and-forget async resolution of cache misses.
         for (auto& p : pending) host.enqueue_resolve(p.url);
     }
 #endif

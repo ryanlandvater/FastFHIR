@@ -145,6 +145,7 @@ struct FF_Result
 // RECOVERY TAG REGISTRY (auto-generated from FHIR StructureDefinitions)
 // =====================================================================
 #include "../generated_src/FF_Recovery.hpp"
+#include "FF_UrlHash.hpp"
 
 // =====================================================================
 // TYPE SIZE CONSTANTS
@@ -768,6 +769,10 @@ struct FF_UrlInternState
     // containing this slice and store its Offset under the FF_EXTENSION VALUE
     // choice slot tagged RECOVER_FF_OPAQUE_JSON, preserving round-trip export.
     std::unordered_map<std::string, std::string> passive_payload;
+    // Flat Robin Hood hash table for O(1) URL→entry_idx lookup by ingest
+    // workers.  Populated after the predigestion pipeline drains.
+    // Parallel to url_to_index (Phase A); workers currently use url_to_index.
+    FF_UrlHashTable url_hash_table;
 };
 
 // =====================================================================
