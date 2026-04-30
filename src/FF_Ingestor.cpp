@@ -55,8 +55,7 @@ namespace FastFHIR::Ingest {
 //           consumer.  At this point `entries` is complete.
 //
 //  Phase 4  Main thread writes the FF_URL_DIRECTORY block from `entries`
-//           (identical to the old Phase 5), records the offset, builds the
-//           flat Robin Hood URL hash table, and returns.
+//           (identical to the old Phase 5), records the offset, and returns.
 //
 // Trie node layout
 // ────────────────
@@ -94,7 +93,13 @@ namespace FastFHIR::Ingest {
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ─── FNV-1a 64-bit hash — identical to FF_UrlHashTable::hash_url ─────────────
+// ─── FNV-1a 64-bit hash (ingestor-local) ─────────────────────────────────────
+// Used only for:
+//  1) producer-side tiny dedup cache (hash bucket check), and
+//  2) trie segment hashing in insert/find child operations.
+// Full URL -> ext_ref routing remains keyed by full URL string in
+// FF_UrlInternState::url_to_index (see consumer_process_batch and ingest
+// mapping lookup path).
 static constexpr uint64_t FNV1A_OFFSET = 14695981039346656037ULL;
 static constexpr uint64_t FNV1A_PRIME  = 1099511628211ULL;
 
@@ -112,7 +117,6 @@ static constexpr uint32_t DEDUP_SLOTS   = 64;    // thread-local LRU direct-mapp
 
 struct UrlBatchEntry {
     std::string_view url;       // points into a chunk_storage padded_string
-    uint64_t         hash;      // FNV-1a hash of url (pre-computed by producer)
 };
 
 struct UrlBatch {
@@ -142,7 +146,7 @@ struct ProducerCtx {
         const uint64_t slot = h & (DEDUP_SLOTS - 1u);
         if (dedup_cache[slot] == h) return; // thread-local cache hit — skip
         dedup_cache[slot] = h;
-        batch.entries[batch.count++] = {url, h};
+        batch.entries[batch.count++] = {url};
         if (batch.count == URL_BATCH_SIZE) {
             injector.push(batch);
             batch.count = 0;
@@ -409,12 +413,8 @@ static void consumer_process_batch(ConsumerState& cs, const UrlBatch& batch) {
         const UrlBatchEntry& e = batch.entries[i];
         if (e.url.empty()) continue;
 
-        // Allocate the owned key once and reuse it for both the dedup check
-        // and the map insert (avoids a second allocation after the check).
-        std::string url_str(e.url);
-
         // Dedup: skip URLs already interned (duplicate from another thread/chunk).
-        auto it = cs.state.url_to_index.find(url_str);
+        auto it = cs.state.url_to_index.find(e.url);
         if (it != cs.state.url_to_index.end()) continue;
 
         // Apply extension filter.
@@ -429,14 +429,14 @@ static void consumer_process_batch(ConsumerState& cs, const UrlBatch& batch) {
         }
 
         if (suppress) {
-            cs.state.url_to_index.emplace(std::move(url_str), FF_NULL_UINT32);
+            cs.state.url_to_index.emplace(e.url, FF_NULL_UINT32);
             continue;
         }
 
         // Insert into trie and record in url_to_index.
         const uint32_t idx = insert_url_to_trie(cs.trie_nodes, cs.entries,
                                                   cs.mem, cs.base, e.url);
-        cs.state.url_to_index.emplace(std::move(url_str), idx);
+        cs.state.url_to_index.emplace(e.url, idx);
         // passive_payload: not captured in pipeline mode
         // (WASM Path B feature is not yet fully implemented upstream)
     }
@@ -446,8 +446,32 @@ static void consumer_process_batch(ConsumerState& cs, const UrlBatch& batch) {
 // FF_PredigestExtensionURLs  —  public entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
+static void build_bundle_entry_chunks(
+    std::string_view json_payload,
+    std::vector<simdjson::padded_string>& chunk_storage)
+{
+    simdjson::ondemand::parser splitter;
+    simdjson::padded_string padded(json_payload.data(), json_payload.size());
+    simdjson::ondemand::document doc = splitter.iterate(padded);
+    std::string_view rtype;
+    if (doc["resourceType"].get_string().get(rtype) == simdjson::SUCCESS &&
+        rtype == "Bundle") {
+        simdjson::ondemand::array entry_arr;
+        if (doc["entry"].get_array().get(entry_arr) == simdjson::SUCCESS) {
+            for (auto item : entry_arr) {
+                std::string_view raw;
+                if (item.raw_json().get(raw) == simdjson::SUCCESS)
+                    chunk_storage.emplace_back(raw.data(), raw.size());
+            }
+        }
+    } else {
+        // Non-Bundle ingestion still uses prechunked mode: one chunk = full payload.
+        chunk_storage.emplace_back(json_payload.data(), json_payload.size());
+    }
+}
+
 FF_UrlInternState FF_PredigestExtensionURLs(
-    std::string_view       json_payload,
+    const std::vector<simdjson::padded_string>& prechunked_entries,
     Builder&               builder,
     FF_ExtensionFilterMode mode)
 {
@@ -455,33 +479,9 @@ FF_UrlInternState FF_PredigestExtensionURLs(
     const Memory& mem = builder.memory();
     uint8_t*      base = mem.base();
 
-    // ── Phase 1: Split payload into independently-scannable chunks ────────────
-    // Bundle: each "entry" array element becomes its own padded_string (one per
-    // thread).  Single resource: the whole payload is the single chunk.
-    //
-    // chunk_storage MUST outlive the consumer thread, because producer
-    // string_views point into these padded_strings.
-    std::vector<simdjson::padded_string> chunk_storage;
-    {
-        simdjson::ondemand::parser splitter;
-        simdjson::padded_string padded(json_payload.data(), json_payload.size());
-        simdjson::ondemand::document doc = splitter.iterate(padded);
-        std::string_view rtype;
-        if (doc["resourceType"].get_string().get(rtype) == simdjson::SUCCESS &&
-            rtype == "Bundle") {
-            simdjson::ondemand::array entry_arr;
-            if (doc["entry"].get_array().get(entry_arr) == simdjson::SUCCESS) {
-                for (auto item : entry_arr) {
-                    std::string_view raw;
-                    if (item.raw_json().get(raw) == simdjson::SUCCESS)
-                        chunk_storage.emplace_back(raw.data(), raw.size());
-                }
-            }
-        }
-        if (chunk_storage.empty())
-            chunk_storage.emplace_back(json_payload.data(), json_payload.size());
-    }
-    const size_t num_chunks = chunk_storage.size();
+    // Chunks are required and owned by the caller for the full predigest call.
+    if (prechunked_entries.empty()) return state;
+    const size_t num_chunks = prechunked_entries.size();
 
     // ── Phase 2 + 3: Pipeline — producers scan, consumer builds trie ─────────
     // The consumer thread starts *before* the producers to begin draining as
@@ -524,7 +524,7 @@ FF_UrlInternState FF_PredigestExtensionURLs(
             workers.emplace_back([&, t]() {
                 ProducerCtx ctx(batch_queue);
                 for (size_t i = t; i < num_chunks; i += nthreads)
-                    scan_chunk_producer(chunk_storage[i], ctx);
+                    scan_chunk_producer(prechunked_entries[i], ctx);
                 ctx.flush(); // push partial tail batch
             });
         }
@@ -534,8 +534,6 @@ FF_UrlInternState FF_PredigestExtensionURLs(
     // Signal consumer that no more batches will arrive.
     producers_done.store(true, std::memory_order_release);
     consumer_thread.join();
-
-    // chunk_storage goes out of scope here — all string_views are no longer needed.
 
     // ── Phase 4: Early-exit if no URLs were interned ──────────────────────────
     if (cs.entries.empty()) return state;
@@ -564,16 +562,11 @@ FF_UrlInternState FF_PredigestExtensionURLs(
     STORE_U64(base + FF_HEADER::URL_DIR_OFFSET, dir_off);
     builder.set_url_dir_offset(dir_off);
 
-    // ── Phase 6.5: Build flat Robin Hood hash table ───────────────────────────
-    // Provides O(1) URL→entry_idx lookup for ingest workers.
-    // Currently parallel to url_to_index (Phase A); see FF_UrlHash.hpp.
-    state.url_hash_table.build(state.url_to_index);
-
     // ── Phase 7: Promote cached URLs to MODULE_IDX (EXT_REF MSB=1) ───────────
 #ifdef FASTFHIR_ENABLE_EXTENSIONS
     {
         auto& host = FF_WasmExtensionHost::instance();
-        struct Pending { uint32_t url_idx; std::string url; };
+        struct Pending { uint32_t url_idx; std::string_view url; };
         std::vector<Pending> active;
         std::vector<Pending> pending;
 
@@ -595,13 +588,13 @@ FF_UrlInternState FF_PredigestExtensionURLs(
             for (uint32_t module_idx = 0; module_idx < active.size(); ++module_idx) {
                 const auto& a = active[module_idx];
                 state.url_to_index[a.url] = ff_make_module_ref(module_idx);
-                reg_entries.emplace_back(a.url_idx, a.url);
+                reg_entries.emplace_back(a.url_idx, std::string(a.url));
                 state.passive_payload.erase(a.url);
             }
             host.write_module_registry(builder, reg_entries);
         }
 
-        for (auto& p : pending) host.enqueue_resolve(p.url);
+        for (auto& p : pending) host.enqueue_resolve(std::string(p.url));
     }
 #endif
 
@@ -640,8 +633,7 @@ using IngestQueue = FIFO::Queue<IngestPending, 256>;
 // slot so exactly one thread claims each task — no coordinator needed.
 // =====================================================================
 struct BundleTask {
-    std::string_view payload;   // view into the original request JSON (zero-copy)
-    size_t           index;     // position within the preallocated inline entry array
+    size_t index; // position within the preallocated inline entry array
 };
 
 // CAPACITY=64 → up to 64 concurrent live nodes × 2000 entries/node = 128 000 entries.
@@ -768,17 +760,6 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
         auto& m_builder = request.builder;
         m_logger.log("[Info] FastFHIR: Allocating simdjson tape...");
 
-        // =====================================================================
-        // PREDIGESTION: scan extension URLs and build FF_URL_DIRECTORY
-        // Must run before any resource data is written to the arena.
-        // =====================================================================
-        FF_UrlInternState intern_state = FF_PredigestExtensionURLs(
-            std::string_view(request.json_string.data(), request.json_string.size()),
-            m_builder);
-
-        // Make intern_state available to all ingest workers via the Builder.
-        m_builder.set_intern_state(&intern_state);
-
         // Create a local parser instance for the main thread to handle the initial routing and metadata extraction
         auto& parser = m_parser_pool[0];
 
@@ -793,6 +774,24 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
         if (root_obj["resourceType"].get_string().get(root_type) != simdjson::SUCCESS) {
             return FF_Result{FF_FAILURE, "Invalid FHIR JSON: Missing resourceType at root."};
         }
+
+        std::vector<simdjson::padded_string> entry_chunks;
+        build_bundle_entry_chunks(
+            std::string_view(request.json_string.data(), request.json_string.size()),
+            entry_chunks);
+
+        // =====================================================================
+        // PREDIGESTION: scan extension URLs and build FF_URL_DIRECTORY
+        // Must run before any resource data is written to the arena.
+        // Reuse prebuilt bundle entry chunks when available.
+        // =====================================================================
+        FF_UrlInternState intern_state = FF_PredigestExtensionURLs(
+            entry_chunks,
+            m_builder,
+            FF_ExtensionFilterMode::FILTER_ALL_KNOWN);
+
+        // Make intern_state available to all ingest workers via the Builder.
+        m_builder.set_intern_state(&intern_state);
 
         // =====================================================================
         // FAST PATH: SINGLE RESOURCE (Non-Bundle)
@@ -837,6 +836,9 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
         // using MutableEntry assignments — no secondary allocation or pointer
         // chasing for the array elements themselves.
         size_t count = task_payloads.size();
+        if (entry_chunks.size() != count) {
+            return FF_Result{FF_FAILURE, "Bundle chunk/task count mismatch."};
+        }
         pre_bundle.entry = std::vector<BundleentryData>(count);
 
         // =====================================================================
@@ -875,14 +877,15 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
         {
             auto injector = bundle_queue.get_injector();
             for (size_t i = 0; i < count; ++i) {
-                injector.push(BundleTask{task_payloads[i], i});
+                injector.push(BundleTask{i});
             }
             // Injector destructs here; all slots are now PENDING.
         }
 
         std::vector<std::thread> workers;
+        auto* shared_chunks = &entry_chunks;
         for (unsigned int i = 0; i < m_num_threads; ++i) {
-            workers.emplace_back([this, i, &bundle_queue, entry_array, &m_builder]() mutable {
+            workers.emplace_back([this, i, &bundle_queue, shared_chunks, entry_array, &m_builder]() mutable {
                 auto& local_parser = m_parser_pool[i];
 
                 // Each worker gets its own Consumer starting at the queue head.
@@ -894,15 +897,12 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
                 while (!m_engine_faulted.load(std::memory_order_relaxed)) {
                     if (consumer.pop(task)) {
                         try {
-                            simdjson::padded_string       local_pad(task.payload);
-                            simdjson::ondemand::document  local_doc = local_parser.iterate(local_pad);
-                            simdjson::ondemand::object    local_obj = local_doc.get_object();
-
                             // Locate the pre-allocated inline arena slot for this entry.
                             Reflective::MutableEntry entry_wrapper = entry_array[task.index];
 
-                            // Write all entry fields into the existing inline block.
-                            // All objects are written inline — no heap indirection.
+                            // All tasks map 1:1 to prechunked payloads.
+                            simdjson::ondemand::document local_doc = local_parser.iterate((*shared_chunks)[task.index]);
+                            simdjson::ondemand::object local_obj = local_doc.get_object();
                             Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
 
                         } catch (const simdjson::simdjson_error& e) {

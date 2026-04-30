@@ -145,7 +145,6 @@ struct FF_Result
 // RECOVERY TAG REGISTRY (auto-generated from FHIR StructureDefinitions)
 // =====================================================================
 #include "../generated_src/FF_Recovery.hpp"
-#include "FF_UrlHash.hpp"
 
 // =====================================================================
 // TYPE SIZE CONSTANTS
@@ -751,7 +750,7 @@ struct FF_EXPORT FF_URL_DIRECTORY : DATA_BLOCK
 };
 
 // =====================================================================
-// URL INTERN STATE
+// URL INTERNAL STATE
 // =====================================================================
 // Produced by FF_PredigestExtensionURLs(); consumed read-only by ingest
 // workers.  FF_NULL_UINT32 as value means "filtered/known — skip block".
@@ -762,17 +761,16 @@ struct FF_EXPORT FF_URL_DIRECTORY : DATA_BLOCK
 // Use ff_ext_ref_is_module() / ff_ext_ref_index() helpers below.
 struct FF_UrlInternState
 {
-    std::unordered_map<std::string, uint32_t> url_to_index; // alias: url → ext_ref
+    // Keys are non-owning views into caller-owned prechunked JSON buffers.
+    // Lifetime contract: backing bytes must outlive any use of this state.
+    std::unordered_map<std::string_view, uint32_t> url_to_index; // alias: url → ext_ref
+    
     // Side table (Path B): for each URL whose ext_ref has MSB=0, the verbatim
     // JSON bytes of the original extension sub-tree.  Concurrent ingest
     // workers, when handed a Path B FF_EXTENSION, allocate an FF_STRING
     // containing this slice and store its Offset under the FF_EXTENSION VALUE
     // choice slot tagged RECOVER_FF_OPAQUE_JSON, preserving round-trip export.
-    std::unordered_map<std::string, std::string> passive_payload;
-    // Flat Robin Hood hash table for O(1) URL→entry_idx lookup by ingest
-    // workers.  Populated after the predigestion pipeline drains.
-    // Parallel to url_to_index (Phase A); workers currently use url_to_index.
-    FF_UrlHashTable url_hash_table;
+    std::unordered_map<std::string_view, std::string> passive_payload;
 };
 
 // =====================================================================

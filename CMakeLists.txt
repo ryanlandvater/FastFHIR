@@ -453,6 +453,8 @@ if(FASTFHIR_BUILD_TESTS)
         COMMAND ff_test_readme --filter "Example 9 — Compact nested choice/resource coverage")
     add_test(NAME "cpp_test_10"
         COMMAND ff_test_readme --filter "Example 10 — Reuse patient.ffhr for another surgical edit")
+    add_test(NAME "cpp_test_11"
+        COMMAND ff_test_readme --filter "Example 11 — Extension URL directory filtering and reconstruction")
 
     # Sequential ordering: each test depends on state written by earlier ones
     set_tests_properties(cpp_test_2  PROPERTIES DEPENDS cpp_test_1)
@@ -467,7 +469,7 @@ if(FASTFHIR_BUILD_TESTS)
     # Tests that write/read the same artifact files must share a lock name.
     set_tests_properties(
         cpp_getting_started
-        cpp_test_1 cpp_test_2 cpp_test_3 cpp_test_7 cpp_test_8 cpp_test_9 cpp_test_10
+        cpp_test_1 cpp_test_2 cpp_test_3 cpp_test_7 cpp_test_8 cpp_test_9 cpp_test_10 cpp_test_11
         PROPERTIES RESOURCE_LOCK ff_cpp_patient_ffhr)
     set_tests_properties(
         cpp_test_5 cpp_test_6

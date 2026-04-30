@@ -39,6 +39,7 @@ A Python binding is available — see [`The Python Readme`](python/README.md) fo
   - [Typed Resource Keys](#typed-resource-keys--fastfhirfieldsresourcefield)
   - [Checksum Algorithms](#checksum-algorithms)
   - [FHIR Versions](#fhir-versions)
+- [Extensions and modifierExtensions](#extensions-and-modifierextensions)
 - [Generator Architecture](#generator-architecture)
 - [Design Notes](#design-notes)
 - [License](#license)
@@ -792,6 +793,161 @@ The `FF_HEADER` checksum offset points to an `FF_CHECKSUM` block containing the 
 FHIR_VERSION_R4   // HL7 FHIR R4
 FHIR_VERSION_R5   // HL7 FHIR R5 (default)
 ```
+
+---
+
+## Extensions and modifierExtensions
+
+> FHIR extensibility specification: [https://www.hl7.org/fhir/extensibility.html](https://www.hl7.org/fhir/extensibility.html)
+
+FHIR `extension` and `modifierExtension` arrays contain elements whose `url` field identifies the
+extension type. FastFHIR resolves each URL at ingest time and takes one of three paths, encoded in
+a single 4-byte routing word called `EXT_REF` stored at the binary `FF_EXTENSION::EXT_REF` slot.
+
+The routing decision is made once — during predigestion — and baked into the binary record.
+Subsequent reads pay no URL-lookup cost at all.
+
+| Condition | `EXT_REF` value | Stored as |
+|---|---|---|
+| URL resolves to a **registered WASM module** | `MSB = 1` → `MODULE_IDX` | Decoded at near-native speed; module indexed in `FF_MODULE_REGISTRY` |
+| URL is **unknown** at ingest time | `MSB = 0` → `URL_IDX` | Raw opaque JSON blob; URL indexed in `FF_URL_DIRECTORY` |
+| URL is a **known/filtered** native extension | `FF_NULL_UINT32` (`0xFFFFFFFF`) | Block is suppressed — no arena bytes written |
+
+### EXT_REF bit layout
+
+```
+Bit 31 (MSB)  0 → URL_IDX    (index into FF_URL_DIRECTORY)
+              1 → MODULE_IDX (index into FF_MODULE_REGISTRY)
+Bits 30–0       index payload
+0xFFFFFFFF      sentinel — extension filtered/suppressed
+```
+
+Helper predicates in `FF_Primitives.hpp`:
+
+```cpp
+ff_ext_ref_is_module(ref)   // true  → WASM path (MSB = 1)
+ff_ext_ref_is_url(ref)      // true  → passive URL path (MSB = 0, not null)
+ff_ext_ref_index(ref)       // extract the lower 31-bit index
+```
+
+---
+
+### Condition 1 — Registered WASM modules — binary-speed extension codecs
+
+FastFHIR's most distinctive capability is its open **extension module registry** at
+[registry.fastfhir.org](https://registry.fastfhir.org). Any well-known custom extension — US Core
+race/ethnicity, clinical trial identifiers, organisation-specific profile extensions, and more —
+can have a published **WebAssembly codec module** that fully decodes the extension into typed
+binary fields, stored directly in the FastFHIR arena alongside natively generated resource data.
+
+When a module is registered for an extension URL, FastFHIR treats that extension with exactly the
+same performance and zero-copy access as a first-class built-in FHIR field. The ecosystem of
+available codecs grows over time as organisations and implementers publish modules to the registry.
+
+#### Why WebAssembly?
+
+Compiled WASM modules execute at **near-native speed** inside the FastFHIR runtime. A registered
+module replaces the generic JSON-blob fallback with a structured binary representation that is
+zero-copy readable — the same flat-buffer access pattern used by all first-class FHIR fields.
+Hot paths that access a registered extension field are indistinguishable in performance from
+accessing a built-in field like `Patient.birthDate`.
+
+#### Safe sandboxing
+
+WASM's linear-memory model provides **hard memory isolation** between the host FastFHIR runtime
+and any loaded codec module:
+
+- Each module operates exclusively within its own bounded linear memory region.
+  It cannot read or write FastFHIR's arena, stack, or other modules' memory.
+- There are no native pointers shared across the boundary — all data exchange goes through
+  explicitly typed host-import/export function calls.
+- A misbehaving or malicious codec module cannot corrupt the host process, escalate privileges,
+  or access patient data outside its own sandbox.
+- Modules may be loaded, unloaded, and replaced at runtime without restarting the host.
+
+This makes it safe to consume community-published modules from
+[registry.fastfhir.org](https://registry.fastfhir.org) — or a partner organisation's proprietary
+profile codec — without trusting their compiled binary with direct memory access.
+
+#### Module registration
+
+Codec modules are registered against their extension URL before ingestion begins. Once registered,
+`FF_PredigestExtensionURLs()` will route all matching URLs to that module, writing a
+`MODULE_IDX`-tagged `EXT_REF` into every matching extension block.
+
+```cpp
+FF_MODULE_REGISTRY::register_module(
+    "http://hl7.org/fhir/us/core/StructureDefinition/us-core-race",
+    load_wasm_module("codecs/us_core_race.wasm")
+);
+```
+
+Modules can also be pulled directly from the registry at runtime:
+
+```cpp
+FF_MODULE_REGISTRY::fetch_and_register(
+    "http://hl7.org/fhir/us/core/StructureDefinition/us-core-race",
+    "https://registry.fastfhir.org/modules/us-core-race/latest"
+);
+```
+
+---
+
+### Condition 2 — Unknown extensions — raw JSON preservation
+
+When an extension URL has not been seen before and no WASM module is registered for it, FastFHIR
+**does not silently drop the data**. The predigestion pipeline writes the URL into the stream-level
+`FF_URL_DIRECTORY` (a chained-segment trie that deduplicates shared URL prefixes) and stores the
+verbatim JSON sub-tree of the extension as an opaque blob. On export, the blob is re-emitted as
+valid FHIR JSON, ensuring a **lossless round-trip** even for extensions FastFHIR has never seen.
+
+`FF_URL_DIRECTORY` uses a chained-segment model so that many URLs sharing a common prefix (e.g.
+`http://example.org/fhir/StructureDefinition/`) store that prefix only once:
+
+```
+Entry 0: prior = NONE  seg = "http://example.org/fhir/StructureDefinition"
+Entry 1: prior = 0     seg = "race"      → full URL: "http://…/StructureDefinition/race"
+Entry 2: prior = 0     seg = "ethnicity" → full URL: "http://…/StructureDefinition/ethnicity"
+```
+
+Reconstruct any URL at read time:
+
+```cpp
+Parser parser(mem);
+if (parser.has_url_directory()) {
+    FF_URL_DIRECTORY dir = parser.url_directory();
+    uint32_t n = dir.entry_count(parser.data());
+    for (uint32_t i = 0; i < n; ++i)
+        std::cout << dir.get_url(parser.data(), i) << "\n";
+}
+```
+
+---
+
+### Condition 3 — Filtered / suppressed extensions
+
+Some extensions carry no clinical payload of interest (e.g. HL7-defined rendering hints,
+US Core race narrative text, data-absent-reason flags that are already captured natively).
+For these, FastFHIR writes `FF_NULL_UINT32` into `EXT_REF` at predigestion time and skips the
+block entirely during the ingest pass. No memory is allocated, no bytes are written to the arena,
+and no pointer appears in the binary record.
+
+The filter table is generated from the official HL7 FHIR spec bundles during code generation and
+is baked into the library. Extensions can also be registered as filtered at runtime before
+ingestion begins.
+
+| Filter mode | Effect |
+|---|---|
+| `FILTER_ALL_KNOWN` *(default)* | Suppresses all profile-native and HL7-informational-only extensions; unknown URLs are interned and preserved |
+| `FILTER_NONE` | Every URL is interned; nothing is suppressed |
+
+At ingest time `FF_PredigestExtensionURLs()` runs before any resource data is written. It scans
+the full payload, classifies each URL against the filter table, and builds the intern state
+consumed by all subsequent worker threads.
+
+`modifierExtension` elements follow **exactly the same** three-path routing as `extension`. A
+modifier extension with a registered module is decoded at full binary speed; one with an unknown
+URL is preserved as raw JSON with full fidelity.
 
 ---
 

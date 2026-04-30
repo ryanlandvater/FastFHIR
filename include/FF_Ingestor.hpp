@@ -39,7 +39,7 @@ enum class FF_ExtensionFilterMode {
 // Returns an immutable FF_UrlInternState for ingest workers.
 // =====================================================================
 FF_UrlInternState FF_PredigestExtensionURLs(
-    std::string_view        json_payload,
+    const std::vector<simdjson::padded_string>& prechunked_entries,
     Builder&                builder,
     FF_ExtensionFilterMode  mode = FF_ExtensionFilterMode::FILTER_ALL_KNOWN);
 

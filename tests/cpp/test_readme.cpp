@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #ifndef ASIO_STANDALONE
@@ -352,6 +353,60 @@ static constexpr std::string_view BUNDLE_COMPLEX_JSON = R"({
                             ]
                         },
                         "valueString": "nested-choice"
+                    }
+                ]
+            }
+        }
+    ]
+})";
+
+static constexpr std::string_view BUNDLE_EXTENSION_URLS_JSON = R"({
+    "resourceType": "Bundle",
+    "type": "collection",
+    "entry": [
+        {
+            "resource": {
+                "resourceType": "Patient",
+                "id": "p-ext-1",
+                "extension": [
+                    {
+                        "url": "http://example.org/fhir/StructureDefinition/shared-prefix/alpha",
+                        "valueString": "a-1"
+                    },
+                    {
+                        "url": "http://hl7.org/fhir/StructureDefinition/data-absent-reason",
+                        "valueCode": "unknown"
+                    }
+                ],
+                "modifierExtension": [
+                    {
+                        "url": "http://example.org/fhir/StructureDefinition/shared-prefix/alpha",
+                        "valueString": "a-2"
+                    },
+                    {
+                        "url": "http://example.org/fhir/StructureDefinition/shared-prefix/beta",
+                        "valueBoolean": true
+                    }
+                ]
+            }
+        },
+        {
+            "resource": {
+                "resourceType": "Observation",
+                "id": "obs-ext-1",
+                "status": "final",
+                "code": {
+                    "coding": [
+                        {
+                            "system": "http://loinc.org",
+                            "code": "8867-4"
+                        }
+                    ]
+                },
+                "extension": [
+                    {
+                        "url": "http://example.org/fhir/StructureDefinition/shared-prefix/beta",
+                        "valueString": "b-1"
                     }
                 ]
             }
@@ -1007,6 +1062,69 @@ static void test_9()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Example 11 — Extension URL_DIRECTORY reconstruction + filtering + dedup
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void test_11()
+{
+    static constexpr std::string_view kAlpha =
+        "http://example.org/fhir/StructureDefinition/shared-prefix/alpha";
+    static constexpr std::string_view kBeta =
+        "http://example.org/fhir/StructureDefinition/shared-prefix/beta";
+    static constexpr std::string_view kFilteredKnown =
+        "http://hl7.org/fhir/StructureDefinition/data-absent-reason";
+
+    auto mem = Memory::create(64 * 1024 * 1024);
+    Builder builder(mem, FHIR_VERSION_R5);
+    Ingest::Ingestor ingestor;
+
+    Reflective::ObjectHandle bundle_handle;
+    size_t count = 0;
+    auto result = ingestor.ingest(
+        {builder, Ingest::SourceType::FHIR_JSON, BUNDLE_EXTENSION_URLS_JSON},
+        bundle_handle, count);
+
+    REQUIRE(result.code == FF_SUCCESS, "extension bundle ingest failed: " + result.message);
+    REQUIRE(bundle_handle, "extension bundle handle is null");
+    REQUIRE(count >= 2, "expected at least two resources in extension bundle");
+
+    builder.set_root(bundle_handle);
+    auto view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(!view.empty(), "extension bundle finalize returned empty view");
+
+    Parser parser(mem);
+    REQUIRE(parser.has_url_directory(), "expected URL directory for extension-containing bundle");
+
+    auto dir = parser.url_directory();
+    const uint32_t n = dir.entry_count(parser.data());
+    REQUIRE(n > 0, "URL directory is unexpectedly empty");
+
+    std::unordered_map<std::string, uint32_t> reconstructed_counts;
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        std::string url = dir.get_url(parser.data(), i);
+        ++reconstructed_counts[url];
+    }
+
+    REQUIRE(reconstructed_counts.count(std::string(kAlpha)) == 1,
+            "missing reconstructed shared-prefix alpha URL");
+    REQUIRE(reconstructed_counts.at(std::string(kAlpha)) == 1,
+            "duplicate alpha URL entry detected in URL directory");
+
+    REQUIRE(reconstructed_counts.count(std::string(kBeta)) == 1,
+            "missing reconstructed shared-prefix beta URL");
+    REQUIRE(reconstructed_counts.at(std::string(kBeta)) == 1,
+            "duplicate beta URL entry detected in URL directory");
+
+    REQUIRE(reconstructed_counts.count(std::string(kFilteredKnown)) == 0,
+            "known filtered URL unexpectedly present in URL directory");
+
+    std::cout << "  url-directory entries : " << n << "\n";
+    std::cout << "  reconstructed alpha   : " << reconstructed_counts.at(std::string(kAlpha)) << "\n";
+    std::cout << "  reconstructed beta    : " << reconstructed_counts.at(std::string(kBeta)) << "\n";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1077,6 +1195,9 @@ int main(int argc, char **argv)
     maybe_run("Example 10 — Reuse patient.ffhr for another surgical edit",
               []
               { test_10(); });
+    maybe_run("Example 11 — Extension URL directory filtering and reconstruction",
+              []
+              { test_11(); });
 
     // Summary
     std::cout << "\n"

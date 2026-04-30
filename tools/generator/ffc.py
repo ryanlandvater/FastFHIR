@@ -137,7 +137,7 @@ INGEST_FIELD_OVERRIDES = {
         "            if (field.value().get_string().get(url_sv) == simdjson::SUCCESS) {{\n"
         "                const auto* istate = builder ? builder->intern_state() : nullptr;\n"
         "                if (istate) {{\n"
-        "                    auto it = istate->url_to_index.find(std::string(url_sv));\n"
+        "                    auto it = istate->url_to_index.find(url_sv);\n"
         "                    data.ext_ref = (it != istate->url_to_index.end()) ? it->second : FF_EXT_REF_NULL;\n"
         "                }} else {{\n"
         "                    data.ext_ref = FF_EXT_REF_NULL;\n"

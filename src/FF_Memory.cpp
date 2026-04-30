@@ -170,7 +170,7 @@ namespace FastFHIR
 
             if (ftruncate(os_fd, capacity) == -1)
             {
-                close(os_fd);
+                ::close(os_fd);
                 throw std::system_error(errno, std::system_category(), "POSIX ftruncate failed");
             }
 
@@ -178,7 +178,7 @@ namespace FastFHIR
                                                    MAP_SHARED, os_fd, 0));
             if (base_ptr == MAP_FAILED)
             {
-                close(os_fd);
+                ::close(os_fd);
                 throw std::system_error(errno, std::system_category(), "POSIX shared mmap failed");
             }
         }
@@ -263,7 +263,7 @@ namespace FastFHIR
         struct stat file_stat;
         if (fstat(os_fd, &file_stat) == -1)
         {
-            close(os_fd);
+            ::close(os_fd);
             throw std::system_error(errno, std::system_category(), "POSIX fstat failed");
         }
 
@@ -274,7 +274,7 @@ namespace FastFHIR
         {
             if (ftruncate(os_fd, capacity) == -1)
             {
-                close(os_fd);
+                ::close(os_fd);
                 throw std::system_error(errno, std::system_category(), "POSIX ftruncate failed");
             }
         }
@@ -283,7 +283,7 @@ namespace FastFHIR
                                                MAP_SHARED, os_fd, 0));
         if (base_ptr == MAP_FAILED)
         {
-            close(os_fd);
+            ::close(os_fd);
             throw std::system_error(errno, std::system_category(), "POSIX file mmap failed");
         }
 #endif
@@ -314,13 +314,14 @@ namespace FastFHIR
     // ============================================================================
 
     // Strict initialization order to match header declaration and prevent -Wreorder warnings
-    FF_Memory_t::FF_Memory_t(uint8_t *base, size_t capacity, void *fh, void *osh, int fd, const std::string &name) : m_name(name),
-                                                                                                                     m_capacity(capacity),
-                                                                                                                     m_base(base),
-                                                                                                                     m_head_ptr(reinterpret_cast<uint64_t *>(base + FF_HEADER::STREAM_SIZE)),
-                                                                                                                     m_file_handle(fh),
-                                                                                                                     m_os_handle(osh),
-                                                                                                                     m_os_fd(fd) {}
+    FF_Memory_t::FF_Memory_t(uint8_t *base, size_t capacity, void *fh, void *osh, int fd, const std::string &name) : 
+    m_name(name),
+    m_capacity(capacity),
+    m_base(base),
+    m_head_ptr(reinterpret_cast<uint64_t *>(base + FF_HEADER::STREAM_SIZE)),
+    m_file_handle(fh),
+    m_os_handle(osh),
+    m_os_fd(fd) {}
 
     void FF_Memory_t::close() noexcept
     {
