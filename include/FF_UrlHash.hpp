@@ -69,7 +69,7 @@ struct FF_UrlHashTable {
         _filled = 0;
 
         for (const auto& [url, idx] : m) {
-            if (idx == EMPTY) continue; // filtered URLs — skip
+            // filtered URLs -- skip
             _insert(hash_url(std::string_view(url)), idx);
         }
     }

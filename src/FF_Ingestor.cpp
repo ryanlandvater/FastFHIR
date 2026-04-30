@@ -256,6 +256,11 @@ static uint32_t trie_find_child(
         const TrieNode& n = nodes[nidx];
 
         // SIMD match mask restricted to valid children.
+        // All 8 lanes are always compared regardless of child_count: the SIMD
+        // path has fixed latency (no branch, no loop) which is faster than
+        // branching on child_count in the common case where FANOUT >= child_count.
+        // valid_mask zeroes out uninitialised slots so spurious matches never
+        // propagate to the memcmp verification.
         const uint8_t valid_mask = (n.child_count >= TRIE_FANOUT)
                                  ? static_cast<uint8_t>(0xFFu)
                                  : static_cast<uint8_t>((1u << n.child_count) - 1u);
@@ -404,11 +409,13 @@ static void consumer_process_batch(ConsumerState& cs, const UrlBatch& batch) {
         const UrlBatchEntry& e = batch.entries[i];
         if (e.url.empty()) continue;
 
-        // Allocate owned key once; used for dedup check and map insert.
+        // Allocate the owned key once and reuse it for both the dedup check
+        // and the map insert (avoids a second allocation after the check).
         std::string url_str(e.url);
 
-        // Dedup: skip URLs already in the map.
-        if (cs.state.url_to_index.count(url_str)) continue;
+        // Dedup: skip URLs already interned (duplicate from another thread/chunk).
+        auto it = cs.state.url_to_index.find(url_str);
+        if (it != cs.state.url_to_index.end()) continue;
 
         // Apply extension filter.
         bool suppress = false;
