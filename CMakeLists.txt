@@ -374,9 +374,7 @@ if(FASTFHIR_BUILD_INGESTOR)
         )
         target_link_libraries(ff_ingest 
             PRIVATE 
-                $<TARGET_OBJECTS:fastfhir_obj>
-                $<TARGET_OBJECTS:fastfhir_ingest_obj>
-                simdjson::simdjson
+                fastfhir_ingestor
                 OpenSSL::Crypto
         )
 
@@ -449,9 +447,7 @@ if(FASTFHIR_BUILD_TESTS)
 
     target_link_libraries(ff_test_readme
         PRIVATE
-            $<TARGET_OBJECTS:fastfhir_obj>
-            $<TARGET_OBJECTS:fastfhir_ingest_obj>
-            simdjson::simdjson
+            fastfhir_ingestor
             OpenSSL::Crypto
     )
 

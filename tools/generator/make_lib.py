@@ -3,6 +3,18 @@ import json
 import shutil
 import re
 
+def _write_if_changed(path: str, content: str, encoding: str = "utf-8") -> None:
+    """Write only when content has changed, preserving mtime on no-op regeneration."""
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding=encoding) as fh:
+                if fh.read() == content:
+                    return
+        except OSError:
+            pass
+    with open(path, "w", encoding=encoding) as fh:
+        fh.write(content)
+
 if __package__:
 	from . import fetch_specs
 	from . import ffd
@@ -153,8 +165,7 @@ def generate_known_extensions(versions, specs_dir="fhir_specs", output_dir="gene
 
 	os.makedirs(output_dir, exist_ok=True)
 	out_path = os.path.join(output_dir, "FF_KnownExtensions.hpp")
-	with open(out_path, "w", encoding="utf-8") as fh:
-		fh.write(hpp)
+	_write_if_changed(out_path, hpp, encoding="utf-8")
 	print(f"-- Emitted {out_path} "
 	      f"({len(all_known_sorted)} known, {len(native_sorted)} native)")
 

@@ -16,6 +16,20 @@ import os
 import json
 import re
 
+def _write_if_changed(path: str, content: str, encoding: str = "utf-8") -> None:
+    """Write `content` to `path` only when the content has actually changed.
+    Skipping the write preserves the file's mtime so the C++ build system
+    does not consider dependent translation units stale on a no-op regeneration."""
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding=encoding) as fh:
+                if fh.read() == content:
+                    return
+        except OSError:
+            pass
+    with open(path, "w", encoding=encoding) as fh:
+        fh.write(content)
+
 PRODUCTION_TYPES = [
     "Extension", 
     "Coding", "CodeableConcept", "Quantity", "Identifier",
@@ -1189,8 +1203,7 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
     lines.append("inline constexpr RECOVERY_TAG ToArrayTag(RECOVERY_TAG base_tag) {return static_cast<RECOVERY_TAG>(base_tag | RECOVER_ARRAY_BIT);}")
 
     out_path = os.path.join(output_dir, "FF_Recovery.hpp")
-    with open(out_path, "w") as f:
-        f.write("\n".join(lines))
+    _write_if_changed(out_path, "\n".join(lines))
     print(f"Generated {out_path}")
 
 # =====================================================================
@@ -1767,8 +1780,8 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
 
     out_hpp = os.path.join(output_dir, "FF_IngestMappings.hpp")
     out_cpp = os.path.join(output_dir, "FF_IngestMappings.cpp")
-    with open(out_hpp, "w") as f: f.write(hpp)
-    with open(out_cpp, "w") as f: f.write(cpp)
+    _write_if_changed(out_hpp, hpp)
+    _write_if_changed(out_cpp, cpp)
     print(f"Generated {out_hpp} and {out_cpp}")
 
 # =====================================================================
@@ -2150,9 +2163,9 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
         int_head += int_h
         cpp_head += c
     
-    with open(os.path.join(output_dir, "FF_DataTypes.hpp"), "w") as f: f.write(hpp_head)
-    with open(os.path.join(output_dir, "FF_DataTypes_internal.hpp"), "w") as f: f.write(int_head)
-    with open(os.path.join(output_dir, "FF_DataTypes.cpp"), "w") as f: f.write(cpp_head)
+    _write_if_changed(os.path.join(output_dir, "FF_DataTypes.hpp"), hpp_head)
+    _write_if_changed(os.path.join(output_dir, "FF_DataTypes_internal.hpp"), int_head)
+    _write_if_changed(os.path.join(output_dir, "FF_DataTypes.cpp"), cpp_head)
 
     # Pre-load all resource bundles once (once per version, not once per resource)
     resource_bundles = []
@@ -2189,12 +2202,12 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
                 for field in blk['layout']:
                     all_field_names.add(field['orig_name'])
             public_hpp, internal_hpp, cpp_body = generate_cxx_for_blocks(blocks, versions)
-            with open(os.path.join(output_dir, f"FF_{res}.hpp"), "w") as f:
-                f.write(f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n\n{public_hpp}")
-            with open(os.path.join(output_dir, f"FF_{res}_internal.hpp"), "w") as f:
-                f.write(f"{auto_header}#pragma once\n#include \"FF_DataTypes_internal.hpp\"\n#include \"FF_{res}.hpp\"\n\n{internal_hpp}")
-            with open(os.path.join(output_dir, f"FF_{res}.cpp"), "w") as f:
-                f.write(f"{auto_header}\n#include \"FF_{res}_internal.hpp\"\n#include \"../include/FF_Utilities.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n{cpp_body}")
+            _write_if_changed(os.path.join(output_dir, f"FF_{res}.hpp"),
+                f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n\n{public_hpp}")
+            _write_if_changed(os.path.join(output_dir, f"FF_{res}_internal.hpp"),
+                f"{auto_header}#pragma once\n#include \"FF_DataTypes_internal.hpp\"\n#include \"FF_{res}.hpp\"\n\n{internal_hpp}")
+            _write_if_changed(os.path.join(output_dir, f"FF_{res}.cpp"),
+                f"{auto_header}\n#include \"FF_{res}_internal.hpp\"\n#include \"../include/FF_Utilities.hpp\"\n#include \"FF_Dictionary.hpp\"\n\n{cpp_body}")
 
     field_keys_hpp = (
         f"{auto_header}#pragma once\n"
@@ -2268,8 +2281,8 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     )
 
     # Write Field Keys to map serialized field names to their recovery tags, offsets, and metadata
-    with open(os.path.join(output_dir, "FF_FieldKeys.hpp"), "w") as f: f.write(field_keys_hpp)
-    with open(os.path.join(output_dir, "FF_FieldKeys.cpp"), "w") as f: f.write(field_keys_cpp)
+    _write_if_changed(os.path.join(output_dir, "FF_FieldKeys.hpp"), field_keys_hpp)
+    _write_if_changed(os.path.join(output_dir, "FF_FieldKeys.cpp"), field_keys_cpp)
 
     # Emit Python field modules first (creates ADDRESS, BUNDLE, etc.)
     emit_python_fields(python_resource_map, output_dir)
@@ -2284,17 +2297,15 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
 
     # Generate reflection dispatch files
     reflection_hpp, reflection_cpp = generate_reflection_dispatch(sorted(reflected_block_names), resources)
-    with open(os.path.join(output_dir, "FF_Reflection.hpp"), "w") as f:
-        f.write(reflection_hpp)
-    with open(os.path.join(output_dir, "FF_Reflection.cpp"), "w") as f:
-        f.write(reflection_cpp)
+    _write_if_changed(os.path.join(output_dir, "FF_Reflection.hpp"), reflection_hpp)
+    _write_if_changed(os.path.join(output_dir, "FF_Reflection.cpp"), reflection_cpp)
     
     # FF_AllTypes.hpp is the internal aggregator — includes all _internal variants
     all_types_hpp = f"{auto_header}#pragma once\n#include \"FF_DataTypes_internal.hpp\"\n#include \"FF_FieldKeys.hpp\"\n#include \"FF_Reflection.hpp\"\n"
     for res in generated_resources:
         all_types_hpp += f"#include \"FF_{res}_internal.hpp\"\n"
     all_types_hpp += "\n"
-    with open(os.path.join(output_dir, "FF_AllTypes.hpp"), "w") as f: f.write(all_types_hpp)
+    _write_if_changed(os.path.join(output_dir, "FF_AllTypes.hpp"), all_types_hpp)
 
     # Generate the RECOVERY enum from all discovered block paths
     generate_recovery_header(PRODUCTION_TYPES, resources, all_block_paths, output_dir)
@@ -2570,8 +2581,7 @@ def emit_wasm_codec(ext_url, master_blocks, ext_path, output_dir):
 
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{safe_name}_codec.c")
-    with open(out_path, "w", encoding="utf-8") as fh:
-        fh.write(c_src)
+    _write_if_changed(out_path, c_src)
     print(f"-- [wasm] Emitted {out_path}")
 
 

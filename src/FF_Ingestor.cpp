@@ -13,6 +13,7 @@
 #include "FF_Extensions.hpp"
 #endif
 #include <cctype>
+#include <deque>
 #include <thread>
 #include <vector>
 #include <algorithm>
@@ -622,7 +623,8 @@ struct IngestPending {
     IngestPendingKind          kind     = IngestPendingKind::BlockField;
     Reflective::ObjectHandle   parent;                            // target parent object
     FF_FieldKey                key;                               // field within parent to write
-    std::string                payload;                           // owned JSON for this value
+    std::string_view           payload;                           // view into IngestContext::backing (ArrayField)
+                                                                  // or directly into caller buffer (BlockField)
     RECOVERY_TAG               recovery = FF_RECOVER_UNDEFINED;  // dispatch recovery tag
 };
 
@@ -635,6 +637,8 @@ struct IngestContext {
     IngestQueue::Injector         injector;
     IngestQueue::Consumer         consumer;
     ConcurrentLogger*             logger;
+    std::deque<std::string>       backing;  // owns synthetic JSON strings for ArrayField items;
+                                            // deque guarantees stable references after push_back
 
     IngestContext(Builder& b, simdjson::ondemand::parser& p, ConcurrentLogger* lg)
         : builder(b), parser(p), queue(),
@@ -646,7 +650,7 @@ static void enqueue_ingest_pending(IngestContext& ctx, IngestPending item) {
 }
 
 static FF_Result process_ingest_pending(IngestPending& pending, IngestContext& ctx) {
-    simdjson::padded_string safe_json(pending.payload);
+    simdjson::padded_string safe_json(pending.payload.data(), pending.payload.size());
     try {
         if (pending.kind == IngestPendingKind::BlockField) {
             simdjson::ondemand::document doc = ctx.parser.iterate(safe_json);
@@ -976,20 +980,25 @@ FF_Result Ingestor::insert_at_field_json(Reflective::ObjectHandle& parent_object
         }
         owner_json += "}";
 
+        // Transfer ownership into IngestContext::backing so the string_view in
+        // IngestPending remains valid through queue drain.  deque guarantees
+        // stable element addresses regardless of subsequent push_backs.
+        ctx.backing.push_back(std::move(owner_json));
         enqueue_ingest_pending(ctx, IngestPending{
             IngestPendingKind::ArrayField,
             parent_object,
             key,
-            std::move(owner_json),
+            std::string_view(ctx.backing.back()),
             key.owner_recovery,
         });
     } else {
-        // Block field path.
+        // Block field path — payload is a view into the caller's buffer, which
+        // is guaranteed valid for the entire duration of insert_at_field_json.
         enqueue_ingest_pending(ctx, IngestPending{
             IngestPendingKind::BlockField,
             parent_object,
             key,
-            std::string(payload),
+            payload,
             key.child_recovery,
         });
     }
