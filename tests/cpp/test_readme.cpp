@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #ifndef ASIO_STANDALONE
@@ -234,6 +235,29 @@ static fs::path find_patient_json()
     return create_runtime_patient_json_fixture();
 }
 
+// Returns the path to the first Synthea FHIR R4 bundle JSON available, or an
+// empty path if FASTFHIR_SYNTHEA_DIR was not set at build time or the data was
+// not downloaded.  Synthea output lands in a 'fhir/' sub-directory of the
+// extracted ZIP; we probe both the sub-directory and the root.
+#ifndef FASTFHIR_SYNTHEA_DIR
+#  define FASTFHIR_SYNTHEA_DIR ""
+#endif
+static fs::path find_synthea_bundle_json()
+{
+    const fs::path synthea_root(FASTFHIR_SYNTHEA_DIR);
+    if (synthea_root.empty()) return {};
+    for (const auto &dir : {synthea_root / "fhir", synthea_root})
+    {
+        if (!fs::is_directory(dir)) continue;
+        for (const auto &entry : fs::directory_iterator(dir))
+        {
+            if (entry.path().extension() == ".json")
+                return entry.path();
+        }
+    }
+    return {};
+}
+
 static void cleanup_artifacts()
 {
     for (auto &p : {PATIENT_FFHR, BUNDLE_FFHR, PATIENT_COMPACT_FFHR,
@@ -352,6 +376,60 @@ static constexpr std::string_view BUNDLE_COMPLEX_JSON = R"({
                             ]
                         },
                         "valueString": "nested-choice"
+                    }
+                ]
+            }
+        }
+    ]
+})";
+
+static constexpr std::string_view BUNDLE_EXTENSION_URLS_JSON = R"({
+    "resourceType": "Bundle",
+    "type": "collection",
+    "entry": [
+        {
+            "resource": {
+                "resourceType": "Patient",
+                "id": "p-ext-1",
+                "extension": [
+                    {
+                        "url": "http://example.org/fhir/StructureDefinition/shared-prefix/alpha",
+                        "valueString": "a-1"
+                    },
+                    {
+                        "url": "http://hl7.org/fhir/StructureDefinition/data-absent-reason",
+                        "valueCode": "unknown"
+                    }
+                ],
+                "modifierExtension": [
+                    {
+                        "url": "http://example.org/fhir/StructureDefinition/shared-prefix/alpha",
+                        "valueString": "a-2"
+                    },
+                    {
+                        "url": "http://example.org/fhir/StructureDefinition/shared-prefix/beta",
+                        "valueBoolean": true
+                    }
+                ]
+            }
+        },
+        {
+            "resource": {
+                "resourceType": "Observation",
+                "id": "obs-ext-1",
+                "status": "final",
+                "code": {
+                    "coding": [
+                        {
+                            "system": "http://loinc.org",
+                            "code": "8867-4"
+                        }
+                    ]
+                },
+                "extension": [
+                    {
+                        "url": "http://example.org/fhir/StructureDefinition/shared-prefix/beta",
+                        "valueString": "b-1"
                     }
                 ]
             }
@@ -1007,6 +1085,115 @@ static void test_9()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Example 11 — Extension URL_DIRECTORY reconstruction + filtering + dedup
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void test_11()
+{
+    static constexpr std::string_view kAlpha =
+        "http://example.org/fhir/StructureDefinition/shared-prefix/alpha";
+    static constexpr std::string_view kBeta =
+        "http://example.org/fhir/StructureDefinition/shared-prefix/beta";
+    static constexpr std::string_view kFilteredKnown =
+        "http://hl7.org/fhir/StructureDefinition/data-absent-reason";
+
+    auto mem = Memory::create(64 * 1024 * 1024);
+    Builder builder(mem, FHIR_VERSION_R5);
+    Ingest::Ingestor ingestor;
+
+    Reflective::ObjectHandle bundle_handle;
+    size_t count = 0;
+    auto result = ingestor.ingest(
+        {builder, Ingest::SourceType::FHIR_JSON, BUNDLE_EXTENSION_URLS_JSON},
+        bundle_handle, count);
+
+    REQUIRE(result.code == FF_SUCCESS, "extension bundle ingest failed: " + result.message);
+    REQUIRE(bundle_handle, "extension bundle handle is null");
+    REQUIRE(count >= 2, "expected at least two resources in extension bundle");
+
+    builder.set_root(bundle_handle);
+    auto view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(!view.empty(), "extension bundle finalize returned empty view");
+
+    Parser parser(mem);
+    REQUIRE(parser.has_url_directory(), "expected URL directory for extension-containing bundle");
+
+    auto dir = parser.url_directory();
+    const uint32_t n = dir.entry_count(parser.data());
+    REQUIRE(n > 0, "URL directory is unexpectedly empty");
+
+    std::unordered_map<std::string, uint32_t> reconstructed_counts;
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        std::string url = dir.get_url(parser.data(), i);
+        ++reconstructed_counts[url];
+    }
+
+    REQUIRE(reconstructed_counts.count(std::string(kAlpha)) == 1,
+            "missing reconstructed shared-prefix alpha URL");
+    REQUIRE(reconstructed_counts.at(std::string(kAlpha)) == 1,
+            "duplicate alpha URL entry detected in URL directory");
+
+    REQUIRE(reconstructed_counts.count(std::string(kBeta)) == 1,
+            "missing reconstructed shared-prefix beta URL");
+    REQUIRE(reconstructed_counts.at(std::string(kBeta)) == 1,
+            "duplicate beta URL entry detected in URL directory");
+
+    REQUIRE(reconstructed_counts.count(std::string(kFilteredKnown)) == 0,
+            "known filtered URL unexpectedly present in URL directory");
+
+    std::cout << "  url-directory entries : " << n << "\n";
+    std::cout << "  reconstructed alpha   : " << reconstructed_counts.at(std::string(kAlpha)) << "\n";
+    std::cout << "  reconstructed beta    : " << reconstructed_counts.at(std::string(kBeta)) << "\n";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Example 12 — Synthea R4 patient bundle ingest + round-trip
+// ─────────────────────────────────────────────────────────────────────────────
+// Uses a real Synthea-generated patient bundle (downloaded at configure time).
+// Verifies that a rich real-world Bundle — with many extensions, nested
+// resources, and clinical data — ingests cleanly and round-trips through seal
+// + re-parse without data loss.
+// Skipped gracefully if FASTFHIR_SYNTHEA_DIR was not provided at build time.
+static void test_synthea_bundle()
+{
+    const fs::path synthea_json = find_synthea_bundle_json();
+    if (synthea_json.empty())
+    {
+        std::cout << "  [SKIP] Synthea fixture not available "
+                  << "(set FASTFHIR_DOWNLOAD_SYNTHEA=ON and reconfigure)\n";
+        return;
+    }
+    std::cout << "  fixture : " << synthea_json.filename().string() << "\n";
+
+    const std::string json_str = slurp(synthea_json);
+    // Synthea bundles can be large (>10 MB of FHIR JSON); 256 MB arena is ample.
+    auto mem = Memory::create(256 * 1024 * 1024);
+    Builder builder(mem, FHIR_VERSION_R5);
+    Ingest::Ingestor ingestor;
+
+    Reflective::ObjectHandle root_handle;
+    size_t count = 0;
+    auto result = ingestor.ingest(
+        {builder, Ingest::SourceType::FHIR_JSON, json_str},
+        root_handle, count);
+    REQUIRE(result.code == FF_SUCCESS, "Synthea ingest failed: " + result.message);
+    REQUIRE(root_handle, "root handle is null after Synthea ingest");
+    REQUIRE(count > 1, "expected multiple resources in Synthea bundle");
+    std::cout << "  ingested resources : " << count << "\n";
+
+    // Seal and round-trip through the parser.
+    builder.set_root(root_handle);
+    auto view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(!view.empty(), "finalize returned empty view");
+    std::cout << "  sealed bytes       : " << view.size() << "\n";
+
+    auto reparse_root = Parser(mem).root();
+    REQUIRE(reparse_root, "re-parsed root is null after Synthea ingest");
+    std::cout << "  round-trip         : ok\n";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1023,7 +1210,11 @@ int main(int argc, char **argv)
         }
     }
 
-    cleanup_artifacts();
+    // Only wipe artifacts when running the full suite.  Filtered CTest runs
+    // (e.g. --filter "Example 2 …") must NOT delete files written by earlier
+    // tests in the chain — test_1 writes patient.ffhr; test_2..10 depend on it.
+    if (filter.empty())
+        cleanup_artifacts();
 
     fs::path patient_json;
     try
@@ -1077,6 +1268,12 @@ int main(int argc, char **argv)
     maybe_run("Example 10 — Reuse patient.ffhr for another surgical edit",
               []
               { test_10(); });
+    maybe_run("Example 11 — Extension URL directory filtering and reconstruction",
+              []
+              { test_11(); });
+    maybe_run("Example 12 — Synthea R4 patient bundle ingest and round-trip",
+              []
+              { test_synthea_bundle(); });
 
     // Summary
     std::cout << "\n"

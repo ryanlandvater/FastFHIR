@@ -32,8 +32,10 @@ message(STATUS "FastFHIR version: ${FASTFHIR_VERSION_MAJOR}.${FASTFHIR_VERSION_M
 
 
 # Define the project name, semantic version, and enabled language(s). 
+set(FASTFHIR_VERSION
+    "${FASTFHIR_VERSION_MAJOR}.${FASTFHIR_VERSION_MINOR}.${FASTFHIR_VERSION_BUILD}")
 project(FastFHIR
-    VERSION ${FASTFHIR_VERSION_MAJOR}.${FASTFHIR_VERSION_MINOR}.${FASTFHIR_VERSION_BUILD}
+    VERSION ${FASTFHIR_VERSION}
     LANGUAGES CXX
 )
 
@@ -401,6 +403,33 @@ if(FASTFHIR_BUILD_TESTS)
     endif()
 
     add_executable(ff_test_readme tests/cpp/test_readme.cpp)
+
+    # ── Synthea sample FHIR R4 data ──────────────────────────────────────────
+    # Downloaded once at configure time and cached in the build directory.
+    # Provides real-world patient bundles with extensions, nested resources,
+    # and clinical variety that the inline test fixtures cannot replicate.
+    option(FASTFHIR_DOWNLOAD_SYNTHEA "Download Synthea R4 sample data at configure time" ON)
+    set(_SYNTHEA_ZIP "${CMAKE_CURRENT_BINARY_DIR}/synthea_sample_data_fhir_latest.zip")
+    set(_SYNTHEA_DIR "${CMAKE_CURRENT_BINARY_DIR}/synthea_fhir_r4")
+    if(FASTFHIR_DOWNLOAD_SYNTHEA AND NOT EXISTS "${_SYNTHEA_DIR}/fhir")
+        message(STATUS "FastFHIR: Downloading Synthea sample FHIR R4 data...")
+        file(DOWNLOAD
+            "https://synthetichealth.github.io/synthea-sample-data/downloads/latest/synthea_sample_data_fhir_latest.zip"
+            "${_SYNTHEA_ZIP}"
+            SHOW_PROGRESS
+            STATUS _SYNTHEA_DL_STATUS
+        )
+        list(GET _SYNTHEA_DL_STATUS 0 _SYNTHEA_DL_RESULT)
+        if(_SYNTHEA_DL_RESULT EQUAL 0)
+            file(ARCHIVE_EXTRACT INPUT "${_SYNTHEA_ZIP}" DESTINATION "${_SYNTHEA_DIR}")
+            message(STATUS "FastFHIR: Synthea data extracted to ${_SYNTHEA_DIR}")
+        else()
+            list(GET _SYNTHEA_DL_STATUS 1 _SYNTHEA_DL_ERROR)
+            message(WARNING "FastFHIR: Synthea download failed (${_SYNTHEA_DL_ERROR}). Synthea tests will be skipped.")
+        endif()
+    endif()
+    # ─────────────────────────────────────────────────────────────────────────
+
     target_include_directories(ff_test_readme
         PRIVATE
             ${FASTFHIR_INCLUDE_DIR}
@@ -411,6 +440,7 @@ if(FASTFHIR_BUILD_TESTS)
         PRIVATE
             ASIO_STANDALONE
             FASTFHIR_TEST_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/tests/cpp"
+            $<$<BOOL:${FASTFHIR_DOWNLOAD_SYNTHEA}>:FASTFHIR_SYNTHEA_DIR="${_SYNTHEA_DIR}">
     )
 
     if(WIN32)
@@ -453,6 +483,10 @@ if(FASTFHIR_BUILD_TESTS)
         COMMAND ff_test_readme --filter "Example 9 — Compact nested choice/resource coverage")
     add_test(NAME "cpp_test_10"
         COMMAND ff_test_readme --filter "Example 10 — Reuse patient.ffhr for another surgical edit")
+    add_test(NAME "cpp_test_11"
+        COMMAND ff_test_readme --filter "Example 11 — Extension URL directory filtering and reconstruction")
+    add_test(NAME "cpp_test_synthea"
+        COMMAND ff_test_readme --filter "Example 12 — Synthea R4 patient bundle ingest and round-trip")
 
     # Sequential ordering: each test depends on state written by earlier ones
     set_tests_properties(cpp_test_2  PROPERTIES DEPENDS cpp_test_1)
@@ -467,7 +501,7 @@ if(FASTFHIR_BUILD_TESTS)
     # Tests that write/read the same artifact files must share a lock name.
     set_tests_properties(
         cpp_getting_started
-        cpp_test_1 cpp_test_2 cpp_test_3 cpp_test_7 cpp_test_8 cpp_test_9 cpp_test_10
+        cpp_test_1 cpp_test_2 cpp_test_3 cpp_test_7 cpp_test_8 cpp_test_9 cpp_test_10 cpp_test_11
         PROPERTIES RESOURCE_LOCK ff_cpp_patient_ffhr)
     set_tests_properties(
         cpp_test_5 cpp_test_6

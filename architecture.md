@@ -1090,6 +1090,142 @@ generator-only change.
 
 ---
 
+## 10. Extension Subsystem: Compiled, WASM, and Passive Routing
+
+Extensions are the most dynamic part of FHIR — a resource may carry metadata in fields not defined by the base specification. FastFHIR handles three categories of extensions, determined at **predigestion time** and baked into each `FF_EXTENSION` instance via a 4-byte routing word (`EXT_REF`). The routing decision is made once, during `FF_PredigestExtensionURLs()` (Phase 7 of ingest), and the outcome is stored; at read time, there is no re-lookup, no re-dispatch — the path is fixed per instance.
+
+### 10.1 Five-Tier Extension Routing
+
+FastFHIR routes extensions through one of five outcomes, each with distinct storage and access characteristics:
+
+| EXT_REF value | Registry KIND | Payload storage | Access path | Performance | Use case |
+|---|---|---|---|---|---|
+| `0xFFFFFFFF` | — | None (suppressed) | None | Zero bytes, zero allocation | Known safe/built-in extensions in filter list |
+| MSB=1, KIND=STATIC | — | Typed arena block (C++ struct from IG SD) | Native-speed zero-copy `TypeTraits<CompiledExtensionData>::read()` | Same as built-in resources | Official HL7 extensions (us-core-race, au-core-* …) |
+| MSB=0 | — | Raw opaque JSON blob | Passive verbatim export via `FF_URL_DIRECTORY` | String-copy on export | Vendor, experimental, or user-defined extensions |
+| MSB=1, KIND=DYNAMIC | — | WASM-encoded bytes | WAMR runtime decode via `ext_decode()` triplet | ~native speed + staging overhead | Third-party/community modules with codec contract |
+| (inline scalar tag) | — | Primitive value (inline) | Direct load from V-Table | O(1) in-place | Simple scalar-valued extensions |
+
+Four of these (suppressed, STATIC, raw-JSON, DYNAMIC) are discriminated by `EXT_REF` (Path B vs A, plus a 4-byte null sentinel); the fifth (inline scalar) is identified by the RECOVERY_TAG on the `VALUE` ChoiceEntry and requires no registry lookup. The routing contract is deterministic: given an extension URL and the stream's compiled filter/registry tables, the outcome is unique and fixed for all time.
+
+### 10.2 STATIC Extension Payload Binary Layout
+
+Compiled (STATIC) extensions are generated from official FHIR StructureDefinitions (e.g. those in HL7's US Core or UK Core Implementation Guides) and emit the same binary blocks as built-in FHIR resources: a V-Table with fixed-stride slots, followed by optional payload (arrays, strings, nested blocks).
+
+**Payload storage:** The encoded extension struct is stored as an offset-addressed arena block (like `Bundle.entry.resource`). Its byte offset is placed in the `VALUE` field of the `FF_EXTENSION` ChoiceEntry:
+
+```
+FF_EXTENSION::VALUE ChoiceEntry {
+    raw_bits(8) = <Offset to compiled extension arena block>
+    recovery(2) = RECOVER_FF_<COMPILED_EXTENSION_NAME>
+}
+```
+
+**Generator responsibility:** The generator emits:
+- A typed C++ struct (e.g. `FF_USCoreRaceExtensionData`) matching the IG's StructureDefinition.
+- A recovery tag (e.g. `RECOVER_FF_USCORERACE_EXTENSION`), allocated from the reserved extension tag range (0x7000–0x7FFF).
+- A `TypeTraits<FF_USCoreRaceExtensionData>` specialisation with `size()`, `store()`, `read()`, and `recovery` constant.
+- An entry in `FF_MODULE_REGISTRY` with KIND=STATIC, pointing to the compiled extension's recovery tag.
+
+**Read-time access:** The parser uses `Node::resolve_choice()` on the VALUE field, reads the recovery tag, and dispatches to the generated `TypeTraits<>::read()` — identical to the path for built-in resources. No WAMR staging, no callbacks; execution is native-speed zero-copy.
+
+### 10.3 FF_MODULE_REGISTRY Entry Expansion — KIND Field Discrimination
+
+The current 56-byte registry entry layout is expanded to 88 bytes (Phase 2) to include a `KIND` field that discriminates STATIC (compiled) from DYNAMIC (WASM) modules:
+
+```
+URL_IDX(4) | KIND(2) | PAD(2) | WASM_BLOB_OFFSET(8) | WASM_BLOB_SIZE(4) | PAD2(4)
+         | MODULE_HASH(32) | SCHEMA_HASH(32)
+```
+
+**KIND values:**
+- `KIND = 0` (DYNAMIC): WASM codec path. `WASM_BLOB_OFFSET` and `WASM_BLOB_SIZE` are valid; payload bytes are WASM-encoded and decoded by WAMR.
+- `KIND = 1` (STATIC): Compiled extension path. `WASM_BLOB_OFFSET` is `FF_NULL_OFFSET`; the recovery tag stored in the entry (or looked up separately) identifies the C++ struct.
+- `KIND = 2` (reserved for future extensions).
+
+**Backward compatibility:** Streams encoded by an older engine that lacks the KIND field store entries as 56 bytes; readers must detect this via `FF_HEADER::ENGINE_VERSION` and implicitly treat all entries as KIND=DYNAMIC (WASM path).
+
+**Accessors in `FF_Primitives.hpp`:**
+```cpp
+constexpr uint16_t REG_ENTRY_KIND              = 4;   // offset within entry
+constexpr uint16_t REG_ENTRY_KIND_DYNAMIC      = 0u;
+constexpr uint16_t REG_ENTRY_KIND_STATIC       = 1u;
+constexpr uint16_t REG_ENTRY_SIZE              = 88;  // expanded from 56
+
+inline uint16_t ff_registry_entry_kind(const BYTE* reg_base, uint32_t idx) {
+    const BYTE* entry = reg_base + 16 + idx * REG_ENTRY_SIZE;
+    return *reinterpret_cast<const uint16_t*>(entry + REG_ENTRY_KIND);
+}
+```
+
+### 10.4 Generator Path — `compile_extension_library()` Pass
+
+**New ffc.py function:** `compile_extension_library(spec_bundles, ig_specs)` runs as a late stage in `make_lib.py::main()` (before the current extension-URL predigest setup). It:
+
+1. **Scans IG StructureDefinitions** — iterates all Extension SDs in US Core, UK Core, and other official IG bundles (stored in `fhir_specs/R4/` and `fhir_specs/R5/`).
+2. **Filters for compilation:** Only extensions matching a curated list (e.g. `COMPILED_EXTENSIONS = { 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-race', … }`) are compiled to C++. Others fall back to WASM or passive JSON.
+3. **Emits typed C++ structs:** For each selected extension, generates a struct matching its IG definition (e.g., `FF_USCoreRaceExtensionData`).
+4. **Allocates recovery tags:** Assigns a unique tag from the range `RECOVER_FF_EXTENSION_COMPILED_MIN (0x7000)` to `RECOVER_FF_EXTENSION_COMPILED_MAX (0x7FFF)`.
+5. **Emits `TypeTraits<>`:** Generates `size()`, `store()`, `read()` for each.
+6. **Emits registry entries:** Creates `FF_MODULE_REGISTRY` rows with KIND=STATIC, recovery tag, and zero WASM blob.
+7. **Outputs `FF_CompiledExtensions.hpp`:** A header containing:
+   - The struct definitions.
+   - Recovery tag constants.
+   - TypeTraits specialisations.
+   - A sorted array of extension URLs: `constexpr const char* FF_CompiledExtensionURLs[]`.
+   - A lookup function: `RECOVERY_TAG FF_FindCompiledExtension(std::string_view url)`.
+
+**Integration in make_lib.py:**
+```python
+# Phase 3 (after resolve_production_resources, before predigest setup)
+compiled_exts = ffc.compile_extension_library(fhir_specs_dir, ig_specs)
+if compiled_exts:
+    with open(f'{generated_src}/FF_CompiledExtensions.hpp', 'w') as f:
+        f.write(compiled_exts.header_content)
+    with open(f'{generated_src}/FF_CompiledExtensions.cpp', 'w') as f:
+        f.write(compiled_exts.source_content)
+```
+
+### 10.5 Predigest Routing — Phase 7 Extended
+
+`FF_PredigestExtensionURLs()` (Phase 7 in `src/FF_Ingestor.cpp`) is extended to probe compiled extensions after the WASM registry but before falling back to passive JSON:
+
+**Modified Phase 7 logic:**
+1. Parse extension URL from the raw input.
+2. Query the existing WASM `FF_MODULE_REGISTRY` (KIND=DYNAMIC entries).
+3. **[NEW]** Query `FF_CompiledExtensionURLs` and `FF_FindCompiledExtension(url_sv)` for KIND=STATIC matches.
+4. Probe `FF_URL_DIRECTORY` for passive storage.
+5. Apply filter rules (FILTER_ALL_KNOWN, FILTER_NONE).
+
+Matches are in priority order: suppressed > STATIC > raw-JSON > DYNAMIC. The first successful match writes an `EXT_REF` and returns.
+
+### 10.6 Parser Read Path — KIND-Aware Dispatch
+
+The parser (§8) is extended to handle STATIC extensions transparently:
+
+**Read-time contract:** When a `Node` resolves an `FF_EXTENSION` field:
+1. Load `EXT_REF` (4 bytes).
+2. Check MSB: if `0`, it's Path B (passive JSON) — existing behaviour unchanged.
+3. If `1`, look up `MODULE_IDX` in `FF_MODULE_REGISTRY` and check `KIND` field.
+4. If KIND=STATIC, recover the recovery tag and dispatch to `TypeTraits<>::read()` (native C++ path).
+5. If KIND=DYNAMIC, proceed with WAMR dispatch (existing WASM path).
+
+No changes to public API; KIND discrimination is internal to the parser's field-resolution machinery.
+
+### 10.7 Invariants — Extension Subsystem
+
+**E1: Unique URL → outcome mapping.** For any extension URL, the predigest phase computes exactly one outcome (suppressed / STATIC / raw-JSON / DYNAMIC / inline scalar). That outcome is recorded in the stream; re-lookup is forbidden.
+
+**E2: KIND field is discriminant only within registry.** The `EXT_REF` MSB alone determines Path A vs B; KIND is read *only* after a Path A (DYNAMIC) lookup has been decided, to refine the dispatch within Path A.
+
+**E3: STATIC recovery tags are disjoint from filter list.** If an extension URL is in the `FF_KnownExtensions` filter table (causing it to be suppressed), it cannot simultaneously have a STATIC compiled extension. The compiler rejects this configuration.
+
+**E4: Backward compatibility — implicit KIND.** Streams written by an older engine (before KIND field existed, 56-byte entries) are read by a newer parser with implicit KIND=DYNAMIC, preserving WASM-module semantics for old streams.
+
+**E5: Extension recovery tags live in disjoint range.** STATIC extension recovery tags (0x7000–0x7FFF) are reserved and never allocated to built-in types. This allows `Recovery_to_Kind` to unambiguously discriminate built-in resources from compiled extensions without a registry lookup.
+
+---
+
 ## Appendix A — Invariant Cheatsheet
 
 The following invariants are mandatory; any patch that violates one without

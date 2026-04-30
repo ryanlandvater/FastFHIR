@@ -12,6 +12,9 @@
 #include "FF_Parser.hpp"
 #include <atomic>
 #include <functional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 struct PyMutableEntry;
@@ -53,7 +56,23 @@ namespace FastFHIR
         uint32_t m_ff_version;
         std::atomic<bool> m_finalizing;
         std::atomic<uint64_t> m_active_mutators;
-        const FF_UrlInternState *m_intern_state = nullptr; // borrowed; set/cleared by Ingestor
+
+        // Transparent hash/equal for the URL retrieve table.
+        struct _UrlHash {
+            using is_transparent = void;
+            size_t operator()(std::string_view sv) const noexcept {
+                return std::hash<std::string_view>{}(sv);
+            }
+        };
+        struct _UrlEqual {
+            using is_transparent = void;
+            bool operator()(std::string_view a, std::string_view b) const noexcept { return a == b; }
+        };
+
+        // Extension URL directory — owned for stream lifetime.
+        // Populated by FF_PredigestExtensionURLs(); read by parse workers after predigestion.
+        // Full URL → ext_ref: O(1) lookup with owned std::string keys.
+        std::unordered_map<std::string, uint32_t, _UrlHash, _UrlEqual> m_url_retrieve;
 
         bool try_begin_mutation();
         void end_mutation();
@@ -66,11 +85,29 @@ namespace FastFHIR
         const Memory &memory() const { return m_memory; }
         const FHIR_VERSION FhirVersion() const { return m_fhir_rev; }
 
-        // Borrowed pointer to the active predigestion intern state.
-        // Set by the Ingestor before dispatching resources; cleared after.
-        // Workers read this read-only — no locking needed.
-        void set_intern_state(const FF_UrlInternState *s) { m_intern_state = s; }
-        const FF_UrlInternState *intern_state() const { return m_intern_state; }
+        // Resolves a full extension URL to its pre-computed ext_ref word.
+        // Returns FF_EXT_REF_NULL if the URL is unknown or suppressed.
+        // Safe to call from concurrent parse workers (read-only after predigestion).
+        inline uint32_t resolve_extension_url(std::string_view url) const noexcept {
+            const auto it = m_url_retrieve.find(url);
+            return it != m_url_retrieve.end() ? it->second : FF_EXT_REF_NULL;
+        }
+        // Returns true if the URL has already been seen (active or suppressed).
+        // Used by the predigestion consumer for deduplication.
+        inline bool has_extension_url(std::string_view url) const noexcept {
+            return m_url_retrieve.contains(url);
+        }
+        // Records a URL → ext_ref mapping. Called from the single consumer thread
+        // during FF_PredigestExtensionURLs(); uses insert_or_assign for Phase 7 promotion.
+        inline void intern_extension_url(std::string_view url, uint32_t ext_ref) {
+            m_url_retrieve.insert_or_assign(std::string(url), ext_ref);
+        }
+        // Iterates all interned URL entries. Used by Phase 7 WASM module promotion.
+        template<typename Fn>
+        inline void for_each_extension_url(Fn&& fn) const {
+            for (const auto& [url, ref] : m_url_retrieve)
+                fn(static_cast<std::string_view>(url), ref);
+        }
 
         // Recorded by FF_PredigestExtensionURLs after writing the URL directory; consumed by finalize().
         void set_url_dir_offset(Offset off) { m_url_dir_offset = off; }

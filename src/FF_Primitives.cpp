@@ -378,31 +378,47 @@ uint32_t FF_MODULE_REGISTRY::entry_count(const BYTE* base) const {
     return LOAD_U32(base + __offset + ENTRY_COUNT);
 }
 uint32_t FF_MODULE_REGISTRY::url_idx(const BYTE* base, uint32_t entry_idx) const {
-    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * REG_ENTRY_SIZE;
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * get_entry_size();
     return LOAD_U32(base + ep + REG_ENTRY_URL_IDX);
 }
+FF_ModuleKind FF_MODULE_REGISTRY::kind(const BYTE* base, uint32_t entry_idx) const {
+    const Size es = get_entry_size();
+    if (es < REG_ENTRY_SIZE) return FF_MODULE_KIND_DYNAMIC; // legacy entry: implicitly DYNAMIC
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * es;
+    return static_cast<FF_ModuleKind>(LOAD_U16(base + ep + REG_ENTRY_KIND));
+}
 Offset FF_MODULE_REGISTRY::wasm_blob_offset(const BYTE* base, uint32_t entry_idx) const {
-    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * REG_ENTRY_SIZE;
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * get_entry_size();
     return LOAD_U64(base + ep + REG_ENTRY_WASM_BLOB_OFFSET);
 }
 uint32_t FF_MODULE_REGISTRY::wasm_blob_size(const BYTE* base, uint32_t entry_idx) const {
-    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * REG_ENTRY_SIZE;
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * get_entry_size();
     return LOAD_U32(base + ep + REG_ENTRY_WASM_BLOB_SIZE);
 }
 std::string_view FF_MODULE_REGISTRY::module_hash(const BYTE* base, uint32_t entry_idx) const {
-    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * REG_ENTRY_SIZE;
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * get_entry_size();
     return std::string_view(
         reinterpret_cast<const char*>(base + ep + REG_ENTRY_MODULE_HASH),
+        REG_ENTRY_HASH_SIZE);
+}
+std::string_view FF_MODULE_REGISTRY::schema_hash(const BYTE* base, uint32_t entry_idx) const {
+    const Size es = get_entry_size();
+    if (es < REG_ENTRY_SIZE) return {}; // legacy entry: no schema hash
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * es;
+    return std::string_view(
+        reinterpret_cast<const char*>(base + ep + REG_ENTRY_SCHEMA_HASH),
         REG_ENTRY_HASH_SIZE);
 }
 uint32_t FF_MODULE_REGISTRY::find_entry(const BYTE* base, uint32_t search_url_idx) const {
     uint32_t n = entry_count(base);
     if (n == 0) return FF_NULL_UINT32;
     // Binary search on url_idx; entries are written sorted ascending.
+    const Size es = get_entry_size();
     uint32_t lo = 0, hi = n;
     while (lo < hi) {
         uint32_t mid = lo + (hi - lo) / 2;
-        uint32_t mid_idx = url_idx(base, mid);
+        Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(mid) * es;
+        uint32_t mid_idx = LOAD_U32(base + ep + REG_ENTRY_URL_IDX);
         if (mid_idx == search_url_idx) return mid;
         if (mid_idx < search_url_idx) lo = mid + 1;
         else                          hi = mid;

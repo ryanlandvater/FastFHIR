@@ -88,9 +88,17 @@ URL split rule: at the last `/`. No-`/` edge case → `NO_PREFIX (0xFFFF)`, full
 ```
 VALIDATION (8) | RECOVERY (2) | ENTRY_COUNT (4) | PAD (2)              ← 16-byte header
 ENTRY_TABLE: ENTRY_COUNT × 88-byte entries
-  URL_IDX(4) | PAD(4) | WASM_BLOB_OFFSET(8) | WASM_BLOB_SIZE(4) | PAD2(4)
+  URL_IDX(4) | KIND(2) | WASM_BLOB_OFFSET(8) | WASM_BLOB_SIZE(4) | PAD2(4)
             | MODULE_HASH(32) | SCHEMA_HASH(32)
 ```
+
+**KIND field (offset 4, 2 bytes):** Discriminates the codec path:
+- `KIND = 0` (DYNAMIC) — WASM codec path; `WASM_BLOB_OFFSET` and `WASM_BLOB_SIZE` are valid payload pointers.
+- `KIND = 1` (STATIC) — Compiled C++ extension path; `WASM_BLOB_OFFSET` is `FF_NULL_OFFSET`; recovery tag identifies the generated struct.
+- `KIND ≥ 2` reserved for future extension mechanisms.
+
+Backward compatibility: Streams with 56-byte entries (older engine, no KIND field) implicitly have KIND=DYNAMIC when read by a newer parser.
+
 Two content-addressed identities per module:
 
 - `MODULE_HASH` — SHA-256 of the raw `.wasm` bytes. Identifies the **codec implementation**.
@@ -130,6 +138,54 @@ A registry update may **only add new fields at the end of the schema** and **mus
 | Patch codec implementation, schema unchanged        | none (binary patch only)           | New `MODULE_HASH`, identical `SCHEMA_HASH` → cached `.ffd` reused.               |
 
 This mirrors the rule already enforced for FastFHIR's primitive blocks: header layouts may only **grow** between MINOR versions, never shrink or reorder, so that `get_header_size(version)` is a monotone function of MINOR within a MAJOR.
+
+---
+
+## 3. Phase A — Compiled Extension Tier
+
+The compiled extension tier adds a new path for extensions derived from official FHIR StructureDefinitions (e.g. HL7's US Core, UK Core, IPS). Compiled extensions are generated as C++ types (similar to built-in resources) and stored as native arena blocks, achieving native-speed read access without WASM staging.
+
+### Phase A work-items (7 sub-phases)
+
+Phase A is implemented in parallel with existing WASM and passive-JSON paths, with no breaking changes:
+
+| Phase | Work item | Duration est. | Depends on | Deliverable |
+|---|---|---|---|---|
+| A1 | architecture.md Section 10 + WASM_extensions.prompt.md KIND/Phase A docs | 1 day | None | Design doc complete (THIS FILE) |
+| A2 | FF_Primitives.hpp KIND field + accessors; CMakeLists.txt test updates | 1 day | A1 | Compile-time constants and helper functions |
+| A3 | ffc.py `compile_extension_library()` pass; make_lib.py integration | 2 days | A1 | FF_CompiledExtensions.hpp emission |
+| A4 | FF_Ingestor.cpp Phase 7 compiled extension probe + routing | 1 day | A2, A3 | Predigest routing logic |
+| A5 | FF_Parser.hpp KIND-aware dispatch in Node field resolution | 1 day | A2 | Parser read path |
+| A6 | tests/cpp/ test_compiled_extensions covering at least us-core-race | 1 day | A2–A5 | Regression test suite |
+| A7 | README.md Section 3 (Compiled Extensions subsection) + test coverage reporting | 1 day | A6 | User-facing documentation |
+
+### Affected files (Phase A scope)
+
+**Include headers:**
+- `include/FF_Primitives.hpp` — KIND constants (`REG_ENTRY_KIND*`), accessor `ff_registry_entry_kind()`, recovery tag range constants (`RECOVER_FF_EXTENSION_COMPILED_MIN/MAX`), recovery tag partition in `Recovery_to_Kind()`.
+- `include/FF_Parser.hpp` — KIND-aware dispatch in `Node::as<T>()` and field resolution.
+- `include/FF_Ingestor.hpp` — no API change, but internal Phase 7 signature may be revised to accept compiled extension table.
+
+**Runtime sources:**
+- `src/FF_Ingestor.cpp` — Phase 7 extended with compiled extension probe.
+- `src/FF_Parser.cpp` — KIND-aware dispatch implementation (if any).
+
+**Generator:**
+- `tools/generator/ffc.py` — new `compile_extension_library()` function; integration in `compile_fhir_library()`.
+- `tools/generator/make_lib.py` — wire `compile_extension_library()` call; update output manifest.
+
+**Generated artifacts:**
+- `generated_src/FF_CompiledExtensions.hpp` — (new) typed extension structs, recovery tags, TypeTraits, lookup table.
+- `generated_src/FF_Recovery.hpp` — updated with STATIC extension tags.
+- `generated_src/FF_Reflection.hpp/cpp` — ParserOps entries for compiled extensions (if needed).
+
+**Build:**
+- `CMakeLists.txt` — add test target `test_compiled_extensions`, integrate `FF_CompiledExtensions.hpp` generation into the codegen chain.
+
+**Documentation:**
+- `architecture.md` — Section 10 (this document, A1 deliverable).
+- `README.md` — new Compiled Extensions subsection (A7 deliverable).
+- `WASM_extensions.prompt.md` — Phase A docs (A1 deliverable, i.e., this file).
 
 ### Implications for the descriptor (`FF_EXT_SCHEMA`)
 

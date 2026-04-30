@@ -129,19 +129,13 @@ VIEW_EXTRA_METHODS = {
 #   concurrent_queue, err_log, cpp_name (the C++ member name).
 INGEST_FIELD_OVERRIDES = {
     # Extension.url is a JSON string but is stored as a 4-byte EXT_REF word.
-    # Predigestion has already populated url_to_index with either a URL_IDX
-    # (MSB=0, Path B) or a MODULE_IDX with the MSB pre-set (Path A).  The
-    # ingest worker just reads the precomputed value — no branching here.
+    # Predigestion has already loaded Builder::m_url_retrieve with either a
+    # URL_IDX (MSB=0, Path B) or a MODULE_IDX with the MSB pre-set (Path A).
+    # The ingest worker calls resolve_extension_url() directly — no branching.
     ('Extension', 'url'): (
         "            std::string_view url_sv;\n"
         "            if (field.value().get_string().get(url_sv) == simdjson::SUCCESS) {{\n"
-        "                const auto* istate = builder ? builder->intern_state() : nullptr;\n"
-        "                if (istate) {{\n"
-        "                    auto it = istate->url_to_index.find(std::string(url_sv));\n"
-        "                    data.ext_ref = (it != istate->url_to_index.end()) ? it->second : FF_EXT_REF_NULL;\n"
-        "                }} else {{\n"
-        "                    data.ext_ref = FF_EXT_REF_NULL;\n"
-        "                }}\n"
+        "                data.ext_ref = builder ? builder->resolve_extension_url(url_sv) : FF_EXT_REF_NULL;\n"
         "            }} else {{\n"
         "                {err_log}\n"
         "            }}\n"
@@ -1145,6 +1139,7 @@ def generate_recovery_header(target_types, resources, all_block_paths, output_di
     lines.append("    RECOVER_FF_URL_DIRECTORY              = 0x0006, // Stream-level URL intern table")
     lines.append("    RECOVER_FF_MODULE_REGISTRY            = 0x0007, // WASM extension module registry")
     lines.append("    RECOVER_FF_OPAQUE_JSON                = 0x0008, // Path B passive raw-JSON extension blob")
+    lines.append("    RECOVER_FF_WASM_PAYLOAD               = 0x0009, // Path A WASM-encoded extension payload")
     
     lines.append("")
     lines.append("    // --- Inline Scalars (0x0100 Block) ---")
