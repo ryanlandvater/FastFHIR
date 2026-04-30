@@ -41,7 +41,7 @@ namespace FastFHIR::Ingest {
 //
 //  Phase 3  One consumer thread starts *before* the producers and drains the
 //           queue concurrently.  For each URL it:
-//             a) checks the global url_to_index map (dedup),
+//             a) checks Builder's URL retrieve table (dedup),
 //             b) applies the FF_ExtensionFilterMode filter,
 //             c) inserts the URL into a per-'/' radix trie whose nodes live
 //                in a bump-allocated vector (scratch, not the FF arena),
@@ -89,7 +89,7 @@ namespace FastFHIR::Ingest {
 //
 //  Interior nodes (shared URL prefixes not themselves complete URLs) are
 //  included in `entries` so prior chains are always well-formed.  They are
-//  *not* added to url_to_index.
+//  *not* added to Builder's URL retrieve table.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -98,7 +98,7 @@ namespace FastFHIR::Ingest {
 //  1) producer-side tiny dedup cache (hash bucket check), and
 //  2) trie segment hashing in insert/find child operations.
 // Full URL -> ext_ref routing remains keyed by full URL string in
-// FF_UrlInternState::url_to_index (see consumer_process_batch and ingest
+// Builder::m_url_retrieve (see consumer_process_batch and ingest
 // mapping lookup path).
 static constexpr uint64_t FNV1A_OFFSET = 14695981039346656037ULL;
 static constexpr uint64_t FNV1A_PRIME  = 1099511628211ULL;
@@ -142,6 +142,16 @@ struct ProducerCtx {
     // Zero heap allocation on the hot path.
     void push_url(std::string_view url) noexcept {
         if (url.empty()) return;
+        // Reject non-absolute URIs. FHIR extension URLs MUST be absolute URIs
+        // (RFC 3986 §4.3): the scheme component (letters only) must precede ':',
+        // and no '/' may appear before that ':'.
+        // Accepts: "http://…", "https://…", "urn:oid:…", "urn:uuid:…"
+        // Rejects: "/relative", "///path//", "no-scheme/path", ""
+        if (!std::isalpha(static_cast<unsigned char>(url[0]))) return;
+        const size_t colon = url.find(':');
+        if (colon == std::string_view::npos) return;
+        const size_t slash = url.find('/');
+        if (slash != std::string_view::npos && slash < colon) return;
         const uint64_t h    = fnv1a(url);
         const uint64_t slot = h & (DEDUP_SLOTS - 1u);
         if (dedup_cache[slot] == h) return; // thread-local cache hit — skip
@@ -393,13 +403,13 @@ static uint32_t insert_url_to_trie(
 struct ConsumerState {
     std::vector<TrieNode>  trie_nodes; // scratch trie (not FF arena)
     std::vector<TrieEntry> entries;    // parallel to FF_URL_DIRECTORY ENTRY_TABLE
-    FF_UrlInternState&     state;
+    Builder&               builder;
     const Memory&          mem;
     uint8_t*               base;
     FF_ExtensionFilterMode mode;
 
-    ConsumerState(FF_UrlInternState& s, const Memory& m, FF_ExtensionFilterMode md)
-        : state(s), mem(m), base(m.base()), mode(md)
+    ConsumerState(Builder& b, const Memory& m, FF_ExtensionFilterMode md)
+        : builder(b), mem(m), base(m.base()), mode(md)
     {
         trie_nodes.reserve(256);
         trie_nodes.push_back({}); // virtual root at index 0
@@ -413,9 +423,8 @@ static void consumer_process_batch(ConsumerState& cs, const UrlBatch& batch) {
         const UrlBatchEntry& e = batch.entries[i];
         if (e.url.empty()) continue;
 
-        // Dedup: skip URLs already interned (duplicate from another thread/chunk).
-        auto it = cs.state.url_to_index.find(e.url);
-        if (it != cs.state.url_to_index.end()) continue;
+        // Dedup: skip URLs already seen (active or suppressed).
+        if (cs.builder.has_extension_url(e.url)) continue;
 
         // Apply extension filter.
         bool suppress = false;
@@ -429,16 +438,14 @@ static void consumer_process_batch(ConsumerState& cs, const UrlBatch& batch) {
         }
 
         if (suppress) {
-            cs.state.url_to_index.emplace(e.url, FF_NULL_UINT32);
+            cs.builder.intern_extension_url(e.url, FF_NULL_UINT32);
             continue;
         }
 
-        // Insert into trie and record in url_to_index.
+        // Insert into trie and record in Builder's URL retrieve table.
         const uint32_t idx = insert_url_to_trie(cs.trie_nodes, cs.entries,
                                                   cs.mem, cs.base, e.url);
-        cs.state.url_to_index.emplace(e.url, idx);
-        // passive_payload: not captured in pipeline mode
-        // (WASM Path B feature is not yet fully implemented upstream)
+        cs.builder.intern_extension_url(e.url, idx);
     }
 }
 
@@ -470,17 +477,16 @@ static void build_bundle_entry_chunks(
     }
 }
 
-FF_UrlInternState FF_PredigestExtensionURLs(
+void FF_PredigestExtensionURLs(
     const std::vector<simdjson::padded_string>& prechunked_entries,
     Builder&               builder,
     FF_ExtensionFilterMode mode)
 {
-    FF_UrlInternState state;
     const Memory& mem = builder.memory();
     uint8_t*      base = mem.base();
 
     // Chunks are required and owned by the caller for the full predigest call.
-    if (prechunked_entries.empty()) return state;
+    if (prechunked_entries.empty()) return;
     const size_t num_chunks = prechunked_entries.size();
 
     // ── Phase 2 + 3: Pipeline — producers scan, consumer builds trie ─────────
@@ -490,7 +496,7 @@ FF_UrlInternState FF_PredigestExtensionURLs(
 
     UrlBatchQueue       batch_queue;
     std::atomic<bool>   producers_done{false};
-    ConsumerState       cs(state, mem, mode);
+    ConsumerState       cs(builder, mem, mode);
 
     // Acquire Consumer before any Injectors (gets head node reference).
     auto consumer_handle = batch_queue.get_consumer();
@@ -536,7 +542,7 @@ FF_UrlInternState FF_PredigestExtensionURLs(
     consumer_thread.join();
 
     // ── Phase 4: Early-exit if no URLs were interned ──────────────────────────
-    if (cs.entries.empty()) return state;
+    if (cs.entries.empty()) return;
 
     // ── Phase 5: Write FF_URL_DIRECTORY block ─────────────────────────────────
     const uint32_t n_entries = static_cast<uint32_t>(cs.entries.size());
@@ -566,19 +572,19 @@ FF_UrlInternState FF_PredigestExtensionURLs(
 #ifdef FASTFHIR_ENABLE_EXTENSIONS
     {
         auto& host = FF_WasmExtensionHost::instance();
-        struct Pending { uint32_t url_idx; std::string_view url; };
+        struct Pending { uint32_t url_idx; std::string url; };
         std::vector<Pending> active;
         std::vector<Pending> pending;
 
-        for (auto& [url, ref] : state.url_to_index) {
-            if (ref == FF_NULL_UINT32) continue;
+        builder.for_each_extension_url([&](std::string_view url, uint32_t ref) {
+            if (ref == FF_NULL_UINT32) return;
             const uint32_t url_idx = ff_ext_ref_index(ref);
             if (host.has_module_cached(url)) {
-                active.push_back({url_idx, url});
+                active.push_back({url_idx, std::string(url)});
             } else {
-                pending.push_back({url_idx, url});
+                pending.push_back({url_idx, std::string(url)});
             }
-        }
+        });
 
         if (!active.empty()) {
             std::sort(active.begin(), active.end(),
@@ -587,18 +593,16 @@ FF_UrlInternState FF_PredigestExtensionURLs(
             reg_entries.reserve(active.size());
             for (uint32_t module_idx = 0; module_idx < active.size(); ++module_idx) {
                 const auto& a = active[module_idx];
-                state.url_to_index[a.url] = ff_make_module_ref(module_idx);
-                reg_entries.emplace_back(a.url_idx, std::string(a.url));
-                state.passive_payload.erase(a.url);
+                builder.intern_extension_url(a.url, ff_make_module_ref(module_idx));
+                reg_entries.emplace_back(a.url_idx, a.url);
             }
             host.write_module_registry(builder, reg_entries);
         }
 
-        for (auto& p : pending) host.enqueue_resolve(std::string(p.url));
+        for (auto& p : pending) host.enqueue_resolve(p.url);
     }
 #endif
 
-    return state;
 }
 
 
@@ -785,13 +789,12 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
         // Must run before any resource data is written to the arena.
         // Reuse prebuilt bundle entry chunks when available.
         // =====================================================================
-        FF_UrlInternState intern_state = FF_PredigestExtensionURLs(
+        FF_PredigestExtensionURLs(
             entry_chunks,
             m_builder,
             FF_ExtensionFilterMode::FILTER_ALL_KNOWN);
 
-        // Make intern_state available to all ingest workers via the Builder.
-        m_builder.set_intern_state(&intern_state);
+        // Builder now owns the URL registry; parse workers call builder->resolve_extension_url().
 
         // =====================================================================
         // FAST PATH: SINGLE RESOURCE (Non-Bundle)
@@ -800,7 +803,6 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
             m_logger.log(std::string("[Info] FastFHIR: Ingesting single ") + std::string(root_type) + " resource...");
             
             out_root = dispatch_resource(root_type, root_obj, m_builder, &m_logger);
-            m_builder.set_intern_state(nullptr);
             if (out_root.offset() == FF_NULL_OFFSET) 
                 return FF_Result{FF_FAILURE, "Failed to parse root resource."};
             out_parsed_count = 1;
@@ -942,14 +944,11 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
         // 6. Return Root
         // =====================================================================
         out_root = root_handle;
-        m_builder.set_intern_state(nullptr);
         return FF_SUCCESS;
 
     } catch (const simdjson::simdjson_error& e) {
-        request.builder.set_intern_state(nullptr);
         return FF_Result{FF_FAILURE, std::string("simdjson Exception: ") + e.what()};
     } catch (const std::exception& e) {
-        request.builder.set_intern_state(nullptr);
         return FF_Result{FF_FAILURE, std::string("Standard Exception: ") + e.what()};
     }
 }

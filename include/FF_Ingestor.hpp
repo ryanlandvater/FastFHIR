@@ -14,14 +14,9 @@
 #include <thread>
 #include <atomic>
 #include <string>
-#include <unordered_map>
 
 namespace FastFHIR::Ingest {
 
-// =====================================================================
-// EXTENSION FILTER MODE
-// Controls which extension URLs are suppressed during predigestion.
-// =====================================================================
 enum class FF_ExtensionFilterMode {
     FILTER_ALL_KNOWN,   // Suppress profile-native + HL7-known-safe (default)
     FILTER_NATIVE_ONLY, // Suppress only profile-native extensions
@@ -30,15 +25,13 @@ enum class FF_ExtensionFilterMode {
 
 // =====================================================================
 // PREDIGESTION
-// Multi-threaded pass before resource ingestion begins.
-// For Bundle payloads, splits entry array across hardware threads so each
-// thread scans its entries and writes full-URL FF_STRING blocks directly
-// to the arena (lock-free via claim_space).  Main thread then merges,
-// deduplicates, builds the chained-segment trie, and writes the
-// FF_URL_DIRECTORY block + back-patches the stream preamble.
-// Returns an immutable FF_UrlInternState for ingest workers.
+// Single-threaded consumer in a producer/consumer pipeline.
+// Producers (per-thread) scan prechunked entries and push URLs into an
+// MPSC queue; consumer drains the queue, deduplicates with a direct-mapped
+// cache, builds a per-'/' radix trie, and writes FF_URL_DIRECTORY to arena.
+// Discovered URLs are interned directly into the Builder's URL registry.
 // =====================================================================
-FF_UrlInternState FF_PredigestExtensionURLs(
+void FF_PredigestExtensionURLs(
     const std::vector<simdjson::padded_string>& prechunked_entries,
     Builder&                builder,
     FF_ExtensionFilterMode  mode = FF_ExtensionFilterMode::FILTER_ALL_KNOWN);

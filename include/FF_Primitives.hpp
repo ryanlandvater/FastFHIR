@@ -755,24 +755,6 @@ struct FF_EXPORT FF_URL_DIRECTORY : DATA_BLOCK
 // Produced by FF_PredigestExtensionURLs(); consumed read-only by ingest
 // workers.  FF_NULL_UINT32 as value means "filtered/known — skip block".
 //
-// The mapped value is an FF_EXTENSION::EXT_REF discriminated-union word:
-//   MSB=0 → URL_IDX  → FF_URL_DIRECTORY    (Path B, passive raw-JSON blob)
-//   MSB=1 → MODULE_IDX → FF_MODULE_REGISTRY (Path A, active WASM codec)
-// Use ff_ext_ref_is_module() / ff_ext_ref_index() helpers below.
-struct FF_UrlInternState
-{
-    // Keys are non-owning views into caller-owned prechunked JSON buffers.
-    // Lifetime contract: backing bytes must outlive any use of this state.
-    std::unordered_map<std::string_view, uint32_t> url_to_index; // alias: url → ext_ref
-    
-    // Side table (Path B): for each URL whose ext_ref has MSB=0, the verbatim
-    // JSON bytes of the original extension sub-tree.  Concurrent ingest
-    // workers, when handed a Path B FF_EXTENSION, allocate an FF_STRING
-    // containing this slice and store its Offset under the FF_EXTENSION VALUE
-    // choice slot tagged RECOVER_FF_OPAQUE_JSON, preserving round-trip export.
-    std::unordered_map<std::string_view, std::string> passive_payload;
-};
-
 // =====================================================================
 // EXT_REF (FF_EXTENSION discriminated-union routing word)
 // =====================================================================
@@ -799,9 +781,14 @@ inline uint32_t ff_make_url_ref(uint32_t i) noexcept { return i & FF_EXT_REF_IND
 //
 // Binary layout:
 //   HEADER (16): VALIDATION(8) | RECOVERY(2) | PAD(2) | ENTRY_COUNT(4)
-//   ENTRY_TABLE:  ENTRY_COUNT × 56-byte RegistryEntry inline structs
-//     RegistryEntry: URL_IDX(4) | PAD(4) | WASM_BLOB_OFFSET(8) |
-//                    WASM_BLOB_SIZE(4) | PAD2(4) | MODULE_HASH(32)
+//   ENTRY_TABLE:  ENTRY_COUNT × 88-byte RegistryEntry inline structs
+//     RegistryEntry: URL_IDX(4) | KIND(2) | KIND_PAD(2) | WASM_BLOB_OFFSET(8) |
+//                    WASM_BLOB_SIZE(4) | PAD2(4) | MODULE_HASH(32) | SCHEMA_HASH(32)
+//
+// KIND discriminates the codec path:
+//   KIND=0 (DYNAMIC) — WASM codec; WASM_BLOB_OFFSET and WASM_BLOB_SIZE are valid.
+//   KIND=1 (STATIC)  — Compiled C++ extension; WASM_BLOB_OFFSET is FF_NULL_OFFSET.
+//   KIND≥2           — Reserved for future extension mechanisms.
 //
 // WASM_BLOB_OFFSET points to the raw .wasm bytes stored in the arena as
 // a flat byte sequence (no FF_STRING header).  WASM_BLOB_SIZE is the byte
@@ -810,8 +797,20 @@ inline uint32_t ff_make_url_ref(uint32_t i) noexcept { return i & FF_EXT_REF_IND
 // MODULE_HASH is the SHA-256 digest of the raw .wasm binary bytes at the
 // time of ingest.  It is the canonical version identity of the module:
 // a content-addressed key that changes exactly when the binary changes.
-// Readers can use it to detect staleness, verify integrity, and key the
-// on-disk cache without re-hashing the bytes.
+//
+// SCHEMA_HASH is the SHA-256 digest of the canonical descriptor blob (.ffd).
+// It identifies the wire schema independently of the binary so a reader can
+// verify schema compatibility without invoking WAMR.
+//
+// Backward compatibility: Streams written by engine < 2026 use 56-byte entries
+// (no KIND / SCHEMA_HASH fields); get_entry_size() returns the appropriate size.
+
+/// Discriminates the codec path stored in a FF_MODULE_REGISTRY entry.
+enum FF_ModuleKind : uint16_t {
+    FF_MODULE_KIND_DYNAMIC = 0, ///< WASM codec path; WASM_BLOB_OFFSET/SIZE are valid pointers.
+    FF_MODULE_KIND_STATIC  = 1, ///< Compiled C++ extension; WASM_BLOB_OFFSET is FF_NULL_OFFSET.
+};
+
 struct FF_EXPORT FF_MODULE_REGISTRY : DATA_BLOCK
 {
     static constexpr char type[] = "FF_MODULE_REGISTRY";
@@ -833,18 +832,30 @@ struct FF_EXPORT FF_MODULE_REGISTRY : DATA_BLOCK
         HEADER_SIZE = ENTRY_COUNT + ENTRY_COUNT_S, // 16
     };
 
-    // Each RegistryEntry in the ENTRY_TABLE is 56 bytes:
-    //   url_idx         (uint32_t,    4) | pad          (uint32_t,   4) |
-    //   wasm_blob_offset(Offset,      8) | wasm_blob_size(uint32_t,  4) |
-    //   pad2            (uint32_t,    4) | module_hash  (uint8_t[32])
-    static constexpr Size REG_ENTRY_SIZE = 56;
+    // Each RegistryEntry in the ENTRY_TABLE is 88 bytes:
+    //   url_idx          (uint32_t,    4) | kind         (uint16_t,    2) |
+    //   kind_pad         (uint16_t,    2) | wasm_blob_offset(Offset,   8) |
+    //   wasm_blob_size   (uint32_t,    4) | pad2         (uint32_t,    4) |
+    //   module_hash      (uint8_t[32])    | schema_hash  (uint8_t[32])
+    // Legacy: engines < 2026 wrote 56-byte entries (no KIND/SCHEMA_HASH).
+    static constexpr Size REG_ENTRY_SIZE_LEGACY = 56; // engines < 2026, no KIND/SCHEMA_HASH
+    static constexpr Size REG_ENTRY_SIZE = 88;        // current layout
     static constexpr Size REG_ENTRY_URL_IDX = 0;
-    static constexpr Size REG_ENTRY_PAD = 4;
+    static constexpr Size REG_ENTRY_KIND = 4;         // uint16_t; FF_ModuleKind
+    static constexpr Size REG_ENTRY_KIND_PAD = 6;     // uint16_t padding
     static constexpr Size REG_ENTRY_WASM_BLOB_OFFSET = 8;
     static constexpr Size REG_ENTRY_WASM_BLOB_SIZE = 16;
     static constexpr Size REG_ENTRY_PAD2 = 20;
-    static constexpr Size REG_ENTRY_MODULE_HASH = 24; // 32 bytes
+    static constexpr Size REG_ENTRY_MODULE_HASH = 24; // 32-byte SHA-256 of .wasm binary
     static constexpr Size REG_ENTRY_HASH_SIZE = 32;
+    static constexpr Size REG_ENTRY_SCHEMA_HASH = 56; // 32-byte SHA-256 of .ffd descriptor
+
+    /// Version-aware entry size.  Streams written by engines < 2026 (pre-KIND)
+    /// use 56-byte entries; all current and future streams use 88-byte entries.
+    inline Size get_entry_size() const noexcept {
+        const uint16_t major = FF_ENGINE_MAJOR(__engine_version);
+        return (major > 0 && major < 2026) ? REG_ENTRY_SIZE_LEGACY : REG_ENTRY_SIZE;
+    }
 
     // Baseline header size for engine MAJOR 2026 (the first versioned engine).
     static constexpr Size HEADER_V2026_SIZE = HEADER_SIZE;
@@ -860,10 +871,15 @@ struct FF_EXPORT FF_MODULE_REGISTRY : DATA_BLOCK
 
     uint32_t entry_count(const BYTE *base) const;
     uint32_t url_idx(const BYTE *base, uint32_t entry_idx) const;
+    /// Returns the codec kind (DYNAMIC or STATIC) for this entry.
+    FF_ModuleKind kind(const BYTE *base, uint32_t entry_idx) const;
     Offset wasm_blob_offset(const BYTE *base, uint32_t entry_idx) const;
     uint32_t wasm_blob_size(const BYTE *base, uint32_t entry_idx) const;
-    /// Returns a view of the 32-byte SHA-256 content hash for this entry.
+    /// Returns a view of the 32-byte SHA-256 content hash (MODULE_HASH) for this entry.
     std::string_view module_hash(const BYTE *base, uint32_t entry_idx) const;
+    /// Returns a view of the 32-byte SHA-256 schema hash (SCHEMA_HASH) for this entry.
+    /// Only valid for entries written with REG_ENTRY_SIZE=88 (engine >= 2026).
+    std::string_view schema_hash(const BYTE *base, uint32_t entry_idx) const;
 
     /// Binary-search for entry with @p url_idx.  Returns FF_NULL_UINT32 if absent.
     uint32_t find_entry(const BYTE *base, uint32_t url_idx) const;

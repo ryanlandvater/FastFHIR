@@ -597,13 +597,18 @@ void FF_WasmExtensionHost::write_module_registry(
         uint8_t* ep = et + static_cast<Size>(i) * FF_MODULE_REGISTRY::REG_ENTRY_SIZE;
         STORE_U32(ep + FF_MODULE_REGISTRY::REG_ENTRY_URL_IDX,
                   url_idx & FF_EXT_REF_INDEX_MASK);
-        STORE_U32(ep + FF_MODULE_REGISTRY::REG_ENTRY_PAD,              0);
+        // KIND = DYNAMIC: WASM blob codec path (static C++ extensions use KIND_STATIC).
+        STORE_U16(ep + FF_MODULE_REGISTRY::REG_ENTRY_KIND,             FF_MODULE_KIND_DYNAMIC);
+        STORE_U16(ep + FF_MODULE_REGISTRY::REG_ENTRY_KIND_PAD,         0);
         STORE_U64(ep + FF_MODULE_REGISTRY::REG_ENTRY_WASM_BLOB_OFFSET, blob_off);
         STORE_U32(ep + FF_MODULE_REGISTRY::REG_ENTRY_WASM_BLOB_SIZE,   blob_size);
         STORE_U32(ep + FF_MODULE_REGISTRY::REG_ENTRY_PAD2,             0);
         // Write the 32-byte SHA-256 content hash — version identity for this module.
         std::memcpy(ep + FF_MODULE_REGISTRY::REG_ENTRY_MODULE_HASH,
                     content_hash.data(), FF_MODULE_REGISTRY::REG_ENTRY_HASH_SIZE);
+        // Schema hash: populated when the .ffd descriptor is available; zero-filled until then.
+        std::memset(ep + FF_MODULE_REGISTRY::REG_ENTRY_SCHEMA_HASH,    0,
+                    FF_MODULE_REGISTRY::REG_ENTRY_HASH_SIZE);
     }
 
     STORE_U64(base + FF_HEADER::MODULE_REG_OFFSET, reg_off);

@@ -893,13 +893,15 @@ FF_MODULE_REGISTRY::fetch_and_register(
 
 ---
 
-### Condition 2 — Unknown extensions — raw JSON preservation
+### Condition 2 — Unknown extensions — URL retention
 
 When an extension URL has not been seen before and no WASM module is registered for it, FastFHIR
-**does not silently drop the data**. The predigestion pipeline writes the URL into the stream-level
-`FF_URL_DIRECTORY` (a chained-segment trie that deduplicates shared URL prefixes) and stores the
-verbatim JSON sub-tree of the extension as an opaque blob. On export, the blob is re-emitted as
-valid FHIR JSON, ensuring a **lossless round-trip** even for extensions FastFHIR has never seen.
+records the URL in the stream-level `FF_URL_DIRECTORY` (a chained-segment trie that deduplicates
+shared URL prefixes). This preserves the extension identifier for lookup and module registration
+workflows, but the current predigestion/export pipeline does **not** preserve the full unknown
+extension JSON payload as an opaque blob for automatic re-emission. In other words, unknown
+extension URLs can be retained, but this should not be interpreted as a **lossless round-trip**
+guarantee for arbitrary, unhandled extension content.
 
 `FF_URL_DIRECTORY` uses a chained-segment model so that many URLs sharing a common prefix (e.g.
 `http://example.org/fhir/StructureDefinition/`) store that prefix only once:
