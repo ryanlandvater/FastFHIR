@@ -628,21 +628,6 @@ struct IngestPending {
 
 using IngestQueue = FIFO::Queue<IngestPending, 256>;
 
-// =====================================================================
-// BUNDLE WORK QUEUE
-// Each bundle entry is represented as a lightweight view-plus-index task.
-// The queue is fully populated before any worker starts (all slots are
-// PENDING), so workers never spin waiting for items to be written.
-// Workers each hold an independent Consumer; pop() uses a CAS on every
-// slot so exactly one thread claims each task — no coordinator needed.
-// =====================================================================
-struct BundleTask {
-    size_t index; // position within the preallocated inline entry array
-};
-
-// CAPACITY=64 → up to 64 concurrent live nodes × 2000 entries/node = 128 000 entries.
-using BundleQueue = FIFO::Queue<BundleTask, 64>;
-
 struct IngestContext {
     Builder&                      builder;
     simdjson::ondemand::parser&   parser;
@@ -873,62 +858,41 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
         // overhead, and no thread ever idles while tasks remain in the queue.
         out_parsed_count = count;
 
-        // Push all tasks before spawning workers so every slot is PENDING
-        // (not WRITING) when consumers start, eliminating any spin-wait.
-        BundleQueue bundle_queue;
-        {
-            auto injector = bundle_queue.get_injector();
-            for (size_t i = 0; i < count; ++i) {
-                injector.push(BundleTask{i});
-            }
-            // Injector destructs here; all slots are now PENDING.
-        }
+        // ── Work-stealing via atomic counter ─────────────────────────────────
+        // Each worker does fetch_add(1) to claim the next unclaimed index.
+        // No queue, no node allocation, no capacity limit — works for any
+        // bundle size.  Faster workers naturally pull more entries.
+        std::atomic<size_t> next_task{0};
 
         std::vector<std::thread> workers;
         auto* shared_chunks = &entry_chunks;
         for (unsigned int i = 0; i < m_num_threads; ++i) {
-            workers.emplace_back([this, i, &bundle_queue, shared_chunks, entry_array, &m_builder]() mutable {
+            workers.emplace_back([this, i, count, &next_task, shared_chunks, entry_array, &m_builder]() mutable {
                 auto& local_parser = m_parser_pool[i];
-
-                // Each worker gets its own Consumer starting at the queue head.
-                // pop() uses CAS so no two workers ever claim the same task.
-                // Faster workers simply pop more entries — no static partition.
-                auto consumer = bundle_queue.get_consumer();
-                BundleTask task;
-
-                while (!m_engine_faulted.load(std::memory_order_relaxed)) {
-                    if (consumer.pop(task)) {
-                        try {
-                            // Locate the pre-allocated inline arena slot for this entry.
-                            Reflective::MutableEntry entry_wrapper = entry_array[task.index];
-
-                            // All tasks map 1:1 to prechunked payloads.
-                            simdjson::ondemand::document local_doc = local_parser.iterate((*shared_chunks)[task.index]);
-                            simdjson::ondemand::object local_obj = local_doc.get_object();
-                            Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
-
-                        } catch (const simdjson::simdjson_error& e) {
-                            m_engine_faulted.store(true, std::memory_order_release);
-                            m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
-                                         std::to_string(task.index) + " (simdjson): " + e.what());
-                            break;
-                        } catch (const std::exception& e) {
-                            m_engine_faulted.store(true, std::memory_order_release);
-                            m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
-                                         std::to_string(task.index) + " (std::exception): " + e.what());
-                            break;
-                        } catch (...) {
-                            m_engine_faulted.store(true, std::memory_order_release);
-                            m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
-                                         std::to_string(task.index) + " with unknown exception.");
-                            break;
-                        }
-                        continue;
+                size_t idx;
+                while ((idx = next_task.fetch_add(1, std::memory_order_relaxed)) < count) {
+                    if (m_engine_faulted.load(std::memory_order_relaxed)) break;
+                    try {
+                        Reflective::MutableEntry entry_wrapper = entry_array[idx];
+                        simdjson::ondemand::document local_doc = local_parser.iterate((*shared_chunks)[idx]);
+                        simdjson::ondemand::object local_obj = local_doc.get_object();
+                        Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
+                    } catch (const simdjson::simdjson_error& e) {
+                        m_engine_faulted.store(true, std::memory_order_release);
+                        m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                     std::to_string(idx) + " (simdjson): " + e.what());
+                        break;
+                    } catch (const std::exception& e) {
+                        m_engine_faulted.store(true, std::memory_order_release);
+                        m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                     std::to_string(idx) + " (std::exception): " + e.what());
+                        break;
+                    } catch (...) {
+                        m_engine_faulted.store(true, std::memory_order_release);
+                        m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                     std::to_string(idx) + " with unknown exception.");
+                        break;
                     }
-                    // Queue exhausted — all entries claimed by this or other workers.
-                    if (consumer.at_end()) break;
-                    // pop() returned false but queue not yet exhausted: another
-                    // thread holds the next slot mid-claim. Spin briefly.
                 }
             });
         }
