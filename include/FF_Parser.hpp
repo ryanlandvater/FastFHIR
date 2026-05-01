@@ -23,6 +23,7 @@
 #include "FF_Memory.hpp"
 #include "FF_Ops.hpp"
 #include "FF_Primitives.hpp"
+#include "FF_ResourceTypes.hpp"
 
 namespace FastFHIR {
 class Builder;
@@ -130,6 +131,17 @@ public:
     * @return Recovery/type tag for the root resource.
      */
     uint16_t root_type() const;
+
+    /**
+    * @brief Get the root resource as a typed enum without exposing recovery tags.
+    */
+    RESOURCETYPE root_resource_type() const { return resource_type_from_recovery(m_root_recovery); }
+
+    /**
+    * @brief Typed root resource check.
+    */
+    template <RESOURCETYPE T>
+    bool is_root() const { return m_root_recovery == ResourceTypeTraits<T>::recovery; }
 
     /**
     * @brief Get the root resource node.
@@ -335,6 +347,17 @@ public:
      * @return Recovery/type tag associated with this node.
      */
     RECOVERY_TAG recovery() const;
+
+    /**
+     * @brief Get this node's concrete resource type as a typed enum.
+     */
+    RESOURCETYPE resource_type() const { return resource_type_from_recovery(m_recovery); }
+
+    /**
+     * @brief Typed check for concrete resource type.
+     */
+    template <RESOURCETYPE T>
+    bool is() const { return m_recovery == ResourceTypeTraits<T>::recovery; }
 
     /**
      * @brief Enumerate reflected field metadata for object nodes.

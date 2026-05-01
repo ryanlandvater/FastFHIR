@@ -551,6 +551,49 @@ def generate_reflection_dispatch(block_struct_names, resources):
 
     return hpp, cpp
 
+def generate_resource_traits_header(resources):
+    hpp = (
+        f"{auto_header}"
+        "#pragma once\n"
+        "#include \"../include/FF_Primitives.hpp\"\n"
+        "#include <string_view>\n\n"
+        "namespace FastFHIR {\n"
+        "enum class RESOURCETYPE : uint16_t {\n"
+        "    UNKNOWN = 0,\n"
+    )
+    for res in resources:
+        hpp += f"    {res.upper()},\n"
+    hpp += (
+        "};\n"
+        "using ResourceType = RESOURCETYPE;\n\n"
+        "template <RESOURCETYPE T> struct ResourceTypeTraits;\n"
+        "template <> struct ResourceTypeTraits<RESOURCETYPE::UNKNOWN> {\n"
+        "    static constexpr RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED;\n"
+        "    static constexpr std::string_view name = \"\";\n"
+        "};\n"
+    )
+    for res in resources:
+        hpp += (
+            f"template <> struct ResourceTypeTraits<RESOURCETYPE::{res.upper()}> {{\n"
+            f"    static constexpr RECOVERY_TAG recovery = RECOVER_FF_{res.upper()};\n"
+            f"    static constexpr std::string_view name = \"{res}\";\n"
+            "};\n"
+        )
+
+    hpp += (
+        "\ninline constexpr RESOURCETYPE resource_type_from_recovery(RECOVERY_TAG recovery) {\n"
+        "    switch (recovery) {\n"
+    )
+    for res in resources:
+        hpp += f"        case RECOVER_FF_{res.upper()}: return RESOURCETYPE::{res.upper()};\n"
+    hpp += (
+        "        default: return RESOURCETYPE::UNKNOWN;\n"
+        "    }\n"
+        "}\n"
+        "\n} // namespace FastFHIR\n"
+    )
+    return hpp
+
 # =====================================================================
 # 3. ZERO-COPY C++ GENERATION HELPERS
 # =====================================================================
@@ -2299,9 +2342,13 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     reflection_hpp, reflection_cpp = generate_reflection_dispatch(sorted(reflected_block_names), resources)
     _write_if_changed(os.path.join(output_dir, "FF_Reflection.hpp"), reflection_hpp)
     _write_if_changed(os.path.join(output_dir, "FF_Reflection.cpp"), reflection_cpp)
+
+    # Generate compile-time resource type traits (typed public bridge API)
+    resource_traits_hpp = generate_resource_traits_header(resources)
+    _write_if_changed(os.path.join(output_dir, "FF_ResourceTypes.hpp"), resource_traits_hpp)
     
     # FF_AllTypes.hpp is the internal aggregator — includes all _internal variants
-    all_types_hpp = f"{auto_header}#pragma once\n#include \"FF_DataTypes_internal.hpp\"\n#include \"FF_FieldKeys.hpp\"\n#include \"FF_Reflection.hpp\"\n"
+    all_types_hpp = f"{auto_header}#pragma once\n#include \"FF_DataTypes_internal.hpp\"\n#include \"FF_FieldKeys.hpp\"\n#include \"FF_ResourceTypes.hpp\"\n#include \"FF_Reflection.hpp\"\n"
     for res in generated_resources:
         all_types_hpp += f"#include \"FF_{res}_internal.hpp\"\n"
     all_types_hpp += "\n"

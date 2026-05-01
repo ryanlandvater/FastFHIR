@@ -645,6 +645,10 @@ static void test_2()
     auto parser = Parser(mem);
     auto root = parser.root();
     REQUIRE(root, "root node is null — is patient.ffhr sealed?");
+        REQUIRE(parser.is_root<FastFHIR::RESOURCETYPE::PATIENT>(),
+            "typed parser root resource check failed (expected Patient)");
+        REQUIRE(root.is<FastFHIR::RESOURCETYPE::PATIENT>(),
+            "typed node resource check failed (expected Patient)");
 
     PatientData data = root;
     std::cout << "  id       : " << data.id << "\n";
@@ -1036,7 +1040,7 @@ static void test_9()
             continue;
 
         auto resource_node = resource_entry.as_node();
-        if (!resource_node || resource_node.recovery() != RECOVER_FF_OBSERVATION)
+        if (!resource_node || !resource_node.is<FastFHIR::RESOURCETYPE::OBSERVATION>())
             continue;
 
         found_observation_source = true;
@@ -1066,7 +1070,7 @@ static void test_9()
             continue;
 
         auto resource_node = resource_entry.as_node();
-        if (!resource_node || resource_node.recovery() != RECOVER_FF_OBSERVATION)
+        if (!resource_node || !resource_node.is<FastFHIR::RESOURCETYPE::OBSERVATION>())
             continue;
 
         found_observation_compact = true;

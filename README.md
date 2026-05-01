@@ -360,6 +360,12 @@ auto mem    = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024)
 auto parser = FastFHIR::Parser(mem);
 auto root   = parser.root();
 
+// Typed resource checks (no direct RECOVERY_TAG usage required)
+bool parser_says_patient = parser.is_root<FastFHIR::RESOURCETYPE::PATIENT>();
+bool root_is_patient     = root.is<FastFHIR::RESOURCETYPE::PATIENT>();
+if (!parser_says_patient || !root_is_patient)
+    throw std::runtime_error("Expected Patient root resource");
+
 // Scalars coerce directly to C++ types — zero heap allocations
 std::string_view id     = root[FastFHIR::Fields::PATIENT::ID];           // std::string_view
 std::string_view gender = root[FastFHIR::Fields::PATIENT::GENDER];       // std::string_view
@@ -376,6 +382,9 @@ for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
 
 // Eagerly materialize into a generated C++ struct (strict schema validation)
 PatientData patient_data = root;
+
+// Same API works for polymorphic resource slots (e.g. Bundle.entry.resource):
+// if (resource_node.is<FastFHIR::RESOURCETYPE::OBSERVATION>()) { ... }
 ```
 
 ---

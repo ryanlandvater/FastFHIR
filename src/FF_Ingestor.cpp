@@ -13,6 +13,7 @@
 #include "FF_Extensions.hpp"
 #endif
 #include <cctype>
+#include <cstdio>
 #include <deque>
 #include <thread>
 #include <vector>
@@ -622,45 +623,89 @@ enum class IngestPendingKind {
 struct IngestPending {
     IngestPendingKind          kind     = IngestPendingKind::BlockField;
     Reflective::ObjectHandle   parent;                            // target parent object
-    FF_FieldKey                key;                               // field within parent to write
+    const FF_FieldKey*         key      = nullptr;                // points to insert_at_field_json() arg; valid for entire local drain
     std::string_view           payload;                           // view into IngestContext::backing (ArrayField)
                                                                   // or directly into caller buffer (BlockField)
-    RECOVERY_TAG               recovery = FF_RECOVER_UNDEFINED;  // dispatch recovery tag
 };
 
-using IngestQueue = FIFO::Queue<IngestPending, 256>;
+struct IngestStack {
+    static constexpr size_t INLINE_CAPACITY = 256;
+    std::array<IngestPending, INLINE_CAPACITY> inline_items{};
+    std::vector<IngestPending> spill_items;
+    size_t count = 0;
+
+    void push(const IngestPending& item) {
+        if (count < INLINE_CAPACITY) {
+            inline_items[count++] = item;
+            return;
+        }
+        spill_items.push_back(item);
+#ifndef NDEBUG
+        // Debug-only visibility into stack overflow beyond inline capacity.
+        if (spill_items.size() == 1) {
+            std::fprintf(stderr,
+                         "[Debug] FastFHIR IngestStack spill started: INLINE_CAPACITY=%zu exceeded.\n",
+                         INLINE_CAPACITY);
+        } else if ((spill_items.size() % 64u) == 0u) {
+            std::fprintf(stderr,
+                         "[Debug] FastFHIR IngestStack spill continuing: spill_size=%zu (inline=%zu).\n",
+                         spill_items.size(), INLINE_CAPACITY);
+        }
+#endif
+        ++count;
+    }
+
+    bool pop(IngestPending& out) {
+        if (count == 0) return false;
+
+        const size_t top_index = count - 1;
+        if (top_index < INLINE_CAPACITY) {
+            out = inline_items[top_index];
+        } else {
+            out = spill_items.back();
+            spill_items.pop_back();
+        }
+        --count;
+        return true;
+    }
+};
 
 struct IngestContext {
     Builder&                      builder;
     simdjson::ondemand::parser&   parser;
-    IngestQueue                   queue;
-    IngestQueue::Injector         injector;
-    IngestQueue::Consumer         consumer;
+    IngestStack                   stack;
     ConcurrentLogger*             logger;
     std::deque<std::string>       backing;  // owns synthetic JSON strings for ArrayField items;
                                             // deque guarantees stable references after push_back
 
     IngestContext(Builder& b, simdjson::ondemand::parser& p, ConcurrentLogger* lg)
-        : builder(b), parser(p), queue(),
-          injector(queue.get_injector()), consumer(queue.get_consumer()), logger(lg) {}
+        : builder(b), parser(p), stack(), logger(lg) {}
 };
 
 static void enqueue_ingest_pending(IngestContext& ctx, IngestPending item) {
-    ctx.injector.push(item);
+    ctx.stack.push(item);
 }
 
 static FF_Result process_ingest_pending(IngestPending& pending, IngestContext& ctx) {
+    if (pending.key == nullptr) {
+        return FF_Result{FF_FAILURE, "IngestPending: missing field key."};
+    }
+    const FF_FieldKey& key = *pending.key;
+    const RECOVERY_TAG recovery = (pending.kind == IngestPendingKind::BlockField)
+        ? key.child_recovery
+        : key.owner_recovery;
+
     simdjson::padded_string safe_json(pending.payload.data(), pending.payload.size());
     try {
         if (pending.kind == IngestPendingKind::BlockField) {
             simdjson::ondemand::document doc = ctx.parser.iterate(safe_json);
             simdjson::ondemand::value    val = doc.get_value();
             Reflective::ObjectHandle child =
-                dispatch_block(pending.recovery, val, ctx.builder, ctx.logger);
+                dispatch_block(recovery, val, ctx.builder, ctx.logger);
             if (child.offset() == FF_NULL_OFFSET)
                 return FF_Result{FF_FAILURE,
-                    std::string("IngestPending: failed to build block '") + pending.key.name + "'."};
-            pending.parent[pending.key] = child;
+                    std::string("IngestPending: failed to build block '") + key.name + "'."};
+            pending.parent[key] = child;
 
         } else /* ArrayField */ {
             // INLINE OBJECT ARRAYS ONLY.
@@ -679,20 +724,20 @@ static FF_Result process_ingest_pending(IngestPending& pending, IngestContext& c
             simdjson::ondemand::document doc  = ctx.parser.iterate(safe_json);
             simdjson::ondemand::value    val  = doc.get_value();
             Reflective::ObjectHandle owner =
-                dispatch_block(pending.recovery, val, ctx.builder, ctx.logger);
+                dispatch_block(recovery, val, ctx.builder, ctx.logger);
             if (owner.offset() == FF_NULL_OFFSET)
                 return FF_Result{FF_FAILURE,
-                    std::string("IngestPending: failed to build array owner for field '") + pending.key.name + "'."};
+                    std::string("IngestPending: failed to build array owner for field '") + key.name + "'."};
 
             // Read the array block offset from the owner's vtable slot for this field.
             // key.field_offset is the byte distance from the owner block base to the
             // 8-byte pointer slot that holds the FF_ARRAY block offset.
             const BYTE* base      = ctx.builder.memory().base();
-            Offset      slot_addr = owner.offset() + pending.key.field_offset;
+            Offset      slot_addr = owner.offset() + key.field_offset;
             Offset      array_off = LOAD_U64(base + slot_addr);
             if (array_off == FF_NULL_OFFSET)
                 return FF_Result{FF_FAILURE,
-                    std::string("IngestPending: array payload parsed to null for field '") + pending.key.name + "'."};
+                    std::string("IngestPending: array payload parsed to null for field '") + key.name + "'."};
 
             // Confirm the block at array_off is a genuine FF_ARRAY (RECOVER_ARRAY_BIT set).
             // This catches any mismatch between owner_recovery and the actual field.
@@ -700,20 +745,20 @@ static FF_Result process_ingest_pending(IngestPending& pending, IngestContext& c
                 LOAD_U16(base + array_off + DATA_BLOCK::RECOVERY));
             if ((stored_tag & RECOVER_ARRAY_BIT) == 0)
                 return FF_Result{FF_FAILURE,
-                    std::string("IngestPending: payload is not an FF_ARRAY block for field '") + pending.key.name + "'."};
+                    std::string("IngestPending: payload is not an FF_ARRAY block for field '") + key.name + "'."};
 
             // Wrap the existing inline array block in an ObjectHandle using the
             // semantic element recovery tag (child_recovery), then assign it to
             // the parent's field slot via MutableEntry::operator=(ObjectHandle).
-            Reflective::ObjectHandle array_handle(&ctx.builder, array_off, pending.key.child_recovery);
-            pending.parent[pending.key] = array_handle;
+            Reflective::ObjectHandle array_handle(&ctx.builder, array_off, key.child_recovery);
+            pending.parent[key] = array_handle;
         }
     } catch (const simdjson::simdjson_error& e) {
         return FF_Result{FF_FAILURE,
-            std::string("IngestPending simdjson error for field '") + pending.key.name + "': " + e.what()};
+            std::string("IngestPending simdjson error for field '") + key.name + "': " + e.what()};
     } catch (const std::exception& e) {
         return FF_Result{FF_FAILURE,
-            std::string("IngestPending error for field '") + pending.key.name + "': " + e.what()};
+            std::string("IngestPending error for field '") + key.name + "': " + e.what()};
     }
     return FF_SUCCESS;
 }
@@ -851,30 +896,36 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
         Reflective::ObjectHandle entry_array = root_handle[Fields::BUNDLE::ENTRY];
 
         // =====================================================================
-        // 5. CONCURRENT ARRAY PATCHING — SHARED QUEUE / DYNAMIC LOAD BALANCING
+        // 5. CONCURRENT ARRAY PATCHING — SHARED QUEUE / CONCURRENT FILL+DRAIN
         // =====================================================================
-        // All N entry tasks are pushed into a single BundleQueue before any
-        // worker is spawned. Workers race to pop() tasks via an atomic CAS on
-        // every queue slot: the first thread to successfully CAS a slot from
-        // PENDING → READING owns that entry; all other threads skip it and
-        // advance to the next slot. This gives perfect dynamic load balancing
-        // — faster threads naturally pull more work with zero coordination
-        // overhead, and no thread ever idles while tasks remain in the queue.
+        // Spawn workers before producing tasks so the queue drains while the
+        // main thread is still pushing. This avoids deadlock on bundles larger
+        // than queue capacity.
         out_parsed_count = count;
 
-        // ── Work-stealing via atomic counter ─────────────────────────────────
-        // Each worker does fetch_add(1) to claim the next unclaimed index.
-        // No queue, no node allocation, no capacity limit — works for any
-        // bundle size.  Faster workers naturally pull more entries.
-        std::atomic<size_t> next_task{0};
+        struct BundleTask {
+            size_t idx;
+        };
+        using BundleQueue = FIFO::Queue<BundleTask, 256>;
+        BundleQueue task_queue;
+        std::atomic<bool> producer_done{false};
 
         std::vector<std::thread> workers;
         auto* shared_chunks = &entry_chunks;
+        workers.reserve(m_num_threads);
         for (unsigned int i = 0; i < m_num_threads; ++i) {
-            workers.emplace_back([this, i, count, &next_task, shared_chunks, entry_array, &m_builder]() mutable {
+            workers.emplace_back([this, i, &producer_done, shared_chunks, entry_array, &m_builder, &task_queue]() mutable {
                 auto& local_parser = m_parser_pool[i];
-                size_t idx;
-                while ((idx = next_task.fetch_add(1, std::memory_order_relaxed)) < count) {
+                auto consumer = task_queue.get_consumer();
+                BundleTask task;
+                while (true) {
+                    if (!consumer.pop(task)) {
+                        if (producer_done.load(std::memory_order_acquire) && consumer.at_end()) break;
+                        std::this_thread::yield();
+                        continue;
+                    }
+
+                    const size_t idx = task.idx;
                     if (m_engine_faulted.load(std::memory_order_relaxed)) break;
                     try {
                         Reflective::MutableEntry entry_wrapper = entry_array[idx];
@@ -900,6 +951,14 @@ FF_Result Ingestor::ingest_fhir_json(const IngestRequest& request, Reflective::O
                 }
             });
         }
+
+        {
+            auto injector = task_queue.get_injector();
+            for (size_t idx = 0; idx < count; ++idx) {
+                injector.push(BundleTask{idx});
+            }
+        }
+        producer_done.store(true, std::memory_order_release);
 
         for (auto& worker : workers) worker.join();
 
@@ -987,9 +1046,8 @@ FF_Result Ingestor::insert_at_field_json(Reflective::ObjectHandle& parent_object
         enqueue_ingest_pending(ctx, IngestPending{
             IngestPendingKind::ArrayField,
             parent_object,
-            key,
+            &key,
             std::string_view(ctx.backing.back()),
-            key.owner_recovery,
         });
     } else {
         // Block field path — payload is a view into the caller's buffer, which
@@ -997,23 +1055,19 @@ FF_Result Ingestor::insert_at_field_json(Reflective::ObjectHandle& parent_object
         enqueue_ingest_pending(ctx, IngestPending{
             IngestPendingKind::BlockField,
             parent_object,
-            key,
+            &key,
             payload,
-            key.child_recovery,
         });
     }
 
-    // 3. Drain the queue
+    // 3. Drain the stack
     //    Each item records the MutableEntry slot (parent + key) and is updated
     //    once its JSON is parsed and the child block written to the arena.
+    //    LIFO keeps traversal cache-local for nested structures.
     IngestPending pending;
-    while (true) {
-        if (ctx.consumer.pop(pending)) {
-            FF_Result result = process_ingest_pending(pending, ctx);
-            if (!result) return result;
-            continue;
-        }
-        if (ctx.consumer.at_end()) break;
+    while (ctx.stack.pop(pending)) {
+        FF_Result result = process_ingest_pending(pending, ctx);
+        if (!result) return result;
     }
 
     return FF_SUCCESS;

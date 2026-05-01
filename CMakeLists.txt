@@ -725,6 +725,7 @@ install(FILES
 install(FILES
     ${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_Recovery.hpp
+    ${FASTFHIR_GENERATED_DIR}/FF_ResourceTypes.hpp
     DESTINATION include
 )
 
