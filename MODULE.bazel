@@ -1,0 +1,24 @@
+module(
+    name = "fastfhir",
+    version = "2026.0.0",
+)
+
+# Core rules for C++ compilation
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+# High-speed JSON parsing for the Ingestor
+bazel_dep(name = "simdjson", version = "3.12.3")
+
+# Cryptographic primitives (BoringSSL is the preferred Bazel drop-in for OpenSSL)
+bazel_dep(name = "boringssl", version = "0.20250114.0")
+
+# Python rules and pybind11 for bindings
+bazel_dep(name = "rules_python", version = "1.9.0")
+bazel_dep(name = "pybind11_bazel", version = "3.0.1")
+
+# Asio for cross-platform socket testing (if you migrate tests later)
+bazel_dep(name = "asio", version = "1.31.0")
+
+# If you decide to enable the WASM extension subsystem (WAMR)
+# bazel_dep(name = "wamr", version = "2.2.0")

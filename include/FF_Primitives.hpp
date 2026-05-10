@@ -30,6 +30,7 @@
 #include <limits>
 #include <unordered_map>
 #include <variant>
+#include "FF_Version.hpp"
 
 #ifndef FF_EXPORT
 #if defined(_WIN32) || defined(_WIN64)

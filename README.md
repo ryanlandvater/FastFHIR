@@ -9,9 +9,9 @@ FastFHIR
 
 **FastFHIR** is a **wildly fast binary HL7 format** comprising a lock-free binary serializer and C++20 code generation pipeline targeting the HL7 FHIR resources (R4 and R5).
 
-Healthcare interoperability has historically relied on formats that are **inherently unsafe**, **computationally expensive**, and **structurally brittle**. FastFHIR replaces traditional parsing with a mathematically strict, offset-based binary layout that guarantees tye safety, data recovery, in-stream HL7 enrichment, and blistering speed. It generates strongly-typed C++ structs and a mathematically strict, zero-copy binary architecture directly from official HL7 FHIR Structure Definitions.
+Healthcare interoperability has historically relied on formats that are **inherently unsafe**, **computationally expensive**, and **structurally brittle**. FastFHIR replaces traditional parsing with a mathematically strict, offset-based binary layout that guarantees type safety, data recovery, in-stream HL7 enrichment, and blistering speed. It generates strongly-typed C++ structs and a mathematically strict, zero-copy binary architecture directly from official HL7 FHIR Structure Definitions.
 
-A Python binding is available — see [`The Python Readme`](python/README.md) for Python API examples.
+Cross-language support is available through Python bindings (C++ and Python both supported natively) — see [`The Python Readme`](python/README.md) for Python API examples and full integration workflows.
 
 ---
 
@@ -36,9 +36,11 @@ A Python binding is available — see [`The Python Readme`](python/README.md) fo
   - [ff\_export](#ff_export)
   - [ff\_compact](#ff_compact)
 - [Reference](#reference)
-  - [Typed Resource Keys](#typed-resource-keys--fastfhirfieldsresourcefield)
-  - [Checksum Algorithms](#checksum-algorithms)
-  - [FHIR Versions](#fhir-versions)
+    - [Typed Resource Keys](#typed-resource-keys--fastfhirfieldsresourcefield)
+    - [Code Assignment Semantics](#code-assignment-semantics)
+    - [Polymorphic Choice Assignment and Readback](#polymorphic-choice-assignment-and-readback)
+    - [Checksum Algorithms](#checksum-algorithms)
+    - [FHIR Versions](#fhir-versions)
 - [Extensions and modifierExtensions](#extensions-and-modifierextensions)
 - [Generator Architecture](#generator-architecture)
 - [Design Notes](#design-notes)
@@ -48,27 +50,48 @@ A Python binding is available — see [`The Python Readme`](python/README.md) fo
 
 ## Why FastFHIR?
 
-### 1. Extreme Performance
-FastFHIR turns data traversal into pure pointer arithmetic, **fundamentally outpacing both legacy text formats and modern serialized binaries**.
+### 1. Extreme Performance & Compact Size
+FastFHIR turns data traversal into pure pointer arithmetic, **fundamentally outpacing both legacy text formats and modern serialized binaries**, while dramatically shrinking storage footprint.
 * **O(1) Random Access:** Jump instantly to any deeply nested FHIR field — completely bypassing the O(N) linear scanning of HL7v2 and the O(N) string-hashing and DOM construction of JSON.
 * **Zero-Heap Allocation:** Reading a FastFHIR stream requires 0 heap allocations. A lightweight `Node` viewing lens is passed directly over the raw memory buffer, enabling nanosecond read times from the instant the message hits RAM.
 * **Zero-Copy Engine:** FastFHIR outperforms even Google Research's Protobuf FHIR implementation because it skips the deserialization phase entirely, operating natively at the absolute memory-bandwidth limit without unpacking varints or allocating C++ message objects.
+* **Fraction of Size on Disk:** Optional compact archive mode reduces storage by up to **66%** on sparse resources through presence bitmasks and dense field packing (see [Compact Archives](#7--compact-archives)).
 
-### 2. Hardware-Level Safety & Security
-Legacy text standards expose systems to XML injection (CDA) and heap fragmentation (JSON). FastFHIR guarantees deterministic memory and structural integrity.
-* **OS-Protected Memory:** By utilizing Virtual Memory Arenas (via POSIX `mmap` or Win32 `VirtualAlloc`), FastFHIR ensures pointers remain perfectly stable and memory access is protected by the OS kernel.
-* **Strict Schema Validation:** The binary layout embeds explicit `RECOVERY_TAG` metadata for every object. This provides guaranteed safe polymorphic resolution and strict C++ type checking at runtime, preventing incorrect information context, garbage reads, and buffer overflows.
-* **Cryptographic Sealing:** Built-in checksum footers (CRC32/MD5/SHA-256/SHA-512) guarantee record immutability, providing a hardware-verified security layer for clinical data lakes.
+<!-- ![test image](build/test_3.png) -->
+<!-- <img src = "build/test_3.png" width="50%"> -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="build/dark.png" width="1000">
+  <source media="(prefers-color-scheme: light)" srcset="build/light.png">
+  <img alt="Project Logo" src="light-image.png">
+</picture>
 
-### 3. Clinical Informatics: Lock-Free Enrichment
+
+
+### 2. Type Safety & Validated FHIR Format
+FastFHIR provides **strongly validated, type-safe FHIR encoding** with guaranteed format correctness and comprehensive extension handling.
+* **Strict Schema Validation:** The binary layout embeds explicit `RECOVERY_TAG` metadata for every object. This provides guaranteed safe polymorphic resolution and strict C++ type checking at runtime, preventing incorrect information context, garbage reads, and buffer overflows. Every resource is validated against official FHIR Structure Definitions at generation time.
+* **Native FHIR Polymorphic Type Support:** FastFHIR understands FHIR's polymorphic fields exactly as the spec defines them, including both choice elements such as `valueQuantity`, `valueString`, `valueCodeableConcept`, and other `[x]` fields, and polymorphic resource-bearing slots such as `Bundle.entry.resource`. Concrete payload types retain strict runtime identity and can be ingested, traversed, materialized, mutated, and re-exported without lossy adapter layers or non-compliant generic protobuf JSON conventions.
+* **Structured Codes & Extensions:** Extensions are intelligently routed at ingest time — registered extensions are decoded into typed binary fields (WASM-based codecs); unknown extensions are preserved with URL tracking. Codes are strongly enumerated from official FHIR CodeSystems.
+* **Primitive Extensions Preserved Correctly:** FastFHIR supports FHIR's underscore-prefixed primitive extension model, allowing extensions on scalar primitives to survive ingest, validation, traversal, and re-export. This is a critical compatibility requirement that standard Protobuf JSON serializers do not implement.
+
+### 3. Hardware-Level Safety & Security
+**In healthcare, security and safety are non-negotiable.** FastFHIR guarantees deterministic memory management and structural integrity at the OS level.
+* **OS-Protected Memory:** By utilizing Virtual Memory Arenas (via POSIX `mmap` or Win32 `VirtualAlloc`), FastFHIR ensures pointers remain perfectly stable and memory access is protected by the OS kernel. Legacy formats like JSON expose systems to heap fragmentation and injection attacks; FastFHIR eliminates these vectors entirely.
+* **Strict Polymorphic Type Checking:** The embedded `RECOVERY_TAG` metadata prevents type confusion, garbage reads, and buffer overflows at runtime — guaranteeing safe polymorphic resolution even for untrusted input streams.
+* **Cryptographic Sealing:** Built-in checksum footers (CRC32/MD5/SHA-256/SHA-512) guarantee record immutability and integrity, providing a hardware-verified security layer for clinical data lakes and audit trails.
+* **Deterministic Memory Layout:** Every byte position is mathematically predetermined. No dynamic allocation, no heap fragmentation, no surprise reallocations — perfect for safety-critical healthcare workflows.
+
+### 4. Clinical Informatics: Lock-Free Enrichment & Custom Profiles
 * **In-Stream Lazy Enrichment:** Read a `Patient.id` or route a payload in nanoseconds without parsing the other 9,999 fields in a `Bundle`. You only pay for the exact bytes you traverse. Append a new laboratory result for a patient without touching any other byte in the record — simply add the new result and reseal before passing the message downstream.
 * **Concurrent Mutex-Free Generation:** Serialize thousands of resources simultaneously across a thread pool. FastFHIR's atomic pointer-patching architecture allows surgical data appends (like NLP annotations) into a single contiguous stream without a single lock.
+* **Custom Implementation Guides:** Generator supports pluggable profiles — switch between US Core IG (27 resources), UK Core IG (22 resources), or custom profiles to match your dataset and requirements. Generation happens automatically at build time from official HL7 bundles.
 
-### 4. Developer Ergonomics
-You do not have to sacrifice a clean API for bare-metal performance.
+### 5. Developer Ergonomics & Cross-Language Support
+You do not have to sacrifice a clean API for bare-metal performance — **native support for both C++ and Python**.
 * **IDE-Friendly Static Keys:** Zero-overhead, compiled O(1) typed keys (e.g., `FastFHIR::Fields::PATIENT::ACTIVE`) completely bypass runtime string hashing.
 * **Polymorphic Type Safety:** Assign fields directly to C++ types with zero-overhead implicit conversion (e.g., `std::string_view id = node[FastFHIR::Fields::PATIENT::ID]`), or eagerly materialize an entire struct (`PatientData patient = parser.root()`).
 * **JSON-Style Traversal:** Walk complex trees using native C++ `[]` operators (e.g., `root[FastFHIR::Fields::PATIENT::NAME][0]`).
+* **FHIR-Accurate JSON Conversion:** Bidirectional parsing and printing via `ff_ingest` and `ff_export` CLI tools and C++/Python APIs preserve official FHIR JSON behavior, including polymorphic choice fields, polymorphic resource slots, and primitive extensions. This avoids the incompatibilities of generic Protobuf JSON utilities such as `google::protobuf::util::MessageToJsonString`, which do not implement the FHIR JSON specification.
 
 ---
 
@@ -275,6 +298,10 @@ ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, json},
 patient_handle[FastFHIR::Fields::PATIENT::ACTIVE] = true;
 patient_handle[FastFHIR::Fields::PATIENT::BIRTH_DATE] = "1990-03-21";
 
+// Code assignment example.
+// Known values resolve through the dictionary path (fast integer code ID).
+patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "male";
+
 // Seal the stream (no checksum for brevity; see API Examples for SHA-256).
 builder.set_root(patient_handle);
 auto view = builder.finalize();      // returns a lifetime-safe Memory::View
@@ -368,7 +395,7 @@ if (!parser_says_patient || !root_is_patient)
 
 // Scalars coerce directly to C++ types — zero heap allocations
 std::string_view id     = root[FastFHIR::Fields::PATIENT::ID];           // std::string_view
-std::string_view gender = root[FastFHIR::Fields::PATIENT::GENDER];       // std::string_view
+std::string_view gender = root[FastFHIR::Fields::PATIENT::GENDER];       // Code Field
 bool             active = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>(); // bool
 std::string_view dob    = root[FastFHIR::Fields::PATIENT::BIRTH_DATE];   // std::string_view
 
@@ -549,34 +576,68 @@ builder.finalize(FF_CHECKSUM_SHA256, [](const unsigned char* data, size_t len) {
 
 ## 6 — Lock-Free Concurrent Generation
 
-FastFHIR's Builder uses OS-level memory mapping and atomic offsets to allow massive
-thread pools to write to a single contiguous binary stream simultaneously, without
-any mutexes.
+For high-throughput bundle assembly, use a parallel STL backend powered by oneTBB.
+In this pattern, each worker appends one `Observation` into the same shared lock-free
+arena, producing a `Bundle.entry` list in parallel. The root `Bundle` is then assembled
+once on the caller thread and sealed with a checksum.
 
 ```cpp
 #include <FastFHIR.hpp>
-#include <thread>
+#include <FF_Bundle.hpp>
+#include <FF_Observation.hpp>
+#include <algorithm>
+#include <execution>
 #include <vector>
 
-auto mem = FastFHIR::Memory::create(2ULL * 1024 * 1024 * 1024);  // 2 GB Virtual Arena
-FastFHIR::Builder builder(mem, FHIR_VERSION_R5);
+std::vector<uint8_t> serialize_bundle_parallel(const std::vector<ObservationData>& raw_observations) {
+    auto mem = FastFHIR::Memory::create(256 * 1024 * 1024); // Allocate 256 MB VMA arena
+    FastFHIR::Builder builder(mem, FHIR_VERSION_R5);
 
-std::vector<std::thread> pool;
+    // 1) Concurrently append Observation resources into one shared lock-free stream.
+    std::vector<BundleentryData> entries(raw_observations.size());
+      std::transform(
+    #if defined(__cpp_lib_execution) && (__cpp_lib_execution >= 201603L)
+      std::execution::par_unseq,
+    #else
+      std::execution::par,
+    #endif
+      fixture.bundle.begin(),
+      fixture.bundle.end(),
+      entries.begin(),
+      [&builder](const ObservationData& obs) -> BundleentryData {
+            BundleentryData entry{};
+            entry.resource = static_cast<FastFHIR::Reflective::ResourceReference>(
+                builder.append_obj(obs)
+            );
+            return entry;
+        }
+    );
 
-// 32 threads simultaneously serializing clinical data into the same stream
-for (int i = 0; i < 32; ++i) {
-    pool.emplace_back([&builder, i]() {
-        FastFHIR::ObservationData obs;
-        obs.status = "preliminary";
+    // 2) Assemble the Bundle root once after all parallel appends complete.
+    BundleData bundle{};
+    bundle.type = BundleType::Collection;
+    bundle.entry = std::move(entries);
 
-        // Single atomic claim — no mutex, no heap allocation, no pointer invalidation
-        auto handle = builder.append_obj(obs);
+    builder.set_root(builder.append_obj(bundle));
+    auto view = builder.finalize(FF_CHECKSUM_SHA256);
 
-        // Push handle to a lock-free queue to link into a Bundle later
-    });
+    return std::vector<uint8_t>(view.begin(), view.end());
 }
+```
 
-for (auto& t : pool) t.join();
+`std::execution::par_unseq` uses your toolchain's parallel backend (commonly oneTBB on
+libstdc++). Link your target against TBB (and threads) explicitly:
+
+```cmake
+find_package(TBB REQUIRED)
+find_package(Threads REQUIRED)
+
+target_link_libraries(your_target
+  PRIVATE
+    fastfhir
+    TBB::tbb
+    Threads::Threads
+)
 ```
 
 ---
@@ -784,6 +845,158 @@ FastFHIR::Fields::CODING::SYSTEM       // "system"      (string)
 FastFHIR::Fields::BUNDLE::ENTRY        // "entry"       (bundle entry array)
 FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE // "resource"  (polymorphic resource)
 ```
+
+### Code Assignment Semantics
+
+When you assign a string to a coded field (for example `Patient.gender`,
+`Observation.status`, or `Coding.code`), FastFHIR stores it using this order:
+
+1. Dictionary lookup (`FF_GetDictionaryCode`)
+2. Custom string fallback (`FF_STRING` + relative pointer)
+3. Null sentinel (`FF_CODE_NULL`) for empty input
+
+#### 1) Dictionary lookup
+
+FastFHIR first attempts to map the incoming code string using
+`FF_GetDictionaryCode`. If found, the field stores that dictionary ID directly.
+
+```cpp
+patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "male";
+// "male" is typically dictionary-resolved and stored as a dict_code
+```
+
+#### 2) Custom string fallback
+
+If lookup fails, FastFHIR writes the raw string into the arena as an `FF_STRING`
+block, computes the relative offset from the current data block to that string,
+and stores that offset with `FF_CUSTOM_STRING_FLAG` (`0x80000000`) set in the MSB.
+
+This marks the value as a custom-string reference instead of a dictionary ID.
+
+```cpp
+patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "org-local-code-91827";
+// Not in dictionary -> stored as custom string with FF_CUSTOM_STRING_FLAG
+```
+
+#### 3) Null handling
+
+If the assigned string is empty, FastFHIR stores `FF_CODE_NULL`.
+
+```cpp
+patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "";
+// Stored as FF_CODE_NULL
+```
+
+#### Read path (inverse operation)
+
+On read, `Node::as<std::string_view>()` performs the inverse resolution order:
+
+1. Try dictionary resolution via `FF_ResolveCode`
+2. If unresolved, check `FF_CUSTOM_STRING_FLAG` and follow the relative pointer
+3. Return the referenced custom `FF_STRING` payload
+
+This is why code fields can be assigned with normal strings while still keeping
+fast dictionary-backed storage for known values.
+
+### Polymorphic Choice Assignment and Readback
+
+FastFHIR choice fields (`[x]`, for example `Observation.value[x]`) use a fixed
+binary slot plus reflection-aware resolution.
+
+#### Binary representation
+
+Each choice slot is 10 bytes:
+
+- 8-byte value area
+- 2-byte `RECOVERY_TAG` indicating the concrete active type
+
+The 8-byte value area is interpreted by tag:
+
+- Inline scalar path: stores raw scalar bits directly (`bool`, integer, `double`)
+- Complex path: stores an 8-byte absolute offset to the target data block
+  (`FF_STRING`, `Quantity`, `Address`, etc.)
+
+#### Assignment (write path)
+
+When ingesting/building a choice field, FastFHIR follows this sequence:
+
+1. Type detection: key suffix determines concrete member (for example
+    `valueBoolean`, `valueQuantity`, `valueString`)
+2. Staging: value + type are staged (commonly through a `ChoiceEntry`
+    `std::variant` + `RECOVERY_TAG`)
+3. Safe amendment: `Builder::amend_variant` writes the 8-byte value area and
+    2-byte tag; for complex payloads, the object/string block is appended first
+    and its absolute offset is written into the slot
+4. Compact mode: compact archives select slot width by concrete payload
+    representation (native scalar widths for scalar payloads, offset payload for
+    complex values)
+
+Concrete examples:
+
+```cpp
+// Scalar choice assignment (Observation.valueBoolean)
+observation_handle[FastFHIR::Fields::OBSERVATION::VALUE] = true;
+
+// Complex choice assignment (Observation.valueString)
+observation_handle[FastFHIR::Fields::OBSERVATION::VALUE] = "normal";
+
+// Complex object choice assignment (Observation.valueQuantity)
+QuantityData q{};
+q.value = 94.0;
+q.unit = "mg/dL";
+q.system = "http://unitsofmeasure.org";
+observation_handle[FastFHIR::Fields::OBSERVATION::VALUE] = q;
+```
+
+The same storage model also applies to other choice fields such as
+`Patient.deceased[x]` (`deceasedBoolean` vs `deceasedDateTime`) and
+`MedicationRequest.medication[x]`.
+
+#### Read path (parse + reflect)
+
+Choice reads are a two-stage process:
+
+1. Resolution (`Reflective::Node::resolve_choice`)
+    - Read the slot `RECOVERY_TAG`
+    - Scalar tag: return a node over the in-slot scalar bytes
+    - Complex tag: follow the 8-byte offset (pointer hop) and return a node at
+      the target block
+2. Typed access (`Node::as<T>()`)
+    - Prefer branching on `node.kind()` first (smaller, stable enum surface)
+    - Use `node.recovery()` only when you need fine-grained subtype detail
+    - Extract with `node.as<T>()`; runtime tag checks enforce type-safe casts
+
+Example:
+
+```cpp
+auto value_node = observation_root[FastFHIR::Fields::OBSERVATION::VALUE];
+
+switch (value_node.kind()) {
+    case FF_FIELD_BOOL: {
+        bool v = value_node.as<bool>();
+        (void)v;
+        break;
+    }
+    case FF_FIELD_STRING: {
+        std::string_view v = value_node.as<std::string_view>();
+        (void)v;
+        break;
+    }
+    case FF_FIELD_BLOCK: {
+        // Complex datatype branch (Quantity, CodeableConcept, Address, etc.).
+        // Use recovery() here only if you need to distinguish concrete block types.
+        QuantityData q = value_node;
+        (void)q;
+        break;
+    }
+    default:
+        break;
+}
+```
+
+During JSON export, the serializer uses choice-type suffix resolution (for
+example `get_choice_suffix`) to emit the correct FHIR key name such as
+`valueBoolean`, `valueString`, or `valueQuantity`.
 
 ### Checksum Algorithms
 

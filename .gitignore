@@ -8,3 +8,17 @@ generated_src/
 FastFHIR.xcodeproj/xcuserdata
 FastFHIR.xcodeproj/project.xcworkspace/xcuserdata
 *.ff
+
+# Bazel outputs and convenience symlinks
+bazel-*
+bazel-build/
+bazel-bin
+bazel-out
+bazel-testlogs
+bazel-fastfhir
+bazel-fastfhir.exe
+
+# Bazel module/dependency cache trees occasionally created in-workspace
+external/
+execroot/
+output/

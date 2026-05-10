@@ -298,8 +298,11 @@ Parser::ChecksumValidation Parser::checksum() const {
     FF_HEADER header(m_size);
     FF_CHECKSUM cs = header.get_checksum(m_base);
 
-    if (!cs || cs.__offset + FF_CHECKSUM::HEADER_SIZE > m_size)
-        return {};
+    const Size cs_header_size = cs.get_header_size();
+
+    if (!cs || cs.__offset + cs_header_size > m_size) {
+        throw std::runtime_error("FastFHIR Parsing Error: Invalid checksum metadata in header.");
+    }
 
     return {
         m_base,

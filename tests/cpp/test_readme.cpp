@@ -16,6 +16,7 @@
 #include <openssl/evp.h>
 
 #include <algorithm>
+#include <execution>
 #include <iostream>
 #include <filesystem>
 #include <fstream>
@@ -891,42 +892,82 @@ static void test_5()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Example 6 — Lock-free concurrent generation (thread-safety smoke test)
+// Example 6 — Lock-free concurrent generation (parallel bundle assembly)
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void test_6()
 {
-    constexpr int NUM_THREADS = 8;
+    constexpr size_t OBS_COUNT = 128;
+
+    std::vector<ObservationData> raw_observations(OBS_COUNT);
+    for (size_t i = 0; i < raw_observations.size(); ++i)
+    {
+        raw_observations[i].status = ObservationStatus::Preliminary;
+    }
 
     auto mem = Memory::create(256 * 1024 * 1024);
     Builder builder(mem, FHIR_VERSION_R5);
 
-    std::vector<std::thread> pool;
-    std::vector<Reflective::ObjectHandle> handles(NUM_THREADS);
-    std::atomic<int> completed{0};
-
-    for (int i = 0; i < NUM_THREADS; ++i)
+    // 1) Parallel append into one shared lock-free arena.
+    std::vector<BundleentryData> entries(raw_observations.size());
+    auto to_bundle_entry = [&builder](const ObservationData &obs) -> BundleentryData
     {
-        pool.emplace_back([&builder, &handles, &completed, i]()
-                          {
-            ObservationData obs;
-            obs.status = ObservationStatus::Preliminary;
+        BundleentryData entry{};
+        entry.resource = static_cast<ResourceReference>(builder.append_obj(obs));
+        return entry;
+    };
 
-            // Single atomic claim — no mutex, no heap allocation, no pointer invalidation
-            handles[i] = builder.append_obj(obs);
-            ++completed; });
+#if defined(__cpp_lib_execution) && (__cpp_lib_execution >= 201603L)
+    std::transform(
+        std::execution::par_unseq,
+        raw_observations.begin(),
+        raw_observations.end(),
+        entries.begin(),
+        to_bundle_entry);
+#else
+    std::transform(
+        raw_observations.begin(),
+        raw_observations.end(),
+        entries.begin(),
+        to_bundle_entry);
+#endif
+
+    // 2) Assemble and seal a root Bundle once.
+    BundleData bundle{};
+    bundle.type = BundleType::Collection;
+    bundle.entry = std::move(entries);
+
+    builder.set_root(builder.append_obj(bundle));
+    auto view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(!view.empty(), "parallel bundle finalize returned empty view");
+
+    Parser parser(view.data(), view.size());
+    auto root = parser.root();
+    REQUIRE(root, "parallel bundle root is null");
+
+    auto out_entries = root[FastFHIR::Fields::BUNDLE::ENTRY].entries();
+    REQUIRE(out_entries.size() == OBS_COUNT, "parallel bundle entry count mismatch");
+
+    size_t found_preliminary = 0;
+    for (auto &entry_node : out_entries)
+    {
+        auto resource_entry = entry_node[FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE];
+        REQUIRE(resource_entry, "bundle entry missing resource");
+
+        auto resource_node = resource_entry.as_node();
+        REQUIRE(resource_node, "bundle resource node is null");
+        REQUIRE(resource_node.is<FastFHIR::RESOURCETYPE::OBSERVATION>(),
+                "bundle entry resource is not Observation");
+
+        std::string_view status = resource_node[FastFHIR::Fields::OBSERVATION::STATUS];
+        if (status == "preliminary")
+            ++found_preliminary;
     }
 
-    for (auto &t : pool)
-        t.join();
-
-    REQUIRE(completed == NUM_THREADS, "not all threads completed");
-    for (int i = 0; i < NUM_THREADS; ++i)
-    {
-        REQUIRE(handles[i], "handle from thread " + std::to_string(i) + " is null");
-    }
-    std::cout << "  " << NUM_THREADS << " threads completed lock-free writes\n";
-    std::cout << "  all " << NUM_THREADS << " ObjectHandles valid\n";
+    REQUIRE(found_preliminary == OBS_COUNT,
+            "not all parallel observations retained preliminary status");
+    std::cout << "  parallel observations : " << OBS_COUNT << "\n";
+    std::cout << "  bundle entries        : " << out_entries.size() << "\n";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1044,6 +1085,18 @@ static void test_9()
             continue;
 
         found_observation_source = true;
+        std::string_view status = resource_node[FastFHIR::Fields::OBSERVATION::STATUS];
+        REQUIRE(status == "final", "source observation status code mismatch");
+
+        auto coding_array = resource_node[FastFHIR::Fields::OBSERVATION::CODE]
+                                      [FastFHIR::Fields::CODEABLECONCEPT::CODING]
+                                          .entries();
+        REQUIRE(!coding_array.empty(), "source observation code.coding is empty");
+        std::string_view coding_system = coding_array.front()[FastFHIR::Fields::CODING::SYSTEM];
+        std::string_view coding_code = coding_array.front()[FastFHIR::Fields::CODING::CODE];
+        REQUIRE(coding_system == "http://loinc.org", "source observation coding.system mismatch");
+        REQUIRE(coding_code == "8867-4", "source observation coding.code mismatch");
+
         std::string_view obs_value = resource_node[FastFHIR::Fields::OBSERVATION::VALUE];
         REQUIRE(obs_value == "final-value", "source observation value[x] mismatch");
 
@@ -1074,6 +1127,18 @@ static void test_9()
             continue;
 
         found_observation_compact = true;
+        std::string_view status = resource_node[FastFHIR::Fields::OBSERVATION::STATUS];
+        REQUIRE(status == "final", "compact observation status code mismatch");
+
+        auto coding_array = resource_node[FastFHIR::Fields::OBSERVATION::CODE]
+                                      [FastFHIR::Fields::CODEABLECONCEPT::CODING]
+                                          .entries();
+        REQUIRE(!coding_array.empty(), "compact observation code.coding is empty");
+        std::string_view coding_system = coding_array.front()[FastFHIR::Fields::CODING::SYSTEM];
+        std::string_view coding_code = coding_array.front()[FastFHIR::Fields::CODING::CODE];
+        REQUIRE(coding_system == "http://loinc.org", "compact observation coding.system mismatch");
+        REQUIRE(coding_code == "8867-4", "compact observation coding.code mismatch");
+
         std::string_view obs_value = resource_node[FastFHIR::Fields::OBSERVATION::VALUE];
         REQUIRE(obs_value == "final-value", "compact observation value[x] mismatch");
 

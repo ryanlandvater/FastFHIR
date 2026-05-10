@@ -1,0 +1,4 @@
+# Route Bazel convenience symlinks into a dedicated directory.
+# This creates paths like bazel-build/bin, bazel-build/out,
+# bazel-build/testlogs, and bazel-build/FastFHIR.
+common --symlink_prefix=bazel-build/

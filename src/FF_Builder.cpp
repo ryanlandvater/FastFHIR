@@ -62,6 +62,22 @@ m_active_mutators(0)
             m_root_recovery = p.m_root_recovery;
             m_fhir_rev      = static_cast<FHIR_VERSION>(p.m_version);
         }
+
+        // Re-open for append: reclaim the old checksum footer so new writes
+        // extend from the payload tail rather than accumulating stale checksum
+        // blocks in the middle of the stream.
+        const Size sealed_size = p.size_bytes();
+        FF_HEADER header(sealed_size);
+        FF_CHECKSUM checksum = header.get_checksum(m_base);
+        if (checksum &&
+            checksum.__offset >= FF_HEADER::HEADER_SIZE &&
+            checksum.__offset <= sealed_size) {
+            // Rewind write head to the start of the existing checksum block.
+            m_memory.reset(checksum.__offset);
+            // Mark checksum as absent until finalize() appends a new one.
+            STORE_U64(const_cast<BYTE*>(m_base) + FF_HEADER::CHECKSUM_OFFSET, FF_NULL_OFFSET);
+        }
+        
     } catch (const std::exception&) {
         // No valid FastFHIR stream detected — this is a new stream, leave root unset.
     }
