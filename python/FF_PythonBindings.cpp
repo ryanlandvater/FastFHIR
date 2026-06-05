@@ -132,10 +132,6 @@ static std::string render_handle_json(const Reflective::ObjectHandle& handle) {
     return render_node_json(handle.as_node());
 }
 
-static std::string render_entry_json(const Reflective::MutableEntry& entry) {
-    return render_node_json(entry.as_node());
-}
-
 static py::object materialize_handle_value(const std::shared_ptr<Builder>& builder,
                                            const Reflective::ObjectHandle& handle);
 
@@ -310,8 +306,6 @@ static std::string render_mutable_entry_json(const PyMutableEntry& entry_wrapper
         return "null";
     }
 
-    const FF_FieldKind kind = entry_wrapper.kind();
-    
     // For arrays, iterate through elements and materialize each one
     // (this handles mutations correctly unlike reading from the original offset)
     if (entry_wrapper.entry.is_array()) {
@@ -363,7 +357,7 @@ static bool try_extract_recovery_tag(py::handle obj, RECOVERY_TAG& out_tag) {
         return false;
     }
 
-    std::string class_name = py::cast<std::string>(obj.get_type().attr("__name__"));
+    std::string class_name = py::cast<std::string>(py::type::of(obj).attr("__name__"));
     constexpr std::string_view suffix = "_PATH";
     if (class_name.size() <= suffix.size() ||
         class_name.compare(class_name.size() - suffix.size(), suffix.size(), suffix) != 0) {

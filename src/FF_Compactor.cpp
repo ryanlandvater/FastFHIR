@@ -56,21 +56,6 @@ static inline uint16_t compact_slot_size(FF_FieldKind kind) {
     }
 }
 
-static inline bool is_inline_scalar_kind(FF_FieldKind kind) {
-    switch (kind) {
-        case FF_FIELD_BOOL:
-        case FF_FIELD_INT32:
-        case FF_FIELD_UINT32:
-        case FF_FIELD_INT64:
-        case FF_FIELD_UINT64:
-        case FF_FIELD_FLOAT64:
-        case FF_FIELD_CODE:
-            return true;
-        default:
-            return false;
-    }
-}
-
 static Offset archive_node(const Reflective::Node& node, ArchiveContext& context);
 static Offset archive_array(const Reflective::Node& node, ArchiveContext& context);
 static Offset archive_object(const Reflective::Node& node, ArchiveContext& context);

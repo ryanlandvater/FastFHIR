@@ -62,21 +62,6 @@ static inline uint32_t compact_presence_bytes(size_t field_count) {
     return static_cast<uint32_t>(field_count / 8 + 1);
 }
 
-static inline uint16_t compact_slot_size(FF_FieldKind kind) {
-    switch (kind) {
-        case FF_FIELD_BOOL:    return TYPE_SIZE_UINT8;
-        case FF_FIELD_INT32:   return TYPE_SIZE_INT32;
-        case FF_FIELD_UINT32:  return TYPE_SIZE_UINT32;
-        case FF_FIELD_INT64:   return TYPE_SIZE_UINT64;
-        case FF_FIELD_UINT64:  return TYPE_SIZE_UINT64;
-        case FF_FIELD_FLOAT64: return TYPE_SIZE_FLOAT64;
-        case FF_FIELD_CODE:    return TYPE_SIZE_UINT32;
-        case FF_FIELD_RESOURCE:return TYPE_SIZE_RESOURCE;
-        case FF_FIELD_CHOICE:  return TYPE_SIZE_CHOICE;
-        default:               return TYPE_SIZE_OFFSET; // string/array/block pointers
-    }
-}
-
 static inline bool compact_presence_contains(const BYTE* presence, size_t field_index) {
     const size_t byte_index = field_index / 8;
     const uint8_t bit_mask = static_cast<uint8_t>(1u << (field_index % 8));
@@ -527,10 +512,10 @@ Node::Node(const BYTE* base, Size size, uint32_t version, Offset offset,
                      RECOVERY_TAG child_recovery, bool array_entries_are_offsets,
                      const ParserOps* ops, uint32_t engine_ver)
     : m_base(base),
+      m_node_offset(offset),
       m_size(size),
       m_version(version),
       m_engine_version(engine_ver),
-      m_node_offset(offset),
       m_recovery(recovery),
       m_child_recovery(child_recovery),
       m_kind(kind),

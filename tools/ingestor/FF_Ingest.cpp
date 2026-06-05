@@ -110,7 +110,6 @@ int main(int argc, char *argv[])
     try
     {
         simdjson::padded_string json_buffer;
-        bool is_piped = false;
 
         // 1. Determine Source & Validate Path
         if (input_file.empty() || input_file == "-")

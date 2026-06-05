@@ -123,9 +123,9 @@ namespace FastFHIR
         void *os_handle = nullptr;
         int os_fd = -1;
         bool is_new = true;
-        const uint64_t total_size = static_cast<uint64_t>(capacity);
 
 #ifdef _WIN32
+        const uint64_t total_size = static_cast<uint64_t>(capacity);
         HANDLE hMapFile = NULL;
         if (shm_name.empty())
         {
@@ -214,12 +214,12 @@ namespace FastFHIR
         void *file_handle = nullptr;
         void *os_handle = nullptr;
         int os_fd = -1;
-        const uint64_t total_size = static_cast<uint64_t>(capacity);
 
         // Convert path to string for native OS APIs
         std::string path_str = filepath.string();
 
 #ifdef _WIN32
+        const uint64_t total_size = static_cast<uint64_t>(capacity);
         HANDLE hFile = CreateFileA(path_str.c_str(), GENERIC_READ | GENERIC_WRITE,
                                    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                                    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -319,9 +319,16 @@ namespace FastFHIR
     m_capacity(capacity),
     m_base(base),
     m_head_ptr(reinterpret_cast<uint64_t *>(base + FF_HEADER::STREAM_SIZE)),
+#ifdef _WIN32
     m_file_handle(fh),
     m_os_handle(osh),
-    m_os_fd(fd) {}
+#endif
+    m_os_fd(fd) {
+#ifndef _WIN32
+        (void)fh;
+        (void)osh;
+#endif
+    }
 
     void FF_Memory_t::close() noexcept
     {

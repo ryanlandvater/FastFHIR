@@ -78,9 +78,7 @@ static int test_sum_sizes_masked_single()
     uint8_t sizes[8] = {1, 2, 4, 8, 16, 32, 64, 128};
     for (int i = 0; i < 8; ++i)
     {
-        uint32_t expected = sizes[i] & (1 << i);
-        // Actually the sum should just be sizes[i] when bit i is set
-        // Wait, ff_sum_sizes_masked sums sizes[j] for each bit j set in mask
+        // ff_sum_sizes_masked sums sizes[j] for each bit j set in mask
         // If mask has bit i set, sum = sizes[i]
         uint8_t mask = 1u << i;
         CHECK(ff_sum_sizes_masked(sizes, mask) == (uint32_t)sizes[i],

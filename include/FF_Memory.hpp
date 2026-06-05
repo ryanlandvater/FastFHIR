@@ -304,8 +304,10 @@ namespace FastFHIR
         uint8_t *m_base = nullptr;
         uint64_t *m_head_ptr = nullptr;
 
+#ifdef _WIN32
         void *m_file_handle = nullptr;
         void *m_os_handle = nullptr;
+#endif
         int m_os_fd = -1;
     };
 
