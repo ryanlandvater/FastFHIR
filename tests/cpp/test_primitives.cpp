@@ -8,7 +8,6 @@
  */
 
 #include <FF_Primitives.hpp>
-#include <FF_Recovery.hpp>
 #include <FF_Ops.hpp>
 #include "../generated_src/FF_ResourceTypes.hpp"
 #include <cstring>
