@@ -59,7 +59,7 @@ static const char *g_current_group = "";
 // Engine version encoded into every test header.  Defined as a macro so it
 // mirrors the real compile-time FASTFHIR_VERSION_* macros from FF_Version.hpp.
 // Version 2026.1 = (2026 << 16) | 1
-#define TEST_ENGINE_VERSION  ((2026 & 0x3FFF) << 16 | (1 & 0xFFFF))
+#define TEST_ENGINE_VERSION ((2026 & 0x3FFF) << 16 | (1 & 0xFFFF))
 
 /// Create a minimal buffer large enough for a FF_HEADER.
 static std::vector<uint8_t> make_header_buffer(uint16_t fhir_rev = FHIR_VERSION_R5,
@@ -84,7 +84,7 @@ static void test_header_validate()
     auto buf = make_header_buffer();
     printf("  buf size=%zu\n", buf.size());
     const FF_HEADER *hdr = reinterpret_cast<const FF_HEADER *>(buf.data());
-    printf("  hdr=%p MAGIC=%08x\n", (void*)hdr, LOAD_U32(buf.data() + FF_HEADER::MAGIC));
+    printf("  hdr=%p MAGIC=%08x\n", (void *)hdr, LOAD_U32(buf.data() + FF_HEADER::MAGIC));
     FF_Result r = hdr->validate_full(buf.data());
     printf("  validate_full returned code=%u\n", (unsigned)r.code);
     CHECK(r, "valid header should pass");

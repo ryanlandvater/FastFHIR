@@ -263,7 +263,10 @@ namespace FastFHIR::Ingest
                                     ProducerCtx &ctx)
     {
         simdjson::ondemand::parser parser;
-        simdjson::ondemand::document doc = parser.iterate(chunk);
+        auto doc_result = parser.iterate(chunk);
+        if (doc_result.error())
+            return;
+        simdjson::ondemand::document doc = std::move(doc_result).value_unsafe();
         simdjson::ondemand::object obj;
         if (doc.get_object().get(obj) != simdjson::SUCCESS)
             return;
@@ -800,7 +803,7 @@ namespace FastFHIR::Ingest
         {
             if (pending.kind == IngestPendingKind::BlockField)
             {
-                simdjson::ondemand::document doc = ctx.parser.iterate(safe_json);
+                simdjson::ondemand::document doc = ctx.parser.iterate(safe_json).value();
                 simdjson::ondemand::value val = doc.get_value();
                 Reflective::ObjectHandle child =
                     dispatch_block(recovery, val, ctx.builder, ctx.logger);
@@ -824,7 +827,7 @@ namespace FastFHIR::Ingest
                 // into the arena in one call. We then read back the array offset from the
                 // owner's vtable slot and hand a typed ObjectHandle to the MutableEntry
                 // assignment, which patches the pointer in the real parent.
-                simdjson::ondemand::document doc = ctx.parser.iterate(safe_json);
+                simdjson::ondemand::document doc = ctx.parser.iterate(safe_json).value();
                 simdjson::ondemand::value val = doc.get_value();
                 Reflective::ObjectHandle owner =
                     dispatch_block(recovery, val, ctx.builder, ctx.logger);
@@ -915,9 +918,10 @@ namespace FastFHIR::Ingest
 
             // Parse the root JSON object to determine if it's a Bundle or a single resource
             simdjson::ondemand::document doc = parser.iterate(
-                request.json_string.data(),
-                request.json_string.size(),
-                request.json_string.size() + simdjson::SIMDJSON_PADDING);
+                                                         request.json_string.data(),
+                                                         request.json_string.size(),
+                                                         request.json_string.size() + simdjson::SIMDJSON_PADDING)
+                                                   .value();
             simdjson::ondemand::object root_obj = doc.get_object();
             std::string_view root_type;
             if (root_obj["resourceType"].get_string().get(root_type) != simdjson::SUCCESS)
@@ -1046,7 +1050,7 @@ namespace FastFHIR::Ingest
                     if (m_engine_faulted.load(std::memory_order_relaxed)) break;
                     try {
                         Reflective::MutableEntry entry_wrapper = entry_array[idx];
-                        simdjson::ondemand::document local_doc = local_parser.iterate((*shared_chunks)[idx]);
+                        simdjson::ondemand::document local_doc = local_parser.iterate((*shared_chunks)[idx]).value();
                         simdjson::ondemand::object local_obj = local_doc.get_object();
                         Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
                     } catch (const simdjson::simdjson_error& e) {

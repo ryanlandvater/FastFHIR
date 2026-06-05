@@ -27,7 +27,6 @@ using namespace FastFHIR;
 
 #include <set>
 
-
 #ifndef TEST_DIR
 #define TEST_DIR "."
 #endif
@@ -227,7 +226,7 @@ static void test_truncate_file()
     auto file_size = fs::file_size(tmp);
     CHECK(file_size == 4096ULL || file_size == 65536ULL,
           "truncate_file reduces file to near claimed size (got " +
-          std::to_string(file_size) + ")");
+              std::to_string(file_size) + ")");
 
     fs::remove(tmp, ec);
 }

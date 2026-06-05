@@ -3,44 +3,29 @@ load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
 package(default_visibility = ["//visibility:public"])
 
-# MSVC requires /std:c++20 (colon, forward-slash); GCC/Clang use -std=c++20.
-# Bazel 9.x MSVC wrapper does not translate between forms, so we pass both.
-_MSVC_COPTS = select({
+# Bazel's MSVC wrapper doesn't translate -std=c++20 → /std:c++20, so pass both.
+_COPTS = ["-std=c++20"] + select({
     "@bazel_tools//src/conditions:windows": ["/std:c++20"],
     "//conditions:default": [],
 })
-_COPTS = ["-std=c++20"] + _MSVC_COPTS
 
-# =====================================================================
-# Core FastFHIR Library
-# =====================================================================
+# ── Core library ───────────────────────────────────────────────────
 cc_library(
     name = "fastfhir",
     srcs = glob(
-        [
-            "src/*.cpp",
-            "generated_src/*.cpp",
-        ],
+        ["src/*.cpp", "generated_src/*.cpp"],
         exclude = [
             "src/FF_Ingestor.cpp",
-            "src/FF_Extensions.cpp",          # Excluded unless WAMR is configured
-            "generated_src/FF_IngestMappings.cpp", # Belongs to ingestor
+            "src/FF_Extensions.cpp",
+            "generated_src/FF_IngestMappings.cpp",
         ],
     ),
-    hdrs = glob([
-        "include/*.hpp",
-        "generated_src/*.hpp",
-    ]),
+    hdrs = glob(["include/*.hpp", "generated_src/*.hpp"]),
     copts = _COPTS,
-    includes = [
-        "generated_src",
-        "include",
-    ],
+    includes = ["generated_src", "include"],
 )
 
-# =====================================================================
-# Ingestor Module
-# =====================================================================
+# ── Ingestor ───────────────────────────────────────────────────────
 cc_library(
     name = "fastfhir_ingestor",
     srcs = [
@@ -48,15 +33,10 @@ cc_library(
         "src/FF_Ingestor.cpp",
     ],
     copts = _COPTS,
-    deps = [
-        ":fastfhir",
-        "@simdjson//:simdjson",
-    ],
+    deps = [":fastfhir", "@simdjson//:simdjson"],
 )
 
-# =====================================================================
-# Command Line Interface Tools
-# =====================================================================
+# ── CLI tools ──────────────────────────────────────────────────────
 cc_binary(
     name = "ff_export",
     srcs = ["tools/exporter/FF_Export.cpp"],
@@ -68,10 +48,7 @@ cc_binary(
     name = "ff_ingest",
     srcs = ["tools/ingestor/ff_ingest.cpp"],
     copts = _COPTS,
-    deps = [
-        ":fastfhir_ingestor",
-        "@boringssl//:crypto",
-    ],
+    deps = [":fastfhir_ingestor", "@boringssl//:crypto"],
 )
 
 cc_binary(
@@ -79,38 +56,23 @@ cc_binary(
     srcs = ["tools/compactor/FF_Compact.cpp"],
     copts = _COPTS,
     defines = ["FASTFHIR_HAS_OPENSSL"],
-    deps = [
-        ":fastfhir",
-        "@boringssl//:crypto",
-    ],
+    deps = [":fastfhir", "@boringssl//:crypto"],
 )
 
-# =====================================================================
-# Python Bindings
-# =====================================================================
+# ── Python bindings ────────────────────────────────────────────────
 pybind_extension(
     name = "_core",
     srcs = ["python/FF_PythonBindings.cpp"],
     copts = _COPTS,
-    deps = [
-        ":fastfhir_ingestor",
-        "@boringssl//:crypto",
-        "@simdjson//:simdjson",
-    ],
+    deps = [":fastfhir_ingestor", "@boringssl//:crypto", "@simdjson//:simdjson"],
 )
 
-# =====================================================================
-# Tests
-# =====================================================================
+# ── Tests ──────────────────────────────────────────────────────────
 cc_test(
     name = "test_readme",
     srcs = ["tests/cpp/test_readme.cpp"],
     copts = _COPTS,
-    deps = [
-        ":fastfhir_ingestor",
-        "@asio//:asio",
-        "@boringssl//:crypto",
-    ],
+    deps = [":fastfhir_ingestor", "@asio//:asio", "@boringssl//:crypto"],
 )
 
 cc_test(
