@@ -16,6 +16,12 @@
 #include <vector>
 #include <cstdlib>
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <process.h>   // for ::_getpid
+#else
+#include <unistd.h>    // for getpid
+#endif
+
 namespace fs = std::filesystem;
 using namespace FastFHIR;
 

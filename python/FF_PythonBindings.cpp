@@ -195,6 +195,72 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
             }
             return materialize_handle_value(entry_wrapper.builder, elevated);
         }
+        case FF_FIELD_CHOICE: {
+            // Resolve the polymorphic choice [x] field by reading its actual tag.
+            // The choice slot is 10 bytes: [uint64_t data][uint16_t recovery_tag].
+            const Offset abs_off = entry.absolute_offset();
+            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
+                LOAD_U16(entry.base + abs_off + DATA_BLOCK::RECOVERY));
+            if (actual_tag == FF_RECOVER_UNDEFINED) {
+                return py::none(); // No choice selected
+            }
+
+            // ── Inline scalar choices (bool, int, float, etc.) ──
+            // The value is stored directly in the 8-byte data slot at abs_off.
+            if (FF_IsScalarBlockTag(actual_tag)) {
+                switch (actual_tag) {
+                    case RECOVER_FF_BOOL:
+                        return py::bool_(static_cast<bool>(
+                            LOAD_U8(entry.base + abs_off)));
+                    case RECOVER_FF_INT32:
+                        return py::int_(static_cast<int32_t>(
+                            LOAD_U32(entry.base + abs_off)));
+                    case RECOVER_FF_UINT32:
+                        return py::int_(static_cast<uint32_t>(
+                            LOAD_U32(entry.base + abs_off)));
+                    case RECOVER_FF_INT64:
+                        return py::int_(static_cast<int64_t>(
+                            LOAD_U64(entry.base + abs_off)));
+                    case RECOVER_FF_UINT64:
+                        return py::int_(static_cast<uint64_t>(
+                            LOAD_U64(entry.base + abs_off)));
+                    case RECOVER_FF_FLOAT64: {
+                        uint64_t raw = LOAD_U64(entry.base + abs_off);
+                        double val;
+                        std::memcpy(&val, &raw, sizeof(double));
+                        return py::float_(val);
+                    }
+                    default:
+                        return py::none();
+                }
+            }
+
+            // ── Block/String/Array choices ──
+            // The slot contains an offset to the child data block.
+            // For strings, the data slot holds the string block offset.
+            Offset child_off = LOAD_U64(entry.base + abs_off);
+            if (child_off == FF_NULL_OFFSET) {
+                return py::none();
+            }
+            if (actual_tag == RECOVER_FF_STRING) {
+                auto str = FF_STRING(child_off, arena_size, version,
+                    entry.m_engine_version).read_view(entry.base);
+                return py::str(std::string_view(str));
+            }
+            // Block/resource: read tag from child and wrap as handle
+            RECOVERY_TAG child_tag = static_cast<RECOVERY_TAG>(
+                LOAD_U16(entry.base + child_off + DATA_BLOCK::RECOVERY));
+            Reflective::ObjectHandle elevated(
+                const_cast<Builder*>(builder),
+                child_off, child_tag);
+            if (elevated.offset() == FF_NULL_OFFSET) {
+                return py::none();
+            }
+            if (!recursive) {
+                return py::cast(PyStreamNode(entry_wrapper.builder, elevated));
+            }
+            return materialize_handle_value(entry_wrapper.builder, elevated);
+        }
         default:
             return py::none();
     }

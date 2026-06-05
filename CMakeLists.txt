@@ -598,9 +598,11 @@ if(FASTFHIR_BUILD_TESTS)
         add_test(NAME "py_test_10"
             COMMAND "${_PY_INTERP}" -m pytest "${_PY_TEST_DIR}/test_readme.py::test_10" -v)
 
-        # Sequential dependency chain — CTest skips a test if its dependency failed
+        # Sequential dependency chain — CTest skips a test if its dependency failed.
+        # py_getting_started writes to patient.ffhr first (its own fixture); py_test_1
+        # must re-create it with the canonical patient so downstream tests see Landvater.
         set_tests_properties(py_getting_started PROPERTIES DEPENDS py_setup)
-        set_tests_properties(py_test_1          PROPERTIES DEPENDS py_setup)
+        set_tests_properties(py_test_1          PROPERTIES DEPENDS py_getting_started)
         set_tests_properties(py_test_2          PROPERTIES DEPENDS py_test_1)
         set_tests_properties(py_test_3          PROPERTIES DEPENDS py_test_2)
         set_tests_properties(py_test_4          PROPERTIES DEPENDS py_test_1)
