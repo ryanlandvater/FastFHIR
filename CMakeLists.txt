@@ -42,6 +42,9 @@ option(FASTFHIR_ENABLE_EXTENSIONS  "Enable WASM extension codec" OFF)
 set(FASTFHIR_PRODUCTION_PROFILE "us" CACHE STRING "Generator: us|uk|all")
 set_property(CACHE FASTFHIR_PRODUCTION_PROFILE PROPERTY STRINGS us uk all)
 
+# ── OpenSSL (system or ExternalProject) ──────────────────────
+include(cmake/openssl.cmake)
+
 # ── Paths ──────────────────────────────────────────────────────
 set(FASTFHIR_INCLUDE_DIR   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 set(FASTFHIR_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated_src")
@@ -157,29 +160,6 @@ if(FASTFHIR_BUILD_INGESTOR)
     target_link_libraries(fastfhir_ingestor PUBLIC fastfhir simdjson::simdjson)
     add_library(FastFHIR::ingestor ALIAS fastfhir_ingestor)
 
-    # OpenSSL for SHA-256 sealing
-    find_package(OpenSSL QUIET)
-    if(NOT OpenSSL_FOUND)
-        message(STATUS "OpenSSL not found — fetching via ExternalProject")
-        include(ExternalProject)
-        set(_OPENSSL_DIR "${CMAKE_CURRENT_BINARY_DIR}/openssl_install")
-        ExternalProject_Add(openssl_external
-            GIT_REPOSITORY https://github.com/openssl/openssl.git
-            GIT_TAG openssl-3.2.1
-            PREFIX "${CMAKE_CURRENT_BINARY_DIR}/openssl"
-            CONFIGURE_COMMAND <SOURCE_DIR>/config --prefix=${_OPENSSL_DIR} --libdir=lib no-shared no-tests
-            BUILD_COMMAND make
-            INSTALL_COMMAND make install_sw
-            BUILD_BYPRODUCTS ${_OPENSSL_DIR}/lib/libcrypto.a
-        )
-        add_library(OpenSSL::Crypto STATIC IMPORTED GLOBAL)
-        set_target_properties(OpenSSL::Crypto PROPERTIES
-            IMPORTED_LOCATION ${_OPENSSL_DIR}/lib/libcrypto.a
-            INTERFACE_INCLUDE_DIRECTORIES ${_OPENSSL_DIR}/include
-        )
-        add_dependencies(OpenSSL::Crypto openssl_external)
-    endif()
-
     add_executable(ff_ingest tools/ingestor/ff_ingest.cpp)
     target_include_directories(ff_ingest PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
     target_link_libraries(ff_ingest PRIVATE fastfhir_ingestor OpenSSL::Crypto)
@@ -192,12 +172,8 @@ target_link_libraries(ff_export PRIVATE $<TARGET_OBJECTS:fastfhir_obj>)
 
 add_executable(ff_compact tools/compactor/FF_Compact.cpp)
 target_include_directories(ff_compact PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
-target_link_libraries(ff_compact PRIVATE $<TARGET_OBJECTS:fastfhir_obj>)
-find_package(OpenSSL QUIET)
-if(OpenSSL_FOUND)
-    target_link_libraries(ff_compact PRIVATE OpenSSL::Crypto)
-    target_compile_definitions(ff_compact PRIVATE FASTFHIR_HAS_OPENSSL)
-endif()
+target_link_libraries(ff_compact PRIVATE $<TARGET_OBJECTS:fastfhir_obj> OpenSSL::Crypto)
+target_compile_definitions(ff_compact PRIVATE FASTFHIR_HAS_OPENSSL)
 
 # ── C++ tests ──────────────────────────────────────────────────
 if(FASTFHIR_BUILD_TESTS)
