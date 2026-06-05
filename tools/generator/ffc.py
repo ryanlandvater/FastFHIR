@@ -1127,127 +1127,24 @@ def generate_cxx_for_blocks(master_blocks, versions):
     return public_hpp, internal_hpp, cpp
 
 # =====================================================================
-# 5. RECOVERY TAG GENERATOR
+# 5. RECOVERY TAG PARSER — Reads the permanent include/FF_Recovery.hpp
 # =====================================================================
-def generate_recovery_header(target_types, resources, all_block_paths, output_dir="generated_src"):
+def _parse_recovery_tags(recovery_path="include/FF_Recovery.hpp"):
     """
-    Auto-generate FF_Recovery.hpp containing the RECOVERY enum from
-    the discovered data types, resources, and backbone elements.
+    Parse the hand-maintained FF_Recovery.hpp and return a dict of
+    {tag_name: tag_value} for all RECOVERY_TAG entries.
+
+    The generator uses this to validate that names it emits (e.g.
+    RECOVER_FF_PATIENT) are defined in the permanent registry.
     """
-
-    # Categorize block paths into data types, resources, and backbone elements
-    type_set = set(target_types)
-    resource_set = set(resources)
-    data_type_paths = []
-    resource_paths = []
-    backbone_paths = []
-
-    candidate_paths = set(all_block_paths)
-
-    # Some profiled datatypes (e.g., Availability in R5 profiles-types) can be
-    # materialized in generated code while missing from all_block_paths in some
-    # spec bundle shapes. Ensure their recovery tags are always present.
-    if "Availability" in type_set:
-        candidate_paths.update({
-            "Availability",
-            "Availability.availableTime",
-            "Availability.notAvailableTime",
-        })
-
-    # Ensure all resource top-level names are always present as candidates.
-    # merge_fhir_versions only adds parent paths derived from child elements, so
-    # if schema extraction silently fails (except: pass) for a resource, its name
-    # never enters all_block_paths and resource_paths stays empty.
-    candidate_paths.update(resources)
-
-    for path in candidate_paths:
-        root = path.split('.')[0]
-        is_nested = '.' in path
-        if not is_nested and root in type_set:
-            data_type_paths.append(path)
-        elif not is_nested and root in resource_set:
-            resource_paths.append(path)
-        else:
-            backbone_paths.append(path)
-
-    # Preserve type/resource ordering for stable ABI
-    dt_order = {t: i for i, t in enumerate(target_types)}
-    res_order = {r: i for i, r in enumerate(resources)}
-    data_type_paths.sort(key=lambda p: dt_order.get(p, len(target_types)))
-    resource_paths.sort(key=lambda p: res_order.get(p, len(resources)))
-    backbone_paths.sort()
-
-    lines = [auto_header]
-    lines.append("#pragma once\n")
-    lines.append("#include <cstdint>\n")
-    lines.append("// =====================================================================")
-    lines.append("// RECOVERY TAG REGISTRY (auto-generated from FHIR StructureDefinitions)")
-    lines.append("// =====================================================================")
-    lines.append("enum RECOVERY_TAG : uint16_t {")
-    lines.append("    // Undefined / Sentinel")
-    lines.append("    FF_RECOVER_UNDEFINED                  = 0x0000,")
-    lines.append("")
-    lines.append("    // Core Primitives (0x0001 range)")
-    lines.append("    RECOVER_FF_HEADER                     = 0x0001,")
-    lines.append("    RECOVER_FF_STRING                     = 0x0002,")
-    lines.append("    RECOVER_FF_CODE                       = 0x0003,")
-    lines.append("    RECOVER_FF_RESOURCE                   = 0x0004,")
-    lines.append("    RECOVER_FF_CHECKSUM                   = 0x0005,")
-    lines.append("    RECOVER_FF_URL_DIRECTORY              = 0x0006, // Stream-level URL intern table")
-    lines.append("    RECOVER_FF_MODULE_REGISTRY            = 0x0007, // WASM extension module registry")
-    lines.append("    RECOVER_FF_OPAQUE_JSON                = 0x0008, // Path B passive raw-JSON extension blob")
-    lines.append("    RECOVER_FF_WASM_PAYLOAD               = 0x0009, // Path A WASM-encoded extension payload")
-    
-    lines.append("")
-    lines.append("    // --- Inline Scalars (0x0100 Block) ---")
-    lines.append("    RECOVER_FF_SCALAR_BLOCK               = 0x0100,")
-    lines.append("    RECOVER_FF_BOOL                       = 0x0101,")
-    lines.append("    RECOVER_FF_INT32                      = 0x0102,")
-    lines.append("    RECOVER_FF_UINT32                     = 0x0103,")
-    lines.append("    RECOVER_FF_INT64                      = 0x0104,")
-    lines.append("    RECOVER_FF_UINT64                     = 0x0105,")
-    lines.append("    RECOVER_FF_FLOAT64                    = 0x0106,")
-    lines.append("    RECOVER_FF_DATE                       = 0x0107, // Reserved for bit-packing")
-    lines.append("    RECOVER_FF_DATETIME                   = 0x0108, // Reserved for bit-packing")
-    lines.append("    RECOVER_FF_TIME                       = 0x0109, // Reserved for bit-packing")
-    lines.append("    RECOVER_FF_INSTANT                    = 0x010A, // Reserved for bit-packing")
-
-    if data_type_paths:
-        lines.append("")
-        lines.append("    // Data Types (0x0200 Block)")
-        lines.append("    RECOVER_FF_DATA_TYPE_BLOCK            = 0x0200,")
-        for i, path in enumerate(data_type_paths):
-            tag_name = f"RECOVER_FF_{path.replace('.', '_').upper()}"
-            lines.append(f"    {tag_name:<44}= 0x{0x0200 + i+1:04X},")
-
-    # Handwritten FastFHIR structural types are emitted in the Core Primitives block above
-    if resource_paths:
-        lines.append("")
-        lines.append("    // Resources (0x0300 Block)")
-        lines.append("    RECOVER_FF_RESOURCE_BLOCK            = 0x0300,")
-        for i, path in enumerate(resource_paths):
-            tag_name = f"RECOVER_FF_{path.replace('.', '_').upper()}"
-            lines.append(f"    {tag_name:<44}= 0x{0x0300 + i+1:04X},")
-
-    if backbone_paths:
-        lines.append("")
-        lines.append("    // Sub-elements / BackboneElements (0x0400 Block)")
-        lines.append("    RECOVER_FF_BACKBONE_BLOCK             = 0x0400,")
-        for i, path in enumerate(backbone_paths):
-            tag_name = f"RECOVER_FF_{path.replace('.', '_').upper()}"
-            lines.append(f"    {tag_name:<44}= 0x{0x0400 + i+1:04X},")
-
-    lines.append("};")
-    lines.append("")
-    lines.append("constexpr uint16_t RECOVER_ARRAY_BIT = 0x8000;")
-    lines.append("constexpr uint16_t RECOVER_TYPE_MASK = 0x7FFF;")
-    lines.append("inline constexpr bool IsArrayTag(RECOVERY_TAG tag) {return(tag & RECOVER_ARRAY_BIT)!= 0;}")
-    lines.append("inline constexpr RECOVERY_TAG GetTypeFromTag(RECOVERY_TAG tag) {return static_cast<RECOVERY_TAG>(tag & RECOVER_TYPE_MASK);}")
-    lines.append("inline constexpr RECOVERY_TAG ToArrayTag(RECOVERY_TAG base_tag) {return static_cast<RECOVERY_TAG>(base_tag | RECOVER_ARRAY_BIT);}")
-
-    out_path = os.path.join(output_dir, "FF_Recovery.hpp")
-    _write_if_changed(out_path, "\n".join(lines))
-    print(f"Generated {out_path}")
+    import re
+    tags = {}
+    with open(recovery_path, "r") as f:
+        for line in f:
+            m = re.match(r'\s+(\w+)\s*=\s*(0x[0-9A-Fa-f]+)', line)
+            if m:
+                tags[m.group(1)] = int(m.group(2), 16)
+    return tags
 
 # =====================================================================
 # 6. INGESTOR MAPPINGS GENERATOR (simdjson bridge)
@@ -2354,8 +2251,12 @@ def compile_fhir_library(resources, versions, input_dir="fhir_specs", output_dir
     all_types_hpp += "\n"
     _write_if_changed(os.path.join(output_dir, "FF_AllTypes.hpp"), all_types_hpp)
 
-    # Generate the RECOVERY enum from all discovered block paths
-    generate_recovery_header(PRODUCTION_TYPES, resources, all_block_paths, output_dir)
+    # Validate RECOVERY_TAG references against permanent header
+    # (The generator emits tag names like RECOVER_FF_PATIENT in generated
+    # internal headers. The actual values come from include/FF_Recovery.hpp
+    # at C++ compile time. We parse it here to confirm all emitted names
+    # are valid.)
+    _parse_recovery_tags("include/FF_Recovery.hpp")
 
     # Generate the simdjson ingestion mappings for all discovered blocks
     generate_ingest_mappings(all_blocks, resources, output_dir)

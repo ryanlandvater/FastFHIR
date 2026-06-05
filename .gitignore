@@ -1,5 +1,5 @@
 *__pycache__
-.venv
+.venv/
 .conda
 .vscode/
 build/
@@ -22,3 +22,5 @@ bazel-fastfhir.exe
 external/
 execroot/
 output/
+
+.arbiter/

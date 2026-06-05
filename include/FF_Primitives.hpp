@@ -145,7 +145,7 @@ struct FF_Result
 // =====================================================================
 // RECOVERY TAG REGISTRY (auto-generated from FHIR StructureDefinitions)
 // =====================================================================
-#include "../generated_src/FF_Recovery.hpp"
+#include "FF_Recovery.hpp"
 
 // =====================================================================
 // TYPE SIZE CONSTANTS

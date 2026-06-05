@@ -176,7 +176,8 @@ Phase A is implemented in parallel with existing WASM and passive-JSON paths, wi
 
 **Generated artifacts:**
 - `generated_src/FF_CompiledExtensions.hpp` — (new) typed extension structs, recovery tags, TypeTraits, lookup table.
-- `generated_src/FF_Recovery.hpp` — updated with STATIC extension tags.
+- `include/FF_Recovery.hpp` — hand-maintained; new STATIC extension tags
+  appended at the end, never inserted.
 - `generated_src/FF_Reflection.hpp/cpp` — ParserOps entries for compiled extensions (if needed).
 
 **Build:**

@@ -455,6 +455,41 @@ if(FASTFHIR_BUILD_TESTS)
         target_link_libraries(ff_test_readme PRIVATE ws2_32)
     endif()
 
+    # ── Unit Tests: Core Primitives ──────────────────────────────────────────
+    add_executable(ff_test_primitives tests/cpp/test_primitives.cpp)
+    target_include_directories(ff_test_primitives
+        PRIVATE
+            ${FASTFHIR_INCLUDE_DIR}
+            ${FASTFHIR_GENERATED_DIR}
+    )
+    target_compile_definitions(ff_test_primitives
+        PRIVATE
+            FF_TEST_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/tests/cpp"
+    )
+    target_link_libraries(ff_test_primitives PRIVATE fastfhir_obj)
+
+    # ── Unit Tests: Memory ──────────────────────────────────────────────────
+    add_executable(ff_test_memory tests/cpp/test_memory.cpp)
+    target_include_directories(ff_test_memory
+        PRIVATE
+            ${FASTFHIR_INCLUDE_DIR}
+            ${FASTFHIR_GENERATED_DIR}
+    )
+    target_compile_definitions(ff_test_memory
+        PRIVATE
+            FF_TEST_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/tests/cpp"
+    )
+    target_link_libraries(ff_test_memory PRIVATE fastfhir_obj)
+
+    # ── Unit Tests: SIMD ────────────────────────────────────────────────────
+    add_executable(ff_test_simd tests/cpp/test_simd.cpp)
+    target_include_directories(ff_test_simd
+        PRIVATE
+            ${FASTFHIR_INCLUDE_DIR}
+            ${FASTFHIR_GENERATED_DIR}
+    )
+    target_link_libraries(ff_test_simd PRIVATE fastfhir_obj)
+
     # Individual C++ test entries — each calls the binary with --filter <name>
     # so tests run in isolation and can be identified separately by CTest.
     add_test(NAME "cpp_getting_started"

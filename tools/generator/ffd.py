@@ -14,6 +14,33 @@
 import os
 import json
 import re
+import hashlib
+
+# ─── SHA-256 truncated hash for stable dictionary code assignment ───────
+# These constants MUST match the values in include/FF_Primitives.hpp.
+_FF_CODE_NULL = 0xFFFFFFFF
+
+def _code_hash(s: str) -> int:
+    """Return a deterministic 31-bit positive uint32_t for `s`.
+
+    Same string → same code always, regardless of ValueSet ordering.
+    A code string that hashes to FF_CODE_NULL is remapped to 1.
+    """
+    h = hashlib.sha256(s.encode()).digest()
+    val = int.from_bytes(h[:4], 'little') & 0x7FFFFFFF  # 31-bit, always positive
+    return 1 if val == _FF_CODE_NULL else val
+
+
+# ─── RECOVERY TAG PARSER (reads the permanent include/FF_Recovery.hpp) ──
+def _parse_recovery_tags(recovery_path="include/FF_Recovery.hpp"):
+    """Parse the hand-maintained RECOVERY_TAG enum and return {name: value}."""
+    tags = {}
+    with open(recovery_path, "r") as f:
+        for line in f:
+            m = re.match(r'\s+(\w+)\s*=\s*(0x[0-9A-Fa-f]+)', line)
+            if m:
+                tags[m.group(1)] = int(m.group(2), 16)
+    return tags
 
 
 
@@ -107,21 +134,34 @@ def generate_fastfhir_dictionary(v_name, input_dir="fhir_specs", output_dir="gen
     # Stabilize output regardless of source bundle entry order.
     mappings = sorted(mappings, key=lambda x: x[0])
 
+    # Assign hash-based codes (stable across spec ordering changes)
+    code_assignments = [(raw, enum, _code_hash(raw)) for raw, enum in mappings]
+
+    # Collision check: fail loudly if two codes map to the same value
+    seen = {}
+    for raw, enum, val in code_assignments:
+        if val in seen:
+            raise RuntimeError(
+                f"Dictionary code collision: '{raw}' ({enum}) and "
+                f"'{seen[val]}' both hash to 0x{val:08X}"
+            )
+        seen[val] = raw
+
     # Content generation logic
     hpp =  f"{auto_header}// Generated from {v_name} ValueSets\n#pragma once\n#include \"../include/FF_Primitives.hpp\"\n\n"
     hpp += f"enum FF_{v_name}_Code : uint32_t {{\n    FF_{v_name}_NULL = FF_CODE_NULL,\n"
-    for i, (raw, enum) in enumerate(mappings, 1): hpp += f"    {enum:<40} = {i},\n"
+    for raw, enum, val in code_assignments: hpp += f"    {enum:<40} = 0x{val:08X},\n"
     hpp += f"}};\n\nFF_EXPORT const char* FF_{v_name}_Resolve(FF_{v_name}_Code code);\nFF_EXPORT uint32_t FF_{v_name}_GetCode(const std::string& str);\n"
     
     cpp = f"{auto_header}#include \"FF_{v_name}_Dictionary.hpp\"\n#include <unordered_map>\n\n"
     cpp += f"const char* FF_{v_name}_Resolve(FF_{v_name}_Code code) {{\n"
-    cpp += f"    uint32_t idx = static_cast<uint32_t>(code);\n"
-    cpp += f"    static constexpr const char* DICT[] = {{\"\",\n"
-    for raw, enum in mappings: cpp += f"        \"{raw}\",\n"
-    cpp += f"    }};\n    if (idx >= {len(mappings)+1}) return \"\";\n    return DICT[idx];\n}}\n\n"
+    cpp += f"    static const std::unordered_map<uint32_t, const char*> REV = {{\n"
+    for raw, enum, val in code_assignments: cpp += f"        {{0x{val:08X}, \"{raw}\"}},\n"
+    cpp += f"    }}; auto it = REV.find(static_cast<uint32_t>(code));\n"
+    cpp += f"    return it != REV.end() ? it->second : \"\";\n}}\n\n"
     cpp += f"uint32_t FF_{v_name}_GetCode(const std::string& str) {{\n"
     cpp += f"    static const std::unordered_map<std::string, uint32_t> MAP = {{\n"
-    for i, (raw, enum) in enumerate(mappings, 1): cpp += f"        {{\"{raw}\", {i}}},\n"
+    for raw, enum, val in code_assignments: cpp += f"        {{\"{raw}\", 0x{val:08X}}},\n"
     cpp += f"    }}; auto it = MAP.find(str); return it != MAP.end() ? it->second : FF_CODE_NULL;\n}}\n"
 
     # Write to generated_src/

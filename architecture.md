@@ -361,8 +361,8 @@ their concrete type is not statically determinable from the parent V-Table.
 
 A 16-bit (`uint16_t`) ID embedded at bytes 8–9 of every block (immediately
 after the 8-byte `VALIDATION` word). Generated into
-`generated_src/FF_Recovery.hpp` from the FHIR StructureDefinitions; the
-inclusion is at `FF_Primitives.hpp:119`.
+`include/FF_Recovery.hpp` (hand-maintained, not regenerated); the
+inclusion is at `FF_Primitives.hpp`, which includes it as `"FF_Recovery.hpp"`.
 
 The tag space is partitioned by high byte:
 
