@@ -204,6 +204,16 @@ namespace FastFHIR::Decode {
         }
         return entry;
     }
+    /// Read a 16-byte FF_ARRAY header and return (entry_count, entry_recovery).
+    /// The array header layout is: VALIDATION(8) | RECOVERY(2) | PAD(2) | ENTRY_COUNT(4).
+    /// Returns a struct with .count and .block_type members unpacked for structured bindings.
+    struct ArrayHeader { uint32_t count; uint16_t block_type; };
+    inline ArrayHeader array_header(const BYTE* base, Offset absolute_offset) {
+        ArrayHeader h;
+        h.block_type = LOAD_U16(base + absolute_offset + DATA_BLOCK::RECOVERY);
+        h.count = LOAD_U32(base + absolute_offset + FF_ARRAY::ENTRY_COUNT);
+        return h;
+    }
 } // namespace FastFHIR::Decode
 
 namespace FastFHIR::Encode {

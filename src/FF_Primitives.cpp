@@ -17,7 +17,7 @@
 // MARK: - FastFHIR Core Primitives Implementation
 #include "../include/FF_Utilities.hpp"
 #include "../include/FF_Primitives.hpp"
-#include "../generated_src/FF_Dictionary.hpp"
+#include "../include/FF_Dictionary.hpp"
 
 // =====================================================================
 // DATA_BLOCK BASE VALIDATION
@@ -306,6 +306,15 @@ Size SIZE_FF_CODE(std::string_view code_str, uint32_t version = FHIR_VERSION_R5)
     if (FF_GetDictionaryCode(std::string(code_str), version) != FF_CODE_NULL) return 0;
     return SIZE_FF_STRING(code_str);
 }
+Offset STORE_FF_CODE(BYTE* const __base, Offset start_offset, std::string_view code_str, uint32_t version) {
+    // If the code is in the dictionary, it's stored inline as a uint32_t
+    // in the vtable slot (4 bytes, already counted in the block header stride).
+    // If not found in the dictionary, store as a custom FF_STRING.
+    if (FF_GetDictionaryCode(std::string(code_str), version) != FF_CODE_NULL)
+        return 0; // Dictionary code — inline, nothing extra to store
+    return STORE_FF_STRING(__base, start_offset, code_str);
+}
+
 Size STORE_FF_STRING(BYTE* const __base, Offset start_offset, std::string_view str) {
     auto __ptr = __base + start_offset;
     uint32_t length = static_cast<uint32_t>(str.size());

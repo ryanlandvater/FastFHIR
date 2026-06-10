@@ -1,0 +1,39 @@
+# FastFHIR — Python tooling config (generator + generator tests).
+#
+# The generated C++ has its own (hand-tuned) style and is out of scope here.
+# This config governs ONLY the generator Python, whose goal is readable code
+# that mirrors C++ strong-typing conventions (full type hints, dataclasses).
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = '(generator/.*\.py$|tests/generator/.*\.py$)'
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Scope ruff to the new package + its tests; legacy tools/generator is migrated
+# incrementally and excluded until S6 deletes it.
+include = ["generator/**/*.py", "tests/generator/**/*.py"]
+extend-exclude = ["tools/generator", "generated_src", ".venv"]
+
+[tool.ruff.lint]
+# Enforce the style guide's hard rules:
+#   E      pycodestyle (4-space indent, spacing)
+#   F      pyflakes (unused imports, undefined names)
+#   I      isort (import ordering)
+#   UP     pyupgrade (modern typing)
+#   B      flake8-bugbear (mutable defaults, broad-except hints)
+#   ANN    flake8-annotations (type hints on public functions)
+select = ["E", "F", "I", "UP", "B", "ANN"]
+# Don't require annotations on *self*/private test fixtures.
+ignore = ["ANN101", "ANN102"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may skip return-type annotations on test functions.
+"tests/generator/**/*.py" = ["ANN201", "ANN001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/generator"]
+# wire_witness lives beside the tests and is imported directly (see conftest).
+pythonpath = ["tests/generator", "."]

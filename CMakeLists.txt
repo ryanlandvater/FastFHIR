@@ -65,7 +65,7 @@ if(FASTFHIR_RUN_GENERATOR)
     execute_process(
         COMMAND ${CMAKE_COMMAND} -E env
             FASTFHIR_PRODUCTION_PROFILE=${FASTFHIR_PRODUCTION_PROFILE}
-            ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generator/make_lib.py
+            ${Python3_EXECUTABLE} -m generator
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         RESULT_VARIABLE _GEN_RESULT
     )
@@ -257,6 +257,13 @@ if(FASTFHIR_BUILD_TESTS)
         target_compile_definitions(ff_test_readme PRIVATE _WIN32_WINNT=0x0601 WIN32_LEAN_AND_MEAN NOMINMAX)
     endif()
     target_link_libraries(ff_test_readme PRIVATE fastfhir_ingestor OpenSSL::Crypto)
+    # ── Round-trip harness (invoked by Python DOM parity tests) ──
+    add_executable(ff_roundtrip tests/cpp/ff_roundtrip.cpp)
+    target_include_directories(ff_roundtrip PRIVATE
+        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
+    )
+    target_link_libraries(ff_roundtrip PRIVATE fastfhir_ingestor OpenSSL::Crypto)
+
     if(WIN32)
         target_link_libraries(ff_test_readme PRIVATE ws2_32)
     endif()
@@ -342,6 +349,16 @@ if(FASTFHIR_BUILD_TESTS)
         set_tests_properties(py_test_8          PROPERTIES DEPENDS py_test_5)
         set_tests_properties(py_test_9          PROPERTIES DEPENDS "py_test_3;py_test_6")
         set_tests_properties(py_test_10         PROPERTIES DEPENDS py_setup)
+        # Round-trip DOM parity test (Synthea fixtures)
+        add_test(NAME py_roundtrip
+            COMMAND "${_PY}" "${_PY_DIR}/test_roundtrip.py"
+                --synthea-dir "${_SYNTHEA_DIR}"
+                --harness "${CMAKE_CURRENT_BINARY_DIR}/ff_roundtrip"
+        )
+        set_tests_properties(py_roundtrip PROPERTIES
+            DEPENDS "py_setup;ff_roundtrip"
+        )
+
 
         set_tests_properties(py_setup py_getting_started
             py_test_1 py_test_2 py_test_3 py_test_4 py_test_5 py_test_7 py_test_8 py_test_9

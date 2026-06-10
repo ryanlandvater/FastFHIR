@@ -13,7 +13,7 @@
 #include "../include/FF_Utilities.hpp"
 #include "../include/FF_Parser.hpp"
 #include "../include/FF_SIMD.hpp"
-#include "../generated_src/FF_Dictionary.hpp"
+#include "../include/FF_Dictionary.hpp"
 #include "../generated_src/FF_Reflection.hpp"
 #include <assert.h>
 

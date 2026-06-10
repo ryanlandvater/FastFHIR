@@ -923,4 +923,5 @@ struct ChoiceEntry
 Size SIZE_FF_STRING(std::string_view str);
 Size SIZE_FF_CODE(std::string_view code_str, uint32_t version);
 Size STORE_FF_STRING(BYTE *const __base, Offset start_offset, std::string_view str);
+Offset STORE_FF_CODE(BYTE *const __base, Offset start_offset, std::string_view code_str, uint32_t version);
 uint32_t ENCODE_FF_CODE(BYTE *const __base, Offset block_offset, Offset &child_off, const std::string &code_str, uint32_t version = FHIR_VERSION_R5);

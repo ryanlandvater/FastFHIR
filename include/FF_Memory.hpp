@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <cstring>
+#include "FF_Primitives.hpp"
 
 namespace FastFHIR
 {

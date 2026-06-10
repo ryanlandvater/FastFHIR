@@ -1056,15 +1056,17 @@ ff_ext_ref_index(ref)       // extract the lower 31-bit index
 
 ### Condition 1 — Registered WASM modules — binary-speed extension codecs
 
-FastFHIR's most distinctive capability is its open **extension module registry** at
-[registry.fastfhir.org](https://registry.fastfhir.org). Any well-known custom extension — US Core
+FastFHIR's most distinctive capability is its open **extension module registry** — by default
+pointing to `https://registry.fastfhir.org` but configurable via the `FF_ExtensionRegistry`
+interface to point to any registry server. Any well-known custom extension — US Core
 race/ethnicity, clinical trial identifiers, organisation-specific profile extensions, and more —
 can have a published **WebAssembly codec module** that fully decodes the extension into typed
 binary fields, stored directly in the FastFHIR arena alongside natively generated resource data.
 
 When a module is registered for an extension URL, FastFHIR treats that extension with exactly the
 same performance and zero-copy access as a first-class built-in FHIR field. The ecosystem of
-available codecs grows over time as organisations and implementers publish modules to the registry.
+available codecs grows over time as organisations and implementers publish modules to one or
+more registries.
 
 #### Why WebAssembly?
 
@@ -1087,8 +1089,8 @@ and any loaded codec module:
   or access patient data outside its own sandbox.
 - Modules may be loaded, unloaded, and replaced at runtime without restarting the host.
 
-This makes it safe to consume community-published modules from
-[registry.fastfhir.org](https://registry.fastfhir.org) — or a partner organisation's proprietary
+This makes it safe to consume community-published modules from a configured registry server
+(e.g. `https://registry.fastfhir.org`) — or a partner organisation's proprietary
 profile codec — without trusting their compiled binary with direct memory access.
 
 #### Module registration
@@ -1104,12 +1106,13 @@ FF_MODULE_REGISTRY::register_module(
 );
 ```
 
-Modules can also be pulled directly from the registry at runtime:
+Modules can also be pulled directly from a registry at runtime. The registry base URL is
+configurable through `FF_ExtensionRegistry`; the example below uses the default public registry:
 
 ```cpp
 FF_MODULE_REGISTRY::fetch_and_register(
     "http://hl7.org/fhir/us/core/StructureDefinition/us-core-race",
-    "https://registry.fastfhir.org/modules/us-core-race/latest"
+    /* base URL from FF_ExtensionRegistry, defaults to https://registry.fastfhir.org */
 );
 ```
 

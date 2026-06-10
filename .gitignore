@@ -24,3 +24,4 @@ execroot/
 output/
 
 .arbiter/
+*.py.md
