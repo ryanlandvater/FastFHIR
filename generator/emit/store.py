@@ -133,6 +133,21 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"        }}\n"
                 cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             
+            # --- PATTERN 1b: ARRAY OF STRING_LIKE TYPES (dateTime, base64Binary, etc.) ---
+            # Same wire layout as PATTERN 1: 8-byte offset pointers to variable-length strings.
+            elif f['fhir_type'] in STRING_TYPES:
+                cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
+                cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
+                cpp += f"        auto __n = static_cast<uint32_t>({data_name}.{f['cpp_name']}.size());\n"
+                cpp += f"        STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, __n, ToArrayTag({_child_recovery_expr(f, block_struct_name)}));\n"
+                cpp += f"        Offset blk_off_tbl = child_off;\n"
+                cpp += f"        child_off += static_cast<Offset>(__n) * TYPE_SIZE_OFFSET;\n"
+                cpp += f"        for (uint32_t blk_i = 0; blk_i < __n; ++blk_i) {{\n"
+                cpp += f"            STORE_U64(__base + blk_off_tbl + blk_i * TYPE_SIZE_OFFSET, child_off);\n"
+                cpp += f"            child_off += STORE_FF_STRING(__base, child_off, {data_name}.{f['cpp_name']}[blk_i]);\n"
+                cpp += f"        }}\n"
+                cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
+
             # --- PATTERN 2: ARRAY OF POLYMORPHIC RESOURCE TUPLES ---
             # Physically: 10-byte tuples (8-byte Offset + 2-byte Recovery Tag) stored inline.
             elif f['fhir_type'] == 'Resource':
@@ -204,6 +219,16 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
             cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
             cpp += f"        child_off += STORE_FF_STRING(__base, child_off, {data_name}.{f['cpp_name']});\n"
+            cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
+            
+        elif f['fhir_type'] in STRING_TYPES and f['cpp_type'] == 'Offset':
+            # STRING_TYPES (dateTime, base64Binary, markdown, etc.) stored as
+            # unique_ptr<string_view>. Use STORE_FF_STRING with 3 args: (base, off, *data).
+            # Only applies when cpp_type is 'Offset' — some STRING_TYPES fields
+            # (e.g. Extension.url) are overridden to scalar storage (uint32_t code).
+            cpp += f"    if ({data_name}.{f['cpp_name']} != nullptr) {{\n"
+            cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
+            cpp += f"        child_off += STORE_FF_STRING(__base, child_off, *{data_name}.{f['cpp_name']});\n"
             cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             
         elif f['cpp_type'] == 'Offset':

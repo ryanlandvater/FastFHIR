@@ -69,6 +69,12 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             elif f['fhir_type'] in SCALAR_PRIMITIVE_TYPES:
                 load_macro = TYPE_MAP[f['fhir_type']]['macro']
                 cpp += f"{indent}        data.{f['cpp_name']}.push_back({load_macro}(blk_item_ptr));\n"
+            elif f['fhir_type'] in STRING_TYPES:
+                # STRING_TYPES in arrays use FF_STRING constructor + read_view, not ::deserialize()
+                cpp += f"{indent}        Offset blk_str_off = LOAD_U64(blk_item_ptr);\n"
+                cpp += f"{indent}        if (blk_str_off != FF_NULL_OFFSET) {{\n"
+                cpp += f"{indent}            data.{f['cpp_name']}.push_back(FF_STRING(blk_str_off, __size, __version).read_view(__base));\n"
+                cpp += f"{indent}        }}\n"
             else:
                 child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
                 cpp += f"{indent}        data.{f['cpp_name']}.push_back({child_struct}::deserialize(__base, static_cast<Offset>(blk_item_ptr - __base), __size, __version));\n"
@@ -89,7 +95,12 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             data_type = _resolve_data_type_name(f['fhir_type'], f['orig_name'], block_struct_name, f.get('resolved_path'))
             child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
             cpp += f"{indent}Offset blk_off_{f['cpp_name']} = LOAD_U64(__base + {vtable_off});\n"
-            cpp += f"{indent}if (blk_off_{f['cpp_name']} != FF_NULL_OFFSET) data.{f['cpp_name']} = std::make_unique<{data_type}>({child_struct}::deserialize(__base, blk_off_{f['cpp_name']}, __size, __version));\n"
+            # STRING_TYPES (dateTime, base64Binary, markdown, xhtml, etc.) use
+            # FF_STRING constructor + read_view(), not ::deserialize().
+            if f['fhir_type'] in STRING_TYPES:
+                cpp += f"{indent}if (blk_off_{f['cpp_name']} != FF_NULL_OFFSET) data.{f['cpp_name']} = std::make_unique<{data_type}>(FF_STRING(blk_off_{f['cpp_name']}, __size, __version).read_view(__base));\n"
+            else:
+                cpp += f"{indent}if (blk_off_{f['cpp_name']} != FF_NULL_OFFSET) data.{f['cpp_name']} = std::make_unique<{data_type}>({child_struct}::deserialize(__base, blk_off_{f['cpp_name']}, __size, __version));\n"
             
         elif f['fhir_type'] == 'code':
             code_enum = f.get('code_enum')

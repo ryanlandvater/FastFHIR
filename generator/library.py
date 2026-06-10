@@ -127,7 +127,10 @@ def compile_fhir_library(
         reflected_block_names.update(
             "FF_" + path.replace(".", "_").upper() for path in master_type_blocks
         )
-        reflected_block_names.add(f"FF_{root_type.upper()}")
+        # Only add root type if it has actual blocks (excludes constrained types
+        # like SimpleQuantity whose snapshot reuses base-type paths, e.g. Quantity.*)
+        if root_type in master_type_blocks:
+            reflected_block_names.add(f"FF_{root_type.upper()}")
 
         # Populate token_registry and python_resource_map for data-type blocks
         # so emit_python_ast can resolve fields on types like Address, HumanName, etc.
@@ -156,6 +159,7 @@ def compile_fhir_library(
         types_hpp += pub_hpp
         types_int_hpp += int_hpp
         types_cpp += cpp_body
+    types_cpp += "} // namespace FastFHIR\n"
 
     write_if_changed(os.path.join(output_dir, "FF_DataTypes.hpp"), types_hpp)
     write_if_changed(os.path.join(output_dir, "FF_DataTypes_internal.hpp"), types_int_hpp)
@@ -208,6 +212,11 @@ def compile_fhir_library(
 
         res_cpp = f'{auto_header}#include "FF_{root_resource}_internal.hpp"\n#include "../include/FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
         res_cpp += cpp_body
+        # Close the namespace opened by FF_DataTypes.hpp (included transitively).
+        # All generated code uses FastFHIR:: fully-qualified names internally, but
+        # type aliases like ExtensionData, Decode etc. in *internal.hpp are
+        # unqualified and rely on being inside namespace FastFHIR.
+        res_cpp += "} // namespace FastFHIR\n"
         write_if_changed(os.path.join(output_dir, f"FF_{root_resource}.cpp"), res_cpp)
         generated_resources.append(root_resource)
         reflected_block_names.update(
@@ -334,7 +343,11 @@ def compile_fhir_library(
     )
     for res in generated_resources:
         all_types_hpp += f'#include "FF_{res}_internal.hpp"\n'
-    all_types_hpp += "} // namespace FastFHIR\n\n"
+    # No namespace wrapper — FF_AllTypes.hpp is an aggregator that includes
+    # internal headers. Those headers rely on already being inside
+    # namespace FastFHIR (from FF_DataTypes.hpp or the .cpp file's context).
+    # A closing } here would be unbalanced and break inclusion from namespace
+    # contexts like namespace FastFHIR::Ingest (FF_IngestMappings).
     write_if_changed(os.path.join(output_dir, "FF_AllTypes.hpp"), all_types_hpp)
 
     # --- Validate RECOVERY_TAG references against permanent header ---
