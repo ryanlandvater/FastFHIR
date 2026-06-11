@@ -22,6 +22,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <array>
 #include <vector>
 
 using namespace FastFHIR;

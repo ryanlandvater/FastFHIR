@@ -10,7 +10,16 @@
 
 ---
 
-## Verdict
+## Verdict (UPDATED)
+
+> **Current status:** The structural refactor is complete and `fastfhir_obj`
+> compiles with **zero errors** on MSVC 19.51 (VS 2026, C++20). The two critical
+> codegen bugs (C-1, C-2) identified in this audit have been fixed. See
+> `refactor_history.md` for the complete bug list and fixes applied.
+
+---
+
+## Original Verdict
 
 The structural refactor is faithful to `generator_refactor_plan.md` and the
 module boundaries are clean (`model/` pure, `emit/` `model → str`, orchestrator

@@ -1180,7 +1180,47 @@ URL is preserved as raw JSON with full fidelity.
 
 ## Generator Architecture
 
-The generator lives in `tools/generator/` and is split by responsibility:
+The generator lives in `generator/` -- a modular package refactored from the
+original `tools/generator/` monolith. See `generator_refactor_plan.md` for the
+decomposition plan and `refactor_history.md` for the build integration record.
+
+| Module | Purpose |
+|---|---|
+| `generator/pipeline.py` | Orchestrator -- runs the full generation pipeline |
+| `generator/specs.py` | FHIR spec download/extraction |
+| `generator/library.py` | Library compilation driver |
+| `generator/model/types.py` | Field, Block dataclasses |
+| `generator/model/type_map.py` | TYPE_MAP, PRODUCTION_TYPES, STRING_TYPES |
+| `generator/model/structure.py` | StructureDefinition extraction, type resolvers |
+| `generator/model/merge.py` | FHIR version merging (R4/R5 unification) |
+| `generator/emit/header.py` | write_if_changed, auto_header |
+| `generator/emit/deserialize.py` | Eager deserializer generation |
+| `generator/emit/store.py` | SIZE and STORE function generation |
+| `generator/emit/views.py` | Lazy view structs, reflection dispatch |
+| `generator/emit/dictionary.py` | Per-version dictionary .cpp files |
+| `generator/emit/codesystems.py` | FF_CodeSystems.hpp enum generation |
+| `generator/emit/traits.py` | Resource traits header |
+| `generator/emit/ingest_mappings.py` | Ingest mapping generation |
+| `generator/emit/extensions_known.py` | Known extensions filter table |
+| `generator/emit/extensions_wasm.py` | WASM extension codec generation |
+| `generator/bindings/python_fields.py` | Python field/AST/stub emission |
+
+### Windows Build Prerequisites
+
+OpenSSL is required for SHA-256 checksums. On Windows, install via vcpkg:
+
+```powershell
+git clone https://github.com/microsoft/vcpkg.git
+cd vcpkg
+.\bootstrap-vcpkg.bat
+.\vcpkg install openssl --triplet x64-windows
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="path/to/vcpkg/scripts/buildsystems/vcpkg.cmake"
+cmake --build build --config Release --target fastfhir_obj -- /m:4
+```
+
+### Profile Selection
+
+Resource scope constants in `generator/model/type_map.py`:
 
 | File | Purpose |
 |---|---|

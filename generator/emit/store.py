@@ -13,7 +13,7 @@ def generate_size_fields(layout, block_struct_name, data_name):
             cpp += f"        }}\n"
             cpp += f"    }}, {data_name}.{f['cpp_name']}.value);\n"
         elif f['is_array']:
-            if f['fhir_type'] == 'string':
+            if f['fhir_type'] == 'string' or f['fhir_type'] in STRING_TYPES:
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * TYPE_SIZE_OFFSET);\n"
                 cpp += f"        for (const auto& __item : {data_name}.{f['cpp_name']}) {{\n"
@@ -32,18 +32,14 @@ def generate_size_fields(layout, block_struct_name, data_name):
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * TYPE_SIZE_RESOURCE);\n"
                 cpp += f"    }}\n"
-            elif f['fhir_type'] in STRING_TYPES:
-                cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
-                cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * TYPE_SIZE_OFFSET);\n"
-                cpp += f"        for (const auto& __item : {data_name}.{f['cpp_name']}) {{\n"
-                cpp += f"            __total += SIZE_FF_STRING(__item);\n"
-                cpp += "        }\n    }\n"
-                
             elif f['fhir_type'] in SCALAR_PRIMITIVE_TYPES:
                 size_const = TYPE_MAP[f['fhir_type']]['size_const']
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * {size_const});\n"
                 cpp += f"    }}\n"
+            # Self-referential arrays (e.g. Extension.extension → ExtensionData)
+            # fall through to the generic array-of-blocks branch below — the type
+            # is complete, so SIZE_{child_struct} is available for recursive sizing.
             else:
                 child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
@@ -117,7 +113,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
         elif f['is_array']:
             # --- PATTERN 1: ARRAY OF STRING/CODE OFFSETS ---
             # Physically: 8-byte pointers (Offsets) to variable-length strings elsewhere.
-            if f['fhir_type'] in ('string', 'code'):
+            if f['fhir_type'] in ('string', 'code') or f['fhir_type'] in STRING_TYPES:
                 code_enum = f.get('code_enum')
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
@@ -165,14 +161,11 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             
             # --- PATTERN 3: ARRAY OF COMPLEX STRUCTS ---
+            # Self-referential arrays (e.g. Extension.extension → ExtensionData)
+            # fall through to the generic array-of-blocks branch below — the type
+            # is complete, so STORE_{child_struct} is available for recursive store.
+
             # --- PATTERN 4: ARRAY OF INLINE SCALAR PRIMITIVES ---
-            elif f['fhir_type'] in STRING_TYPES:
-                cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
-                cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * TYPE_SIZE_OFFSET);\n"
-                cpp += f"        for (const auto& __item : {data_name}.{f['cpp_name']}) {{\n"
-                cpp += f"            __total += SIZE_FF_STRING(__item);\n"
-                cpp += "        }\n    }\n"
-                
             elif f['fhir_type'] in SCALAR_PRIMITIVE_TYPES:
                 size_const = TYPE_MAP[f['fhir_type']]['size_const']
                 recovery   = _scalar_recovery_tag(f['fhir_type'])
@@ -188,6 +181,9 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"        }}\n"
                 cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             # --- PATTERN 3: ARRAY OF COMPLEX STRUCTS ---
+            # Self-referential arrays (e.g. Extension.extension → ExtensionData)
+            # fall through to the generic array-of-blocks branch below — the type
+            # is complete, so STORE_{child_struct} is available for recursive store.
             else:
                 child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
                 store_fn = f"STORE_{child_struct}"
@@ -233,13 +229,20 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             
         elif f['cpp_type'] == 'Offset':
             child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
-            store_fn = f"STORE_{child_struct}"
-            cpp += f"    if ({data_name}.{f['cpp_name']} != nullptr) {{\n"
-            cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
-            cpp += f"        Offset nested_hdr = child_off;\n"
-            cpp += f"        child_off += {child_struct}::HEADER_SIZE;\n"
-            cpp += f"        child_off = {store_fn}(__base, nested_hdr, child_off, *{data_name}.{f['cpp_name']});\n"
-            cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
+            if child_struct == 'FF_STRING':
+                # FF_STRING manages its own header internally — use 3-arg STORE_FF_STRING directly
+                cpp += f"    if ({data_name}.{f['cpp_name']} != nullptr) {{\n"
+                cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
+                cpp += f"        child_off += STORE_FF_STRING(__base, child_off, *{data_name}.{f['cpp_name']});\n"
+                cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
+            else:
+                store_fn = f"STORE_{child_struct}"
+                cpp += f"    if ({data_name}.{f['cpp_name']} != nullptr) {{\n"
+                cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
+                cpp += f"        Offset nested_hdr = child_off;\n"
+                cpp += f"        child_off += {child_struct}::HEADER_SIZE;\n"
+                cpp += f"        child_off = {store_fn}(__base, nested_hdr, child_off, *{data_name}.{f['cpp_name']});\n"
+                cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             
         elif f['fhir_type'] == 'code':
             code_enum = f.get('code_enum')
@@ -252,68 +255,3 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             cpp += f"    {get_store_macro(f['macro'])}({ptr_name} + {block_struct_name}::{f['name']}, {data_name}.{f['cpp_name']});\n"
             
     return cpp
-
-# =====================================================================
-# 4. ORCHESTRATION & VERSION MERGING
-# =====================================================================
-def merge_fhir_versions(schemas_by_version, root_resource):
-    master_blocks = {}
-    for v_idx, (v_name, elements) in enumerate(schemas_by_version):
-        for el in elements:
-            path = el.get('path', '')
-            if not path.startswith(root_resource) or len(path.split('.')) == 1: continue
-            parent_path = '.'.join(path.split('.')[:-1])
-            raw_field_name = path.split('.')[-1]
-            field_name = raw_field_name.replace('[x]', '')
-            is_choice = '[x]' in raw_field_name
-            choice_types = [t.get('code') for t in el.get('type', [])] if is_choice else []
-            
-            if parent_path not in master_blocks: master_blocks[parent_path] = {'layout': [], 'seen': set(), 'sizes': {}}
-            blk = master_blocks[parent_path]
-            f_type = sanitize_fhir_type(el.get('type', [{'code': 'BackboneElement'}])[0].get('code', 'BackboneElement'))
-            is_array = el.get('max') == '*'
-            mapping = TYPE_MAP['DEFAULT'] if (is_array or f_type not in TYPE_MAP) else TYPE_MAP[f_type]
-            if field_name not in blk['seen']:
-
-                if is_choice: mapping = TYPE_MAP['CHOICE']
-                else: mapping = TYPE_MAP['DEFAULT'] if (is_array or f_type not in TYPE_MAP) else TYPE_MAP[f_type]
-
-                off = 10 if not blk['layout'] else blk['layout'][-1]['offset'] + blk['layout'][-1]['size']
-
-                # C++ Keyword Sanitization
-                cpp_safe_name = field_name.lower()
-                if cpp_safe_name in ["class", "template", "namespace", "operator", "new", "delete", "default", "struct", "enum", "concept", "requires", "export", "import", "module"]:
-                    cpp_safe_name += "_"
-                field_entry = {
-                    'name': field_name.upper(), 'cpp_name': cpp_safe_name, 'orig_name': field_name,
-                    'is_choice': is_choice,             # Ensure these are passed
-                    'choice_types': choice_types,       # for the generator
-                    'is_array': is_array, 'fhir_type': f_type, 'size': mapping['size'],
-                    'size_const': mapping['size_const'], 'cpp_type': mapping['cpp'],
-                    'data_type': mapping['data_type'], 'macro': mapping['macro'],
-                    'first_version_name': v_name, 'first_version_idx': v_idx, 'offset': off
-                }
-                # Apply per-field layout overrides (e.g. Extension.url → URL_IDX uint32_t)
-                override = BLOCK_FIELD_OVERRIDES.get((parent_path, field_name))
-                if override:
-                    field_entry.update(override)
-                    # Recalculate size from the override so the offset chain is correct
-                    field_entry['offset'] = off
-                blk['layout'].append(field_entry)
-                blk['seen'].add(field_name)
-            blk['sizes'][v_name] = blk['layout'][-1]['offset'] + blk['layout'][-1]['size']
-            
-    for parent_path, blk in master_blocks.items():
-        for f in blk['layout']:
-            if f['fhir_type'] not in ('BackboneElement', 'Element'): continue
-            expected = parent_path + '.' + f['orig_name']
-            if expected in master_blocks:
-                f['resolved_path'] = expected
-                continue
-            direct_root = root_resource + '.' + f['orig_name']
-            if direct_root in master_blocks:
-                f['resolved_path'] = direct_root
-                continue
-            candidates = [p for p in master_blocks.keys() if p.endswith('.' + f['orig_name'])]
-            if len(candidates) == 1: f['resolved_path'] = candidates[0]
-    return master_blocks

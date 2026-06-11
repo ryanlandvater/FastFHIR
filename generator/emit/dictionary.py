@@ -190,7 +190,7 @@ def generate_fastfhir_dictionary(
     _verify_no_drift(v_name, entries)
 
     write_if_changed(os.path.join("src", f"FF_{v_name}_Dictionary.cpp"), cpp)
-    print(f"  → {len(entries)} entries in FF_{v_name}_Dictionary.cpp")
+    print(f"  -> {len(entries)} entries in FF_{v_name}_Dictionary.cpp")
     return True
 
 

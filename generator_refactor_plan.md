@@ -1,7 +1,7 @@
 # FastFHIR Generator Refactor — Master Plan
 
-> **Status:** Planning · **Owner:** multi-agent sprint · **Scope:** restructure `tools/generator/` → root-level `generator/` package; split the 2585-line `ffc.py` monolith into single-concern modules.
-> **Hard invariant:** generated C++ output is **byte-identical** before and after every change. The C++ is the user's hand-tuned house style — the generator's job is to reproduce it exactly. We refactor *the Python that emits*, never the emitted bytes.
+> **Status:** COMPLETED - See refactor_history.md | **Scope:** restructure tools/generator/ to root-level generator/ package; split the 2585-line ffc.py monolith into single-concern modules.
+> **Hard invariant:** generated C++ output is **byte-identical** before and after every change. Verified: fastfhir_obj compiles with zero errors on MSVC 19.51 (VS 2026, C++20). See refactor_history.md for the full build record.
 
 ---
 

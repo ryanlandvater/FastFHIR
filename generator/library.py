@@ -38,6 +38,11 @@ from generator.bindings.python_fields import (
 )
 
 
+def enclose_namespace(ns: str, code: str) -> str:
+    """Wrap *code* inside ``namespace ns { ... }`` with a closing comment."""
+    return f"namespace {ns} {{\n{code}\n}} // namespace {ns}\n"
+
+
 def compile_fhir_library(
     resources: list[str],
     versions: list[str],
@@ -73,13 +78,15 @@ def compile_fhir_library(
     )
     hpp_head += "namespace FastFHIR { template<typename T> struct TypeTraits; \n\n"
     hpp_head += _DATA_TYPES_TRAITS
+    hpp_head += "} // namespace FastFHIR\n"
+    hpp_head += "using namespace FastFHIR;\n\n"
     hpp_head += "// Forward Declarations\n"
     for dec in sorted(fwd_decls):
         hpp_head += f"struct {dec};\n"
     hpp_head += "\n"
 
     types_hpp = hpp_head
-    types_cpp = f'{auto_header}#include "FF_DataTypes.hpp"\n#include "FF_DataTypes_internal.hpp"\n#include "../include/FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
+    types_cpp = f'{auto_header}#include "FF_DataTypes.hpp"\n#include "FF_DataTypes_internal.hpp"\n#include "../include/FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\nnamespace FastFHIR {{\n'
     types_int_hpp = f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n\n"
     types_all = list(_tm.PRODUCTION_TYPES)
     all_blocks: dict[str, dict] = {}
@@ -158,8 +165,7 @@ def compile_fhir_library(
         pub_hpp, int_hpp, cpp_body = generate_cxx_for_blocks(all_type_blocks, versions)
         types_hpp += pub_hpp
         types_int_hpp += int_hpp
-        types_cpp += cpp_body
-    types_cpp += "} // namespace FastFHIR\n"
+        types_cpp += enclose_namespace("FastFHIR", cpp_body)
 
     write_if_changed(os.path.join(output_dir, "FF_DataTypes.hpp"), types_hpp)
     write_if_changed(os.path.join(output_dir, "FF_DataTypes_internal.hpp"), types_int_hpp)
@@ -211,12 +217,7 @@ def compile_fhir_library(
         write_if_changed(os.path.join(output_dir, f"FF_{root_resource}_internal.hpp"), res_int_hpp)
 
         res_cpp = f'{auto_header}#include "FF_{root_resource}_internal.hpp"\n#include "../include/FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
-        res_cpp += cpp_body
-        # Close the namespace opened by FF_DataTypes.hpp (included transitively).
-        # All generated code uses FastFHIR:: fully-qualified names internally, but
-        # type aliases like ExtensionData, Decode etc. in *internal.hpp are
-        # unqualified and rely on being inside namespace FastFHIR.
-        res_cpp += "} // namespace FastFHIR\n"
+        res_cpp += enclose_namespace("FastFHIR", cpp_body)
         write_if_changed(os.path.join(output_dir, f"FF_{root_resource}.cpp"), res_cpp)
         generated_resources.append(root_resource)
         reflected_block_names.update(
@@ -340,6 +341,7 @@ def compile_fhir_library(
         '#include "FF_FieldKeys.hpp"\n'
         '#include "FF_ResourceTypes.hpp"\n'
         '#include "FF_Reflection.hpp"\n'
+        'namespace FastFHIR {\n'
     )
     for res in generated_resources:
         all_types_hpp += f'#include "FF_{res}_internal.hpp"\n'
@@ -421,3 +423,4 @@ def _parse_recovery_tags(recovery_path: str = "include/FF_Recovery.hpp") -> dict
             if m:
                 tags[m.group(1)] = int(m.group(2), 16)
     return tags
+

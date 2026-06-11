@@ -29,6 +29,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type (Debug|Release|RelWithDebInfo)")
 
 # ── Options ─────────────────────────────────────────────────────
 option(FASTFHIR_BUILD_SHARED       "Build as shared library" ON)
@@ -58,12 +59,8 @@ file(GLOB FASTFHIR_GENERATED_SOURCES CONFIGURE_DEPENDS generated_src/*.cpp)
 file(GLOB FASTFHIR_GENERATED_HEADERS CONFIGURE_DEPENDS generated_src/*.hpp)
 list(REMOVE_ITEM FASTFHIR_GENERATED_SOURCES "${FASTFHIR_GENERATED_DIR}/FF_IngestMappings.cpp")
 
-if(NOT FASTFHIR_GENERATED_SOURCES)
-    message(FATAL_ERROR "No generated sources. Enable FASTFHIR_RUN_GENERATOR or run generator manually.")
-endif()
-
 # ── Code generator ─────────────────────────────────────────────
-if(FASTFHIR_RUN_GENERATOR)
+if(FASTFHIR_RUN_GENERATOR OR NOT FASTFHIR_GENERATED_SOURCES OR NOT FASTFHIR_GENERATED_HEADERS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     execute_process(
         COMMAND ${CMAKE_COMMAND} -E env
@@ -75,7 +72,17 @@ if(FASTFHIR_RUN_GENERATOR)
     if(NOT _GEN_RESULT EQUAL 0)
         message(FATAL_ERROR "Code generator failed — see output above")
     endif()
+    file(GLOB FASTFHIR_GENERATED_SOURCES CONFIGURE_DEPENDS generated_src/*.cpp)
+    file(GLOB FASTFHIR_GENERATED_HEADERS CONFIGURE_DEPENDS generated_src/*.hpp)
 endif()
+
+if(NOT FASTFHIR_GENERATED_SOURCES)
+    message(FATAL_ERROR "No generated sources. Enable FASTFHIR_RUN_GENERATOR or run generator manually.")
+endif()
+if(NOT FASTFHIR_GENERATED_HEADERS)
+    message(FATAL_ERROR "No generated headers. Enable FASTFHIR_RUN_GENERATOR or run generator manually.")
+endif()
+
 
 # ── Core object library ─────────────────────────────────────────
 add_library(fastfhir_obj OBJECT

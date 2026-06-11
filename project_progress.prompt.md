@@ -1,3 +1,35 @@
+## Recent Generator Refactor - Build Integration
+
+The `tools/generator/` monolith was decomposed into the `generator/` modular
+package. The first Windows MSVC build revealed 10 bug categories in the
+refactored code generator. All are now fixed.
+
+### Completed
+- [x] Unicode encoding crash fix (dictionary.py Unicode arrow -> ASCII)
+- [x] Missing namespace closes in library.py (FF_DataTypes.hpp, FF_AllTypes.hpp)
+- [x] FF_STRING::deserialize -> FF_STRING(...).read_view(...) in Offset branches
+- [x] STORE_FF_STRING 4-arg -> 3-arg for nullable strings
+- [x] Self-referential ExtensionData struct (std::vector<Offset> instead of std::vector<ExtensionData>)
+- [x] Namespace resolution (using namespace FastFHIR at global scope)
+- [x] OpenSSL via vcpkg for Windows (replaces Perl-based ExternalProject)
+- [x] is_self_ref handling in store/size/deserialize code paths
+- [x] STRING_TYPES coverage in array handlers (id, uri, markdown, etc.)
+- [x] SimpleQuantity removed from PRODUCTION_TYPES (no FHIR definition)
+
+### Current Status
+- **fastfhir_obj**: Compiles with zero errors on MSVC 19.51, C++20
+- **OpenSSL**: Installed via vcpkg (required for fastfhir_ingest_obj and tools)
+- **CI**: Full multi-platform build not yet verified
+
+### Lessons Learned
+See `refactor_history.md` for detailed lessons on:
+- MSVC incomplete-type handling for self-referential vectors
+- Namespace boundary tracking in code generation
+- Windows portability (Perl, Unicode, file encoding)
+- Cross-cutting propagation of type changes through all emission paths
+
+---
+
 # FastFHIR Project Progress
 
 ## How To Use

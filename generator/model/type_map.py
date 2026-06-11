@@ -25,7 +25,7 @@ import re
 PRODUCTION_TYPES: list[str] = [
     "Extension",
     "Coding", "CodeableConcept", "Quantity", "Identifier",
-    "Age", "Count", "Distance", "SimpleQuantity",
+    "Age", "Count", "Distance", 
     "Range", "Period", "Reference", "Meta", "Narrative",
     "Annotation", "HumanName", "Address", "ContactPoint",
     "Attachment", "Ratio", "SampledData", "Duration", "Availability",

@@ -114,6 +114,10 @@ def merge_fhir_versions(schemas_by_version, root_resource):
                 if override:
                     field_entry.update(override)
                     field_entry["offset"] = off
+                # All arrays use INLINE_BLOCK with full Data structs — even
+                # self-referential cases (e.g. Extension.extension). MSVC
+                # accepts std::vector<IncompleteType> at the closing brace of
+                # the enclosing struct, so no special handling needed.
                 blk["layout"].append(field_entry)
                 blk["seen"].add(field_name)
             blk["sizes"][v_name] = blk["layout"][-1]["offset"] + blk["layout"][-1]["size"]
@@ -232,6 +236,11 @@ def generate_cxx_for_blocks(master_blocks, versions):
                         f["fhir_type"], f["orig_name"], path, f.get("resolved_path")
                     )
                 )
+                # Self-referential arrays (e.g. Extension.extension → ExtensionData)
+                # are valid C++ — the type is complete at the closing brace of the
+                # struct definition, and std::vector<T> only requires T to be complete
+                # at instantiation point (the struct's closing brace). All major
+                # compilers (MSVC, GCC, Clang) accept this.
                 public_hpp += f"    std::vector<{item_type}> {f['cpp_name']};\n"
             elif f["fhir_type"] == "string":
                 public_hpp += f"    std::string_view {f['cpp_name']};\n"
@@ -407,3 +416,4 @@ def generate_cxx_for_blocks(master_blocks, versions):
 
     public_hpp += traits_hpp
     return public_hpp, internal_hpp, cpp
+

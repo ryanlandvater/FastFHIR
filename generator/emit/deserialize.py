@@ -1,4 +1,5 @@
 from generator.model.type_map import SCALAR_PRIMITIVE_TYPES, STRING_TYPES, TYPE_MAP
+from generator.model import structure as _st
 from generator.model.structure import _child_recovery_expr, _resolve_data_type_name
 
 
@@ -50,7 +51,7 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}    auto blk_item_ptr = arr_{f['cpp_name']}.entries(__base);\n"
             cpp += f"{indent}    for (uint32_t i = 0; i < ENTRIES; ++i, blk_item_ptr += STEP) {{\n"
             
-            if f['fhir_type'] in ('string', 'code'):
+            if f['fhir_type'] in ('string', 'code') or f['fhir_type'] in STRING_TYPES:
                 code_enum = f.get('code_enum')
                 cpp += f"{indent}        Offset blk_str_off = LOAD_U64(blk_item_ptr);\n"
                 cpp += f"{indent}        if (blk_str_off != FF_NULL_OFFSET) {{\n"
@@ -124,4 +125,5 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
         if f['first_version_idx'] > 0: cpp += f"    }}\n"
     cpp += "    return data;\n"
     return cpp
+
 
