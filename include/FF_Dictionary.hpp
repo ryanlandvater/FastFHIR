@@ -33,48 +33,46 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include "FF_Primitives.hpp"
+#include "../dictionaries/FF_Codes.hpp"
 
-// =====================================================================
-// FF_CodeEntry — a single (value, string) pair in the dictionary table.
-// Tables are sorted by `code` to enable O(log n) binary-search resolve.
-// =====================================================================
-struct FF_CodeEntry {
-    uint32_t      code;   // 31-bit permanent value (MSB = 0)
-    const char*   label;  // Canonical FHIR code string
+union FF_CodeUnion {
+    uint64_t                    raw;
+    FastFHIR::FF_CODE::UCUM    UCUM;
+    FastFHIR::FF_CODE::R4      R4;
+    FastFHIR::FF_CODE::R5      R5;
 };
 
-// ── R4 dictionary ────────────────────────────────────────────────────
+struct FF_CodeEntry {
+    FF_CodeUnion  code;
+    const char*   label;
+};
+
+extern const char* const FF_DICTIONARY_STRINGS[];
+extern const size_t      FF_DICTIONARY_STRINGS_SIZE;
+
 extern const FF_CodeEntry* const  FF_R4_DICTIONARY;
 extern const size_t               FF_R4_DICTIONARY_SIZE;
 
-// ── R5 dictionary ────────────────────────────────────────────────────
 extern const FF_CodeEntry* const  FF_R5_DICTIONARY;
 extern const size_t               FF_R5_DICTIONARY_SIZE;
 
-// =====================================================================
-// Public API
-// =====================================================================
+extern const FF_CodeEntry* const  FF_UCUM_DICTIONARY;
+extern const size_t               FF_UCUM_DICTIONARY_SIZE;
 
-/**
- * @brief Resolve a 31-bit wire code to its FHIR code string.
- *
- * @param code    The uint32_t value read from an FF_FIELD_CODE vtable slot
- *                (MSB is ignored — callers should strip FF_CUSTOM_STRING_FLAG
- *                before calling this function).
- * @param version FHIR version selector (e.g. FHIR_VERSION_R5).
- * @return const char*  The code string, or nullptr if unknown.
- *
- * @note Freetext custom strings (MSB set) should NOT be passed here —
- *       they are handled by the caller (FF_Parser) using the relative
- *       offset path.
- */
-const char* FF_ResolveCode(uint32_t code, uint32_t version) noexcept;
+inline const char* FF_ResolveCode(uint32_t code, uint32_t /*version*/) noexcept {
+    if (code == FF_CODE_NULL || code >= FF_DICTIONARY_STRINGS_SIZE)
+        return nullptr;
+    return FF_DICTIONARY_STRINGS[code];
+}
 
-/**
- * @brief Look up a FHIR code string and return its permanent wire value.
- *
- * @param str     The code string to look up.
- * @param version FHIR version selector.
- * @return uint32_t  The permanent code value, or FF_CODE_NULL if not found.
- */
 uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t version) noexcept;
+
+inline FastFHIR::FF_CODE::UCUM FF_GetUCUMCode(std::string_view label) noexcept {
+    return static_cast<FastFHIR::FF_CODE::UCUM>(
+        FF_GetDictionaryCode(std::string(label), FHIR_VERSION_R5));
+}
+
+inline const char* FF_ResolveUCUMCode(FastFHIR::FF_CODE::UCUM code) noexcept {
+    return FF_ResolveCode(static_cast<uint32_t>(code), FHIR_VERSION_R5);
+}

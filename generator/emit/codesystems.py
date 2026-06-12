@@ -163,20 +163,23 @@ def generate_code_systems(
                 if code != "code":
                     continue
                 binding = el.get("binding", {})
-                if binding.get("strength") != "required":
-                    continue
+                strength = binding.get("strength", "")
                 vs_url = binding.get("valueSet", "")
                 if not vs_url:
                     continue
-                # Strip FHIR version suffix (e.g. "|5.0.0") so the
-                # URL matches the valueset index keys stored without version.
                 vs_url = vs_url.split("|")[0]
+
+                # Skip UCUM-bound fields — their codes are in the dictionary.
+                # UCUM does not need external_system annotation.
+                if "ucum" in vs_url.lower() or "unitsofmeasure" in vs_url.lower():
+                    continue
+
+                # Non-UCUM: only process required bindings for enum generation.
+                if strength != "required":
+                    continue
                 path_to_vs[path] = vs_url
                 if vs_url not in vs_registry:
                     vs_registry[vs_url] = {}
-                # Detect UCUM-bound fields for external codeable concept path.
-                if "ucum" in vs_url.lower():
-                    external_system_map[path] = "FF_ExternalCodeSystem::UCUM"
 
     for v_name, bundle in type_bundles.items():
         for entry in bundle.get("entry", []):

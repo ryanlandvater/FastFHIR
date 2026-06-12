@@ -331,8 +331,11 @@ Size STORE_FF_STRING(BYTE* const __base, Offset start_offset, std::string_view s
 uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_off, const std::string& code_str, uint32_t version, FF_ExternalCodeSystem system) {
     if (code_str.empty()) return FF_CODE_NULL;
 
-    // ── External codeable concept path ──────────────────────────
-    if (system != FF_ExternalCodeSystem::NULL_SYSTEM) {
+    // External codeable concept path — only for systems whose codes
+    // don't fit in the 31-bit dictionary (e.g., SNOMED CT).
+    // UCUM codes are in the dictionary or go to custom string.
+    if (system != FF_ExternalCodeSystem::NULL_SYSTEM
+        && system != FF_ExternalCodeSystem::UCUM) {
         return ENCODE_FF_CODEABLE_CONCEPT(__base, block_offset, child_off, code_str, system, version);
     }
 

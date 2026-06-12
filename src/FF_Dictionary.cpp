@@ -17,42 +17,15 @@
 #include "../include/FF_Primitives.hpp"  // FF_CODE_NULL, FHIR_VERSION_*
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 
 // =====================================================================
-// FF_ResolveCode — code → string via binary search
+// FF_ResolveCode — now O(1) inline in FF_Dictionary.hpp.
 // =====================================================================
-const char* FF_ResolveCode(uint32_t code, uint32_t version) noexcept {
-    // Freetext custom strings should never reach this function.
-    if (code & FF_CUSTOM_STRING_FLAG) return nullptr;
-
-    const FF_CodeEntry* table = nullptr;
-    size_t              size  = 0;
-
-    if (version >= FHIR_VERSION_R5) {
-        table = FF_R5_DICTIONARY;
-        size  = FF_R5_DICTIONARY_SIZE;
-    } else if (version >= FHIR_VERSION_R4) {
-        table = FF_R4_DICTIONARY;
-        size  = FF_R4_DICTIONARY_SIZE;
-    } else {
-        return nullptr;
-    }
-
-    // Binary search on sorted-by-code array
-    auto it = std::lower_bound(table, table + size, code,
-        [](const FF_CodeEntry& entry, uint32_t c) noexcept {
-            return entry.code < c;
-        });
-
-    if (it != table + size && it->code == code) {
-        return it->label;
-    }
-    return nullptr;
-}
 
 // =====================================================================
 // FF_GetDictionaryCode — string → code via unordered_map (built once)
@@ -60,41 +33,49 @@ const char* FF_ResolveCode(uint32_t code, uint32_t version) noexcept {
 uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t version) noexcept {
     if (str.empty()) return FF_CODE_NULL;
 
-    // Build a lazy static map for the requested version.
-    // The full R4+R5 combined set is ~14K entries — well within reason.
     using Map = std::unordered_map<std::string_view, uint32_t>;
 
-    static const Map* s_r4_map = nullptr;
-    static const Map* s_r5_map = nullptr;
-
-    const FF_CodeEntry* table = nullptr;
-    size_t              size  = 0;
-    const Map**         cache = nullptr;
+    // UCUM first — highest priority in dedup (UCUM > R4 > R5).
+    // Also inserts lowered keys for case-insensitive fuzzy matching.
+    {
+        static const Map s_ucum_map = [] {
+            static std::vector<std::string> lowered;
+            Map m; m.reserve(FF_UCUM_DICTIONARY_SIZE * 2);
+            for (size_t i = 0; i < FF_UCUM_DICTIONARY_SIZE; ++i) {
+                const char* label = FF_UCUM_DICTIONARY[i].label;
+                auto code = static_cast<uint32_t>(FF_UCUM_DICTIONARY[i].code.raw);
+                m.emplace(label, code);
+                // Lowered key for fuzzy UCUM matching
+                std::string lo(label);
+                for (auto& c : lo) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                lowered.push_back(std::move(lo));
+                m.emplace(lowered.back(), code);
+            }
+            return m;
+        }();
+        auto it = s_ucum_map.find(std::string_view(str));
+        if (it != s_ucum_map.end()) return it->second;
+    }
 
     if (version >= FHIR_VERSION_R5) {
-        table = FF_R5_DICTIONARY;
-        size  = FF_R5_DICTIONARY_SIZE;
-        cache = &s_r5_map;
+        static const Map s_r5_map = [] {
+            Map m; m.reserve(FF_R5_DICTIONARY_SIZE);
+            for (size_t i = 0; i < FF_R5_DICTIONARY_SIZE; ++i)
+                m.emplace(FF_R5_DICTIONARY[i].label, static_cast<uint32_t>(FF_R5_DICTIONARY[i].code.raw));
+            return m;
+        }();
+        auto it = s_r5_map.find(std::string_view(str));
+        if (it != s_r5_map.end()) return it->second;
     } else if (version >= FHIR_VERSION_R4) {
-        table = FF_R4_DICTIONARY;
-        size  = FF_R4_DICTIONARY_SIZE;
-        cache = &s_r4_map;
-    } else {
-        return FF_CODE_NULL;
+        static const Map s_r4_map = [] {
+            Map m; m.reserve(FF_R4_DICTIONARY_SIZE);
+            for (size_t i = 0; i < FF_R4_DICTIONARY_SIZE; ++i)
+                m.emplace(FF_R4_DICTIONARY[i].label, static_cast<uint32_t>(FF_R4_DICTIONARY[i].code.raw));
+            return m;
+        }();
+        auto it = s_r4_map.find(std::string_view(str));
+        if (it != s_r4_map.end()) return it->second;
     }
 
-    // Thread-safe one-time init (benign race on pointer — at worst two
-    // threads build the same map and one leaks; fine for a read-heavy
-    // workload.  If this becomes a problem, add std::call_once.)
-    if (!*cache) {
-        auto* map = new Map();
-        map->reserve(size);
-        for (size_t i = 0; i < size; ++i) {
-            map->emplace(table[i].label, table[i].code);
-        }
-        *cache = map;
-    }
-
-    auto it = (*cache)->find(std::string_view(str));
-    return it != (*cache)->end() ? it->second : FF_CODE_NULL;
+    return FF_CODE_NULL;
 }

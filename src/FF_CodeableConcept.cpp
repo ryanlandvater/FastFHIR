@@ -13,7 +13,7 @@
  */
 
 #include "../include/FF_CodeableConcept.hpp"
-#include "../dictionaries/FF_UCUM_Codes.hpp"
+#include "../include/FF_Dictionary.hpp"
 #include "../include/FF_Utilities.hpp"
 
 #include <algorithm>
@@ -26,11 +26,11 @@ namespace FastFHIR {
 // =====================================================================
 // Lookup dispatch — delegates to per-system inline functions
 // =====================================================================
-// UCUM uses FF_GetUCUMCode() / FF_ResolveUCUMCode() from FF_UCUM_Codes.hpp
+// UCUM uses FF_GetUCUMCode() / FF_ResolveUCUMCode() from FF_Codes.hpp
 // (O(log n) binary search on sorted array, same pattern as FF_Dictionary).
 // Other systems fall back to inline encoding (SNOMED) or return 0.
 
-#include "../dictionaries/FF_UCUM_Codes.hpp"
+// FF_Codes.hpp included via FF_Dictionary.hpp
 
 // =====================================================================
 // System-specific inline packing
@@ -59,23 +59,12 @@ uint64_t FF_PackCode(FF_ExternalCodeSystem sys,
     switch (sys) {
 
     case FF_ExternalCodeSystem::SNOMED_CT:
-        // SNOMED concept IDs are self-encoding: the numeric string IS the ID.
-        // Parse directly into a 56-bit integer.
         return _parse_numeric(code_str);
 
-    case FF_ExternalCodeSystem::UCUM: {
-        // Tier 1: binary search on sorted concept array (same pattern as FF_GetDictionaryCode).
-        if (auto code = FF_GetUCUMCode(code_str); code != FF_UCUM_CODES::UCUM_INVALID)
-            return static_cast<uint64_t>(code);
-        // Tier 2 fallback: hash the first 7 ASCII bytes into a 56-bit token.
-        // The caller should prefer the custom-string path for complex
-        // compositions; this is a last-resort inline encoding.
-        uint64_t token = 0;
-        size_t n = code_str.size() < 7 ? code_str.size() : 7;
-        for (size_t i = 0; i < n; ++i)
-            token = (token << 8) | static_cast<uint8_t>(code_str[i]);
-        return token;
-    }
+    case FF_ExternalCodeSystem::UCUM:
+        // UCUM codes go through the dictionary + custom string path,
+        // not through FF_CODEABLE_CONCEPT.  This case should not be reached.
+        return 0;
 
     case FF_ExternalCodeSystem::LOINC: {
         // TODO: add LOINC lookup table (same pattern as UCUM).
@@ -128,7 +117,7 @@ std::string_view FF_UnpackCode(FF_ExternalCodeSystem sys,
 
     case FF_ExternalCodeSystem::UCUM: {
         // O(1) reverse lookup via compiled-in string table.
-        if (const char* s = FF_ResolveUCUMCode(static_cast<FF_UCUM_CODES>(packed_id)))
+        if (const char* s = FF_ResolveUCUMCode(static_cast<FastFHIR::FF_CODE::UCUM>(packed_id)))
             return s;
         // Fallback: unpack ASCII from the 56-bit token.
         size_t len = 0;
