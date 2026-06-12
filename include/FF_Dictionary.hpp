@@ -10,8 +10,8 @@
  *
  * This header declares the external arrays that hold the permanent,
  * auditable mapping between 31-bit FF_CODE values and their FHIR code
- * strings.  The actual data lives in generated_src/FF_R4_Dictionary.cpp
- * and FF_R5_Dictionary.cpp — those files are auto-generated but their
+ * strings.  The actual data lives in dictionaries/FF_R4_Dictionary.cpp
+ * and dictionaries/FF_R5_Dictionary.cpp — those files are auto-generated but their
  * values are permanent once committed.
  *
  * Design rationale (see architecture.md §6):

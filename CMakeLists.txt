@@ -52,6 +52,7 @@ set(FASTFHIR_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated_src")
 
 # ── Source files ────────────────────────────────────────────────
 file(GLOB FASTFHIR_CORE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+file(GLOB FASTFHIR_DICT_SOURCES CONFIGURE_DEPENDS dictionaries/*.cpp)
 file(GLOB FASTFHIR_CORE_HEADERS CONFIGURE_DEPENDS include/*.hpp)
 list(REMOVE_ITEM FASTFHIR_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/FF_Ingestor.cpp")
 
@@ -72,21 +73,25 @@ if(FASTFHIR_RUN_GENERATOR OR NOT FASTFHIR_GENERATED_SOURCES OR NOT FASTFHIR_GENE
     if(NOT _GEN_RESULT EQUAL 0)
         message(FATAL_ERROR "Code generator failed — see output above")
     endif()
-    file(GLOB FASTFHIR_GENERATED_SOURCES CONFIGURE_DEPENDS generated_src/*.cpp)
-    file(GLOB FASTFHIR_GENERATED_HEADERS CONFIGURE_DEPENDS generated_src/*.hpp)
+    if (NOT FASTFHIR_GENERATED_SOURCES)
+        file(GLOB FASTFHIR_GENERATED_SOURCES CONFIGURE_DEPENDS generated_src/*.cpp)
+    endif()
+    if (NOT FASTFHIR_GENERATED_HEADERS)
+        file(GLOB FASTFHIR_GENERATED_HEADERS CONFIGURE_DEPENDS generated_src/*.hpp)
+    endif()
 endif()
-
 if(NOT FASTFHIR_GENERATED_SOURCES)
     message(FATAL_ERROR "No generated sources. Enable FASTFHIR_RUN_GENERATOR or run generator manually.")
 endif()
 if(NOT FASTFHIR_GENERATED_HEADERS)
     message(FATAL_ERROR "No generated headers. Enable FASTFHIR_RUN_GENERATOR or run generator manually.")
 endif()
-
+# –– END generator section –––––––––––––––––––––––––––––––––––––––
 
 # ── Core object library ─────────────────────────────────────────
 add_library(fastfhir_obj OBJECT
     ${FASTFHIR_CORE_SOURCES}
+    ${FASTFHIR_DICT_SOURCES}
     ${FASTFHIR_GENERATED_SOURCES}
     ${FASTFHIR_CORE_HEADERS}
     ${FASTFHIR_GENERATED_HEADERS}

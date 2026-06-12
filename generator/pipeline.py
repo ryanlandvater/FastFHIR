@@ -48,13 +48,14 @@ def run(output_dir: str = "generated_src", *, keep_specs: bool = False) -> None:
     code_system_urls = generate_master_dictionary(version_configs, output_dir=output_dir)
 
     # 3. Build the code-system enums (FF_CodeSystems.hpp).
-    code_enum_map = generate_code_systems(
+    code_enum_map, external_system_map = generate_code_systems(
         PRODUCTION_TYPES, resources, versions=versions, output_dir=output_dir
     )
 
     # 4. Build the domains/resources (the bulk of generated_src/).
     compile_fhir_library(
-        resources, versions, code_enum_map=code_enum_map, output_dir=output_dir
+        resources, versions, code_enum_map=code_enum_map,
+        external_system_map=external_system_map, output_dir=output_dir
     )
 
     # 5. Build the known-extension filter table (includes code system URLs).

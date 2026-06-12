@@ -97,7 +97,7 @@ def _verify_no_drift(
     
     Only wholly new codes (absent from the committed file) may be added.
     """
-    version_path = f"src/FF_{v_name}_Dictionary.cpp"
+    version_path = f"dictionaries/FF_{v_name}_Dictionary.cpp"
     try:
         r = subprocess.run(
             ["git", "show", f"HEAD:{version_path}"],
@@ -111,7 +111,7 @@ def _verify_no_drift(
     if r.returncode != 0:
         raise RuntimeError(
             f"Committed dictionary not found: {version_path} is not in git. "
-            f"Run `git add src/FF_*_Dictionary.cpp && git commit` first."
+            f"Run `git add dictionaries/FF_*_Dictionary.cpp && git commit` first."
         )
     
     # Extract committed (code_str → value) mappings
@@ -189,7 +189,7 @@ def generate_fastfhir_dictionary(
     # ── Guard: verify no committed code-value mapping changed ──
     _verify_no_drift(v_name, entries)
 
-    write_if_changed(os.path.join("src", f"FF_{v_name}_Dictionary.cpp"), cpp)
+    write_if_changed(os.path.join("dictionaries", f"FF_{v_name}_Dictionary.cpp"), cpp)
     print(f"  -> {len(entries)} entries in FF_{v_name}_Dictionary.cpp")
     return True
 
@@ -238,7 +238,7 @@ def generate_master_dictionary(
     # freshly generated in that case.
     existing_values: dict[str, int] = {}
     for v_name, _ in normalized_versions:
-        version_path = f"src/FF_{v_name}_Dictionary.cpp"
+        version_path = f"dictionaries/FF_{v_name}_Dictionary.cpp"
         existing_cpp = None
         try:
             r = subprocess.run(
@@ -254,7 +254,7 @@ def generate_master_dictionary(
             raise RuntimeError(
                 f"Committed dictionary not found: {version_path} is not in git. "
                 "The dictionary files must be committed before regeneration. "
-                "Run `git add src/FF_*_Dictionary.cpp && git commit` first."
+                "Run `git add dictionaries/FF_*_Dictionary.cpp && git commit` first."
             )
         
         if existing_cpp:
@@ -278,6 +278,24 @@ def generate_master_dictionary(
 
     print(f"  Master dictionary: {len(master_code_list)} unique codes "
           f"({len(existing_codes)} preserved, {len(new_codes)} new)")
+
+    # ── Bit-30 safety margin ──────────────────────────────────────
+    # FF_CODEABLE_CONCEPT_FLAG occupies bit 30 (0x40000000).  Every
+    # dictionary index must stay strictly below that boundary so the
+    # three-way branch in FF_FIELD_CODE (dictionary / codeable-concept
+    # / custom-string) never misclassifies a dictionary index.
+    _FF_CODE_DICTIONARY_MAX = 0x3FFFFFFF
+    final_max = master_code_list[-1][1] if master_code_list else 0
+    if final_max >= _FF_CODE_DICTIONARY_MAX:
+        raise RuntimeError(
+            f"Dictionary overflow: max index 0x{final_max:08X} exceeds "
+            f"FF_CODE_DICTIONARY_MAX (0x{_FF_CODE_DICTIONARY_MAX:08X}). "
+            f"Bit 30 is reserved for FF_CODEABLE_CONCEPT_FLAG. "
+            f"Reduce dictionary size or extend the index field."
+        )
+    if final_max > _FF_CODE_DICTIONARY_MAX * 0.75:
+        print(f"  [Warning] Dictionary at {final_max / _FF_CODE_DICTIONARY_MAX * 100:.1f}% capacity "
+              f"({final_max}/{_FF_CODE_DICTIONARY_MAX})")
 
     # ── Phase 3: Generate per-version .cpp files ──────────────────
     active_versions: list[str] = []

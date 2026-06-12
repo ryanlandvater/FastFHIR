@@ -473,9 +473,14 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
             uint32_t raw = LOAD_U32(base + slot);
             if (raw == FF_CODE_NULL) { out << "null"; break; }
             if (raw & FF_CUSTOM_STRING_FLAG) {
-                Offset str_off = parent_offset + static_cast<Offset>(raw & ~FF_CUSTOM_STRING_FLAG);
+                Offset str_off = FF_ResolveCustomStringOffset(raw, parent_offset);
                 out << '"';
                 escape_json_string(out, FF_STRING(str_off, 0, version).read_view(base));
+                out << '"';
+            } else if (raw & FF_CODEABLE_CONCEPT_FLAG) {
+                Offset cc_off = FF_ResolveCodeableConceptOffset(raw, parent_offset);
+                out << '"';
+                escape_json_string(out, FF_DECODE_CODEABLE_CONCEPT(base, cc_off, version));
                 out << '"';
             } else {
                 if (const char* resolved = FF_ResolveCode(raw, version)) {

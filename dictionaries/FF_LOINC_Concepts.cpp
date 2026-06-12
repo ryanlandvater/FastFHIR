@@ -12,7 +12,7 @@
 #include <cstddef>
 #include <utility>
 
-const std::pair<const char*, uint64_t> FF_LOINC_CONCEPTS[] = {};
+extern const std::pair<const char*, uint64_t> FF_LOINC_CONCEPTS[] = {};
 
-const size_t FF_LOINC_CONCEPTS_SIZE =
+extern const size_t FF_LOINC_CONCEPTS_SIZE =
     sizeof(FF_LOINC_CONCEPTS) / sizeof(FF_LOINC_CONCEPTS[0]);

@@ -20,11 +20,11 @@
 
 // Placeholder — no entries yet.
 // Format: {"ucum_expression", sequential_id}
-const std::pair<const char*, uint64_t> FF_UCUM_CONCEPTS[] = {
+extern const std::pair<const char*, uint64_t> FF_UCUM_CONCEPTS[] = {
     // {"m",   1},
     // {"g",   2},
     // {"s",   3},
 };
 
-const size_t FF_UCUM_CONCEPTS_SIZE =
+extern const size_t FF_UCUM_CONCEPTS_SIZE =
     sizeof(FF_UCUM_CONCEPTS) / sizeof(FF_UCUM_CONCEPTS[0]);

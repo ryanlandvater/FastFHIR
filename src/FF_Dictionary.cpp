@@ -7,8 +7,8 @@
  *
  * @brief Code dictionary resolve/lookup — shared by FF_Parser and FF_Builder.
  *
- * The actual code→label tables live in generated_src/FF_R4_Dictionary.cpp
- * and generated_src/FF_R5_Dictionary.cpp (auto-generated, permanent values).
+ * The actual code→label tables live in dictionaries/FF_R4_Dictionary.cpp
+ * and dictionaries/FF_R5_Dictionary.cpp (auto-generated, permanent values).
  * This file implements the version-dispatched resolve and lookup on top of
  * those tables.
  */

@@ -266,6 +266,18 @@ def _array_entries_are_offsets_expr(f: dict) -> str:
     return "true"  # Block-typed children are arena offsets
 
 
+def _annotate_external_systems(master_blocks: dict, external_system_map: dict | None) -> None:
+    """Annotate code fields with their external code system (UCUM, etc.)."""
+    if not external_system_map:
+        return
+    for path, blk in master_blocks.items():
+        for f in blk.get("layout", []):
+            if f.get("fhir_type") == "code":
+                fhir_path = path + "." + f.get("orig_name", "")
+                if fhir_path in external_system_map:
+                    f["external_system"] = external_system_map[fhir_path]
+
+
 def _annotate_code_enums(master_blocks: dict, code_enum_map: dict | None) -> None:
     """Annotate code fields with their corresponding ValueSet enum bindings."""
     if not code_enum_map:

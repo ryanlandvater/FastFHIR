@@ -45,6 +45,7 @@ enum RECOVERY_TAG : uint16_t {
     RECOVER_FF_MODULE_REGISTRY            = 0x0007, // WASM extension module registry
     RECOVER_FF_OPAQUE_JSON                = 0x0008, // Path B passive raw-JSON extension blob
     RECOVER_FF_WASM_PAYLOAD               = 0x0009, // Path A WASM-encoded extension payload
+    RECOVER_FF_CODEABLE_CONCEPT           = 0x000A, // External codeable concept (UCUM, SNOMED CT, ...)
 
     // --- Inline Scalars (0x0100 Block) ---
     RECOVER_FF_SCALAR_BLOCK               = 0x0100,

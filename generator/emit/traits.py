@@ -5,21 +5,18 @@ RESOURCETYPE enum, per-resource TypeTraits, and the recovery-to-type lookup.
 """
 
 from generator.emit.header import auto_header
+from generator.utilities import enclose_namespace
 
 
 def generate_resource_traits_header(resources):
-    hpp = (
-        f"{auto_header}"
-        "#pragma once\n"
-        '#include "../include/FF_Primitives.hpp"\n'
-        "#include <string_view>\n\n"
-        "namespace FastFHIR {\n"
-        "enum class RESOURCETYPE : uint16_t {\n"
-        "    UNKNOWN = 0,\n"
-    )
+    # Build the namespace body first, then wrap once with enclose_namespace.
+    # No manual open/close tracking.
+    body = ""
+    body += "enum class RESOURCETYPE : uint16_t {\n"
+    body += "    UNKNOWN = 0,\n"
     for res in resources:
-        hpp += f"    {res.upper()},\n"
-    hpp += (
+        body += f"    {res.upper()},\n"
+    body += (
         "};\n"
         "using ResourceType = RESOURCETYPE;\n\n"
         "template <RESOURCETYPE T> struct ResourceTypeTraits;\n"
@@ -29,22 +26,29 @@ def generate_resource_traits_header(resources):
         "};\n"
     )
     for res in resources:
-        hpp += (
+        body += (
             f"template <> struct ResourceTypeTraits<RESOURCETYPE::{res.upper()}> {{\n"
             f"    static constexpr RECOVERY_TAG recovery = RECOVER_FF_{res.upper()};\n"
             f"    static constexpr std::string_view name = \"{res}\";\n"
             "};\n"
         )
-    hpp += (
+    body += (
         "\ninline constexpr RESOURCETYPE resource_type_from_recovery(RECOVERY_TAG recovery) {\n"
         "    switch (recovery) {\n"
     )
     for res in resources:
-        hpp += f"        case RECOVER_FF_{res.upper()}: return RESOURCETYPE::{res.upper()};\n"
-    hpp += (
+        body += f"        case RECOVER_FF_{res.upper()}: return RESOURCETYPE::{res.upper()};\n"
+    body += (
         "        default: return RESOURCETYPE::UNKNOWN;\n"
         "    }\n"
         "}\n"
-        "\n} // namespace FastFHIR\n"
+    )
+
+    hpp = (
+        f"{auto_header}"
+        "#pragma once\n"
+        '#include "../include/FF_Primitives.hpp"\n'
+        "#include <string_view>\n\n"
+        + enclose_namespace("FastFHIR", body)
     )
     return hpp

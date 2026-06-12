@@ -9,6 +9,7 @@ import json
 import os
 
 from generator.emit.header import auto_header, write_if_changed
+from generator.utilities import enclose_namespace
 
 # Category 2: HL7-known-informational-only extensions.
 # STRICT FILTER: Only extensions GUARANTEED to carry zero semantic weight and
@@ -96,18 +97,19 @@ def generate_known_extensions(
     hpp += "#include <string_view>\n"
     hpp += "#include <algorithm>\n"
     hpp += "#include <cstddef>\n\n"
-    hpp += "namespace FastFHIR {\n\n"
 
-    hpp += "// --- Category 1: profile-native extensions ---\n"
-    hpp += "// Already stored as native vtable fields; always suppressed.\n"
-    hpp += _url_array(native_sorted, "FF_NATIVE_EXTENSION_URLS", "FF_NATIVE_EXTENSION_URL_COUNT")
-    hpp += "\n\n"
+    # Build namespace body first, then wrap with enclose_namespace.
+    ns_body = ""
+    ns_body += "// --- Category 1: profile-native extensions ---\n"
+    ns_body += "// Already stored as native vtable fields; always suppressed.\n"
+    ns_body += _url_array(native_sorted, "FF_NATIVE_EXTENSION_URLS", "FF_NATIVE_EXTENSION_URL_COUNT")
+    ns_body += "\n\n"
 
-    hpp += "// --- Category 1+2+spec: all known/safe extensions ---\n"
-    hpp += _url_array(all_known_sorted, "FF_ALL_KNOWN_EXTENSION_URLS", "FF_ALL_KNOWN_EXTENSION_URL_COUNT")
-    hpp += "\n\n"
+    ns_body += "// --- Category 1+2+spec: all known/safe extensions ---\n"
+    ns_body += _url_array(all_known_sorted, "FF_ALL_KNOWN_EXTENSION_URLS", "FF_ALL_KNOWN_EXTENSION_URL_COUNT")
+    ns_body += "\n\n"
 
-    hpp += (
+    ns_body += (
         "/// Returns true when @p url is a profile-native extension that is\n"
         "/// already stored as a native vtable field (should always be suppressed).\n"
         "inline bool FF_IsNativeExtension(std::string_view url) noexcept {\n"
@@ -120,7 +122,7 @@ def generate_known_extensions(
         "}\n\n"
     )
 
-    hpp += (
+    ns_body += (
         "/// Returns true when @p url is in the all-known set (category 1+2+spec).\n"
         "inline bool FF_IsKnownExtension(std::string_view url) noexcept {\n"
         "    if (url.empty() || FF_ALL_KNOWN_EXTENSION_URL_COUNT == 0) return false;\n"
@@ -132,7 +134,7 @@ def generate_known_extensions(
         "}\n\n"
     )
 
-    hpp += "} // namespace FastFHIR\n"
+    hpp += enclose_namespace("FastFHIR", ns_body)
 
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, "FF_KnownExtensions.hpp")

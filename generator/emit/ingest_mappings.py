@@ -19,6 +19,14 @@ from generator.model.structure import (
 # Per-field JSON-ingest overrides (relocated from ffc.py line 144).
 INGEST_FIELD_OVERRIDES: dict[tuple[str, str], str] = {}
 
+# FHIR primitive types stored as strings (no _from_json function, no vtable).
+# These parse as string_view with RECOVER_FF_STRING, exactly like "string".
+_STRING_LIKE_TYPES: frozenset = frozenset({
+    "string", "code", "id", "markdown", "uri", "url", "canonical",
+    "oid", "base64Binary", "date", "dateTime", "instant", "time",
+    "uuid",
+})
+
 
 def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src"):
     hpp = (
@@ -154,20 +162,50 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                             f"                    }}\n"
                             f"                }}\n"
                         )
-                    else:
-                        child_fn = f"{c_type}_from_json"
-                        child_data = f"FF_{c_type.upper()}Data"
+                    elif c_type in _STRING_LIKE_TYPES:
+                        # String-like primitives (url, dateTime, base64Binary,
+                        # canonical, etc.) have no _from_json function and no
+                        # vtable — they're stored as string_view with the
+                        # RECOVER_FF_STRING tag, exactly like "string".
                         cpp += (
-                            f"                auto sub = field.value().get_object();\n"
-                            f"                if (!sub.error()) {{\n"
-                            f"                    auto sub_val = {child_fn}(sub.value_unsafe(), logger, concurrent_queue, builder);\n"
-                            f"                    data.{cpp_name}.tag = RECOVER_FF_{c_type.upper()};\n"
-                            f"                    if (builder) data.{cpp_name}.value = builder->claim(builder->store(data.{cpp_name}));\n"
-                            f"                    else if (concurrent_queue) {{ /* stub */ }}\n"
-                            f"                }} else {{\n"
-                            f"                    {err_log}\n"
+                            f"                std::string_view s_val;\n"
+                            f"                if (field.value().get_string().get(s_val) == simdjson::SUCCESS) {{\n"
+                            f"                    if (!s_val.empty()) {{\n"
+                            f"                        data.{cpp_name}.tag = RECOVER_FF_STRING;\n"
+                            f"                        data.{cpp_name}.value = s_val;\n"
+                            f"                    }}\n"
                             f"                }}\n"
                         )
+                    else:
+                        # Complex type (HumanName, Address, CodeableConcept, etc.)
+                        # Only emit _from_json call when the block is actually
+                        # in master_blocks (some types like TriggerDefinition,
+                        # UsageContext are not in the spec bundles).
+                        target_block = c_type
+                        # FHIR constrains Age/Distance/Duration/Count → Quantity
+                        if target_block in ("Age", "Distance", "Duration", "Count") and "Quantity" in master_blocks:
+                            target_block = "Quantity"
+                        if target_block in master_blocks:
+                            child_fn = f"{target_block}_from_json"
+                            tag_name = f"RECOVER_FF_{target_block.upper()}"
+                            cpp += (
+                                f"                simdjson::ondemand::object obj_val;\n"
+                                f"                if (field.value().get_object().get(obj_val) == simdjson::SUCCESS) {{\n"
+                                f"                    if (builder) {{\n"
+                                f"                        auto child_data = {child_fn}(obj_val, logger, concurrent_queue, builder);\n"
+                                f"                        data.{cpp_name}.value = builder->append(child_data);\n"
+                                f"                        data.{cpp_name}.tag = {tag_name};\n"
+                                f"                    }} else if (logger) {{\n"
+                                f"                        logger->log(\"[Warning] FastFHIR Ingestion: Cannot stage choice block {c_type} without a Builder.\");\n"
+                                f"                    }}\n"
+                                f"                }} else {{\n"
+                                f"                    {err_log}\n"
+                                f"                }}\n"
+                            )
+                        else:
+                            cpp += (
+                                f"                if (logger) logger->log(\"[Warning] FastFHIR Ingestion: Unsupported choice type {c_type}\");\n"
+                            )
                     cpp += f"            }}\n"
                     is_first_choice = False
             elif f["is_array"]:
@@ -182,10 +220,16 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         f"                else {{ {err_log_line} }}\n"
                     )
                 elif fhir_type == "code":
+                    code_enum = f.get("code_enum")
                     cpp += (
                         f"                std::string_view c;\n"
                         f"                if (elem.get_string().get(c) == simdjson::SUCCESS) "
-                        f"data.{cpp_name}.emplace_back(std::string(c));\n"
+                    )
+                    if code_enum:
+                        cpp += f"data.{cpp_name}.emplace_back({code_enum['parse']}(std::string(c)));\n"
+                    else:
+                        cpp += f"data.{cpp_name}.emplace_back(std::string(c));\n"
+                    cpp += (
                         f"                else {{ {err_log_line} }}\n"
                     )
                 elif fhir_type in _tm.SCALAR_PRIMITIVE_TYPES:
@@ -210,8 +254,38 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                             f"data.{cpp_name}.push_back(static_cast<uint32_t>(v));\n"
                             f"                else {{ {err_log_line} }}\n"
                         )
+                elif fhir_type in _STRING_LIKE_TYPES:
+                    # Array of string-like primitives (e.g. dateTime[])
+                    cpp += (
+                        f"                std::string_view sv;\n"
+                        f"                if (elem.get_string().get(sv) == simdjson::SUCCESS) "
+                        f"data.{cpp_name}.emplace_back(sv);\n"
+                        f"                else {{ {err_log_line} }}\n"
+                    )
+                elif fhir_type == "Resource":
+                    # Contained resources — dispatch by resourceType
+                    cpp += (
+                        f"                auto res_obj = elem.get_object();\n"
+                        f"                if (!res_obj.error()) {{\n"
+                        f"                    if (builder) {{\n"
+                        f"                        std::string_view child_type;\n"
+                        f"                        if (res_obj[\"resourceType\"].get_string().get(child_type) == simdjson::SUCCESS) {{\n"
+                        f"                            FastFHIR::Reflective::ObjectHandle child = dispatch_resource(child_type, res_obj.value_unsafe(), *builder, logger);\n"
+                        f"                            if (child.offset() != FF_NULL_OFFSET) {{\n"
+                        f"                                data.{cpp_name}.emplace_back(child.offset(), child.recovery());\n"
+                        f"                            }}\n"
+                        f"                        }}\n"
+                        f"                    }} else if (logger) {{\n"
+                        f"                        logger->log(\"[Warning] FastFHIR Ingestion: Contained resource requires Builder context.\");\n"
+                        f"                    }}\n"
+                        f"                }} else {{ {err_log_line} }}\n"
+                    )
                 else:
-                    child_fn_name = f"{fhir_type}_from_json"
+                    # BackboneElement/Element use resolved_path for unique name
+                    if fhir_type in ("BackboneElement", "Element"):
+                        child_fn_name = f.get("resolved_path", f"{path}.{f['orig_name']}").replace(".", "_") + "_from_json"
+                    else:
+                        child_fn_name = f"{fhir_type}_from_json"
                     cpp += (
                         f"                auto sub_obj = elem.get_object();\n"
                         f"                if (!sub_obj.error()) {{\n"
@@ -229,11 +303,19 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                     f"            else {{ {err_log} }}\n"
                 )
             elif f["fhir_type"] == "code":
+                code_enum = f.get("code_enum")
                 cpp += (
                     f"            std::string_view c;\n"
-                    f"            if (field.value().get_string().get(c) == simdjson::SUCCESS) "
-                    f"data.{cpp_name} = std::string(c);\n"
-                    f"            else {{ {err_log} }}\n"
+                    f"            if (field.value().get_string().get(c) == simdjson::SUCCESS) {{\n"
+                )
+                if code_enum:
+                    cpp += f"                data.{cpp_name} = {code_enum['parse']}(std::string(c));\n"
+                else:
+                    cpp += f"                data.{cpp_name} = std::string(c);\n"
+                cpp += (
+                    f"            }} else {{\n"
+                    f"                {err_log}\n"
+                    f"            }}\n"
                 )
             elif f["fhir_type"] in _tm.SCALAR_PRIMITIVE_TYPES:
                 if f["fhir_type"] == "boolean":
@@ -264,8 +346,32 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                     f"                data.{cpp_name} = ResourceReference();\n"
                     f"            }}\n"
                 )
-            else:
-                child_fn = f"{f['fhir_type']}_from_json"
+            elif f["fhir_type"] in _STRING_LIKE_TYPES:
+                # String-like primitives (url, dateTime, base64Binary,
+                # canonical, date, etc.) — parse as string_view.
+                # These have no _from_json function.
+                if f.get("data_type") in ("std::string_view", "std::string"):
+                    cpp += (
+                        f"            std::string_view sv;\n"
+                        f"            if (field.value().get_string().get(sv) == simdjson::SUCCESS) "
+                        f"data.{cpp_name} = sv;\n"
+                        f"            else {{ {err_log} }}\n"
+                    )
+                else:
+                    # url_idx (uint32_t) or other non-string storage — needs
+                    # Builder context for the conversion; warn and skip.
+                    cpp += (
+                        f"            if (logger) logger->log(\"[Warning] FastFHIR Ingestion: "
+                        f"Field {f['orig_name']} ({f['fhir_type']}) requires Builder context; skipping.\");\n"
+                    )
+            elif f["cpp_type"] == "Offset":
+                # Complex block type — has a generated _from_json function.
+                # BackboneElement/Element use resolved_path to get a unique
+                # function name (e.g. Availability_availabletime_from_json).
+                if f["fhir_type"] in ("BackboneElement", "Element"):
+                    child_fn = f.get("resolved_path", f"{path}.{f['orig_name']}").replace(".", "_") + "_from_json"
+                else:
+                    child_fn = f"{f['fhir_type']}_from_json"
                 cpp += (
                     f"            auto sub = field.value().get_object();\n"
                     f"            if (!sub.error()) {{\n"
@@ -274,12 +380,98 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                     f");\n"
                     f"            }} else {{ {err_log} }}\n"
                 )
+            else:
+                cpp += (
+                    f"            if (logger) logger->log(\"[Warning] FastFHIR Ingestion: Unsupported field type {f['fhir_type']} for {path}.{f['orig_name']}\");\n"
+                )
             cpp += "        }\n"
 
         cpp += (
             "    }\n"
             "    return data;\n"
             "}\n\n"
+        )
+
+    # ── Auto-generated dispatch_resource for contained / inline resources ──
+    hpp += (
+        "\n    FastFHIR::Reflective::ObjectHandle dispatch_resource("
+        "std::string_view resource_type, simdjson::ondemand::object obj, "
+        "FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+    )
+
+    dispatch_is_first = True
+    cpp += "\nFastFHIR::Reflective::ObjectHandle dispatch_resource("
+    cpp += "std::string_view resource_type, simdjson::ondemand::object obj, "
+    cpp += "FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {\n"
+    for res in resources:
+        prefix = "if" if dispatch_is_first else "else if"
+        cpp += f"    {prefix} (resource_type == \"{res}\") "
+        cpp += f"return builder.append_obj({res}_from_json(obj, logger, nullptr, &builder));\n"
+        dispatch_is_first = False
+    cpp += (
+        "    if (logger) logger->log(\"[Warning] FastFHIR Ingestion: "
+        "Unknown root resource type encountered.\");\n"
+        "    return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
+        "}\n\n"
+    )
+
+    # ── dispatch_block — routes RECOVERY_TAG to the correct _from_json ──
+    hpp += (
+        "\n    FastFHIR::Reflective::ObjectHandle dispatch_block("
+        "RECOVERY_TAG expected_tag, simdjson::ondemand::value& json_val, "
+        "FastFHIR::Builder& builder, "
+        "FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+    )
+    cpp += (
+        "\nFastFHIR::Reflective::ObjectHandle dispatch_block("
+        "RECOVERY_TAG expected_tag, simdjson::ondemand::value& json_val, "
+        "FastFHIR::Builder& builder, "
+        "FastFHIR::ConcurrentLogger* logger) {\n"
+        "    simdjson::ondemand::object obj;\n"
+        "    if (json_val.get_object().get(obj) != simdjson::SUCCESS)\n"
+        "        return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
+        "    switch (GetTypeFromTag(expected_tag)) {\n"
+    )
+    for path in sorted(master_blocks, key=lambda p: (p.count("."), p)):
+        tag_name = "RECOVER_FF_" + path.replace(".", "_").upper()
+        fn_name = path.replace(".", "_") + "_from_json"
+        cpp += f"        case {tag_name}: return builder.append_obj({fn_name}(obj, logger, nullptr, &builder));\n"
+    cpp += (
+        "        default: return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
+        "    }\n"
+        "}\n\n"
+    )
+
+    # ── Bundle patch function (used by concurrent ingest workers) ──
+    bundle_entry_path = "Bundle.entry"
+    if bundle_entry_path in master_blocks:
+        patch_fn = f"patch_{bundle_entry_path.replace('.', '_')}_from_json"
+        hpp += (
+            f"void {patch_fn}(simdjson::ondemand::object& obj, "
+            f"FastFHIR::Reflective::MutableEntry& wrapper, "
+            f"FastFHIR::Builder& builder, "
+            f"FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+        )
+        cpp += (
+            f"void {patch_fn}(simdjson::ondemand::object& obj, "
+            f"FastFHIR::Reflective::MutableEntry& wrapper, "
+            f"FastFHIR::Builder& builder, "
+            f"FastFHIR::ConcurrentLogger* logger) {{\n"
+            f"    for (auto field : obj) {{\n"
+            f"        std::string_view key = field.unescaped_key().value_unsafe();\n"
+            f"        if (key == \"resource\") {{\n"
+            f"            simdjson::ondemand::object res_obj;\n"
+            f"            if (field.value().get_object().get(res_obj) == simdjson::SUCCESS) {{\n"
+            f"                std::string_view child_type;\n"
+            f"                if (res_obj[\"resourceType\"].get_string().get(child_type) == simdjson::SUCCESS) {{\n"
+            f"                    FastFHIR::Reflective::ObjectHandle child = dispatch_resource(child_type, res_obj, builder, logger);\n"
+            f"                    if (child.offset() != FF_NULL_OFFSET)\n"
+            f"                        wrapper[FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE] = child;\n"
+            f"                }}\n"
+            f"            }}\n"
+            f"        }}\n"
+            f"    }}\n"
+            f"}}\n\n"
         )
 
     hpp += "} // namespace FastFHIR::Ingest\n"

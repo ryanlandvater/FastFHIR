@@ -106,3 +106,29 @@ inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_of
             return true;
     }
 }
+
+// =====================================================================
+// Sign-extended relative offset resolution
+// =====================================================================
+// FF_FIELD_CODE slots pack signed relative offsets into 31 or 30 bits
+// alongside a flag bit.  These helpers extract, sign-extend, and resolve
+// the offset to an absolute arena address from the parent block.
+
+/// Resolve a 31-bit signed offset (FF_CUSTOM_STRING_FLAG set) to absolute offset.
+/// The lower 31 bits of @p raw are sign-extended via XOR-bias: bit 30 is the
+/// sign bit, shifted to bit 31 in the int32_t result.
+inline Offset FF_ResolveCustomStringOffset(uint32_t raw,
+                                            Offset parent_off) noexcept {
+    uint32_t val = raw & 0x7FFFFFFFu;  // strip flag bit
+    int32_t rel = static_cast<int32_t>(val ^ 0x40000000u) - 0x40000000;
+    return parent_off + static_cast<Offset>(static_cast<int64_t>(rel));
+}
+
+/// Resolve a 30-bit signed offset (FF_CODEABLE_CONCEPT_FLAG set) to absolute offset.
+/// The lower 30 bits of @p raw are sign-extended: bit 29 is the sign bit.
+inline Offset FF_ResolveCodeableConceptOffset(uint32_t raw,
+                                               Offset parent_off) noexcept {
+    uint32_t val = raw & 0x3FFFFFFFu;  // strip flag bits 31,30
+    int32_t rel = static_cast<int32_t>(val ^ 0x20000000u) - 0x20000000;
+    return parent_off + static_cast<Offset>(static_cast<int64_t>(rel));
+}

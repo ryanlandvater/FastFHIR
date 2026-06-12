@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
-
 from generator.emit.header import auto_header, write_if_changed
 from generator.model import type_map as _tm
 from generator.model import structure as _st
@@ -36,11 +34,7 @@ from generator.bindings.python_fields import (
     emit_python_ast_stubs,
     emit_py_typed_marker,
 )
-
-
-def enclose_namespace(ns: str, code: str) -> str:
-    """Wrap *code* inside ``namespace ns { ... }`` with a closing comment."""
-    return f"namespace {ns} {{\n{code}\n}} // namespace {ns}\n"
+from generator.utilities import enclose_namespace, parse_recovery_tags
 
 
 def compile_fhir_library(
@@ -49,6 +43,7 @@ def compile_fhir_library(
     input_dir: str = "fhir_specs",
     output_dir: str = "generated_src",
     code_enum_map: dict | None = None,
+    external_system_map: dict | None = None,
 ) -> None:
     code_enums = code_enum_map or {}
     os.makedirs(output_dir, exist_ok=True)
@@ -76,9 +71,8 @@ def compile_fhir_library(
         '#include "FF_CodeSystems.hpp"\n'
         "#include <vector>\n#include <string_view>\n#include <memory>\n\n"
     )
-    hpp_head += "namespace FastFHIR { template<typename T> struct TypeTraits; \n\n"
-    hpp_head += _DATA_TYPES_TRAITS
-    hpp_head += "} // namespace FastFHIR\n"
+    traits_preamble = "template<typename T> struct TypeTraits; \n\n" + _DATA_TYPES_TRAITS
+    hpp_head += enclose_namespace("FastFHIR", traits_preamble)
     hpp_head += "using namespace FastFHIR;\n\n"
     hpp_head += "// Forward Declarations\n"
     for dec in sorted(fwd_decls):
@@ -86,7 +80,7 @@ def compile_fhir_library(
     hpp_head += "\n"
 
     types_hpp = hpp_head
-    types_cpp = f'{auto_header}#include "FF_DataTypes.hpp"\n#include "FF_DataTypes_internal.hpp"\n#include "../include/FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\nnamespace FastFHIR {{\n'
+    types_cpp = f'{auto_header}#include "FF_DataTypes.hpp"\n#include "FF_DataTypes_internal.hpp"\n#include "../include/FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
     types_int_hpp = f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n\n"
     types_all = list(_tm.PRODUCTION_TYPES)
     all_blocks: dict[str, dict] = {}
@@ -121,6 +115,7 @@ def compile_fhir_library(
                         existing.setdefault("_versions", set()).add(v_name)
 
         _st._annotate_code_enums(master_type_blocks, code_enums)
+        _st._annotate_external_systems(master_type_blocks, external_system_map)
 
         # Accumulate all type blocks for a single generate_cxx_for_blocks pass
         # (matching old ffc.py, ensuring cross-type dependency ordering)
@@ -165,7 +160,7 @@ def compile_fhir_library(
         pub_hpp, int_hpp, cpp_body = generate_cxx_for_blocks(all_type_blocks, versions)
         types_hpp += pub_hpp
         types_int_hpp += int_hpp
-        types_cpp += enclose_namespace("FastFHIR", cpp_body)
+        types_cpp += cpp_body
 
     write_if_changed(os.path.join(output_dir, "FF_DataTypes.hpp"), types_hpp)
     write_if_changed(os.path.join(output_dir, "FF_DataTypes_internal.hpp"), types_int_hpp)
@@ -203,6 +198,7 @@ def compile_fhir_library(
                 all_block_paths.add(key)
 
         _st._annotate_code_enums(master_resource_blocks, code_enums)
+        _st._annotate_external_systems(master_resource_blocks, external_system_map)
         pub_hpp, int_hpp, cpp_body = generate_cxx_for_blocks(master_resource_blocks, versions)
 
         res_hpp = f"{auto_header}#pragma once\n"
@@ -217,7 +213,7 @@ def compile_fhir_library(
         write_if_changed(os.path.join(output_dir, f"FF_{root_resource}_internal.hpp"), res_int_hpp)
 
         res_cpp = f'{auto_header}#include "FF_{root_resource}_internal.hpp"\n#include "../include/FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
-        res_cpp += enclose_namespace("FastFHIR", cpp_body)
+        res_cpp += cpp_body
         write_if_changed(os.path.join(output_dir, f"FF_{root_resource}.cpp"), res_cpp)
         generated_resources.append(root_resource)
         reflected_block_names.update(
@@ -245,7 +241,7 @@ def compile_fhir_library(
                     fld.get("fhir_type", "string"),
                 )
 
-        block_key_defs.append((root_resource, []))
+        block_key_defs.append((root_resource, all_blocks.get(root_resource, {}).get("layout", [])))
         for path in sorted(all_blocks, key=lambda x: (x.count("."), x)):
             if path not in [b[0] for b in block_key_defs]:
                 block_key_defs.append((path, all_blocks[path]["layout"]))
@@ -258,19 +254,25 @@ def compile_fhir_library(
     field_keys_hpp = (
         f"{auto_header}#pragma once\n"
         f'#include "../include/FF_Primitives.hpp"\n\n'
-        f"namespace FastFHIR::FieldKeys {{\n"
-        f"    extern const FF_FieldKey* const Registry[];\n"
-        f"    extern const size_t RegistrySize;\n\n"
     )
+
+    # ── FastFHIR::FieldKeys ──────────────────────────────────────
+    # Accumulate body first, then wrap once — no manual open/close tracking.
+    fieldkeys_body = ""
+    fieldkeys_body += "    extern const FF_FieldKey* const Registry[];\n"
+    fieldkeys_body += "    extern const size_t RegistrySize;\n\n"
     for field_name in sorted(all_field_names):
         # Skip c_name variants (e.g. "FF_ACTIVE") — only emit for original names
         if field_name.startswith("FF_"):
             continue
         const_name = _st._field_key_constant_name(field_name)
-        field_keys_hpp += f"    inline constexpr FF_FieldKey {const_name}{{\"{field_name}\"}};\n"
-    
-    field_keys_hpp += "\n} // namespace FastFHIR::FieldKeys\n\n"
-    field_keys_hpp += "namespace FastFHIR::Fields {\n"
+        fieldkeys_body += f"    inline constexpr FF_FieldKey {const_name}{{\"{field_name}\"}};\n"
+    field_keys_hpp += enclose_namespace("FastFHIR::FieldKeys", fieldkeys_body) + "\n"
+
+    # ── FastFHIR::Fields ─────────────────────────────────────────
+    # Each block gets its own sub-namespace (e.g. PATIENT, OBSERVATION)
+    # wrapped inside the outer FastFHIR::Fields namespace.
+    fields_inner = ""
     
     registry_entries: list[str] = []
     seen_blocks: set[str] = set()
@@ -283,7 +285,8 @@ def compile_fhir_library(
         ns_name = _st._block_key_namespace(path)
         block_struct_name = "FF_" + path.replace(".", "_").upper()
         
-        field_keys_hpp += f"namespace {ns_name} {{\n"
+        # Accumulate this block's field keys, then wrap in its sub-namespace
+        block_body = ""
         for f in layout:
             short_name = _st._field_key_short_name(f["orig_name"])
             child_rec = _st._child_recovery_key_expr(f, block_struct_name)
@@ -291,26 +294,27 @@ def compile_fhir_library(
             owner_rec = f"ToArrayTag(RECOVER_{block_struct_name})" if f.get("is_array") else f"RECOVER_{block_struct_name}"
             field_kind = _st._field_kind_expr(f)
             
-            field_keys_hpp += (
+            block_body += (
                 f"    inline constexpr FF_FieldKey {short_name}"
                 f"{{{owner_rec}, {field_kind}, {f['offset']}, "
                 f"{child_rec}, {arr_offsets}, \"{f['cpp_name']}\"}};\n"
             )
             registry_entries.append(f"        &FastFHIR::Fields::{ns_name}::{short_name}")
         
-        field_keys_hpp += f"}} // namespace {ns_name}\n\n"
+        fields_inner += enclose_namespace(ns_name, block_body) + "\n"
     
-    field_keys_hpp += "} // namespace FastFHIR::Fields\n"
+    field_keys_hpp += enclose_namespace("FastFHIR::Fields", fields_inner) + "\n"
     
-    field_keys_cpp = (
-        f"{auto_header}\n"
-        f'#include "FF_FieldKeys.hpp"\n\n'
-        f"namespace FastFHIR::FieldKeys {{\n"
+    cpp_body_fieldkeys = (
         f"    const FF_FieldKey* const Registry[] = {{\n"
         + ",\n".join(registry_entries)
         + f"\n    }};\n\n"
         f"    const size_t RegistrySize = {len(registry_entries)};\n"
-        f"}} // namespace FastFHIR::FieldKeys\n"
+    )
+    field_keys_cpp = (
+        f"{auto_header}\n"
+        f'#include "FF_FieldKeys.hpp"\n\n'
+        + enclose_namespace("FastFHIR::FieldKeys", cpp_body_fieldkeys)
     )
     
     write_if_changed(os.path.join(output_dir, "FF_FieldKeys.hpp"), field_keys_hpp)
@@ -341,19 +345,20 @@ def compile_fhir_library(
         '#include "FF_FieldKeys.hpp"\n'
         '#include "FF_ResourceTypes.hpp"\n'
         '#include "FF_Reflection.hpp"\n'
-        'namespace FastFHIR {\n'
     )
     for res in generated_resources:
         all_types_hpp += f'#include "FF_{res}_internal.hpp"\n'
-    # No namespace wrapper — FF_AllTypes.hpp is an aggregator that includes
-    # internal headers. Those headers rely on already being inside
-    # namespace FastFHIR (from FF_DataTypes.hpp or the .cpp file's context).
-    # A closing } here would be unbalanced and break inclusion from namespace
-    # contexts like namespace FastFHIR::Ingest (FF_IngestMappings).
+    # NOTE: No namespace wrapper — FF_AllTypes.hpp is a flat aggregator.
+    # The internal headers define DATA_BLOCK subclasses at global scope
+    # (using `using namespace FastFHIR;` from the public header chain).
+    # Callers (like FF_IngestMappings) include this at global scope and
+    # open their own namespace (FastFHIR::Ingest) afterwards. A namespace
+    # wrapper here would double-nest and break std:: resolution in headers
+    # included afterward.
     write_if_changed(os.path.join(output_dir, "FF_AllTypes.hpp"), all_types_hpp)
 
     # --- Validate RECOVERY_TAG references against permanent header ---
-    _parse_recovery_tags("include/FF_Recovery.hpp")
+    parse_recovery_tags("include/FF_Recovery.hpp")
 
     # --- Ingest mappings ---
     from generator.emit.ingest_mappings import generate_ingest_mappings
@@ -413,14 +418,4 @@ template<> struct TypeTraits<std::vector<double>> {
 
 """
 
-
-# ─── Shared helper (also lives in emit/dictionary.py) ─────────────────
-def _parse_recovery_tags(recovery_path: str = "include/FF_Recovery.hpp") -> dict[str, int]:
-    tags: dict[str, int] = {}
-    with open(recovery_path, "r") as f:
-        for line in f:
-            m = re.match(r"\s+(\w+)\s*=\s*(0x[0-9A-Fa-f]+)", line)
-            if m:
-                tags[m.group(1)] = int(m.group(2), 16)
-    return tags
 

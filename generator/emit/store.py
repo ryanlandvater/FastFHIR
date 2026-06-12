@@ -247,9 +247,13 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
         elif f['fhir_type'] == 'code':
             code_enum = f.get('code_enum')
             val_str = f"std::string({code_enum['serialize']}({data_name}.{f['cpp_name']}))" if code_enum else f"std::string({data_name}.{f['cpp_name']})"
+            ext_sys = f.get('external_system', '')
             cpp += f"    {{\n"
             cpp += f"        std::string __code_str = {val_str};\n"
-            cpp += f"        STORE_U32({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_CODE(__base, hdr_off, child_off, __code_str, __version));\n"
+            if ext_sys:
+                cpp += f"        STORE_U32({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_CODE(__base, hdr_off, child_off, __code_str, __version, {ext_sys}));\n"
+            else:
+                cpp += f"        STORE_U32({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_CODE(__base, hdr_off, child_off, __code_str, __version));\n"
             cpp += f"    }}\n"
         else:
             cpp += f"    {get_store_macro(f['macro'])}({ptr_name} + {block_struct_name}::{f['name']}, {data_name}.{f['cpp_name']});\n"

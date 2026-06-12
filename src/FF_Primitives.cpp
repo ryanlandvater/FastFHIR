@@ -328,23 +328,38 @@ Size STORE_FF_STRING(BYTE* const __base, Offset start_offset, std::string_view s
     return FF_STRING::HEADER_SIZE + length;
 }
 
-uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_off, const std::string& code_str, uint32_t version) {
+uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_off, const std::string& code_str, uint32_t version, FF_ExternalCodeSystem system) {
     if (code_str.empty()) return FF_CODE_NULL;
+
+    // ── External codeable concept path ──────────────────────────
+    if (system != FF_ExternalCodeSystem::NULL_SYSTEM) {
+        return ENCODE_FF_CODEABLE_CONCEPT(__base, block_offset, child_off, code_str, system, version);
+    }
 
     uint32_t dict_code = FF_GetDictionaryCode(code_str, version);
     if (dict_code != FF_CODE_NULL) {
         return dict_code; 
     }
 
-    // Custom String Fallback
+    // Custom String Fallback.
     Offset string_offset = child_off;
     child_off += STORE_FF_STRING(__base, string_offset, code_str);
-    Offset relative_offset = string_offset - block_offset;
-    if (relative_offset > 0x7FFFFFFF) {
-        throw std::runtime_error("FastFHIR: Custom string relative offset exceeds 2GB.");
+
+    // Compute 31-bit signed relative offset (block_offset → string_offset).
+    // Use int64_t to avoid unsigned wraparound for upstream allocations.
+    int64_t relative_offset = static_cast<int64_t>(string_offset) - static_cast<int64_t>(block_offset);
+    if (relative_offset < -0x40000000LL || relative_offset > 0x3FFFFFFFLL) {
+        throw std::runtime_error("FastFHIR: Custom string relative offset exceeds ±1 GB.");
     }
-    return static_cast<uint32_t>(relative_offset) | FF_CUSTOM_STRING_FLAG;
+    // Mask to 31 bits, set MSB flag.
+    uint32_t packed = (static_cast<uint32_t>(static_cast<int32_t>(relative_offset)) & 0x7FFFFFFFu) | FF_CUSTOM_STRING_FLAG;
+    return packed;
 }
+
+// =====================================================================
+// FF_CODEABLE_CONCEPT — see src/FF_CodeableConcept.cpp
+// All encode/decode logic moved to its own translation unit.
+// =====================================================================
 
 // =====================================================================
 // FF_URL_DIRECTORY — stream-level URL intern table (chained-segment model)

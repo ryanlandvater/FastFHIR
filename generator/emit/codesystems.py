@@ -19,6 +19,7 @@ import os
 import re
 
 from generator.emit.header import auto_header, write_if_changed
+from generator.utilities import enclose_namespace
 
 EXCLUDED_VALUESET_FRAGMENTS: set[str] = {
     "all-languages",
@@ -116,7 +117,7 @@ def generate_code_systems(
     versions: list[str],
     input_dir: str = "fhir_specs",
     output_dir: str = "generated_src",
-) -> dict[str, dict[str, str]]:
+) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
     """Scan StructureDefinitions for code fields with required bindings,
     generate FF_CodeSystems.hpp, and return a mapping for ffc.py.
 
@@ -150,6 +151,7 @@ def generate_code_systems(
     # ------------------------------------------------------------------
     vs_registry: dict[str, dict] = {}
     path_to_vs: dict[str, str] = {}
+    external_system_map: dict[str, str] = {}  # path → "FF_ExternalCodeSystem::*"
 
     def _scan_elements(elements, root_name):
         for el in elements:
@@ -172,6 +174,9 @@ def generate_code_systems(
                 path_to_vs[path] = vs_url
                 if vs_url not in vs_registry:
                     vs_registry[vs_url] = {}
+                # Detect UCUM-bound fields for external codeable concept path.
+                if "ucum" in vs_url.lower():
+                    external_system_map[path] = "FF_ExternalCodeSystem::UCUM"
 
     for v_name, bundle in type_bundles.items():
         for entry in bundle.get("entry", []):
@@ -229,12 +234,13 @@ def generate_code_systems(
     # ------------------------------------------------------------------
     # Emit FF_CodeSystems.hpp
     # ------------------------------------------------------------------
+    # Build namespace body first, then wrap with enclose_namespace.
     hpp = auto_header
     hpp += "#pragma once\n"
     hpp += "#include <string_view>\n"
     hpp += "#include <cstdint>\n\n"
-    hpp += "namespace FastFHIR {\n\n"
 
+    ns_body = ""
     emitted: set[str] = set()
     for vs_url, (name, codes) in sorted(enum_defs.items(), key=lambda x: x[0]):
         if not codes:
@@ -248,34 +254,34 @@ def generate_code_systems(
         parse_name = f"parse_{clean}"
         serialize_name = f"serialize_{clean}"
 
-        hpp += f"// --- {name or vs_url} ---\n"
-        hpp += f"enum class {enum_name} : uint8_t {{\n"
+        ns_body += f"// --- {name or vs_url} ---\n"
+        ns_body += f"enum class {enum_name} : uint8_t {{\n"
         for code in sorted(codes):
             ident = _code_to_identifier(code)
-            hpp += f"    {ident},\n"
-        hpp += "};\n\n"
+            ns_body += f"    {ident},\n"
+        ns_body += "};\n\n"
 
         # Serialize function.
-        hpp += f"inline const char* {serialize_name}({enum_name} e) {{\n"
-        hpp += f"    switch (e) {{\n"
+        ns_body += f"inline const char* {serialize_name}({enum_name} e) {{\n"
+        ns_body += f"    switch (e) {{\n"
         for code in sorted(codes):
             ident = _code_to_identifier(code)
             escaped = code.replace("\\", "\\\\").replace('"', '\\"')
-            hpp += f'        case {enum_name}::{ident}: return "{escaped}";\n'
-        hpp += '        default: return "";\n'
-        hpp += "    }\n"
-        hpp += "}\n\n"
+            ns_body += f'        case {enum_name}::{ident}: return "{escaped}";\n'
+        ns_body += '        default: return "";\n'
+        ns_body += "    }\n"
+        ns_body += "}\n\n"
 
         # Parse function.
-        hpp += f"inline {enum_name} {parse_name}(std::string_view sv) {{\n"
+        ns_body += f"inline {enum_name} {parse_name}(std::string_view sv) {{\n"
         for code in sorted(codes):
             ident = _code_to_identifier(code)
             escaped = code.replace("\\", "\\\\").replace('"', '\\"')
-            hpp += f'    if (sv == "{escaped}") return {enum_name}::{ident};\n'
-        hpp += f'    return static_cast<{enum_name}>(0);\n'
-        hpp += "}\n\n"
+            ns_body += f'    if (sv == "{escaped}") return {enum_name}::{ident};\n'
+        ns_body += f'    return static_cast<{enum_name}>(0);\n'
+        ns_body += "}\n\n"
 
-    hpp += "} // namespace FastFHIR\n"
+    hpp += enclose_namespace("FastFHIR", ns_body)
     write_if_changed(os.path.join(output_dir, "FF_CodeSystems.hpp"), hpp)
     print(f"-- Emitted {output_dir}/FF_CodeSystems.hpp ({len(emitted)} enums)")
-    return code_enum_map
+    return code_enum_map, external_system_map

@@ -24,6 +24,7 @@
 #include "FF_Ops.hpp"
 #include "FF_Primitives.hpp"
 #include "FF_ResourceTypes.hpp"
+#include "FF_Utilities.hpp"
 
 namespace FastFHIR {
 class Builder;
@@ -419,9 +420,15 @@ public:
                 }
 
                 if (raw_code & FF_CUSTOM_STRING_FLAG) {
-                    Offset relative_off = (raw_code & ~FF_CUSTOM_STRING_FLAG);
-                    return FF_STRING(m_node_offset + relative_off, m_size, m_version, m_engine_version).read_view(m_base);
+                    Offset abs_off = FF_ResolveCustomStringOffset(raw_code, m_node_offset);
+                    return FF_STRING(abs_off, m_size, m_version, m_engine_version).read_view(m_base);
                 }
+
+                if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
+                    Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, m_node_offset);
+                    return FF_DECODE_CODEABLE_CONCEPT(m_base, abs_off, m_version);
+                }
+
                 return "";
             }
 
@@ -480,8 +487,13 @@ inline Entry::operator std::string_view() const {
         }
 
         if (raw_code & FF_CUSTOM_STRING_FLAG) {
-            Offset relative_off = static_cast<Offset>(raw_code & ~FF_CUSTOM_STRING_FLAG);
-            return FF_STRING(parent_offset + relative_off, m_size, m_version, m_engine_version).read_view(base);
+            Offset abs_off = FF_ResolveCustomStringOffset(raw_code, parent_offset);
+            return FF_STRING(abs_off, m_size, m_version, m_engine_version).read_view(base);
+        }
+
+        if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
+            Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, parent_offset);
+            return FF_DECODE_CODEABLE_CONCEPT(base, abs_off, m_version);
         }
 
         return "";
