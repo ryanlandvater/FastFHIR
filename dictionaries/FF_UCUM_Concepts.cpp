@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <utility>
-#include "../include/FF_UCUM_Codes.hpp"
+#include "FF_UCUM_Codes.hpp"
 
 using FastFHIR::FF_UCUM_CODES;
 
