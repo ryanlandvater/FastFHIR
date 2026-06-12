@@ -13,6 +13,7 @@
  */
 
 #include "../include/FF_CodeableConcept.hpp"
+#include "../dictionaries/FF_UCUM_Codes.hpp"
 #include "../include/FF_Utilities.hpp"
 
 #include <algorithm>
@@ -64,14 +65,14 @@ std::string_view ConceptRegistry::resolve(CodeId id) const noexcept {
 }  // namespace FastFHIR
 
 // ── Extern concept arrays (defined in dictionaries/) ──────────────
-extern const std::pair<const char*, uint64_t> FF_UCUM_CONCEPTS[];
-extern const size_t                            FF_UCUM_CONCEPTS_SIZE;
+extern const std::pair<const char*, FF_UCUM_CODES> FF_UCUM_CONCEPTS[];
+extern const size_t                                 FF_UCUM_CONCEPTS_SIZE;
 extern const std::pair<const char*, uint64_t> FF_LOINC_CONCEPTS[];
 extern const size_t                            FF_LOINC_CONCEPTS_SIZE;
 
 namespace FastFHIR {
 namespace {
-    ConceptRegistry g_ucum_registry(FF_UCUM_CONCEPTS, FF_UCUM_CONCEPTS_SIZE);
+    ConceptRegistry g_ucum_registry(reinterpret_cast<const std::pair<const char*, uint64_t>*>(FF_UCUM_CONCEPTS), FF_UCUM_CONCEPTS_SIZE);
 }
 
 // ── LOINC ───────────────────────────────────────────────────────────
