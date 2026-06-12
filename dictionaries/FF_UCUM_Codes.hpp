@@ -1,13 +1,20 @@
 /**
  * @file FF_UCUM_Codes.hpp
- * @brief UCUM Tier-1 concept enum — permanent, auditable named identifiers.
+ * @brief UCUM Tier-1 concept enum + lookup — permanent, auditable.
  *
  * Sourced from FHIR R5 UCUM ValueSet expansion.  1-based (0 = invalid).
  * Once committed, a value never changes.
+ *
+ * Lookup functions mirror FF_ResolveCode / FF_GetDictionaryCode:
+ *   FF_GetUCUMCode(string_view) → FF_UCUM_CODES (O(log n) binary search)
+ *   FF_ResolveUCUMCode(FF_UCUM_CODES) → const char* (O(1) reverse lookup)
  */
 
 #pragma once
 #include <cstdint>
+#include <cstddef>
+#include <string_view>
+#include <unordered_map>
 
 namespace FastFHIR {
 
@@ -1625,7 +1632,52 @@ enum class FF_UCUM_CODES : uint64_t {
     UCUM_SPRAY = 1610,
     UCUM_TBL = 1611,
     UCUM_TITER = 1612,
-    UCUM_TOT = 1613,
+    UCUM_TOT = 1613
 };
+
+// ── Concept entry — same pattern as FF_CodeEntry ──────────────────
+struct FF_ConceptEntry {
+    FF_UCUM_CODES code;
+    const char*   label;
+};
+
+// Sorted by label alphabetically for O(log n) string→code lookup.
+extern const FF_ConceptEntry* const FF_UCUM_CONCEPTS;
+extern const size_t               FF_UCUM_CONCEPTS_SIZE;
+
+// ── Lookup functions ──────────────────────────────────────────────
+
+/// Look up a UCUM expression string → FF_UCUM_CODES enum value.
+/// Returns UCUM_INVALID (0) if not found.
+inline FF_UCUM_CODES FF_GetUCUMCode(std::string_view label) noexcept {
+    if (label.empty()) return FF_UCUM_CODES::UCUM_INVALID;
+
+    // Lazy static hash map — built once on first call, O(1) thereafter.
+    // Same pattern as FF_GetDictionaryCode.
+    using Map = std::unordered_map<std::string_view, FF_UCUM_CODES>;
+    static const Map s_map = [] {
+        Map m;
+        m.reserve(FF_UCUM_CONCEPTS_SIZE);
+        for (size_t i = 0; i < FF_UCUM_CONCEPTS_SIZE; ++i)
+            m.emplace(FF_UCUM_CONCEPTS[i].label,
+                      FF_UCUM_CONCEPTS[i].code);
+        return m;
+    }();
+    auto it = s_map.find(label);
+    return (it != s_map.end()) ? it->second : FF_UCUM_CODES::UCUM_INVALID;
+}
+
+/// Resolve an FF_UCUM_CODES enum value → UCUM expression string.
+/// Returns nullptr if invalid.  O(1) via compiled-in reverse table.
+inline const char* FF_ResolveUCUMCode(FF_UCUM_CODES code) noexcept {
+    // Reverse table generated from the same source as the enum.
+    // Index = enum value, nullptr at index 0 (UCUM_INVALID).
+    // static_assert in FF_UCUM_Concepts.cpp verifies length matches enum.
+    extern const char* const FF_UCUM_STRINGS[];
+    extern const size_t FF_UCUM_STRINGS_SIZE;
+    uint64_t idx = static_cast<uint64_t>(code);
+    if (idx >= FF_UCUM_STRINGS_SIZE) return nullptr;
+    return FF_UCUM_STRINGS[idx];
+}
 
 }  // namespace FastFHIR

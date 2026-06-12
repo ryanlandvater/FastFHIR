@@ -8,7 +8,7 @@
  * @brief Enriched encode/decode for FF_CODEABLE_CONCEPT blocks.
  *
  * Each external code system uses a pre-built hash map
- * (ConceptRegistry) to map canonical code strings ↔ compact 56-bit IDs.
+ * (FF_GetUCUMCode / FF_ResolveUCUMCode) for O(1) string↔code lookup.
  * Unknown codes fall back to system-specific inline packing.
  */
 
@@ -23,82 +23,17 @@
 namespace FastFHIR {
 
 // =====================================================================
-// ConceptRegistry
 // =====================================================================
+// Lookup dispatch — delegates to per-system inline functions
+// =====================================================================
+// UCUM uses FF_GetUCUMCode() / FF_ResolveUCUMCode() from FF_UCUM_Codes.hpp
+// (O(log n) binary search on sorted array, same pattern as FF_Dictionary).
+// Other systems fall back to inline encoding (SNOMED) or return 0.
 
-ConceptRegistry::ConceptRegistry(const std::pair<const char*, CodeId>* entries,
-                                 size_t count) {
-    if (!entries || count == 0) return;
-    m_forward.reserve(count);
-    CodeId max_id = 0;
-    for (size_t i = 0; i < count; ++i)
-        if (entries[i].second > max_id) max_id = entries[i].second;
-    m_reverse.resize(static_cast<size_t>(max_id) + 1);
-
-    for (size_t i = 0; i < count; ++i) {
-        std::string key(entries[i].first);
-        CodeId id = entries[i].second;
-        m_forward.emplace(std::move(key), id);
-        m_reverse[static_cast<size_t>(id)] = entries[i].first;
-    }
-}
-
-ConceptRegistry::CodeId ConceptRegistry::find(const std::string& code) const noexcept {
-    auto it = m_forward.find(code);
-    return (it != m_forward.end()) ? it->second : 0;
-}
-
-std::string_view ConceptRegistry::resolve(CodeId id) const noexcept {
-    auto idx = static_cast<size_t>(id);
-    if (idx >= m_reverse.size()) return {};
-    return m_reverse[idx];
-}
+#include "../dictionaries/FF_UCUM_Codes.hpp"
 
 // =====================================================================
-// Pre-compiled concept tables (populated from generated data)
-// =====================================================================
-
-// ── SNOMED CT ───────────────────────────────────────────────────────
-// SNOMED concept IDs are numeric and self-encoding — no registry needed.
-// The numeric ID is stored directly as a 56-bit big-endian integer.
-
-}  // namespace FastFHIR
-
-// ── Extern concept arrays (defined in dictionaries/) ──────────────
-extern const std::pair<const char*, FF_UCUM_CODES> FF_UCUM_CONCEPTS[];
-extern const size_t                                 FF_UCUM_CONCEPTS_SIZE;
-extern const std::pair<const char*, uint64_t> FF_LOINC_CONCEPTS[];
-extern const size_t                            FF_LOINC_CONCEPTS_SIZE;
-
-namespace FastFHIR {
-namespace {
-    ConceptRegistry g_ucum_registry(reinterpret_cast<const std::pair<const char*, uint64_t>*>(FF_UCUM_CONCEPTS), FF_UCUM_CONCEPTS_SIZE);
-}
-
-// ── LOINC ───────────────────────────────────────────────────────────
-namespace {
-    ConceptRegistry g_loinc_registry(FF_LOINC_CONCEPTS, FF_LOINC_CONCEPTS_SIZE);
-}
-
-// ── BCP-47 / MIME — no registries yet (TODO: add dictionaries) ────
-namespace {
-    ConceptRegistry g_bcp47_registry;  // empty
-    ConceptRegistry g_mime_registry;   // empty
-}
-
-const ConceptRegistry* FF_GetConceptRegistry(FF_ExternalCodeSystem sys) noexcept {
-    switch (sys) {
-    case FF_ExternalCodeSystem::UCUM:      return &g_ucum_registry;
-    case FF_ExternalCodeSystem::LOINC:     return &g_loinc_registry;
-    case FF_ExternalCodeSystem::BCP_47:    return &g_bcp47_registry;
-    case FF_ExternalCodeSystem::MIME:      return &g_mime_registry;
-    case FF_ExternalCodeSystem::SNOMED_CT: return nullptr;  // self-encoding
-    default:                               return nullptr;
-    }
-}
-
-
-// =====================================================================
+// System-specific inline packing
 // System-specific inline packing — see global-scope helpers below.
 
 #include <cstdlib>  // strtoull
@@ -129,11 +64,9 @@ uint64_t FF_PackCode(FF_ExternalCodeSystem sys,
         return _parse_numeric(code_str);
 
     case FF_ExternalCodeSystem::UCUM: {
-        // Tier 1: check the concept registry for known synonyms.
-        if (auto* reg = FF_GetConceptRegistry(sys)) {
-            if (auto id = reg->find(std::string(code_str)))
-                return id;
-        }
+        // Tier 1: binary search on sorted concept array (same pattern as FF_GetDictionaryCode).
+        if (auto code = FF_GetUCUMCode(code_str); code != FF_UCUM_CODES::UCUM_INVALID)
+            return static_cast<uint64_t>(code);
         // Tier 2 fallback: hash the first 7 ASCII bytes into a 56-bit token.
         // The caller should prefer the custom-string path for complex
         // compositions; this is a last-resort inline encoding.
@@ -145,11 +78,8 @@ uint64_t FF_PackCode(FF_ExternalCodeSystem sys,
     }
 
     case FF_ExternalCodeSystem::LOINC: {
-        // Check concept registry first.
-        if (auto* reg = FF_GetConceptRegistry(sys)) {
-            if (auto id = reg->find(std::string(code_str)))
-                return id;
-        }
+        // TODO: add LOINC lookup table (same pattern as UCUM).
+        (void)code_str;
         // Fallback: pack the LOINC code (e.g., "12345-6") as ASCII.
         uint64_t token = 0;
         for (char c : code_str) {
@@ -161,11 +91,8 @@ uint64_t FF_PackCode(FF_ExternalCodeSystem sys,
 
     case FF_ExternalCodeSystem::BCP_47:
     case FF_ExternalCodeSystem::MIME:
-        // Check concept registry.
-        if (auto* reg = FF_GetConceptRegistry(sys)) {
-            if (auto id = reg->find(std::string(code_str)))
-                return id;
-        }
+        // TODO: add lookup tables (same pattern as UCUM).
+        (void)code_str;
         // Fallback: pack first 7 ASCII bytes.
         {
             uint64_t token = 0;
@@ -200,11 +127,9 @@ std::string_view FF_UnpackCode(FF_ExternalCodeSystem sys,
     }
 
     case FF_ExternalCodeSystem::UCUM: {
-        // Try concept registry reverse lookup first.
-        if (auto* reg = FF_GetConceptRegistry(sys)) {
-            if (auto sv = reg->resolve(packed_id); !sv.empty())
-                return sv;
-        }
+        // O(1) reverse lookup via compiled-in string table.
+        if (const char* s = FF_ResolveUCUMCode(static_cast<FF_UCUM_CODES>(packed_id)))
+            return s;
         // Fallback: unpack ASCII from the 56-bit token.
         size_t len = 0;
         uint64_t tmp = packed_id;
@@ -217,11 +142,7 @@ std::string_view FF_UnpackCode(FF_ExternalCodeSystem sys,
     }
 
     case FF_ExternalCodeSystem::LOINC: {
-        // Try concept registry.
-        if (auto* reg = FF_GetConceptRegistry(sys)) {
-            if (auto sv = reg->resolve(packed_id); !sv.empty())
-                return sv;
-        }
+        // TODO: add LOINC reverse lookup table.
         // Fallback: unpack ASCII from token, re-insert hyphen at position 5.
         uint64_t tmp = packed_id;
         size_t len = 0;
@@ -237,11 +158,7 @@ std::string_view FF_UnpackCode(FF_ExternalCodeSystem sys,
 
     case FF_ExternalCodeSystem::BCP_47:
     case FF_ExternalCodeSystem::MIME:
-        // Try concept registry.
-        if (auto* reg = FF_GetConceptRegistry(sys)) {
-            if (auto sv = reg->resolve(packed_id); !sv.empty())
-                return sv;
-        }
+        // TODO: add BCP-47 / MIME lookup tables (same pattern as UCUM).
         // Fallback: unpack ASCII.
         {
             size_t len = 0;

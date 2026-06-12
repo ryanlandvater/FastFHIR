@@ -56,12 +56,12 @@ file(GLOB FASTFHIR_DICT_SOURCES CONFIGURE_DEPENDS dictionaries/*.cpp)
 file(GLOB FASTFHIR_CORE_HEADERS CONFIGURE_DEPENDS include/*.hpp)
 list(REMOVE_ITEM FASTFHIR_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/FF_Ingestor.cpp")
 
-file(GLOB FASTFHIR_GENERATED_SOURCES CONFIGURE_DEPENDS generated_src/*.cpp)
-file(GLOB FASTFHIR_GENERATED_HEADERS CONFIGURE_DEPENDS generated_src/*.hpp)
-list(REMOVE_ITEM FASTFHIR_GENERATED_SOURCES "${FASTFHIR_GENERATED_DIR}/FF_IngestMappings.cpp")
-
 # ── Code generator ─────────────────────────────────────────────
-if(FASTFHIR_RUN_GENERATOR OR NOT FASTFHIR_GENERATED_SOURCES OR NOT FASTFHIR_GENERATED_HEADERS)
+# Use EXISTS (not a GLOB variable) to check whether generated files are
+# present — the GLOB variable hasn't been set yet, so `NOT` on it would
+# always be True on the first configure, making the generator run even
+# when FASTFHIR_RUN_GENERATOR=OFF.
+if(FASTFHIR_RUN_GENERATOR OR NOT EXISTS "${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.hpp")
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     execute_process(
         COMMAND ${CMAKE_COMMAND} -E env
@@ -73,13 +73,16 @@ if(FASTFHIR_RUN_GENERATOR OR NOT FASTFHIR_GENERATED_SOURCES OR NOT FASTFHIR_GENE
     if(NOT _GEN_RESULT EQUAL 0)
         message(FATAL_ERROR "Code generator failed — see output above")
     endif()
-    if (NOT FASTFHIR_GENERATED_SOURCES)
-        file(GLOB FASTFHIR_GENERATED_SOURCES CONFIGURE_DEPENDS generated_src/*.cpp)
-    endif()
-    if (NOT FASTFHIR_GENERATED_HEADERS)
-        file(GLOB FASTFHIR_GENERATED_HEADERS CONFIGURE_DEPENDS generated_src/*.hpp)
-    endif()
 endif()
+
+# Single GLOB, always after the generator (or confirmed existing files).
+# Only GLOB once per configure — a second GLOB on the same expression
+# after the directory changed would error with "directory contents have
+# changed during configuration run".
+file(GLOB FASTFHIR_GENERATED_SOURCES CONFIGURE_DEPENDS generated_src/*.cpp)
+file(GLOB FASTFHIR_GENERATED_HEADERS CONFIGURE_DEPENDS generated_src/*.hpp)
+list(REMOVE_ITEM FASTFHIR_GENERATED_SOURCES "${FASTFHIR_GENERATED_DIR}/FF_IngestMappings.cpp")
+
 if(NOT FASTFHIR_GENERATED_SOURCES)
     message(FATAL_ERROR "No generated sources. Enable FASTFHIR_RUN_GENERATOR or run generator manually.")
 endif()
