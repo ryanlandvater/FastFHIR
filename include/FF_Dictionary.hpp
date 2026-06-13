@@ -18,7 +18,7 @@
  *   - Every known FHIR code string gets a unique, permanent uint32_t
  *     value.  Values are assigned sequentially in alphabetical order.
  *     Once assigned, a value never changes.
- *   - Bit 31 (MSB) is reserved for FF_CUSTOM_STRING_FLAG — dictionary
+ *   - Bit 31 (MSB) is reserved for FF_CODEABLE_CONCEPT_FLAG — dictionary
  *     codes always have MSB = 0.  The null sentinel is FF_CODE_NULL
  *     (0xFFFFFFFF).
  *   - Two version-specific dictionaries (R4, R5) coexist so that codes

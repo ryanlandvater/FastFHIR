@@ -4,6 +4,7 @@
 .vscode/
 build/
 fhir_specs/
+fhir_packages/
 generated_src/
 FastFHIR.xcodeproj/xcuserdata
 FastFHIR.xcodeproj/project.xcworkspace/xcuserdata

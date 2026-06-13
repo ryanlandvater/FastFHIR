@@ -1041,7 +1041,7 @@ hand-written FHIR resource code.
    dictionary (`FF_Dictionary.hpp`), which maps FHIR `code` values to small
    integer indices. The dictionary is the substrate for
    `FF_FIELD_CODE`'s 4-byte slot (top bit reserved as
-   `FF_CUSTOM_STRING_FLAG` for code values not in the dictionary).
+   `FF_CODEABLE_CONCEPT_FLAG` for code values not in the dictionary).
 5. **`ffcs.generate_code_systems(...)`** — emit per-CodeSystem C++
    `enum class` definitions (`FF_CodeSystems.hpp`) so callers get type-safe,
    IDE-completable code constants.

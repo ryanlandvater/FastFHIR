@@ -1,15 +1,9 @@
 # FastFHIR — Runtime Terminology Validation & Translation Layer
 
-> **Status:** Architecture Proposal — Revised  
-> **Author:** Systems Engineering Review  
-> **Date:** 2025-07-18  
-> **Scope:** Open-ended vocabularies (UCUM, SNOMED CT, LOINC, BCP-47, MIME types)
-> and any code system not compiled into `FF_CodeSystems.hpp` enum classes.
-> 
-> **Key Design Decision:** External codeable concepts are represented by a new
-> `FF_CODEABLE_CONCEPT` primitive block with an inline 1-byte system identifier
-> and a 7-byte packed code payload. The `FF_FIELD_CODE` vtable slot gains a
-> second flag bit (bit 30) alongside the existing custom-string flag (bit 31).
+> **Status:** IMPLEMENTED — See `include/FF_Primitives.hpp`, `src/FF_Primitives.cpp`
+> **Date:** 2025-07-20
+> **Scope:** Single-flag (Bit 31) CodeableConcept architecture with variable-length
+> payloads and per-system discriminator byte.
 
 ---
 
@@ -134,54 +128,43 @@ about which terminology system it belongs to.
 
 ---
 
-## 3. Revised Bit Layout for `FF_FIELD_CODE`
+## 3. Bit Layout for `FF_FIELD_CODE` (IMPLEMENTED)
 
-The 4-byte `FF_FIELD_CODE` slot is repurposed with two flag bits:
+The 4-byte `FF_FIELD_CODE` slot uses a single flag bit at Bit 31:
 
 ```
-Bit 31 (MSB, 0x80000000) = FF_CUSTOM_STRING_FLAG       → 31-bit relative offset to FF_STRING
-Bit 30       (0x40000000) = FF_CODEABLE_CONCEPT_FLAG    → 30-bit relative offset to FF_CODEABLE_CONCEPT
-Bits 29–0                 = Dictionary index            → ~1B entries (current: ~10K)
+Bit 31 (MSB, 0x80000000) = FF_CODEABLE_CONCEPT_FLAG  → 31-bit signed relative offset
+Bits 30–0                  = Dictionary index          → ~2.14B entries
 ```
 
-Constants (add to `FF_Primitives.hpp`):
+Single constant in `include/FF_Primitives.hpp`:
 
 ```cpp
-constexpr uint32_t FF_CUSTOM_STRING_FLAG      = 0x80000000;  // existing
-constexpr uint32_t FF_CODEABLE_CONCEPT_FLAG   = 0x40000000;  // new
-constexpr uint32_t FF_CODE_PAYLOAD_MASK       = 0x3FFFFFFF;  // new: lower 30 bits
+constexpr uint32_t FF_CODEABLE_CONCEPT_FLAG = 0x80000000;  // Bit 31
+constexpr uint32_t FF_CODE_PAYLOAD_MASK     = 0x7FFFFFFF;  // Lower 31 bits
+constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x7FFFFFFF;
 ```
 
-**Read path** becomes a three-way branch with explicit sign-extension:
+**Read path** — binary branch with sign-extension (see `include/FF_Parser.hpp`,
+`include/FF_Utilities.hpp::FF_ResolveCodeableConceptOffset`):
 
 ```cpp
 case FF_FIELD_CODE: {
     uint32_t raw = LOAD_U32(base + slot);
     if (raw == FF_CODE_NULL) { /* null */ }
-    if (raw & FF_CUSTOM_STRING_FLAG) {
-        // Sign-extend 31-bit relative offset (bit 31 = flag, bits 30–0 = offset).
-        int32_t rel_off = static_cast<int32_t>(raw << 1) >> 1;
-        Offset str_off = parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
-        return FF_STRING(str_off, ...).read_view(base);
-    }
     if (raw & FF_CODEABLE_CONCEPT_FLAG) {
-        // Sign-extend 30-bit relative offset (bit 30 = flag, bits 29–0 = offset).
-        int32_t rel_off = static_cast<int32_t>(raw << 2) >> 2;
+        int32_t rel_off = static_cast<int32_t>(raw << 1) >> 1;  // sign-extend 31-bit
         Offset cc_off = parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
         return FF_DECODE_CODEABLE_CONCEPT(base, cc_off, version);
     }
-    // Permanent dictionary (30-bit index)
-    return FF_ResolveCode(raw, version);
+    return FF_ResolveCode(raw, version);  // Dictionary (31-bit index)
 }
 ```
 
-**Why sign-extension matters.** The arena is append-only, but the relative offset
-is computed as `child_offset - parent_offset`. If the parent block was allocated
-after the child (possible in back-patching scenarios), the offset is negative.
-The old code used `raw & ~FF_CUSTOM_STRING_FLAG` (zero-extension), which
-silently mapped negative offsets to large positive addresses >2 GB.  The new
-code uses arithmetic right-shift on a signed `int32_t` to reconstruct the
-correct signed value.
+**Why shift-based sign extension.** The old XOR-bias technique required knowing
+which bit was the sign bit. The shift-based approach works uniformly:
+left-shift by 1 puts bit 30 in the sign position of `int32_t`, arithmetic
+right-shift sign-extends the full 31-bit signed range (±1 GB).
 
 ---
 
@@ -204,87 +187,90 @@ Offset 18–23 : _PADDING    (6 bytes)      — alignment to 24-byte stride
 Defined in `FF_Primitives.hpp` following the existing pattern:
 
 ```cpp
+## 4. `FF_CODEABLE_CONCEPT` — Block Specification (IMPLEMENTED)
+
+### 4.1 Layout
+
+Variable-length block. No fixed padding — `FF_Ops.hpp` handles unaligned ARM access.
+
+```
+Offset  0– 7 : VALIDATION  (uint64_t) — standard DATA_BLOCK
+Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT (0x000A)
+Offset 10    : SYSTEM      (uint8_t)  — FF_CodeableConceptSystem discriminator
+Offset 11    : LENGTH      (uint8_t)  — payload byte count
+Offset 12+   : PAYLOAD     (variable) — LENGTH bytes
+```
+
+Defined in `include/FF_Primitives.hpp`:
+
+```cpp
 struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
     static constexpr char type[] = "FF_CODEABLE_CONCEPT";
     static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_CODEABLE_CONCEPT;
 
-    enum vtable_sizes {
-        VALIDATION_S = TYPE_SIZE_UINT64,   // 8
-        RECOVERY_S   = TYPE_SIZE_UINT16,   // 2
-        SYSTEM_S     = TYPE_SIZE_UINT8,    // 1
-        CODE_S       = 7,                  // 7-byte packed payload
-        PADDING_S    = 6,                  // alignment to 24 bytes
-    };
     enum vtable_offsets {
         VALIDATION = 0,
-        RECOVERY   = VALIDATION + VALIDATION_S,  // 8
-        SYSTEM     = RECOVERY + RECOVERY_S,       // 10
-        CODE       = SYSTEM + SYSTEM_S,           // 11
-        PADDING    = CODE + CODE_S,               // 18
-        HEADER_SIZE = PADDING + PADDING_S,        // 24 bytes
+        RECOVERY   = 8,
+        SYSTEM     = 10,
+        LENGTH     = 11,
+        PAYLOAD    = 12,
+        HEADER_SIZE = 12,  // VALIDATION(8) + RECOVERY(2) + SYSTEM(1) + LENGTH(1)
     };
 
     explicit FF_CODEABLE_CONCEPT(Offset off, Size total_size, uint32_t ver)
         : DATA_BLOCK(off, total_size, ver) {}
 
-    FF_ExternalCodeSystem system(const BYTE* base) const noexcept {
-        return static_cast<FF_ExternalCodeSystem>(
-            LOAD_U8(base + __offset + SYSTEM));
+    FF_CodeableConceptSystem system(const BYTE* base) const noexcept {
+        return static_cast<FF_CodeableConceptSystem>(base[__offset + SYSTEM]);
     }
-
-    void code_bytes(const BYTE* base, uint8_t (&out)[7]) const noexcept;
+    uint8_t length(const BYTE* base) const noexcept {
+        return base[__offset + LENGTH];
+    }
+    const BYTE* payload(const BYTE* base) const noexcept {
+        return base + __offset + PAYLOAD;
+    }
 };
 ```
 
-### 4.2 Code Payload Encoding Per System
+### 4.2 Payload Encoding Per System
 
-| System | Payload Encoding | Max Capacity |
+| System | LENGTH | Payload |
 |---|---|---|
-| **SNOMED CT** (`0x0002`) | Big-endian `uint64_t` in 7 bytes (lower 56 bits). Concept ID as integer. | 2^56 ≈ 7.2×10^16 (comfortably >10^16 active concepts) |
-| **UCUM** (`0x0001`) | Index into pre-configured UCUM expression table (20 bits) + prefix byte + exponent byte. Remaining 5 bytes reserved. | 1M pre-registered expressions |
-| **LOINC** (`0x0003`) | 6-digit LOINC code as ASCII, packed into lower 6 bytes. 7th byte = 0x00. | 10^6 codes |
-| **BCP-47** (`0x0004`) | Index into pre-configured language tag table (3 bytes). Remaining 4 bytes reserved. | 16M registered tags |
+| **DICOM** (`0x05`) | 4 (always) | `STORE_U32` of hex-parsed tag (e.g., `"0008002A"` → `0x0008002A`) |
+| **SNOMED CT** (`0x02`) | 8 (always) | `STORE_U64` of decimal-parsed concept ID (e.g., `"1006005"`) |
+| **UCUM** (`0x01`) | variable | Raw ASCII UCUM expression string |
+| **UNKNOWN** (`0x00`) | variable | 2-byte `STORE_U16` URL index + raw ASCII code string |
+| **LOINC** (`0x03`) | variable | Raw ASCII LOINC code (reserved) |
+| **BCP_47** (`0x04`) | variable | Raw ASCII language tag (reserved) |
+| **MIME** (`0x06`) | variable | Raw ASCII MIME type (reserved) |
 
-### 4.3 Why 7 Bytes?
+**Why variable-length.** The old 7-byte fixed packing could not represent
+SNOMED concept IDs > 2^56 or arbitrary UCUM compositional expressions without
+a pre-compiled expression table. The current design stores composable
+strings as-is (variable LENGTH) and fixed-width integers at their natural
+size (4 for DICOM, 8 for SNOMED).
 
-7 bytes = 56 bits. SNOMED CT concept IDs are 6–18 digits in the specification
-but the current production set uses 6–10 digits. 2^56 ≈ 7.2×10^16 comfortably
-covers any 17-digit number. For the theoretical 18-digit max, one additional
-byte would be needed; the design reserves this option via a future
-`HEADER_V2_SIZE` extension. In practice, FastFHIR streams are versioned and the
-header size can be rev'd without breaking existing readers (see
-`architecture.md §4.2`).
+## 5. `FF_CodeableConceptSystem` — Permanent Registry (IMPLEMENTED)
 
-For UCUM, the payload is not a raw string — it is an index into a
-pre-configured lookup table of validated UCUM expressions. The same atom table
-used by the validator doubles as the encode/decode table. This eliminates string
-deduplication overhead: a `Quantity.code` of `"mg/dL"` is stored as a 7-byte
-packed reference, not a variable-length `FF_STRING`.
-
----
-
-## 5. `FF_ExternalCodeSystem` — Permanent Registry
-
-Like `RECOVERY_TAG` and `FF_R4_Dictionary`, this is a permanent, auditable,
-compiled-in registry. Values are assigned once and never renumbered. The table
-is emitted into a generated source file.
-
-### 5.1 Enum Definition
+One-byte discriminator stored in the `SYSTEM` field of each
+`FF_CODEABLE_CONCEPT` block. Defined in `include/FF_Primitives.hpp`:
 
 ```cpp
-// include/FF_ExternalCodeSystem.hpp  (new file)
+enum class FF_CodeableConceptSystem : uint8_t {
+    UNKNOWN           = 0x00,  // payload: uint16_t URL index + raw code string
+    UCUM              = 0x01,  // payload: raw ASCII UCUM expression
+    SNOMED_CT         = 0x02,  // payload: 8-byte native-endian concept ID
+    LOINC             = 0x03,  // payload: raw ASCII LOINC code (reserved)
+    BCP_47            = 0x04,  // payload: raw ASCII language tag (reserved)
+    DICOM             = 0x05,  // payload: 4-byte native-endian tag
+    MIME              = 0x06,  // payload: raw ASCII MIME type (reserved)
+    // 0x07–0xFF  reserved for future terminologies
+};
+```
 
-#pragma once
-#include <cstdint>
-#include <string_view>
-
-namespace FastFHIR {
-
-enum class FF_ExternalCodeSystem : uint8_t {
-    NULL_SYSTEM    = 0x00,  // Sentinel — use dictionary / custom string path
-    UCUM           = 0x01,  // http://unitsofmeasure.org
-    SNOMED_CT      = 0x02,  // http://snomed.info/sct
-    LOINC          = 0x03,  // http://loinc.org
+The old `FF_ExternalCodeSystem` enum and `FF_ExternalCodeSystemEntry` metadata
+table were **deleted**. System URI resolution now happens in the parser via
+`FF_DECODE_CODEABLE_CONCEPT` which dispatches on this single byte.
     BCP_47         = 0x04,  // urn:ietf:bcp:47
     MIME           = 0x05,  // urn:ietf:bcp:13
     // ── Append only ──

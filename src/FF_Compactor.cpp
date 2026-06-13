@@ -76,18 +76,29 @@ static void write_compact_code_slot(const Reflective::Entry& entry, Memory& dest
                                     Offset compact_parent_off, Offset dense_off) {
     BYTE* base = destination.base();
     const uint32_t raw_code = LOAD_U32(entry.base + entry.absolute_offset());
-    if (raw_code == FF_CODE_NULL || (raw_code & FF_CUSTOM_STRING_FLAG) == 0) {
+    if (raw_code == FF_CODE_NULL || (raw_code & FF_CODEABLE_CONCEPT_FLAG) == 0) {
         STORE_U32(base + dense_off, raw_code);
         return;
     }
 
-    const std::string_view code_str = static_cast<std::string_view>(entry);
-    const Offset string_off = archive_string(code_str, destination);
-    const Offset relative_off = string_off - compact_parent_off;
+    // CodeableConcept block — copy the source block verbatim to preserve
+    // SYSTEM byte, LENGTH byte, and payload.  Creating an FF_STRING would
+    // lose the discriminator and break FF_DECODE_CODEABLE_CONCEPT on read.
+    int32_t rel_off = static_cast<int32_t>(raw_code << 1) >> 1;
+    Offset src_cc_off = entry.parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
+    const BYTE* src = entry.base;
+
+    uint8_t cc_len = src[src_cc_off + FF_CODEABLE_CONCEPT::LENGTH];
+    Size total_bytes = FF_CODEABLE_CONCEPT::HEADER_SIZE + cc_len;
+
+    Offset dst_cc_off = destination.claim_space(total_bytes);
+    std::memcpy(base + dst_cc_off, src + src_cc_off, total_bytes);
+
+    Offset relative_off = dst_cc_off - compact_parent_off;
     if (relative_off > 0x7FFFFFFF) {
-        throw std::runtime_error("FastFHIR Compactor Error: custom code relative offset exceeds 2GB.");
+        throw std::runtime_error("FastFHIR Compactor Error: CodeableConcept relative offset exceeds 31-bit signed range.");
     }
-    STORE_U32(base + dense_off, static_cast<uint32_t>(relative_off) | FF_CUSTOM_STRING_FLAG);
+    STORE_U32(base + dense_off, static_cast<uint32_t>(relative_off) | FF_CODEABLE_CONCEPT_FLAG);
 }
 
 static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& context,
@@ -99,22 +110,23 @@ static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& co
 
     if (FF_IsScalarBlockTag(tag)) {
         if (tag == RECOVER_FF_CODE) {
-            Reflective::Entry code_entry(entry.base, entry.parent_offset,
-                                         static_cast<uint32_t>(src_slot - entry.parent_offset),
-                                         RECOVER_FF_CODE, FF_FIELD_CODE,
-                                         entry.m_size, entry.m_version, entry.m_ops);
             uint64_t raw_bits = 0;
             const uint32_t raw_code = LOAD_U32(entry.base + src_slot);
-            if (raw_code == FF_CODE_NULL || (raw_code & FF_CUSTOM_STRING_FLAG) == 0) {
+            if (raw_code == FF_CODE_NULL || (raw_code & FF_CODEABLE_CONCEPT_FLAG) == 0) {
                 raw_bits = raw_code;
             } else {
-                const std::string_view code_str = static_cast<std::string_view>(code_entry);
-                const Offset string_off = archive_string(code_str, context.destination);
-                const Offset relative_off = string_off - compact_parent_off;
+                // Resolve and copy the source CodeableConcept block verbatim
+                int32_t rel_off = static_cast<int32_t>(raw_code << 1) >> 1;
+                Offset src_cc_off = entry.parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
+                uint8_t cc_len = entry.base[src_cc_off + FF_CODEABLE_CONCEPT::LENGTH];
+                Size block_total = FF_CODEABLE_CONCEPT::HEADER_SIZE + cc_len;
+                Offset dst_cc_off = context.destination.claim_space(block_total);
+                std::memcpy(context.destination.base() + dst_cc_off, entry.base + src_cc_off, block_total);
+                Offset relative_off = dst_cc_off - compact_parent_off;
                 if (relative_off > 0x7FFFFFFF) {
-                    throw std::runtime_error("FastFHIR Compactor Error: custom choice-code relative offset exceeds 2GB.");
+                    throw std::runtime_error("FastFHIR Compactor Error: CodeableConcept relative offset exceeds 31-bit signed range.");
                 }
-                raw_bits = static_cast<uint32_t>(relative_off) | FF_CUSTOM_STRING_FLAG;
+                raw_bits = static_cast<uint32_t>(relative_off) | FF_CODEABLE_CONCEPT_FLAG;
             }
             STORE_U64(base + dense_off, raw_bits);
             return;
@@ -222,7 +234,7 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                 break;
             case FF_FIELD_CODE:
                 if (const uint32_t raw_code = LOAD_U32(entry.base + entry.absolute_offset());
-                    raw_code == FF_CODE_NULL || (raw_code & FF_CUSTOM_STRING_FLAG) == 0) {
+                    raw_code == FF_CODE_NULL || (raw_code & FF_CODEABLE_CONCEPT_FLAG) == 0) {
                     STORE_U32(base + dense_off, raw_code);
                 } else {
                     STORE_U32(base + dense_off, FF_CODE_NULL);

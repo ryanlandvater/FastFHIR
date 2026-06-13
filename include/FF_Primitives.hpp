@@ -66,14 +66,31 @@ constexpr uint32_t FF_CODE_NULL = FF_NULL_UINT32;
 constexpr float FF_NULL_F32 = FF_NULL_UINT32;
 constexpr double FF_NULL_F64 = FF_NULL_UINT64;
 constexpr Offset FF_NULL_OFFSET = FF_NULL_UINT64;
-constexpr uint32_t FF_CUSTOM_STRING_FLAG    = 0x80000000;  // Bit 31: 31-bit signed offset to FF_STRING
-constexpr uint32_t FF_CODEABLE_CONCEPT_FLAG = 0x40000000;  // Bit 30: 30-bit signed offset to FF_CODEABLE_CONCEPT
-constexpr uint32_t FF_CODE_PAYLOAD_MASK     = 0x3FFFFFFF;  // Lower 30 bits: dictionary index or payload
+// ── Unified Dynamic Code Block Flag ───────────────────────────────────
+// Bit 31 (MSB) distinguishes dictionary codes from dynamic fallback blocks.
+//   MSB = 0  → 31-bit dictionary index (FF_ResolveCode)
+//   MSB = 1  → 31-bit signed relative offset to dynamic fallback block
+// FF_CODEABLE_CONCEPT_FLAG (old Bit 30) is REMOVED — bit 30 is reclaimed
+// for data, doubling dictionary capacity and signed offset range.
+constexpr uint32_t FF_CODEABLE_CONCEPT_FLAG    = 0x80000000;  // Bit 31
+constexpr uint32_t FF_CODE_PAYLOAD_MASK     = 0x7FFFFFFF;  // Lower 31 bits
 
-// Hard cap on permanent dictionary size to prevent overflow into Bit 30.
-// At current scale (~15K entries) this is far away; the assertion in
-// generator/emit/dictionary.py enforces it at generation time.
-constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x3FFFFFFF;
+// Hard cap on permanent dictionary size to prevent overflow into Bit 31.
+// Enforced at generation time by generator/emit/dictionary.py.
+constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x7FFFFFFF;
+
+// ── Dynamic Block System Discriminator ────────────────────────────────
+// Byte at offset 10 of the unified dynamic fallback block.  Tells the
+// read path how to interpret the variable-length payload at offset 12+.
+enum class FF_CodeableConceptSystem : uint8_t {
+    UNKNOWN           = 0x00,  // payload: uint16_t URL index + raw code string
+    UCUM              = 0x01,  // payload: raw ASCII UCUM expression
+    SNOMED_CT         = 0x02,  // payload: 8-byte big-endian concept ID
+    LOINC             = 0x03,  // payload: raw ASCII LOINC code (reserved)
+    BCP_47            = 0x04,  // payload: raw ASCII language tag (reserved)
+    DICOM             = 0x05,  // payload: 4-byte big-endian tag
+    // 0x06–0xFF  reserved for future fixed-width terminologies
+};
 
 // FastFHIR magic bytes: "FFHR" in little-endian
 constexpr uint32_t FF_MAGIC_BYTES = 0x52484646;
@@ -908,55 +925,24 @@ struct ResourceReference
 
 // Slim staging structure for polymorphic FHIR choice [x] fields
 // =====================================================================
-// EXTERNAL CODE SYSTEM REGISTRY
+// UNIFIED CODABLE CONCEPT FALLBACK BLOCK
 // =====================================================================
-// Permanent, auditable enum mapping code system URIs to 1-byte identifiers.
-// Values are assigned once and never renumbered.  The metadata table lives in
-// generated_src/FF_ExternalCodeSystems.cpp — same pattern as FF_Dictionary.
+// Variable-length block for ALL non-dictionary code values.  Bit 31 of the
+// vtable slot (FF_CODEABLE_CONCEPT_FLAG) signals this path; the remaining 31 bits
+// are a signed relative offset to this block.
 //
-// Systems registered here own dedicated validation, packing, and unpacking
-// logic.  Unregistered systems fall through to the custom-string path.
-enum class FF_ExternalCodeSystem : uint8_t {
-    NULL_SYSTEM    = 0x00,  // Sentinel: use FHIR dictionary / custom string fallback
-    UCUM           = 0x01,  // http://unitsofmeasure.org
-    SNOMED_CT      = 0x02,  // http://snomed.info/sct
-    LOINC          = 0x03,  // http://loinc.org
-    BCP_47         = 0x04,  // urn:ietf:bcp:47
-    MIME           = 0x05,  // urn:ietf:bcp:13
-    // ── Append only above this line ──
-};
-
-// Metadata entry for a registered external code system.
-struct FF_ExternalCodeSystemEntry {
-    FF_ExternalCodeSystem   id;          // enum value = array index
-    const char*             identifier;  // "UCUM"
-    const char*             description; // "Unified Code for Units of Measure"
-    const char*             url;         // "http://unitsofmeasure.org"
-};
-
-extern const FF_ExternalCodeSystemEntry FF_EXTERNAL_CODE_SYSTEM_TABLE[];
-extern const size_t                      FF_EXTERNAL_CODE_SYSTEM_COUNT;
-
-// O(1) lookup by enum value.
-inline const FF_ExternalCodeSystemEntry& FF_GetExternalCodeSystemInfo(
-    FF_ExternalCodeSystem sys) noexcept {
-    return FF_EXTERNAL_CODE_SYSTEM_TABLE[static_cast<uint8_t>(sys)];
-}
-
-// O(log n) binary search on URL — ingest-time only.
-FF_ExternalCodeSystem FF_ResolveExternalCodeSystem(
-    std::string_view url) noexcept;
-
-// =====================================================================
-// FF_CODEABLE_CONCEPT — external codeable concept block
-// =====================================================================
-// 24-byte fixed-stride block (padded to 8-byte boundary for ARM alignment).
-// Carries a 1-byte system identifier and a 7-byte packed code payload.
+// Layout (no fixed padding — FF_Ops.hpp handles unaligned ARM access):
+//   Offset  0– 7 : VALIDATION  (uint64_t) — standard DATA_BLOCK
+//   Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT
+//   Offset 10    : SYSTEM      (uint8_t)  — FF_CodeableConceptSystem discriminator
+//   Offset 11    : LENGTH      (uint8_t)  — payload byte count
+//   Offset 12+   : PAYLOAD     (variable) — LENGTH bytes
 //
-//   Byte  0– 7 : VALIDATION  (uint64_t) — standard DATA_BLOCK
-//   Byte  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT
-//   Byte 10    : SYSTEM      (uint8_t)  — FF_ExternalCodeSystem enum value
-//   Byte 11–17 : CODE        (7 bytes)  — packed code payload, system-specific
+// System-specific payload interpretation:
+//   UNKNOWN (0x00): 2-byte URL index (uint16_t BE) + raw code string
+//   UCUM    (0x01): raw ASCII UCUM expression
+//   SNOMED  (0x02): 8-byte big-endian concept ID (uint64_t)
+//   DICOM   (0x05): 4-byte big-endian tag (uint32_t)
 struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
     static constexpr char type[] = "FF_CODEABLE_CONCEPT";
     static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_CODEABLE_CONCEPT;
@@ -965,43 +951,51 @@ struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
         VALIDATION_S = TYPE_SIZE_UINT64,   // 8
         RECOVERY_S   = TYPE_SIZE_UINT16,   // 2
         SYSTEM_S     = TYPE_SIZE_UINT8,    // 1
-        CODE_S       = 7,                  // 7-byte packed payload
+        LENGTH_S     = TYPE_SIZE_UINT8,    // 1
+        HEADER_SIZE  = VALIDATION_S + RECOVERY_S + SYSTEM_S + LENGTH_S,  // 12
     };
     enum vtable_offsets {
         VALIDATION = 0,
-        RECOVERY   = VALIDATION + VALIDATION_S,  // 8
-        SYSTEM     = RECOVERY + RECOVERY_S,       // 10
-        CODE       = SYSTEM + SYSTEM_S,           // 11
-        HEADER_SIZE = CODE + CODE_S,              // 18 bytes
+        RECOVERY   = 8,
+        SYSTEM     = 10,
+        LENGTH     = 11,
+        PAYLOAD    = 12,
     };
 
     explicit FF_CODEABLE_CONCEPT(Offset off, Size total_size, uint32_t ver)
         : DATA_BLOCK(off, total_size, ver) {}
 
-    // Read the system identifier.
-    FF_ExternalCodeSystem system(const BYTE* base) const noexcept {
-        return static_cast<FF_ExternalCodeSystem>(
-            base[__offset + SYSTEM]);
+    FF_CodeableConceptSystem system(const BYTE* base) const noexcept {
+        return static_cast<FF_CodeableConceptSystem>(base[__offset + SYSTEM]);
     }
-
-    // Raw access to the 7-byte code payload.
-    void code_bytes(const BYTE* base, uint8_t (&out)[7]) const noexcept;
+    uint8_t length(const BYTE* base) const noexcept {
+        return base[__offset + LENGTH];
+    }
+    const BYTE* payload(const BYTE* base) const noexcept {
+        return base + __offset + PAYLOAD;
+    }
 };
 
-// Write path: encode a code string as an FF_CODEABLE_CONCEPT block.
-// Returns a packed uint32_t with FF_CODEABLE_CONCEPT_FLAG set and the
-// 30-bit signed relative offset.
-uint32_t ENCODE_FF_CODEABLE_CONCEPT(BYTE* __base, Offset block_offset,
-                                     Offset& child_off,
-                                     const std::string& code_str,
-                                     FF_ExternalCodeSystem system,
-                                     uint32_t version);
-
-// Decode an FF_CODEABLE_CONCEPT to its string representation.
-// Uses a thread-local buffer for reconstruction; returned string_view
-// is valid until the next call on the same thread.
+// Decode a unified dynamic block to its string representation.
+// Uses a thread-local buffer; returned string_view is valid until the
+// next call on the same thread.
 std::string_view FF_DECODE_CODEABLE_CONCEPT(const BYTE* base, Offset offset,
-                                             uint32_t version);
+                                          uint32_t version);
+
+// Write an unknown-system dynamic block (SYSTEM=0x00) with a 2-byte URL index
+// followed by the raw code string.  Returns packed uint32_t with
+// FF_CODEABLE_CONCEPT_FLAG set.
+uint32_t ENCODE_FF_CODEABLE_CONCEPT_UNKNOWN(BYTE* __base, Offset block_offset,
+                                          Offset& child_off,
+                                          const std::string& code_str,
+                                          uint16_t url_index,
+                                          uint32_t version);
+
+// Write a UCUM dynamic block (SYSTEM=0x01) with raw ASCII expression.
+uint32_t ENCODE_FF_CODEABLE_CONCEPT_UCUM(BYTE* __base, Offset block_offset,
+                                       Offset& child_off,
+                                       const std::string& ucum_expr,
+                                       uint32_t version);
 
 struct ChoiceEntry
 {
@@ -1027,4 +1021,10 @@ Size SIZE_FF_STRING(std::string_view str);
 Size SIZE_FF_CODE(std::string_view code_str, uint32_t version);
 Size STORE_FF_STRING(BYTE *const __base, Offset start_offset, std::string_view str);
 Offset STORE_FF_CODE(BYTE *const __base, Offset start_offset, std::string_view code_str, uint32_t version);
-uint32_t ENCODE_FF_CODE(BYTE *const __base, Offset block_offset, Offset &child_off, const std::string &code_str, uint32_t version = FHIR_VERSION_R5, FF_ExternalCodeSystem system = FF_ExternalCodeSystem::NULL_SYSTEM);
+// Pack a code value into a 32-bit vtable slot.  Returns dictionary index
+// (MSB=0) when the code is in the permanent dictionary, or a packed relative
+// offset with FF_CODEABLE_CONCEPT_FLAG set (MSB=1) when the code requires a
+// dynamic fallback block.
+uint32_t ENCODE_FF_CODE(BYTE *const __base, Offset block_offset, Offset &child_off,
+                         const std::string &code_str, uint32_t version = FHIR_VERSION_R5,
+                         FF_CodeableConceptSystem system = FF_CodeableConceptSystem::UNKNOWN);

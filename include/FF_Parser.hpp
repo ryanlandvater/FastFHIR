@@ -419,11 +419,6 @@ public:
                     return resolved;
                 }
 
-                if (raw_code & FF_CUSTOM_STRING_FLAG) {
-                    Offset abs_off = FF_ResolveCustomStringOffset(raw_code, m_node_offset);
-                    return FF_STRING(abs_off, m_size, m_version, m_engine_version).read_view(m_base);
-                }
-
                 if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
                     Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, m_node_offset);
                     return FF_DECODE_CODEABLE_CONCEPT(m_base, abs_off, m_version);
@@ -484,11 +479,6 @@ inline Entry::operator std::string_view() const {
 
         if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
             return resolved;
-        }
-
-        if (raw_code & FF_CUSTOM_STRING_FLAG) {
-            Offset abs_off = FF_ResolveCustomStringOffset(raw_code, parent_offset);
-            return FF_STRING(abs_off, m_size, m_version, m_engine_version).read_view(base);
         }
 
         if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {

@@ -869,13 +869,13 @@ patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "male";
 
 If lookup fails, FastFHIR writes the raw string into the arena as an `FF_STRING`
 block, computes the relative offset from the current data block to that string,
-and stores that offset with `FF_CUSTOM_STRING_FLAG` (`0x80000000`) set in the MSB.
+and stores that offset with `FF_CODEABLE_CONCEPT_FLAG` (`0x80000000`) set in the MSB.
 
 This marks the value as a custom-string reference instead of a dictionary ID.
 
 ```cpp
 patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "org-local-code-91827";
-// Not in dictionary -> stored as custom string with FF_CUSTOM_STRING_FLAG
+// Not in dictionary -> stored as CodeableConcept block with FF_CODEABLE_CONCEPT_FLAG
 ```
 
 #### 3) Null handling
@@ -892,7 +892,8 @@ patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "";
 On read, `Node::as<std::string_view>()` performs the inverse resolution order:
 
 1. Try dictionary resolution via `FF_ResolveCode`
-2. If unresolved, check `FF_CUSTOM_STRING_FLAG` and follow the relative pointer
+2. If unresolved, check `FF_CODEABLE_CONCEPT_FLAG` and follow the relative pointer
+   to the `FF_CODEABLE_CONCEPT` block, then decode per system discriminator
 3. Return the referenced custom `FF_STRING` payload
 
 This is why code fields can be assigned with normal strings while still keeping

@@ -1,14 +1,9 @@
 # ============================================================
-# FastFHIR Generator — FHIR specification fetcher.
+# FastFHIR Generator — FHIR specification fetcher (NPM packages).
 #
-# Relocated VERBATIM from tools/generator/fetch_specs.py (S1: behaviour-
-# preserving move). Downloads and extracts the FHIR R4/R5 definition bundles
-# into fhir_specs/ for the rest of the pipeline to consume.
-#
-# KNOWN FOLLOW-UP (post-S1 cleanup, tracked in plan): the broad `except
-# Exception` on download violates the style guide (catch specific errors / log
-# why). Left untouched here to keep the S1 move behaviour-identical; tighten in
-# a dedicated cleanup pass once the wire-format gate is green.
+# Downloads hl7.fhir.r4.core and hl7.fhir.r5.core .tgz packages from
+# https://packages.fhir.org, extracts into fhir_packages/R4/package/
+# and fhir_packages/R5/package/.
 #
 # Author: Ryan Landvater (ryanlandvater[at]gmail[dot]com)
 # Copyright (c) 2025 Ryan Landvater. All rights reserved.
@@ -17,68 +12,59 @@
 
 import os
 import urllib.request
-import zipfile
+import tarfile
+import shutil
 from pathlib import Path
 
-# --- Configuration ---
-FHIR_CONFIG = {
-    "R4": "http://hl7.org/fhir/R4/definitions.json.zip",
-    "R5": "http://hl7.org/fhir/R5/definitions.json.zip",
+FHIR_PACKAGES = {
+    "R4": "https://packages.fhir.org/hl7.fhir.r4.core/-/hl7.fhir.r4.core-4.0.1.tgz",
+    "R5": "https://packages.fhir.org/hl7.fhir.r5.core/-/hl7.fhir.r5.core-5.0.0.tgz",
 }
 
-# Where the raw HL7 data lives.
-BASE_DIR = Path("fhir_specs")
-
-# The specific files ffc/ffd consume.
-REQUIRED_FILES = [
-    "profiles-resources.json",
-    "profiles-types.json",
-    "valuesets.json",
-]
+BASE_DIR = Path("fhir_packages")
 
 
 def fetch_fhir_specs(force_download=False):
-    """Download and extract the FHIR R4 and R5 specifications.
+    """Download and extract FHIR R4/R5 NPM packages.
 
-    Ensures 'fhir_specs/' is populated without polluting the repo root.
+    Ensures 'fhir_packages/R4/package/' and 'fhir_packages/R5/package/'
+    are populated with CodeSystem-*.json and ValueSet-*.json files.
     """
     BASE_DIR.mkdir(exist_ok=True)
 
-    for version, url in FHIR_CONFIG.items():
+    for version, url in FHIR_PACKAGES.items():
         v_dir = BASE_DIR / version
-        v_dir.mkdir(exist_ok=True)
+        package_dir = v_dir / "package"
 
-        zip_path = v_dir / "definitions.zip"
+        if package_dir.exists() and not force_download:
+            code_systems = list(package_dir.glob("CodeSystem-*.json"))
+            print(f"[Info] FHIR {version} package already exists ({len(code_systems)} CodeSystems). Skipping download.")
+            continue
 
-        # 1. Download (only if missing or forced).
-        if not zip_path.exists() or force_download:
-            print(f"Downloading FHIR {version} from HL7...")
-            try:
-                def progress(count, block_size, total_size):
-                    percent = int(count * block_size * 100 / total_size)
-                    print(f"\r   Progress: {percent}%", end="")
+        # Clean and recreate
+        if v_dir.exists():
+            shutil.rmtree(v_dir)
+        v_dir.mkdir()
 
-                urllib.request.urlretrieve(url, zip_path, reporthook=progress)
-                print(f"\n   [Success] Downloaded {version}.")
-            except Exception as e:  # noqa: BLE001  (verbatim S1 move; tighten later)
-                print(f"\n   [Error] Error downloading {version}: {e}")
-                continue
-        else:
-            print(f"[Info] FHIR {version} zip already exists in {v_dir}. Skipping download.")
-
-        # 2. Extract only the bundles we use.
-        print(f"[Info] Extracting required bundles to {v_dir}...")
+        tgz_path = v_dir / "package.tgz"
+        print(f"Downloading FHIR {version} NPM package...")
         try:
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                for file_name in REQUIRED_FILES:
-                    if file_name in zip_ref.namelist():
-                        zip_ref.extract(file_name, v_dir)
-                        print(f"   [Info] Extracted {file_name}")
-                    else:
-                        print(f"   [Warning] {file_name} not found in zip.")
-            print(f"[Success] FHIR {version} ready.")
-        except zipfile.BadZipFile:
-            print(f"   [Error] {zip_path} is not a valid zip file. Try force_download=True.")
+            urllib.request.urlretrieve(url, tgz_path)
+        except Exception as e:
+            print(f"[Error] Download failed for {version}: {e}")
+            continue
+
+        print(f"Extracting {version}...")
+        try:
+            with tarfile.open(tgz_path, "r:gz") as tar:
+                tar.extractall(path=v_dir)
+        except tarfile.TarError as e:
+            print(f"[Error] Extraction failed for {version}: {e}")
+            continue
+
+        tgz_path.unlink()  # remove the .tgz after extraction
+        code_systems = list(package_dir.glob("CodeSystem-*.json"))
+        print(f"[Success] FHIR {version} ready ({len(code_systems)} CodeSystems).")
 
 
 if __name__ == "__main__":

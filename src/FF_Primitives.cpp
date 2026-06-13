@@ -328,41 +328,132 @@ Size STORE_FF_STRING(BYTE* const __base, Offset start_offset, std::string_view s
     return FF_STRING::HEADER_SIZE + length;
 }
 
-uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_off, const std::string& code_str, uint32_t version, FF_ExternalCodeSystem system) {
+#include <cstdlib>  // strtoull
+
+static uint32_t _pack_codeable_concept_offset(Offset cc_offset, Offset block_offset) {
+    int64_t rel = static_cast<int64_t>(cc_offset) - static_cast<int64_t>(block_offset);
+    if (rel < -0x40000000LL || rel > 0x3FFFFFFFLL) {
+        throw std::runtime_error("FastFHIR: CodeableConcept relative offset exceeds ±1 GB.");
+    }
+    return (static_cast<uint32_t>(static_cast<int32_t>(rel)) & 0x7FFFFFFFu) | FF_CODEABLE_CONCEPT_FLAG;
+}
+
+uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_off, const std::string& code_str, uint32_t version, FF_CodeableConceptSystem system) {
     if (code_str.empty()) return FF_CODE_NULL;
 
-    // External codeable concept path — only for systems whose codes
-    // don't fit in the 31-bit dictionary (e.g., SNOMED CT).
-    // UCUM codes are in the dictionary or go to custom string.
-    if (system != FF_ExternalCodeSystem::NULL_SYSTEM
-        && system != FF_ExternalCodeSystem::UCUM) {
-        return ENCODE_FF_CODEABLE_CONCEPT(__base, block_offset, child_off, code_str, system, version);
-    }
-
+    // Dictionary lookup first — always the fast path (MSB = 0).
     uint32_t dict_code = FF_GetDictionaryCode(code_str, version);
     if (dict_code != FF_CODE_NULL) {
-        return dict_code; 
+        return dict_code;
     }
 
-    // Custom String Fallback.
-    Offset string_offset = child_off;
-    child_off += STORE_FF_STRING(__base, string_offset, code_str);
+    // ── System-aware CodeableConcept block encoding ──────────
+    // DICOM:    4-byte uint32_t  tag   parsed from hex string
+    // SNOMED:   8-byte uint64_t  id    parsed from decimal string
+    // UNKNOWN:  2-byte URL index + raw ASCII code string
+    // UCUM/LOINC/BCP_47/MIME:   raw ASCII string (variable)
 
-    // Compute 31-bit signed relative offset (block_offset → string_offset).
-    // Use int64_t to avoid unsigned wraparound for upstream allocations.
-    int64_t relative_offset = static_cast<int64_t>(string_offset) - static_cast<int64_t>(block_offset);
-    if (relative_offset < -0x40000000LL || relative_offset > 0x3FFFFFFFLL) {
-        throw std::runtime_error("FastFHIR: Custom string relative offset exceeds ±1 GB.");
+    Offset cc_offset = child_off;
+    BYTE* ptr = __base + cc_offset;
+
+    switch (system) {
+    case FF_CodeableConceptSystem::DICOM: {
+        char* end = nullptr;
+        uint32_t tag = static_cast<uint32_t>(strtoull(code_str.c_str(), &end, 16));
+        uint8_t payload_len = 4;
+
+        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
+        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
+        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
+        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
+        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
+        STORE_U32(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, tag);
+        return _pack_codeable_concept_offset(cc_offset, block_offset);
     }
-    // Mask to 31 bits, set MSB flag.
-    uint32_t packed = (static_cast<uint32_t>(static_cast<int32_t>(relative_offset)) & 0x7FFFFFFFu) | FF_CUSTOM_STRING_FLAG;
-    return packed;
+    case FF_CodeableConceptSystem::SNOMED_CT: {
+        char* end = nullptr;
+        uint64_t concept_id = strtoull(code_str.c_str(), &end, 10);
+        uint8_t payload_len = 8;
+
+        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
+        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
+        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
+        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
+        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
+        STORE_U64(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, concept_id);
+        return _pack_codeable_concept_offset(cc_offset, block_offset);
+    }
+    case FF_CodeableConceptSystem::UNKNOWN: {
+        uint16_t url_index = 0;  // 0 = not yet registered
+        uint8_t payload_len = static_cast<uint8_t>(2 + code_str.size());
+
+        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
+        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
+        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
+        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
+        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
+        STORE_U16(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, url_index);
+        std::memcpy(ptr + FF_CODEABLE_CONCEPT::PAYLOAD + 2, code_str.data(), code_str.size());
+        return _pack_codeable_concept_offset(cc_offset, block_offset);
+    }
+    default: {
+        // UCUM, LOINC, BCP_47, MIME — raw ASCII string payload
+        uint8_t payload_len = static_cast<uint8_t>(code_str.size());
+
+        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
+        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
+        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
+        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
+        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
+        std::memcpy(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, code_str.data(), payload_len);
+        return _pack_codeable_concept_offset(cc_offset, block_offset);
+    }
+    }
 }
 
 // =====================================================================
-// FF_CODEABLE_CONCEPT — see src/FF_CodeableConcept.cpp
-// All encode/decode logic moved to its own translation unit.
+// FF_DECODE_CODEABLE_CONCEPT — unified dynamic fallback block decoder
 // =====================================================================
+// Reads the SYSTEM discriminator byte and variable-length PAYLOAD from
+// the unified FF_CODEABLE_CONCEPT.  Returns the code as a human-readable
+// string_view (thread-local buffer for fixed-width types).
+std::string_view FF_DECODE_CODEABLE_CONCEPT(const BYTE* base, Offset offset,
+                                          uint32_t version) {
+    using S = FF_CodeableConceptSystem;
+    S sys = static_cast<S>(base[offset + FF_CODEABLE_CONCEPT::SYSTEM]);
+    uint8_t len = base[offset + FF_CODEABLE_CONCEPT::LENGTH];
+    const BYTE* payload = base + offset + FF_CODEABLE_CONCEPT::PAYLOAD;
+
+    switch (sys) {
+    case S::UCUM:          // Raw ASCII UCUM expression
+    case S::LOINC:         // Raw ASCII LOINC code (reserved)
+    case S::BCP_47:        // Raw ASCII language tag (reserved)
+        return std::string_view(reinterpret_cast<const char*>(payload), len);
+
+    case S::SNOMED_CT: {   // 8-byte big-endian concept ID
+        thread_local char buf[24];
+        uint64_t id = LOAD_U64(payload);
+        int pos = snprintf(buf, sizeof(buf), "%llu",
+                          static_cast<unsigned long long>(id));
+        return std::string_view(buf, static_cast<size_t>(pos));
+    }
+    case S::DICOM: {       // 4-byte big-endian tag
+        thread_local char buf[16];
+        uint32_t tag = LOAD_U32(payload);
+        int pos = snprintf(buf, sizeof(buf), "%08X", tag);
+        return std::string_view(buf, static_cast<size_t>(pos));
+    }
+    case S::UNKNOWN: {     // uint16_t URL index + raw code string
+        // Skip the 2-byte URL index; return the remaining code bytes
+        uint16_t url_idx = LOAD_U16(payload);
+        (void)url_idx;  // caller can use this to resolve system URI
+        return std::string_view(
+            reinterpret_cast<const char*>(payload + 2), len - 2);
+    }
+    default:
+        return {};
+    }
+}
 
 // =====================================================================
 // FF_URL_DIRECTORY — stream-level URL intern table (chained-segment model)

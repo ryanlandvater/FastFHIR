@@ -472,17 +472,64 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
         case FF_FIELD_CODE: {
             uint32_t raw = LOAD_U32(base + slot);
             if (raw == FF_CODE_NULL) { out << "null"; break; }
-            if (raw & FF_CUSTOM_STRING_FLAG) {
-                Offset str_off = FF_ResolveCustomStringOffset(raw, parent_offset);
-                out << '"';
-                escape_json_string(out, FF_STRING(str_off, 0, version).read_view(base));
-                out << '"';
-            } else if (raw & FF_CODEABLE_CONCEPT_FLAG) {
-                Offset cc_off = FF_ResolveCodeableConceptOffset(raw, parent_offset);
-                out << '"';
-                escape_json_string(out, FF_DECODE_CODEABLE_CONCEPT(base, cc_off, version));
-                out << '"';
+            if (raw & FF_CODEABLE_CONCEPT_FLAG) {
+                // Sign-extend 31-bit relative offset to dynamic fallback block
+                int32_t rel_off = static_cast<int32_t>(raw << 1) >> 1;
+                Offset block_off = parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
+                // Read SYSTEM byte and payload length
+                FF_CodeableConceptSystem sys = static_cast<FF_CodeableConceptSystem>(
+                    LOAD_U8(base + block_off + 10));
+                uint8_t len = LOAD_U8(base + block_off + 11);
+                const BYTE* payload = base + block_off + 12;
+                switch (sys) {
+                    case FF_CodeableConceptSystem::UNKNOWN:
+                        // Payload: 2-byte URL index + raw code string
+                        if (len >= 2) {
+                            std::string_view code_str(
+                                reinterpret_cast<const char*>(payload + 2), len - 2);
+                            out << '"';
+                            escape_json_string(out, code_str);
+                            out << '"';
+                        } else {
+                            out << "null";
+                        }
+                        break;
+                    case FF_CodeableConceptSystem::UCUM:
+                        // Payload: raw ASCII UCUM expression
+                        out << '"';
+                        escape_json_string(out, std::string_view(
+                            reinterpret_cast<const char*>(payload), len));
+                        out << '"';
+                        break;
+                    case FF_CodeableConceptSystem::SNOMED_CT: {
+                        uint64_t concept_id = LOAD_U64(payload);
+                        char buf[24];
+                        int n = snprintf(buf, sizeof(buf), "%llu",
+                                        static_cast<unsigned long long>(concept_id));
+                        out << '"';
+                        escape_json_string(out, std::string_view(buf, n));
+                        out << '"';
+                        break;
+                    }
+                    case FF_CodeableConceptSystem::DICOM: {
+                        uint32_t tag = LOAD_U32(payload);
+                        char buf[16];
+                        int n = snprintf(buf, sizeof(buf), "%08X", tag);
+                        out << '"';
+                        escape_json_string(out, std::string_view(buf, n));
+                        out << '"';
+                        break;
+                    }
+                    default:
+                        // Unknown system — emit raw payload as string
+                        out << '"';
+                        escape_json_string(out, std::string_view(
+                            reinterpret_cast<const char*>(payload), len));
+                        out << '"';
+                        break;
+                }
             } else {
+                // Dictionary lookup (31-bit index)
                 if (const char* resolved = FF_ResolveCode(raw, version)) {
                     out << '"';
                     escape_json_string(out, resolved);
