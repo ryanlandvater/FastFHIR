@@ -530,9 +530,9 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
                 }
             } else {
                 // Dictionary lookup (31-bit index)
-                if (const char* resolved = FF_ResolveCode(raw, version)) {
+                auto resolved = FF_ResolveCode(raw, version); if (resolved.label.data()) {
                     out << '"';
-                    escape_json_string(out, resolved);
+                    escape_json_string(out, resolved.label);
                     out << '"';
                 } else {
                     out << "null";

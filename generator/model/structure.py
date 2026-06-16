@@ -50,6 +50,40 @@ INGEST_FIELD_OVERRIDES: dict = {}
 # StructureDefinition extraction & naming
 # ---------------------------------------------------------------------------
 
+
+
+
+def load_npm_valueset_bundle(pkg_dir: str) -> dict:
+    """Load all ValueSet-*.json AND CodeSystem-*.json files from an NPM
+    package directory into a bundle-compatible dict with 'entry' list."""
+    entries = []
+    if not os.path.isdir(pkg_dir):
+        return {"entry": entries}
+    for fname in os.listdir(pkg_dir):
+        if fname.endswith(".json") and (
+            fname.startswith("ValueSet-") or fname.startswith("CodeSystem-")
+        ):
+            with open(os.path.join(pkg_dir, fname), "r", encoding="utf-8") as f:
+                entries.append({"resource": json.load(f)})
+    return {"entry": entries}
+
+
+
+def load_npm_bundle(pkg_dir: str) -> dict:
+    """Load all StructureDefinition-*.json files from an NPM package directory
+    into a bundle-compatible dict with 'entry' list."""
+    entries = []
+    if not os.path.isdir(pkg_dir):
+        return {"entry": entries}
+    for fname in os.listdir(pkg_dir):
+        if not fname.startswith("StructureDefinition-") or not fname.endswith(".json"):
+            continue
+        with open(os.path.join(pkg_dir, fname), "r", encoding="utf-8") as f:
+            sd = json.load(f)
+        entries.append({"resource": sd})
+    return {"entry": entries}
+
+
 def extract_structure_definition(bundle_json: dict, resource_name: str) -> list[dict]:
     """Return the snapshot element list for `resource_name` from a FHIR bundle.
     Raises ValueError if the resource is absent (fail-loud).
@@ -294,7 +328,7 @@ def _annotate_code_enums(master_blocks: dict, code_enum_map: dict | None) -> Non
 # Version & resource discovery
 # ---------------------------------------------------------------------------
 
-def discover_versions(specs_dir: str = "fhir_specs") -> list[str]:
+def discover_versions(specs_dir: str = "fhir_packages") -> list[str]:
     """Discover available FHIR versions from extracted spec folders."""
     if not os.path.isdir(specs_dir):
         return []
@@ -307,35 +341,36 @@ def discover_versions(specs_dir: str = "fhir_specs") -> list[str]:
 
 
 def _discover_resource_names(
-    specs_dir: str = "fhir_specs",
+    specs_dir: str = "fhir_packages",
     versions: list[str] | None = None,
     include_abstract: bool = False,
 ) -> list[str]:
-    """Discover resource StructureDefinition names from profiles-resources.json."""
+    """Discover resource StructureDefinition names from NPM package files."""
     versions = versions or discover_versions(specs_dir)
     discovered: set[str] = set()
     for v in versions:
-        p = os.path.join(specs_dir, v, "profiles-resources.json")
-        if not os.path.exists(p):
+        pkg = os.path.join(specs_dir, v, "package")
+        if not os.path.isdir(pkg):
             continue
-        with open(p, "r", encoding="utf-8") as f:
-            bundle = json.load(f)
-        for entry in bundle.get("entry", []):
-            resource = entry.get("resource", {})
-            if resource.get("resourceType") != "StructureDefinition":
+        for fname in os.listdir(pkg):
+            if not fname.startswith("StructureDefinition-") or not fname.endswith(".json"):
                 continue
-            if resource.get("kind") != "resource":
+            with open(os.path.join(pkg, fname), "r", encoding="utf-8") as f:
+                sd = json.load(f)
+            if sd.get("resourceType") != "StructureDefinition":
                 continue
-            if not include_abstract and resource.get("abstract", False):
+            if sd.get("kind") != "resource":
                 continue
-            name = resource.get("name")
+            if not include_abstract and sd.get("abstract", False):
+                continue
+            name = sd.get("name")
             if name:
                 discovered.add(name)
     return sorted(discovered)
 
 
 def resolve_production_resources(
-    specs_dir: str = "fhir_specs",
+    specs_dir: str = "fhir_packages",
     versions: list[str] | None = None,
     profile: str | None = None,
 ) -> list[str]:
@@ -359,7 +394,7 @@ def resolve_production_resources(
         if not resources:
             raise RuntimeError(
                 "FASTFHIR_PRODUCTION_PROFILE=all: no resources discovered. "
-                "Ensure fhir_specs/<version>/profiles-resources.json exists."
+                "Ensure fhir_packages/<version>/package/ exists with StructureDefinition-*.json files."
             )
     else:
         raise RuntimeError(

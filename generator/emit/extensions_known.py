@@ -45,23 +45,21 @@ def generate_known_extensions(
     profiles like US Core, UK Core), merges with HL7-known-safe list, and
     emits sorted compile-time arrays with O(log n) lookup helpers.
     """
-    # Collect all extension URLs from downloaded spec bundles.
+    # Collect all extension URLs from NPM package StructureDefinition files.
     all_spec_ext_urls: set[str] = set()
     for v in versions:
-        for bundle_file in ("profiles-types.json", "profiles-resources.json"):
-            path = os.path.join(specs_dir, v, bundle_file)
-            if not os.path.exists(path):
+        pkg = os.path.join(specs_dir, v, "package")
+        if not os.path.isdir(pkg):
+            continue
+        for fname in os.listdir(pkg):
+            if not fname.startswith("StructureDefinition-") or not fname.endswith(".json"):
                 continue
-            with open(path, "r", encoding="utf-8") as fh:
-                bundle = json.load(fh)
-            for entry in bundle.get("entry", []):
-                res = entry.get("resource", {})
-                if res.get("resourceType") != "StructureDefinition":
-                    continue
-                if res.get("type") == "Extension":
-                    url = res.get("url", "").strip()
-                    if url:
-                        all_spec_ext_urls.add(url)
+            with open(os.path.join(pkg, fname), "r", encoding="utf-8") as fh:
+                sd = json.load(fh)
+            if sd.get("type") == "Extension":
+                url = sd.get("url", "").strip()
+                if url:
+                    all_spec_ext_urls.add(url)
 
     # Profile-native: base FHIR + major profiles (US Core, UK Core).
     profile_native_urls: set[str] = {

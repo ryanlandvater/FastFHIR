@@ -40,7 +40,7 @@ from generator.utilities import enclose_namespace, parse_recovery_tags
 def compile_fhir_library(
     resources: list[str],
     versions: list[str],
-    input_dir: str = "fhir_specs",
+    input_dir: str = "fhir_packages",
     output_dir: str = "generated_src",
     code_enum_map: dict | None = None,
     external_system_map: dict | None = None,
@@ -57,10 +57,9 @@ def compile_fhir_library(
     print("Generating FF_DataTypes...")
     type_bundles: list[tuple[str, dict]] = []
     for v in versions:
-        p = os.path.join(input_dir, v, "profiles-types.json")
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                type_bundles.append((v, json.load(f)))
+        pkg = os.path.join(input_dir, v, "package")
+        if os.path.isdir(pkg):
+            type_bundles.append((v, load_npm_bundle(pkg)))
 
     fwd_decls = {t + "Data" for t in _tm.PRODUCTION_TYPES}
     hpp_head = (

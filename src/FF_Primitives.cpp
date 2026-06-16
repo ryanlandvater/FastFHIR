@@ -348,10 +348,9 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
     }
 
     // ── System-aware CodeableConcept block encoding ──────────
-    // DICOM:    4-byte uint32_t  tag   parsed from hex string
-    // SNOMED:   8-byte uint64_t  id    parsed from decimal string
-    // UNKNOWN:  2-byte URL index + raw ASCII code string
-    // UCUM/LOINC/BCP_47/MIME:   raw ASCII string (variable)
+    // Fixed-width: DICOM(4) SNOMED(8) IDMP(8) RXNORM(4) CPT(2) CVX(1) MDC(4) MED_RT(8)
+    // Variable:    UCUM LOINC NDC ICD_9_CM ICD_10 ISO_3166 UNII PCLOCD
+    // Unknown:     2-byte URL index + raw code string
 
     Offset cc_offset = child_off;
     BYTE* ptr = __base + cc_offset;
@@ -370,7 +369,9 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
         STORE_U32(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, tag);
         return _pack_codeable_concept_offset(cc_offset, block_offset);
     }
-    case FF_CodeableConceptSystem::SNOMED_CT: {
+    case FF_CodeableConceptSystem::SNOMED_CT:
+    case FF_CodeableConceptSystem::IDMP:
+    case FF_CodeableConceptSystem::MED_RT: {
         char* end = nullptr;
         uint64_t concept_id = strtoull(code_str.c_str(), &end, 10);
         uint8_t payload_len = 8;
@@ -381,6 +382,46 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
         ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
         ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
         STORE_U64(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, concept_id);
+        return _pack_codeable_concept_offset(cc_offset, block_offset);
+    }
+    case FF_CodeableConceptSystem::RXNORM:
+    case FF_CodeableConceptSystem::MDC: {
+        char* end = nullptr;
+        uint32_t code = static_cast<uint32_t>(strtoull(code_str.c_str(), &end, 10));
+        uint8_t payload_len = 4;
+
+        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
+        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
+        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
+        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
+        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
+        STORE_U32(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, code);
+        return _pack_codeable_concept_offset(cc_offset, block_offset);
+    }
+    case FF_CodeableConceptSystem::CPT: {
+        char* end = nullptr;
+        uint16_t code = static_cast<uint16_t>(strtoull(code_str.c_str(), &end, 10));
+        uint8_t payload_len = 2;
+
+        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
+        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
+        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
+        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
+        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
+        STORE_U16(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, code);
+        return _pack_codeable_concept_offset(cc_offset, block_offset);
+    }
+    case FF_CodeableConceptSystem::CVX: {
+        char* end = nullptr;
+        uint8_t code = static_cast<uint8_t>(strtoul(code_str.c_str(), &end, 10));
+        uint8_t payload_len = 1;
+
+        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
+        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
+        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
+        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
+        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
+        ptr[FF_CODEABLE_CONCEPT::PAYLOAD] = code;
         return _pack_codeable_concept_offset(cc_offset, block_offset);
     }
     case FF_CodeableConceptSystem::UNKNOWN: {
@@ -397,7 +438,7 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
         return _pack_codeable_concept_offset(cc_offset, block_offset);
     }
     default: {
-        // UCUM, LOINC, BCP_47, MIME — raw ASCII string payload
+        // variable-length string systems — raw ASCII payload
         uint8_t payload_len = static_cast<uint8_t>(code_str.size());
 
         child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
@@ -417,41 +458,63 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
 // Reads the SYSTEM discriminator byte and variable-length PAYLOAD from
 // the unified FF_CODEABLE_CONCEPT.  Returns the code as a human-readable
 // string_view (thread-local buffer for fixed-width types).
-std::string_view FF_DECODE_CODEABLE_CONCEPT(const BYTE* base, Offset offset,
-                                          uint32_t version) {
+FF_CodeableConceptResult FF_DECODE_CODEABLE_CONCEPT(
+    const BYTE* base, Offset offset, uint32_t version)
+{
     using S = FF_CodeableConceptSystem;
     S sys = static_cast<S>(base[offset + FF_CODEABLE_CONCEPT::SYSTEM]);
     uint8_t len = base[offset + FF_CODEABLE_CONCEPT::LENGTH];
     const BYTE* payload = base + offset + FF_CODEABLE_CONCEPT::PAYLOAD;
 
     switch (sys) {
-    case S::UCUM:          // Raw ASCII UCUM expression
-    case S::LOINC:         // Raw ASCII LOINC code (reserved)
-    case S::BCP_47:        // Raw ASCII language tag (reserved)
-        return std::string_view(reinterpret_cast<const char*>(payload), len);
-
-    case S::SNOMED_CT: {   // 8-byte big-endian concept ID
-        thread_local char buf[24];
+    case S::SNOMED_CT:
+    case S::IDMP:
+    case S::MED_RT: {
         uint64_t id = LOAD_U64(payload);
-        int pos = snprintf(buf, sizeof(buf), "%llu",
-                          static_cast<unsigned long long>(id));
-        return std::string_view(buf, static_cast<size_t>(pos));
+        thread_local char buf[24];
+        int pos = snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(id));
+        return {sys, id, std::string_view(buf, static_cast<size_t>(pos))};
     }
-    case S::DICOM: {       // 4-byte big-endian tag
-        thread_local char buf[16];
+    case S::DICOM: {
         uint32_t tag = LOAD_U32(payload);
+        thread_local char buf[16];
         int pos = snprintf(buf, sizeof(buf), "%08X", tag);
-        return std::string_view(buf, static_cast<size_t>(pos));
+        return {sys, tag, std::string_view(buf, static_cast<size_t>(pos))};
     }
-    case S::UNKNOWN: {     // uint16_t URL index + raw code string
-        // Skip the 2-byte URL index; return the remaining code bytes
+    case S::RXNORM:
+    case S::MDC: {
+        uint32_t code = LOAD_U32(payload);
+        thread_local char buf[12];
+        int pos = snprintf(buf, sizeof(buf), "%u", code);
+        return {sys, code, std::string_view(buf, static_cast<size_t>(pos))};
+    }
+    case S::CPT: {
+        uint16_t code = LOAD_U16(payload);
+        thread_local char buf[8];
+        int pos = snprintf(buf, sizeof(buf), "%u", code);
+        return {sys, code, std::string_view(buf, static_cast<size_t>(pos))};
+    }
+    case S::CVX: {
+        uint8_t code = payload[0];
+        thread_local char buf[4];
+        int pos = snprintf(buf, sizeof(buf), "%u", code);
+        return {sys, code, std::string_view(buf, static_cast<size_t>(pos))};
+    }
+    case S::UCUM:
+    case S::LOINC:
+    case S::NDC:
+    case S::ICD_9_CM:
+    case S::ICD_10:
+    case S::ISO_3166:
+    case S::UNII:
+    case S::PCLOCD:
+        return {sys, 0, std::string_view(reinterpret_cast<const char*>(payload), len)};
+    case S::UNKNOWN: {
         uint16_t url_idx = LOAD_U16(payload);
-        (void)url_idx;  // caller can use this to resolve system URI
-        return std::string_view(
-            reinterpret_cast<const char*>(payload + 2), len - 2);
+        return {sys, url_idx, std::string_view(reinterpret_cast<const char*>(payload + 2), len - 2)};
     }
     default:
-        return {};
+        return {S::UNKNOWN, 0, {}};
     }
 }
 

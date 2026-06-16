@@ -79,18 +79,81 @@ constexpr uint32_t FF_CODE_PAYLOAD_MASK     = 0x7FFFFFFF;  // Lower 31 bits
 // Enforced at generation time by generator/emit/dictionary.py.
 constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x7FFFFFFF;
 
-// ── Dynamic Block System Discriminator ────────────────────────────────
-// Byte at offset 10 of the unified dynamic fallback block.  Tells the
-// read path how to interpret the variable-length payload at offset 12+.
+// ── CodeableConcept System Discriminator ───────────────────────────
+// Byte at offset 10 of the CodeableConcept block.
+// Values from FHIR terminology systems (§4.3.0.1):
+//   https://build.fhir.org/terminologies-systems.html
 enum class FF_CodeableConceptSystem : uint8_t {
-    UNKNOWN           = 0x00,  // payload: uint16_t URL index + raw code string
-    UCUM              = 0x01,  // payload: raw ASCII UCUM expression
-    SNOMED_CT         = 0x02,  // payload: 8-byte big-endian concept ID
-    LOINC             = 0x03,  // payload: raw ASCII LOINC code (reserved)
-    BCP_47            = 0x04,  // payload: raw ASCII language tag (reserved)
-    DICOM             = 0x05,  // payload: 4-byte big-endian tag
-    // 0x06–0xFF  reserved for future fixed-width terminologies
+    UNKNOWN           = 0x00,  // uint16_t URL index + raw code string
+
+    // http://unitsofmeasure.org
+    // raw ASCII UCUM expression (variable)
+    UCUM              = 0x01,
+
+    // http://snomed.info/sct
+    // 8-byte native-endian concept ID (uint64_t)
+    SNOMED_CT         = 0x02,
+
+    // http://www.nlm.nih.gov/research/umls/rxnorm
+    // 4-byte native-endian numeric code (uint32_t)
+    RXNORM            = 0x03,
+
+    // http://loinc.org
+    // raw ASCII LOINC code (variable, alphanumeric with check digit)
+    LOINC             = 0x04,
+
+    // http://dicom.nema.org/resources/ontology/DCM
+    // 4-byte native-endian tag (uint32_t)
+    DICOM             = 0x05,
+
+    // http://www.ama-assn.org/go/cpt
+    // 2-byte native-endian numeric code (uint16_t)
+    CPT               = 0x06,
+
+    // http://hl7.org/fhir/sid/cvx
+    // 1-byte native-endian vaccine code (uint8_t)
+    CVX               = 0x07,
+
+    // http://hl7.org/fhir/sid/ndc
+    // raw ASCII NDC drug code (variable, contains dashes)
+    NDC               = 0x08,
+
+    // http://hl7.org/fhir/sid/icd-9-cm
+    // raw ASCII ICD-9-CM code (variable, contains dots)
+    ICD_9_CM          = 0x09,
+
+    // http://hl7.org/fhir/sid/icd-10
+    // raw ASCII ICD-10 code (variable, alphanumeric)
+    ICD_10            = 0x0A,
+
+    // urn:iso:std:iso:3166
+    // raw ASCII ISO-3166 country code (variable, 2-letter)
+    ISO_3166          = 0x0B,
+
+    // urn:iso:std:iso:11073:10101
+    // 4-byte native-endian numeric code (uint32_t)
+    MDC               = 0x0C,
+
+    // http://fdasis.nlm.nih.gov
+    // raw ASCII UNII ingredient code (variable)
+    UNII              = 0x0D,
+
+    // http://va.gov/terminology/medrt
+    // 8-byte native-endian numeric code (uint64_t)
+    MED_RT            = 0x0E,
+
+    // https://fhir.infoway-inforoute.ca/CodeSystem/pCLOCD
+    // raw ASCII pCLOCD pan-Canadian code (variable)
+    PCLOCD            = 0x0F,
+
+    // http://hl7.org/fhir/ (IDMP medicinal product codes)
+    // 8-byte native-endian concept ID (uint64_t)
+    IDMP              = 0x10,
+
+    // 0x11–0xFE  reserved for future external systems
+    FHIR_DICTIONARY   = 0xFF,  // dictionary-resolved code (not a CodeableConcept block)
 };
+
 
 // FastFHIR magic bytes: "FFHR" in little-endian
 constexpr uint32_t FF_MAGIC_BYTES = 0x52484646;
@@ -976,11 +1039,18 @@ struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
     }
 };
 
-// Decode a unified dynamic block to its string representation.
-// Uses a thread-local buffer; returned string_view is valid until the
-// next call on the same thread.
-std::string_view FF_DECODE_CODEABLE_CONCEPT(const BYTE* base, Offset offset,
-                                          uint32_t version);
+// ── CodeableConcept decode result ──────────────────────────────
+struct FF_CodeableConceptResult {
+    FF_CodeableConceptSystem system;   // discriminator byte
+    uint64_t                 raw_code; // integer value (0 for string systems)
+    std::string_view         label;    // human-readable string
+};
+
+// Decode a CodeableConcept block.  Returns structured result with
+// system discriminator, raw integer (for fixed-width systems), and
+// human-readable label.  Thread-local buffer for label string.
+FF_CodeableConceptResult FF_DECODE_CODEABLE_CONCEPT(
+    const BYTE* base, Offset offset, uint32_t version);
 
 // Write an unknown-system dynamic block (SYSTEM=0x00) with a 2-byte URL index
 // followed by the raw code string.  Returns packed uint32_t with

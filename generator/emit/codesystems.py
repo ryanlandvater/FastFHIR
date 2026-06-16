@@ -115,7 +115,7 @@ def generate_code_systems(
     target_types: list[str],
     resources: list[str],
     versions: list[str],
-    input_dir: str = "fhir_specs",
+    input_dir: str = "fhir_packages",
     output_dir: str = "generated_src",
 ) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
     """Scan StructureDefinitions for code fields with required bindings,
@@ -133,18 +133,11 @@ def generate_code_systems(
     vs_indices: dict[str, tuple[dict, dict]] = {}
 
     for v in versions:
-        tp = os.path.join(input_dir, v, "profiles-types.json")
-        rp = os.path.join(input_dir, v, "profiles-resources.json")
-        vp = os.path.join(input_dir, v, "valuesets.json")
-        if os.path.exists(tp):
-            with open(tp, encoding="utf-8") as f:
-                type_bundles[v] = json.load(f)
-        if os.path.exists(rp):
-            with open(rp, encoding="utf-8") as f:
-                resource_bundles[v] = json.load(f)
-        if os.path.exists(vp):
-            with open(vp, encoding="utf-8") as f:
-                vs_indices[v] = _build_bundle_index(json.load(f))
+        pkg = os.path.join(input_dir, v, "package")
+        if os.path.isdir(pkg):
+            type_bundles[v] = load_npm_bundle(pkg)
+            resource_bundles[v] = type_bundles[v]  # same files for types+resources
+            vs_indices[v] = _build_bundle_index(load_npm_valueset_bundle(pkg))
 
     # ------------------------------------------------------------------
     # Scan StructureDefinitions for code + required binding

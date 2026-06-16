@@ -415,13 +415,14 @@ public:
                 uint32_t raw_code = LOAD_U32(m_base + m_node_offset);
                 if (raw_code == FF_CODE_NULL) return "";
 
-                if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
-                    return resolved;
+                auto resolved = FF_ResolveCode(raw_code, m_version);
+                if (resolved.label.data()) {
+                    return resolved.label;
                 }
 
                 if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
                     Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, m_node_offset);
-                    return FF_DECODE_CODEABLE_CONCEPT(m_base, abs_off, m_version);
+                    return FF_DECODE_CODEABLE_CONCEPT(m_base, abs_off, m_version).label;
                 }
 
                 return "";
@@ -477,13 +478,14 @@ inline Entry::operator std::string_view() const {
         uint32_t raw_code = LOAD_U32(base + absolute_offset());
         if (raw_code == FF_CODE_NULL) return "";
 
-        if (const char* resolved = FF_ResolveCode(raw_code, m_version)) {
-            return resolved;
+        auto resolved = FF_ResolveCode(raw_code, m_version);
+                if (resolved.label.data()) {
+            return resolved.label;
         }
 
         if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
             Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, parent_offset);
-            return FF_DECODE_CODEABLE_CONCEPT(base, abs_off, m_version);
+            return FF_DECODE_CODEABLE_CONCEPT(base, abs_off, m_version).label;
         }
 
         return "";
