@@ -244,7 +244,7 @@ def _compact_slot_size(f: dict) -> int:
 
     Must match compact_slot_size() in FF_Parser.cpp.  Only the SECOND
     definition in ffc.py is preserved here (the first was a duplicate
-    shadowed by the second — flagged in generator_refactor_plan.md §1.2).
+    shadowed by the second — flagged in generator_refactor_plan.md (deleted; in git history) §1.2).
     """
     if f.get("is_choice"):
         return 10  # TYPE_SIZE_CHOICE

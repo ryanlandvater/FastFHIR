@@ -8,8 +8,9 @@ base with redistribution/attribution restrictions) — never modify `LICENSE` or
 attribution headers from source files.
 
 **Pending work lives in `TASKS.md`** — read its Execution contract before claiming a task.
-The older checklist docs (`audit*.md`, `*_revision.todo.md`, `project_progress.prompt.md`,
-`generator_refactor_plan.md`, `unification.plan.md`) are superseded historical records.
+The former checklist/plan docs (audit, integration-revision, project-progress,
+generator-refactor, unification, refactor-history) were consolidated into TASKS.md and
+deleted; consult git history if you need them.
 
 ## Repo map
 
@@ -92,9 +93,10 @@ Windows: OpenSSL via vcpkg (see README → Windows Build Prerequisites).
    both include dirs are on the compiler path. (Legacy violations are being removed —
    TASKS.md A2.)
 5. **Errors are exceptions** (`std::runtime_error` / `std::system_error`) with actionable
-   messages on the write path; the read path returns falsy Nodes / null sentinels instead of
-   throwing on absent fields. Recovery-gate failures use `**RECOVERY_GATE**` /
-   `**RECOVERY_REQUIRED**` markers in messages — preserve them, tooling greps for them.
+   messages prefixed `"FastFHIR: "` on the write path; the read path returns falsy Nodes /
+   null sentinels instead of throwing on absent fields. (A structured
+   `"FastFHIR RECOVERY_REQUIRED:"` message convention is planned in TASKS.md Block C — it
+   does not exist in the code yet; don't invent it outside that block.)
 6. **Concurrency contract:** `claim_space()` appends are lock-free and thread-safe;
    pointer amendments and finalize are not concurrency-protected (see TASKS.md Q9). Don't
    introduce mutexes into the append hot path.
@@ -112,7 +114,20 @@ Windows: OpenSSL via vcpkg (see README → Windows Build Prerequisites).
 Common pitfalls for agents: `generated_src/` won't exist until you configure with network;
 `ctest` Python tests use `.venv/bin/python` if present, else the system interpreter; the
 wire-format pytest gate currently **skips silently** until TASKS.md A4 lands — a green run
-does not prove wire stability; MSVC is the strictest compiler for this codebase (incomplete
-types, namespace boundaries) — if you can't build on Windows, at least keep
-self-referential structs using `std::vector<Offset>` indirection (see `refactor_history.md`
-§4 lessons).
+does not prove wire stability.
+
+## Portability lessons (paid for on MSVC — don't relearn them)
+
+- MSVC rejects `std::vector<IncompleteType>` (GCC/Clang accept it). Self-referential
+  generated structs (e.g. `Extension.extension`) must use `std::vector<Offset>`
+  indirection; the `is_self_ref` flag must be set once at layout construction and honored
+  by **every** emitter (store, size, deserialize, view) — a single field-type change
+  propagates through all emission paths.
+- No Unicode in generator print/output statements — cp1252 Windows terminals crash on it.
+- Nothing in the build may require Perl (Windows runners lack it); OpenSSL comes from
+  vcpkg on Windows.
+- String-like FHIR types must be tested via `fhir_type in STRING_TYPES`
+  (`generator/model/type_map.py`), never `== "string"` — ad-hoc checks have silently
+  dropped `id`/`uri`/`markdown` fields before.
+- The `namespace FastFHIR` boundary in generated code is fragile: every emitter that opens
+  a namespace must visibly close it; keep explicit open/close markers in emitter code.

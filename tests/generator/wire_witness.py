@@ -1,7 +1,7 @@
 """Extract the wire-format-relevant constants from generated C++.
 
 THE GATE for the generator refactor is *wire-format stability*, not C++ source
-text byte-identity (see generator_refactor_plan.md section 0). The refactor may
+text byte-identity (see generator_refactor_plan.md (deleted; in git history) section 0). The refactor may
 freely reformat emitted C++; this witness ignores formatting and captures only
 the values that actually serialize into a `.ffhr` stream:
 

@@ -3,7 +3,7 @@
 #
 # Single source of truth for the two helpers that were previously
 # DUPLICATED verbatim in tools/generator/ffc.py and make_lib.py
-# (style violation SV-1 in generator_refactor_plan.md).
+# (style violation SV-1 in generator_refactor_plan.md (deleted; in git history)).
 #
 # `auto_header` and `write_if_changed` are byte-for-byte identical to
 # the originals so generated wire constants stay unchanged.

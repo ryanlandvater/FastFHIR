@@ -34,7 +34,7 @@ class Field:
     in the emitted C++ the byte offset is a SYMBOLIC sum
     (`RECOVERY = VALIDATION + VALIDATION_S`) the compiler resolves, so the
     wire position is determined by field ORDER + each field's size constant,
-    not a literal stored here. See generator_refactor_plan.md section 6.
+    not a literal stored here. See generator_refactor_plan.md (deleted; in git history) section 6.
     """
 
     # --- identity ---
