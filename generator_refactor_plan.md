@@ -1,3 +1,7 @@
+> **SUPERSEDED (2026-07-06)** — Pending items from this document were re-verified and
+> consolidated into [`TASKS.md`](TASKS.md); stale items were dropped there with rationale.
+> This file is retained as a historical record only. Do not work from its checklists.
+
 # FastFHIR Generator Refactor — Master Plan
 
 > **Status:** COMPLETED - See refactor_history.md | **Scope:** restructure tools/generator/ to root-level generator/ package; split the 2585-line ffc.py monolith into single-concern modules.

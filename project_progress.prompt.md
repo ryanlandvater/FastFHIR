@@ -1,3 +1,7 @@
+> **SUPERSEDED (2026-07-06)** — Pending items from this document were re-verified and
+> consolidated into [`TASKS.md`](TASKS.md); stale items were dropped there with rationale.
+> This file is retained as a historical record only. Do not work from its checklists.
+
 ## Recent Generator Refactor - Build Integration
 
 The `tools/generator/` monolith was decomposed into the `generator/` modular
