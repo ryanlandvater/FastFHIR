@@ -1,6 +1,6 @@
 """Wire-format stability gate for the generator refactor.
 
-This is the ONE hard gate (generator_refactor_plan.md section 6). It asserts
+This is the ONE hard gate (generator_refactor_plan.md (deleted; in git history) section 6). It asserts
 that the wire-relevant constants emitted by the generator match a committed
 baseline witness. C++ source formatting is explicitly NOT checked here.
 

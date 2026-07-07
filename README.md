@@ -1182,8 +1182,9 @@ URL is preserved as raw JSON with full fidelity.
 ## Generator Architecture
 
 The generator lives in `generator/` -- a modular package refactored from the
-original `tools/generator/` monolith. See `generator_refactor_plan.md` for the
-decomposition plan and `refactor_history.md` for the build integration record.
+original `tools/generator/` monolith (the decomposition plan and build
+integration record are preserved in git history as `generator_refactor_plan.md`
+and `refactor_history.md`).
 
 | Module | Purpose |
 |---|---|
