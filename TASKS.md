@@ -642,10 +642,9 @@ cite, quantify, and regression-guard.
   so it catches catastrophic regressions (accidental O(N²), heap allocation on the read
   path) without being flaky on shared CI runners. Full comparative benchmarking stays in
   the benchmark repo; this is a tripwire, not a benchmark.
-- [ ] F4. **Keep the benchmark repo honest:** when a task in this file changes the public
-  API or wire format, its Verify step must include noting the change for
-  FastFHIR-benchmark (open an issue there or re-run it). Add this rule as a line in the
-  Execution contract at the top of this file.
+- [x] F4. **Keep the benchmark repo honest:** when a task in this file changes the public
+  API or wire format, note the change for FastFHIR-benchmark (open an issue there or
+  re-run it). Codified as Execution contract rule 9 above. (151e025)
 - Verify (block): README benchmark section renders with a working repo link;
   `ctest -R cpp_test_perf_smoke` passes; every performance adjective in README has a
   citation or was scoped.
