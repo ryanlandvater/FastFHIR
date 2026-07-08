@@ -731,20 +731,18 @@ in FastFHIR targets.
   Linux/macOS/Windows, inject the version via the `FASTFHIR_VERSION_*` env vars already
   honored by `include/FF_Version.hpp` (tag `v1.2.3` → 1/2/3), attach binaries + SHA-256
   sums to the GitHub Release.
-- [ ] H3. **conda-forge feedstock** `Blocked on Q10`: submit to conda-forge
-  `staged-recipes` following the same path used for Iris-Codec's feedstock (separate
-  feedstock repo, recipe consuming the release tarball). Blocked on the license decision
-  because conda-forge requires an OSI-friendly license metadata entry — resolve Q10
-  first.
+- [ ] H3. **conda-forge feedstock** (unblocked — license is now MPL-2.0, OSI-approved):
+  submit to conda-forge `staged-recipes` following the same path used for Iris-Codec's
+  feedstock (separate feedstock repo, recipe consuming the release tarball; recipe
+  `license: MPL-2.0`, `license_file: LICENSE`). Needs a tagged release first (H2).
 - [ ] H4. **Offline-build path** `Blocked on Q7`: whichever mechanism Q7 selects
   (committed `generated_src/` snapshot under `third_party/` or a release-attached
   tarball + `FASTFHIR_GENERATED_SNAPSHOT=<path>` CMake option), configure must succeed
   with networking disabled. Acceptance: `cmake -S . -B build -DFASTFHIR_...` completes in
   a network-isolated container. Do FIRST in this block — H1 depends on it.
-- [ ] H5. **vcpkg / Conan recipe** (lower priority than H1–H3): write a port/recipe
-  consuming a release tarball. Registry submission has the same license-metadata
-  consideration as H3 (Q10); a private overlay port is still useful before that
-  resolves.
+- [ ] H5. **vcpkg / Conan recipe** (lower priority than H1–H3; unblocked — MPL-2.0 is
+  registry-friendly): write a port/recipe consuming a release tarball. Needs a tagged
+  release first (H2).
 
 ---
 
@@ -759,9 +757,10 @@ in FastFHIR targets.
   Seed heavily from `architecture.md` §4–§6 but write it as a spec (MUST/SHOULD), not a
   tour. This is the bus-factor mitigation: a third party must be able to read a `.ffhr`
   from this document alone.
-- [ ] I2. **Spec/format licensing statement** `Blocked on Q10`: add a licensing note to
-  `docs/SPEC.md` per Ryan's Q10 decision. This task only adds the spec's own notice; the
-  `LICENSE` file is touched exclusively by task I5.
+- [ ] I2. **Spec/format licensing statement** (Q10 decided: spec text under CC-BY-4.0):
+  add the CC-BY-4.0 notice to `docs/SPEC.md` plus a pointer to `TRADEMARK.md` (anyone may
+  implement from the spec; only conformant implementations may claim the name). Do
+  together with I1 when SPEC.md is created.
 - [ ] I3. **README claims alignment sweep** (one commit per bullet):
   - [ ] I3.1 Scope "Concurrent Mutex-Free Generation" to the append path: appends are
         lock-free; `amend_*`/finalize are single-threaded by contract (until C6/Q9 says
@@ -775,31 +774,22 @@ in FastFHIR targets.
         G4 lands (then G4's commit reverts this).
   - [ ] I3.5 Replace/anchor unquantified performance adjectives with citations to the F2
         benchmark table (do together with F2).
-- [ ] I4. **Contribution surface:** `CONTRIBUTING.md` (build prerequisites, the two style
-  regimes, wire-invariant warning, how to claim a TASKS.md item, the FF-SSL
-  right-to-repair PR path), GitHub issue + PR templates under `.github/`, and a README
-  "Roadmap" link pointing at this file.
-- [ ] I5. **License migration** `Blocked on Q10` — Ryan has approved changing the license
-  in principle to ensure adoption (2026-07-08); Q10 decides the target. Execute ONLY with
-  Q10's written answer, and Ryan must personally review the PR. Steps once decided:
-  1. Replace `LICENSE` with the chosen license text (this task is the single sanctioned
-     exception to the "never modify LICENSE" invariant in CLAUDE.md).
-  2. Update the `@remark FastFHIR Shared Source License (FF-SSL)` line in every source
-     file header (`grep -rln 'FF-SSL' src/ include/ tools/ python/ tests/ generator/`)
-     and the generator's `auto_header` emitter (`generator/emit/header.py`) so
-     regenerated files carry the new notice.
-  3. Update README's License section and badge, `pyproject.toml` license metadata, and
-     the license line in `CLAUDE.md`.
-  4. Unblock H3/H5 registry submissions if the new license satisfies their metadata
-     requirements.
-  5. If Q10 adopts the MPL + trademark recommendation: add a `TRADEMARK.md` conformance
-     policy (the "FastFHIR" name and compatibility claims require passing the official
-     conformance suite — A4 wire gate + B5 corpus are its seed) and a NOTICE file
-     carrying the attribution.
-  6. If Q10 adopts the CLA/DCO recommendation: add the DCO/CLA requirement to
-     `CONTRIBUTING.md` (I4) and enable the corresponding PR check in CI.
-  Acceptance: `grep -rn 'FF-SSL' .` (excluding git history references) returns only
-  intentional historical mentions; all packaging metadata agrees.
+- [x] I4. **Contribution surface** — done 2026-07-08 alongside I5: `CONTRIBUTING.md`
+  (build prerequisites, two style regimes, wire invariants, TASKS.md claim workflow,
+  DCO sign-off; the FF-SSL right-to-repair path is obsolete under MPL), GitHub issue +
+  PR templates under `.github/`, and a README roadmap link (in the License section).
+- [x] I5. **License migration to MPL-2.0** — done 2026-07-08 per Q10's answer:
+  1. ✔ `LICENSE` replaced with canonical MPL-2.0 text (373 lines, verbatim).
+  2. ✔ Every FF-SSL source-header notice replaced with the MPL Exhibit A notice
+     (`grep -rn 'FF-SSL' src/ include/ tools/ python/ tests/ generator/` → empty).
+     Note: the generator's `auto_header` emitter carries no license line, so generated
+     files (`dictionaries/`, `generated_src/`) needed no change.
+  3. ✔ README badge + License section rewritten; CLAUDE.md license text updated.
+     `pyproject.toml` has no `[project]` table yet — **H1 must set
+     `license = "MPL-2.0"` when it creates the packaging metadata.**
+  4. ✔ H3/H5 unblocked (MPL-2.0 is OSI-approved, registry-friendly).
+  5. ✔ `TRADEMARK.md` conformance policy + `NOTICE` attribution file added.
+  6. ✔ DCO requirement in `CONTRIBUTING.md`; the enforcing PR check lands with CI (E1).
 - Verify (block): docs render; a reviewer unfamiliar with the code can describe the
   header byte layout from SPEC.md alone; README contains no unscoped claims flagged in I3.
 
@@ -867,7 +857,8 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
   (4) adopt a CLA/DCO now (single-author moment) to preserve future dual-licensing.
   Rejected: AGPL (deters the adopters, not just Epic), LGPL (static-link relinking
   friction for C++), plain Apache-2.0/MIT (no fork-publication obligation).
-  > Answer (Ryan): License change approved in principle — target license TBD.
+  > Answer (Ryan, 2026-07-08): **MPL-2.0, with the full recommendation package** —
+  > trademark/conformance policy, CC-BY spec posture, DCO. Implemented in I5.
 
 - **Q11 (blocks G4):** Approve allocating a new permanent algorithm constant next to
   `FF_CHECKSUM_*` in `include/FF_Primitives.hpp` for an Ed25519 signature footer

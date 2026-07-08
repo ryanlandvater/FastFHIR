@@ -3,7 +3,7 @@
  * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
  * @copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @brief FastFHIR Byte Operations
- * @license FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
+ * @license This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0 (MPL-2.0) — see LICENSE or http://mozilla.org/MPL/2.0/.
  *
  * Endian-aware unaligned memory load/store primitives, IEEE-754 fallback
  * float/double conversions, and typed scalar encode/decode templates.

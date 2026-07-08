@@ -2,8 +2,9 @@
  * @file FF_Dictionary.cpp
  * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
  * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
- * @remark FastFHIR Shared Source License (FF-SSL) — see LICENSE file
- *         in the project root for terms.
+ * @remark This Source Code Form is subject to the terms of the Mozilla Public
+ *         License, v. 2.0. If a copy of the MPL was not distributed with this
+ *         file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * @brief Code dictionary resolve/lookup — shared by FF_Parser and FF_Builder.
  *
