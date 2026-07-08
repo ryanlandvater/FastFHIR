@@ -4,8 +4,9 @@ FastFHIR is a C++20 zero-copy **binary serialization format for HL7 FHIR** (R4/R
 offset-based data blocks in a memory-mapped arena, lock-free concurrent building, JSON
 ingest/export, optional compact archives, and a Python code generator that emits the typed
 C++ from official HL7 StructureDefinitions. Alpha stage. Licensed under FF-SSL (Apache-2.0
-base with redistribution/attribution restrictions) — never modify `LICENSE` or strip
-attribution headers from source files.
+base with redistribution/attribution restrictions); a license change to improve adoption
+is planned — see TASKS.md I5/Q10. Never modify `LICENSE` or strip attribution headers
+from source files outside that sanctioned task.
 
 **Pending work lives in `TASKS.md`** — read its Execution contract before claiming a task.
 Blocks A–E are engineering debt (build fixes, tests, recovery, WASM, hygiene); Blocks F–I

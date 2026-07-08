@@ -552,8 +552,10 @@ cached binary (`<binary_hash_hex>.wasm`). Never use one where the other is expec
 ## Block E — Hygiene & infrastructure
 
 - [ ] E1. **CI workflow** `Blocked on Q6` — none exists (`.github/` holds only `prompts/`).
-  Create `.github/workflows/ci.yml`: jobs per Q6's platform matrix; steps: checkout,
-  install deps (Linux: `libssl-dev`; mac: system; Windows: vcpkg openssl), configure with
+  Template: mirror the `cmake-linux-CI.yml` / `cmake-macos-CI.yml` / `cmake-win64-CI.yml`
+  structure from Ryan's [Iris-Codec](https://github.com/IrisDigitalPathology/Iris-Codec)
+  repo (proven on the same kind of C++/CMake project). Per job: checkout, install deps
+  (Linux: `libssl-dev`; mac: system; Windows: vcpkg openssl), configure with
   `-DFASTFHIR_BUILD_INGESTOR=ON -DFASTFHIR_BUILD_TESTS=ON`, build `build_all`, run
   `ctest --output-on-failure`, run `pytest tests/generator -q` and
   `ruff check generator tests/generator`. Cache `fhir_specs/` and the Synthea zip
@@ -657,6 +659,8 @@ cite, quantify, and regression-guard.
 "cryptographic sealing", but nothing adversarial exercises the parser, and a checksum
 footer detects corruption — not tampering (an attacker who can modify payload bytes can
 recompute the SHA-256 footer). For a healthcare data parser these claims must be earned.
+**Priority note (Ryan, 2026-07-08): fuzzing has not been done and is required — treat
+G1/G2 as high priority; they have no blockers.**
 
 - [ ] G1. **Fuzz targets** — new directory `tests/fuzz/` with three libFuzzer harnesses:
   - [ ] G1.1 `fuzz_parser.cpp`: `LLVMFuzzerTestOneInput(data, size)` → construct
@@ -700,26 +704,47 @@ recompute the SHA-256 footer). For a healthcare data parser these claims must be
 
 **Context:** today the only way to consume FastFHIR is a from-source build that needs
 network at configure time. Each packaging channel removes an adoption barrier.
+**Template:** Ryan already ships a C++ library this way — the
+[Iris-Codec](https://github.com/IrisDigitalPathology/Iris-Codec) repo has working
+GitHub Actions for all of this (`build-linux.yml`, `build-macos.yml`, `build-win.yml`,
+`build-wasm.yml`, `cmake-{linux,macos,win64}-CI.yml`, `distribute-pypi.yml`,
+`distribute-releases.yml`, `distribute-npm.yml`) plus a separate conda-forge feedstock.
+**Mirror those workflows rather than designing from scratch** — copy the structure, swap
+in FastFHIR targets.
 
-- [ ] H1. **PyPI wheels** `Blocked on Q7`: build the `fastfhir` package with
-  `cibuildwheel` (Linux manylinux + macOS + Windows). Prerequisite: the sdist must vendor
-  a pinned `generated_src/` snapshot (Q7) so pip installs never run the generator. Use
-  `scikit-build-core` as the build backend driving the existing CMake. Acceptance:
-  `pip install fastfhir` in a clean venv → `import fastfhir; fastfhir.Memory` works, and
-  `tests/python/test_readme.py` passes against the wheel.
-- [ ] H2. **Prebuilt CLI releases:** GitHub Actions release workflow producing
-  `ff_ingest`/`ff_export`/`ff_compact` binaries for the three platforms on tag push;
-  version injected via the `FASTFHIR_VERSION_*` env vars already honored by
-  `include/FF_Version.hpp` (tag `v1.2.3` → 1/2/3). Attach SHA-256 sums to the release.
-- [ ] H3. **vcpkg / Conan recipe:** write a port/recipe consuming a release tarball.
-  NOTE: both registries have licensing metadata; FF-SSL is nonstandard — check submission
-  requirements first and record findings in the PR even if submission is deferred
-  (a private overlay port is still useful for consumers).
+- [ ] H1. **PyPI wheels** `Blocked on Q7`: port Iris-Codec's `distribute-pypi.yml`
+  mechanics to this repo:
+  - `cibuildwheel` for Linux (custom manylinux 2.34 image, `CIBW_BUILD`/`CIBW_SKIP`
+    matrix), native jobs for macOS (`macos-latest` + `macos-13`) and `windows-latest`;
+    Linux runners `ubuntu-latest` + `ubuntu-24.04-arm`; Python 3.11–3.13.
+  - Versioning via setuptools-scm with `SETUPTOOLS_SCM_PRETEND_VERSION` extracted from
+    the release tag.
+  - Publish with OIDC trusted publishing (`pypa/gh-action-pypi-publish@release/v1`),
+    publish job gated on release events only; consolidate wheel artifacts from all build
+    jobs first.
+  - FastFHIR-specific prerequisite (Q7): the sdist/build must vendor a pinned
+    `generated_src/` snapshot so wheel builds never hit the network for HL7 bundles.
+  - Acceptance: `pip install fastfhir` in a clean venv → `import fastfhir;
+    fastfhir.Memory` works; `tests/python/test_readme.py` passes against the wheel.
+- [ ] H2. **Prebuilt CLI releases:** port `distribute-releases.yml` + the per-OS
+  `build-*.yml` pattern: on tag push, build `ff_ingest`/`ff_export`/`ff_compact` for
+  Linux/macOS/Windows, inject the version via the `FASTFHIR_VERSION_*` env vars already
+  honored by `include/FF_Version.hpp` (tag `v1.2.3` → 1/2/3), attach binaries + SHA-256
+  sums to the GitHub Release.
+- [ ] H3. **conda-forge feedstock** `Blocked on Q10`: submit to conda-forge
+  `staged-recipes` following the same path used for Iris-Codec's feedstock (separate
+  feedstock repo, recipe consuming the release tarball). Blocked on the license decision
+  because conda-forge requires an OSI-friendly license metadata entry — resolve Q10
+  first.
 - [ ] H4. **Offline-build path** `Blocked on Q7`: whichever mechanism Q7 selects
   (committed `generated_src/` snapshot under `third_party/` or a release-attached
   tarball + `FASTFHIR_GENERATED_SNAPSHOT=<path>` CMake option), configure must succeed
   with networking disabled. Acceptance: `cmake -S . -B build -DFASTFHIR_...` completes in
-  a network-isolated container.
+  a network-isolated container. Do FIRST in this block — H1 depends on it.
+- [ ] H5. **vcpkg / Conan recipe** (lower priority than H1–H3): write a port/recipe
+  consuming a release tarball. Registry submission has the same license-metadata
+  consideration as H3 (Q10); a private overlay port is still useful before that
+  resolves.
 
 ---
 
@@ -735,9 +760,8 @@ network at configure time. Each packaging channel removes an adoption barrier.
   tour. This is the bus-factor mitigation: a third party must be able to read a `.ffhr`
   from this document alone.
 - [ ] I2. **Spec/format licensing statement** `Blocked on Q10`: add a licensing note to
-  `docs/SPEC.md` per Ryan's decision (e.g. spec text under CC-BY so anyone can implement
-  a reader, while the implementation stays FF-SSL). HARD RULE: the `LICENSE` file itself
-  is Ryan-only — no task may modify it; this task only adds the spec's own notice.
+  `docs/SPEC.md` per Ryan's Q10 decision. This task only adds the spec's own notice; the
+  `LICENSE` file is touched exclusively by task I5.
 - [ ] I3. **README claims alignment sweep** (one commit per bullet):
   - [ ] I3.1 Scope "Concurrent Mutex-Free Generation" to the append path: appends are
         lock-free; `amend_*`/finalize are single-threaded by contract (until C6/Q9 says
@@ -755,6 +779,21 @@ network at configure time. Each packaging channel removes an adoption barrier.
   regimes, wire-invariant warning, how to claim a TASKS.md item, the FF-SSL
   right-to-repair PR path), GitHub issue + PR templates under `.github/`, and a README
   "Roadmap" link pointing at this file.
+- [ ] I5. **License migration** `Blocked on Q10` — Ryan has approved changing the license
+  in principle to ensure adoption (2026-07-08); Q10 decides the target. Execute ONLY with
+  Q10's written answer, and Ryan must personally review the PR. Steps once decided:
+  1. Replace `LICENSE` with the chosen license text (this task is the single sanctioned
+     exception to the "never modify LICENSE" invariant in CLAUDE.md).
+  2. Update the `@remark FastFHIR Shared Source License (FF-SSL)` line in every source
+     file header (`grep -rln 'FF-SSL' src/ include/ tools/ python/ tests/ generator/`)
+     and the generator's `auto_header` emitter (`generator/emit/header.py`) so
+     regenerated files carry the new notice.
+  3. Update README's License section and badge, `pyproject.toml` license metadata, and
+     the license line in `CLAUDE.md`.
+  4. Unblock H3/H5 registry submissions if the new license satisfies their metadata
+     requirements.
+  Acceptance: `grep -rn 'FF-SSL' .` (excluding git history references) returns only
+  intentional historical mentions; all packaging metadata agrees.
 - Verify (block): docs render; a reviewer unfamiliar with the code can describe the
   header byte layout from SPEC.md alone; README contains no unscoped claims flagged in I3.
 
@@ -805,13 +844,15 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
   already-assigned check become an atomic CAS so concurrent enrichment is safe?
   > Answer:
 
-- **Q10 (blocks I2):** Licensing strategy for the *wire-format specification* (not the
-  implementation — `LICENSE` stays as-is and is yours alone to change): may `docs/SPEC.md`
-  be published under an open license (e.g. CC-BY 4.0) so any party can always implement a
-  reader for their own archived data? This defuses the archival-lock-in objection while
-  keeping the implementation under FF-SSL. Alternatives: spec under FF-SSL too, or no
-  standalone spec.
-  > Answer:
+- **Q10 (blocks I2, I5, H3, H5):** License decision. Ryan has approved changing the
+  license in principle to ensure adoption (2026-07-08). Which target?
+  (a) Apache-2.0 (maximum adoption; attribution survives via NOTICE file; conda-forge/
+  vcpkg friendly); (b) MIT (simplest); (c) dual-license — permissive core + commercial
+  terms; (d) keep FF-SSL but publish `docs/SPEC.md` under CC-BY so readers can always be
+  independently implemented. Also decide: does the "prominent attribution" requirement
+  survive (as a NOTICE file / trademark policy), and does the right-to-repair clause have
+  a successor?
+  > Answer: License change approved in principle — target license TBD.
 
 - **Q11 (blocks G4):** Approve allocating a new permanent algorithm constant next to
   `FF_CHECKSUM_*` in `include/FF_Primitives.hpp` for an Ed25519 signature footer
