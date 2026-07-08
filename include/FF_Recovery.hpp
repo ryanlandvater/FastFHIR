@@ -4,7 +4,7 @@
  * @copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @version 0.1
  * @brief FastFHIR Recovery Tags
- * @license FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
+ * @license This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0 (MPL-2.0) — see LICENSE or http://mozilla.org/MPL/2.0/.
  *
  * This header defines the recovery tags for the FastFHIR format
  * Recovery tags are used to identify the type of data block during validation and error handling, enabling robust recovery strategies when parsing or processing FastFHIR streams.

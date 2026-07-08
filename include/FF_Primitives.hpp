@@ -4,7 +4,7 @@
  * @copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @version 0.1
  * @brief FastFHIR Core Primitives and Data Structures
- * @license FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
+ * @license This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0 (MPL-2.0) — see LICENSE or http://mozilla.org/MPL/2.0/.
  *
  * This header defines the core data structures and primitives for the FastFHIR format, including:
  * - FF_HEADER: The main file header containing metadata, checksum, and root resource information.

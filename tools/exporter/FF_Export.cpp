@@ -5,7 +5,7 @@
  * @date 2026-03-18
  * 
  * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
- * @remark FastFHIR Shared Source License (FF-SSL) — see LICENSE file in the project root for terms.
+ * @remark This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0 (MPL-2.0) — see LICENSE or http://mozilla.org/MPL/2.0/.
  * 
  * @brief FastFHIR Exporter — Convert FastFHIR binary stream to minified JSON.
  * 

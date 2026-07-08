@@ -5,7 +5,7 @@ FastFHIR
 [![Release](https://img.shields.io/github/v/release/RyanLandvater/FastFHIR?label=version&color=blue)](https://github.com/RyanLandvater/FastFHIR/releases)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
 ![FHIR R4/R5](https://img.shields.io/badge/FHIR-R4%20%7C%20R5-blueviolet)
-![License](https://img.shields.io/badge/license-FF--SSL-orange)
+![License](https://img.shields.io/badge/license-MPL--2.0-brightgreen)
 
 **FastFHIR** is a **wildly fast binary HL7 format** comprising a lock-free binary serializer and C++20 code generation pipeline targeting the HL7 FHIR resources (R4 and R5).
 
@@ -1250,17 +1250,26 @@ Resource scope constants in `generator/model/type_map.py`:
 ---
 
 # License
-This project is licensed under the FastFHIR Shared Source License (FF-SSL) v1.2, which is based on the Apache License 2.0 with additional restrictions:
 
-You may not modify or redistribute altered versions of the core implementation (see LICENSE for details).
+This project is licensed under the **Mozilla Public License, v. 2.0 (MPL-2.0)** — see the
+[LICENSE](LICENSE) file.
 
-Strict attribution to Dr. Ryan Erik Landvater and the FastFHIR project is required in all products, services, or derivative works.
+What that means in practice:
 
-You may not re-brand, rename, or claim authorship of the core implementation.
+- **Use it anywhere.** You may use, link, embed, and statically compile FastFHIR into
+  commercial and proprietary products with no obligations on your own code.
+- **Improvements flow back.** If you modify FastFHIR's source files and distribute the
+  result, those modified files must be made available under the MPL. Private divergent
+  forks of the core cannot be shipped closed — this protects the interoperability of the
+  `.ffhr` format for everyone.
+- **The name is separate.** The MPL covers the code, not the name. "FastFHIR" and claims
+  of FastFHIR compatibility are governed by the conformance policy in
+  [TRADEMARK.md](TRADEMARK.md): implementations claiming compatibility must pass the
+  official conformance suite. Forks are welcome under a different name.
+- **Attribution** is carried in the [NOTICE](NOTICE) file — please preserve it.
 
-The "right to repair" clause allows minimal patching only if the author fails to address critical bugs or vulnerabilities within 30 business days of notification.
-
-See the LICENSE file for the full legal text and compliance requirements.
+Contributions are accepted under MPL-2.0 with a DCO sign-off — see
+[CONTRIBUTING.md](CONTRIBUTING.md). The project roadmap lives in [TASKS.md](TASKS.md).
 
 ---
 **Attribution**: The design of FastFHIR is based upon the [Iris File Extension](https://www.sciencedirect.com/science/article/pii/S2153353925000471) (by Ryan Landvater) and [FlatBuffers](https://github.com/google/flatbuffers) (by Wouter van Oortmerssen and the Google Fun Propulsion Labs team).

@@ -1,0 +1,20 @@
+FastFHIR
+Copyright (c) 2026 Dr. Ryan Erik Landvater and the FastFHIR project.
+
+This product is licensed under the Mozilla Public License, v. 2.0
+(see the LICENSE file or http://mozilla.org/MPL/2.0/).
+
+Attribution: FastFHIR was created and is maintained by Dr. Ryan Erik
+Landvater (ryanlandvater [at] gmail [dot] com). Products and services
+incorporating this library are asked to preserve this attribution in
+their documentation or about screens.
+
+Design lineage: the FastFHIR binary architecture is based upon the
+Iris File Extension (Ryan Landvater;
+https://www.sciencedirect.com/science/article/pii/S2153353925000471)
+and FlatBuffers (Wouter van Oortmerssen and the Google Fun Propulsion
+Labs team; https://github.com/google/flatbuffers).
+
+Trademark: "FastFHIR" and claims of FastFHIR compatibility are governed
+by the trademark and conformance policy in TRADEMARK.md. The Mozilla
+Public License does not grant trademark rights (MPL-2.0 section 2.3).

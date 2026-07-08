@@ -15,7 +15,7 @@
 #
 # Author: Ryan Landvater (ryanlandvater[at]gmail[dot]com)
 # Copyright (c) 2025 Ryan Landvater. All rights reserved.
-# License: FastFHIR Shared Source License (FF-SSL)
+# License: Mozilla Public License, v. 2.0 (MPL-2.0) — see LICENSE or http://mozilla.org/MPL/2.0/
 # ============================================================
 
 from __future__ import annotations
