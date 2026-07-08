@@ -792,6 +792,12 @@ in FastFHIR targets.
      the license line in `CLAUDE.md`.
   4. Unblock H3/H5 registry submissions if the new license satisfies their metadata
      requirements.
+  5. If Q10 adopts the MPL + trademark recommendation: add a `TRADEMARK.md` conformance
+     policy (the "FastFHIR" name and compatibility claims require passing the official
+     conformance suite — A4 wire gate + B5 corpus are its seed) and a NOTICE file
+     carrying the attribution.
+  6. If Q10 adopts the CLA/DCO recommendation: add the DCO/CLA requirement to
+     `CONTRIBUTING.md` (I4) and enable the corresponding PR check in CI.
   Acceptance: `grep -rn 'FF-SSL' .` (excluding git history references) returns only
   intentional historical mentions; all packaging metadata agrees.
 - Verify (block): docs render; a reviewer unfamiliar with the code can describe the
@@ -845,14 +851,23 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
   > Answer:
 
 - **Q10 (blocks I2, I5, H3, H5):** License decision. Ryan has approved changing the
-  license in principle to ensure adoption (2026-07-08). Which target?
-  (a) Apache-2.0 (maximum adoption; attribution survives via NOTICE file; conda-forge/
-  vcpkg friendly); (b) MIT (simplest); (c) dual-license — permissive core + commercial
-  terms; (d) keep FF-SSL but publish `docs/SPEC.md` under CC-BY so readers can always be
-  independently implemented. Also decide: does the "prominent attribution" requirement
-  survive (as a NOTICE file / trademark policy), and does the right-to-repair clause have
-  a successor?
-  > Answer: License change approved in principle — target license TBD.
+  license in principle to ensure adoption (2026-07-08). Stated threat model: a large EHR
+  vendor (e.g. Epic) copying the work into a privately divergent derivative that
+  fragments the format. Note: no code license prevents cleanroom reimplementation of a
+  wire format (formats/interfaces aren't copyrightable) — anti-fragmentation comes from
+  the trademark + conformance-suite layer, not copyright.
+  **Standing recommendation (Claude, 2026-07-08):**
+  (1) Code → **MPL-2.0**: proprietary products may link/embed freely (adoption,
+  registry-friendly for H3/H5), but any shipped modification to FastFHIR source files
+  must be published — a private divergent fork of the core is not possible;
+  (2) Trademark "FastFHIR" + conformance policy: only implementations passing the
+  official conformance suite (seeded by the A4 wire gate + B5 round-trip corpus) may use
+  the name or claim compatibility — this, not the license, is the Epic defense;
+  (3) `docs/SPEC.md` → CC-BY-4.0 so anyone can implement a *conforming* reader;
+  (4) adopt a CLA/DCO now (single-author moment) to preserve future dual-licensing.
+  Rejected: AGPL (deters the adopters, not just Epic), LGPL (static-link relinking
+  friction for C++), plain Apache-2.0/MIT (no fork-publication obligation).
+  > Answer (Ryan): License change approved in principle — target license TBD.
 
 - **Q11 (blocks G4):** Approve allocating a new permanent algorithm constant next to
   `FF_CHECKSUM_*` in `include/FF_Primitives.hpp` for an Ed25519 signature footer
