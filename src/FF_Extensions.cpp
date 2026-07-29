@@ -8,7 +8,7 @@
 // ============================================================
 #ifdef FASTFHIR_ENABLE_EXTENSIONS
 
-#include "../include/FF_Extensions.hpp"
+#include "FF_Extensions.hpp"
 #include <cstring>
 #include <mutex>
 #include <cassert>

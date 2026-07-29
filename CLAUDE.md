@@ -22,8 +22,8 @@ deleted; consult git history if you need them.
 |---|---|
 | `include/` | Public + internal headers. `FastFHIR.hpp` is the consumer entry point. `FF_Recovery.hpp` and `FF_Primitives.hpp` define wire constants — **hand-maintained, values permanent**. |
 | `src/` | Core library: Memory (VMA), Builder, Parser, Compactor, Ingestor, Dictionary, Extensions (WASM), Primitives. |
-| `dictionaries/` | **Generated** code dictionaries (`FF_R4/R5_Dictionary.cpp`, `FF_Dictionary_Strings.cpp`, `FF_UCUM_Dictionary.cpp`, `FF_Codes.hpp`). Committed, but never hand-edit — regenerate via `python -m generator`. |
-| `generator/` | Python code generator (`pipeline.py` orchestrates; `model/` pure data, `emit/` model→str, `bindings/` Python emission). Source of truth for everything in `generated_src/` and `dictionaries/`. `master_codes.json` holds committed permanent code IDs. |
+| `dictionaries/` | **The permanent code ledger.** Generated but committed; every number here is a wire constant that decodes stored archives. Append-only — **read `dictionaries/README.md` before touching this or anything that assigns an ID.** Never hand-edit; regenerate via `python -m generator`. |
+| `generator/` | Python code generator — see `generator/README.md` for the module map. `pipeline.py` orchestrates; `model/` pure data, `emit/` model→str, `bindings/` Python emission. `emit/dictionary.py` owns **numbering** (permanent), `emit/codes_header.py` owns **naming** (source-level only). `master_codes.json` is the committed ID ledger. |
 | `generated_src/` | Generator output (~70 C++ files). **Gitignored** — produced at CMake configure time; requires network (HL7 / packages.fhir.org). |
 | `python/` | pybind11 bindings (`FF_PythonBindings.cpp` → `_core`) + `fastfhir` package. `fastfhir/fields.py` is generated at build time. |
 | `tools/` | CLI tools: `ingestor/FF_Ingest.cpp`, `exporter/FF_Export.cpp`, `compactor/FF_Compact.cpp`. |
@@ -51,6 +51,14 @@ ctest --test-dir build --output-on-failure
 
 # Generator tests (wire-format gate)
 pytest tests/generator -q
+
+# If the wire format has intentionally changed (new block field, new vtable
+# offset, new recovery tag, new code ID), the golden reference must be
+# committed alongside the change:
+#   pytest tests/generator --update-golden
+# Then `git add tests/generator/golden/wire_witness.json` in the same commit.
+# A golden update without a corresponding generator or C++ change is a red
+# flag — the gate exists to catch unintended drift.
 
 # Python lint/format (generator code only — generated C++ is out of scope)
 ruff check generator tests/generator && black --check generator tests/generator
@@ -80,6 +88,9 @@ Windows: OpenSSL via vcpkg (see README → Windows Build Prerequisites).
 - **Codes** — assignment tries the dictionary (`FF_GetDictionaryCode` → permanent uint32 ID
   from `master_codes.json`), else writes an `FF_CODEABLE_CONCEPT` block and sets
   `FF_CODEABLE_CONCEPT_FLAG` (`0x80000000`) in the slot. `FF_CODE_NULL` = `0xFFFFFFFF`.
+  Named constants are scoped by terminology source then CodeSystem
+  (`FF_CODE::FHIR::ADMINISTRATIVE_GENDER::MALE`, `FF_CODE::UCUM::MMHG`); FHIR
+  revision is *not* a namespace axis — that lives in the per-revision lookup tables.
 - **Extensions** — per-extension `EXT_REF` word routes to a registered WASM codec module
   (MSB=1), a retained URL in `FF_URL_DIRECTORY` (MSB=0), or suppression (`0xFFFFFFFF`).
 - **Compactor** — post-finalize rewrite of a sealed stream into a presence-bitmask compact
@@ -89,8 +100,10 @@ Windows: OpenSSL via vcpkg (see README → Windows Build Prerequisites).
 
 1. **Wire constants are permanent.** Never renumber or reorder: `RECOVERY_TAG` values
    (`include/FF_Recovery.hpp` — hand-maintained, generator only *validates* names against
-   it), dictionary code IDs (`generator/master_codes.json` — committed source of truth; the
-   generator must never reassign an existing ID), vtable offset arithmetic
+   it), dictionary code IDs (`generator/master_codes.json` — the committed ledger;
+   **existing IDs are never reassigned and retired IDs are never reused; new codes append
+   at `_next_id`** — this rule has been broken once, in `118d6ad`, silently invalidating
+   every stored archive; see `dictionaries/README.md`), vtable offset arithmetic
    (symbolic sums in headers — never introduce literal offsets), `FF_HEADER` layout,
    `FF_CODEABLE_CONCEPT_FLAG`, `FF_CODE_NULL`, `FF_NULL_OFFSET`.
 2. **Never hand-edit generated files** (`generated_src/`, `dictionaries/*.cpp`,
@@ -123,9 +136,9 @@ Windows: OpenSSL via vcpkg (see README → Windows Build Prerequisites).
 5. Check the box in TASKS.md with the commit hash, commit both together.
 
 Common pitfalls for agents: `generated_src/` won't exist until you configure with network;
-`ctest` Python tests use `.venv/bin/python` if present, else the system interpreter; the
-wire-format pytest gate currently **skips silently** until TASKS.md A4 lands — a green run
-does not prove wire stability.
+`ctest` Python tests use `.venv/bin/python` if present, else the system interpreter. The
+generator is deterministic — two runs produce byte-identical trees, so any diff between
+runs is a real change, not set-iteration noise.
 
 ## Portability lessons (paid for on MSVC — don't relearn them)
 
@@ -140,5 +153,3 @@ does not prove wire stability.
 - String-like FHIR types must be tested via `fhir_type in STRING_TYPES`
   (`generator/model/type_map.py`), never `== "string"` — ad-hoc checks have silently
   dropped `id`/`uri`/`markdown` fields before.
-- The `namespace FastFHIR` boundary in generated code is fragile: every emitter that opens
-  a namespace must visibly close it; keep explicit open/close markers in emitter code.

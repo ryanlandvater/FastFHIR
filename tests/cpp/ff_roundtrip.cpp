@@ -16,6 +16,8 @@
 #include <FF_Ingestor.hpp>
 #include "FF_AllTypes.hpp"
 
+#include <openssl/evp.h>
+
 #include <cstring>
 #include <iostream>
 #include <fstream>
@@ -35,6 +37,21 @@ static std::string slurp(const std::string& path) {
     std::string buf(static_cast<size_t>(size), '\0');
     f.read(buf.data(), size);
     return buf;
+}
+
+static std::vector<BYTE> sha256(const unsigned char *data, Size len)
+{
+    std::vector<BYTE> hash(EVP_MAX_MD_SIZE);
+    unsigned int out_len = 0;
+
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
+    EVP_DigestUpdate(ctx, data, len);
+    EVP_DigestFinal_ex(ctx, hash.data(), &out_len);
+    EVP_MD_CTX_free(ctx);
+
+    hash.resize(out_len);
+    return hash;
 }
 
 int main(int argc, char** argv) {
@@ -73,7 +90,6 @@ int main(int argc, char** argv) {
 
         // 4. Seal
         builder.set_root(root_handle);
-        std::array<unsigned char, 32> sha256{};
         auto view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
         if (view.empty()) {
             std::cerr << "finalize returned empty view\n";

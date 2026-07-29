@@ -26,3 +26,6 @@ output/
 
 .arbiter/
 *.py.md
+
+# macOS
+.DS_Store

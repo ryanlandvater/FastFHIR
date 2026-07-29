@@ -7,12 +7,12 @@
 // Main Thread Ingestion Routing & Bundle Parsing
 // ============================================================
 #include "FF_Ingestor.hpp"
-#include "../include/FF_Queue.hpp"
-#include "../include/FF_SIMD.hpp"
-#include "../include/FF_Utilities.hpp"
-#include "../generated_src/FF_Bundle.hpp"
-#include "../generated_src/FF_IngestMappings.hpp"
-#include "../generated_src/FF_KnownExtensions.hpp"
+#include "FF_Queue.hpp"
+#include "FF_SIMD.hpp"
+#include "FF_Utilities.hpp"
+#include "FF_Bundle.hpp"
+#include "FF_IngestMappings.hpp"
+#include "FF_KnownExtensions.hpp"
 #ifdef FASTFHIR_ENABLE_EXTENSIONS
 #include "FF_Extensions.hpp"
 #endif
@@ -130,7 +130,11 @@ namespace FastFHIR::Ingest
 
     struct UrlBatchEntry
     {
-        std::string_view url; // points into a chunk_storage padded_string
+        // MUST point into the caller-owned chunk (a chunk_storage padded_string),
+        // never into a simdjson parser buffer: the consumer reads these views on
+        // another thread after the producer's parser is gone. See the
+        // raw_json_token() use in collect_extension_urls_pipeline().
+        std::string_view url;
     };
 
     struct UrlBatch
@@ -223,9 +227,33 @@ namespace FastFHIR::Ingest
                         std::string_view ext_key = ext_field.unescaped_key().value_unsafe();
                         if (ext_key == "url")
                         {
-                            std::string_view url_sv;
-                            if (ext_field.value().get_string().get(url_sv) == simdjson::SUCCESS)
-                                found_url = url_sv;
+                            // Take the URL from the SOURCE buffer, never from
+                            // get_string(). ondemand::get_string() unescapes into the
+                            // parser's internal string buffer, which is reused by the
+                            // very next string parsed from this document -- including
+                            // the unescaped_key() calls in the remaining iterations of
+                            // this loop -- and is destroyed when scan_chunk_producer()
+                            // returns, well before the consumer thread reads the batch.
+                            // Every URL therefore arrived blank at the right length,
+                            // so no '/' was found, no segments were interned, and the
+                            // directory held one junk row per URL.
+                            //
+                            // raw_json_token() points into the chunk, which the caller
+                            // owns for the entire FF_PredigestExtensionURLs call.
+                            std::string_view tok = ext_field.value().raw_json_token();
+                            if (tok.size() >= 2 && tok.front() == '"')
+                            {
+                                const size_t close = tok.find('"', 1);
+                                if (close != std::string_view::npos)
+                                {
+                                    const std::string_view inner = tok.substr(1, close - 1);
+                                    // A backslash-escaped URL has no zero-copy source
+                                    // representation. Leave found_url empty so the URL
+                                    // is skipped rather than interned wrong.
+                                    if (inner.find('\\') == std::string_view::npos)
+                                        found_url = inner;
+                                }
+                            }
                         }
                         else
                         {
@@ -523,12 +551,41 @@ namespace FastFHIR::Ingest
     // FF_PredigestExtensionURLs  —  public entry point
     // ─────────────────────────────────────────────────────────────────────────────
 
+    // Normalise a caller payload into something simdjson can parse, WITHOUT copying
+    // when we are allowed not to.
+    //
+    // simdjson reads up to SIMDJSON_PADDING bytes past the logical end of a document,
+    // so it needs that slack to be readable. padded_string_view is the zero-copy way
+    // to say "it is": it is just a string_view plus a capacity. padded_string, by
+    // contrast, always allocates and memcpy's the whole document
+    // (allocate_padded_buffer + memcpy).
+    //
+    // So: if the caller declared enough capacity, parse their buffer in place. Only
+    // fall back to an owning copy when they did not, and keep that copy alive in
+    // `owned_fallback` for as long as the returned view is used.
+    static simdjson::padded_string_view make_padded_payload(
+        std::string_view json,
+        size_t declared_capacity,
+        simdjson::padded_string &owned_fallback)
+    {
+        if (declared_capacity >= json.size() + simdjson::SIMDJSON_PADDING)
+            return simdjson::padded_string_view(json, declared_capacity);
+
+        owned_fallback = simdjson::padded_string(json.data(), json.size());
+        return simdjson::padded_string_view(
+            std::string_view(owned_fallback.data(), owned_fallback.length()),
+            owned_fallback.length() + simdjson::SIMDJSON_PADDING);
+    }
+
+    // `padded` must be a genuinely padded buffer: simdjson reads up to
+    // SIMDJSON_PADDING bytes past the logical end. The caller owns it for the
+    // duration of the call, and the chunk views handed to the URL predigest
+    // point into the chunks this function creates, not into `padded`.
     static void build_bundle_entry_chunks(
-        std::string_view json_payload,
+        simdjson::padded_string_view padded,
         std::vector<simdjson::padded_string> &chunk_storage)
     {
         simdjson::ondemand::parser splitter;
-        simdjson::padded_string padded(json_payload.data(), json_payload.size());
         simdjson::ondemand::document doc = splitter.iterate(padded);
         std::string_view rtype;
         if (doc["resourceType"].get_string().get(rtype) == simdjson::SUCCESS &&
@@ -548,7 +605,7 @@ namespace FastFHIR::Ingest
         else
         {
             // Non-Bundle ingestion still uses prechunked mode: one chunk = full payload.
-            chunk_storage.emplace_back(json_payload.data(), json_payload.size());
+            chunk_storage.emplace_back(padded.data(), padded.length());
         }
     }
 
@@ -920,12 +977,29 @@ namespace FastFHIR::Ingest
             // Create a local parser instance for the main thread to handle the initial routing and metadata extraction
             auto &parser = m_parser_pool[0];
 
+            // One payload view, shared by the root routing parse and the bundle
+            // splitter below. Zero copies when the caller set payload_capacity;
+            // otherwise exactly one padded copy, held alive by owned_payload.
+            //
+            // Previously the root parse passed `size + SIMDJSON_PADDING` as the
+            // capacity of the *caller's* buffer, asserting padding the library does
+            // not own, so a caller string_view ending near a page boundary was an
+            // out-of-bounds read. The splitter then made a second padded copy of the
+            // same bytes.
+            simdjson::padded_string owned_payload; // empty on the zero-copy path
+            const simdjson::padded_string_view payload =
+                make_padded_payload(request.json_string, request.payload_capacity, owned_payload);
+            if (owned_payload.length() != 0)
+            {
+                // Not an error — just the difference between a light ingest and one that
+                // memcpy's the whole document. Says so plainly so it is findable.
+                m_logger.log("[Info] FastFHIR: IngestRequest::payload_capacity not set; "
+                             "copied the payload to guarantee simdjson padding. Set "
+                             "payload_capacity to parse your buffer in place.");
+            }
+
             // Parse the root JSON object to determine if it's a Bundle or a single resource
-            simdjson::ondemand::document doc = parser.iterate(
-                                                         request.json_string.data(),
-                                                         request.json_string.size(),
-                                                         request.json_string.size() + simdjson::SIMDJSON_PADDING)
-                                                   .value();
+            simdjson::ondemand::document doc = parser.iterate(payload).value();
             simdjson::ondemand::object root_obj = doc.get_object();
             std::string_view root_type;
             if (root_obj["resourceType"].get_string().get(root_type) != simdjson::SUCCESS)
@@ -934,9 +1008,7 @@ namespace FastFHIR::Ingest
             }
 
             std::vector<simdjson::padded_string> entry_chunks;
-            build_bundle_entry_chunks(
-                std::string_view(request.json_string.data(), request.json_string.size()),
-                entry_chunks);
+            build_bundle_entry_chunks(payload, entry_chunks);
 
             // =====================================================================
             // PREDIGESTION: scan extension URLs and build FF_URL_DIRECTORY
@@ -970,13 +1042,14 @@ namespace FastFHIR::Ingest
             // =====================================================================
             m_logger.log("[Info] FastFHIR: Allocating Top-Down Bundle structure...");
             root_obj.reset();
-            std::vector<std::string_view> task_payloads;
 
             // =====================================================================
-            // 1. EXTRACT DATA & QUEUE TASKS
+            // 1. EXTRACT BUNDLE METADATA
             // =====================================================================
-            // This single line parses all metadata AND slices the entry array into our task vector.
-            BundleData pre_bundle = Bundle_from_json(root_obj, &m_logger, &task_payloads);
+            // Parses the Bundle envelope (id, type, timestamp, ...) only. Entry
+            // slicing is NOT done here — build_bundle_entry_chunks() above already
+            // produced entry_chunks, and that is what the workers consume below.
+            BundleData pre_bundle = Bundle_from_json(root_obj, &m_logger);
 
             // =====================================================================
             // 2. PREPARE THE PREALLOCATED ARRAY
@@ -992,11 +1065,9 @@ namespace FastFHIR::Ingest
             // Worker threads then patch fields *within* each already-allocated slot
             // using MutableEntry assignments — no secondary allocation or pointer
             // chasing for the array elements themselves.
-            size_t count = task_payloads.size();
-            if (entry_chunks.size() != count)
-            {
-                return FF_Result{FF_FAILURE, "Bundle chunk/task count mismatch."};
-            }
+            // entry_chunks is the single source of truth for how many entries
+            // there are: the workers below index straight into it.
+            const size_t count = entry_chunks.size();
             pre_bundle.entry = std::vector<BundleentryData>(count);
 
             // =====================================================================
@@ -1127,12 +1198,15 @@ namespace FastFHIR::Ingest
                                  std::string("insert_at_field array target '") + key.name +
                                      "' requires a typed FF_FieldKey (owner recovery is undefined)."};
             }
-            if (key.array_entries_are_offsets != 0)
-            {
-                return FF_Result{FF_FAILURE,
-                                 std::string("insert_at_field does not support offset-array field '") + key.name +
-                                     "' yet. Only inline-block arrays are supported."};
-            }
+            // No element-layout check here on purpose. The ArrayField path below
+            // never touches individual entries: the generated *_from_json writes
+            // the whole array block, and we copy that block's offset into the
+            // parent slot. The FF_ARRAY header carries its own kind and stride,
+            // so every reader re-derives the layout from the wire
+            // (FF_ARRAY::entries_are_pointers, consumed in
+            // ParserOps::standard_entry_as_node). The schema-side
+            // `array_entries_are_offsets` flag disagreed with the wire in both
+            // directions and gated this field for no reason.
         }
         if (key.kind != FF_FIELD_BLOCK)
         {

@@ -18,3 +18,13 @@ Labs team; https://github.com/google/flatbuffers).
 Trademark: "FastFHIR" and claims of FastFHIR compatibility are governed
 by the trademark and conformance policy in TRADEMARK.md. The Mozilla
 Public License does not grant trademark rights (MPL-2.0 section 2.3).
+
+Terminology: FastFHIR's contribution is the code NUMBERING, not the
+terminology. The dictionaries in dictionaries/ carry code values from
+HL7 FHIR and UCUM only. FastFHIR does not redistribute SNOMED CT,
+LOINC, RxNorm, ICD, CPT, NDC or any other external terminology --
+those codes travel as FF_CODEABLE_CONCEPT blocks carrying the code the
+user supplied, under the user's own license. HL7(R) and FHIR(R) are
+registered trademarks of Health Level Seven International; UCUM is
+maintained by the Regenstrief Institute, Inc. and the UCUM
+Organization. See THIRD_PARTY_NOTICES.md.

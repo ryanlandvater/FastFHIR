@@ -55,7 +55,9 @@ def emit_python_ast(master_blocks, block_key_defs, token_registry, output_dir="g
         f.write("    def __getitem__(self, index):\n")
         f.write("        if isinstance(index, int):\n")
         f.write("            return self.item_class(self.path + (index,))\n")
-        f.write("        raise TypeError('FastFHIR: Only integer indexing is allowed for arrays.')\n")
+        f.write(
+            "        raise TypeError('FastFHIR: Only integer indexing is allowed for arrays.')\n"
+        )
 
     for path, layout in block_key_defs:
         class_name = path.replace(".", "_").upper()
@@ -75,7 +77,9 @@ def emit_python_ast(master_blocks, block_key_defs, token_registry, output_dir="g
                 is_arr = f_def.get("is_array", False)
                 if is_arr:
                     f.write(f"    def {safe_name}(self):\n")
-                    f.write(f"        return ASTArrayNode(self.path + ({token_id},), self.item_class)\n")
+                    f.write(
+                        f"        return ASTArrayNode(self.path + ({token_id},), self.item_class)\n"
+                    )
                 else:
                     f.write(f"    def {safe_name}(self):\n")
                     f.write(f"        return ASTNode(self.path + ({token_id},))\n")
@@ -113,7 +117,9 @@ def emit_python_ast_stubs(master_blocks, block_key_defs, output_dir="generated_s
         f.write("    def cast(self, target_class: Type[T] | ASTNode) -> T: ...\n\n")
         f.write("class ASTArrayNode(ASTNode):\n")
         f.write("    item_class: Type[ASTNode]\n")
-        f.write("    def __init__(self, current_path: Tuple, item_class: Type[ASTNode]) -> None: ...\n")
+        f.write(
+            "    def __init__(self, current_path: Tuple, item_class: Type[ASTNode]) -> None: ...\n"
+        )
         f.write("    def __getitem__(self, index: int) -> ASTNode: ...\n\n")
     for path, layout in block_key_defs:
         class_name = path.replace(".", "_").upper()

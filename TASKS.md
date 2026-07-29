@@ -46,7 +46,7 @@
 Both build systems reference a lowercase name that does not exist. On case-sensitive
 filesystems (Linux), any build with `FASTFHIR_BUILD_INGESTOR=ON` fails.
 
-- [ ] A1.1 In `CMakeLists.txt`, find the line (currently line 178):
+- [x] A1.1 In `CMakeLists.txt`, find the line (currently line 178):
   ```cmake
   add_executable(ff_ingest tools/ingestor/ff_ingest.cpp)
   ```
@@ -54,7 +54,7 @@ filesystems (Linux), any build with `FASTFHIR_BUILD_INGESTOR=ON` fails.
   ```cmake
   add_executable(ff_ingest tools/ingestor/FF_Ingest.cpp)
   ```
-- [ ] A1.2 In `BUILD.bazel`, find the line (currently line 49):
+- [x] A1.2 In `BUILD.bazel`, find the line (currently line 49):
   ```python
   srcs = ["tools/ingestor/ff_ingest.cpp"],
   ```
@@ -82,7 +82,7 @@ paths break out-of-tree layouts and must become bare: `#include "X.hpp"`.
 **Rule for every subtask:** change ONLY the path inside the quotes. Keep the header name,
 keep the order of includes, keep any trailing comment on the line.
 
-- [ ] A2.1 `src/FF_Parser.cpp` — lines 13–17. Current state:
+- [x] A2.1 `src/FF_Parser.cpp` — lines 13–17. Current state:
   ```cpp
   #include "../include/FF_Utilities.hpp"
   #include "../include/FF_Parser.hpp"
@@ -98,17 +98,17 @@ keep the order of includes, keep any trailing comment on the line.
   #include "FF_Dictionary.hpp"
   #include "FF_Reflection.hpp"
   ```
-- [ ] A2.2 `src/FF_Compactor.cpp` — top of file: `"../include/FF_Compactor.hpp"`,
+- [x] A2.2 `src/FF_Compactor.cpp` — top of file: `"../include/FF_Compactor.hpp"`,
   `"../include/FF_Queue.hpp"`, `"../include/FF_Utilities.hpp"`,
   `"../generated_src/FF_Reflection.hpp"` → bare names, same pattern as A2.1.
-- [ ] A2.3 `src/FF_Ingestor.cpp` — lines 6–11: `"../include/FF_Queue.hpp"`,
+- [x] A2.3 `src/FF_Ingestor.cpp` — lines 6–11: `"../include/FF_Queue.hpp"`,
   `"../include/FF_SIMD.hpp"`, `"../include/FF_Utilities.hpp"`,
   `"../generated_src/FF_Bundle.hpp"`, `"../generated_src/FF_IngestMappings.hpp"`,
   `"../generated_src/FF_KnownExtensions.hpp"` → bare names.
-- [ ] A2.4 `src/FF_Extensions.cpp` line 7 (`"../include/FF_Extensions.hpp"`) and
+- [x] A2.4 `src/FF_Extensions.cpp` line 7 (`"../include/FF_Extensions.hpp"`) and
   `src/FF_Dictionary.cpp` lines 16–17 (`"../include/FF_Dictionary.hpp"`,
   `"../include/FF_Primitives.hpp"` — keep its trailing comment) → bare names.
-- [ ] A2.5 Generator emitters must also emit bare includes, or the problem returns on
+- [x] A2.5 Generator emitters must also emit bare includes, or the problem returns on
   regeneration. Known instance — `generator/emit/master_dictionary.py` line 103:
   ```python
   cpp = '#include "../include/FF_Dictionary.hpp"\n\nstatic const FF_CodeEntry k{}Table[] = {{\n'.format(v_name)
@@ -118,7 +118,7 @@ keep the order of includes, keep any trailing comment on the line.
   `grep -rn '"\.\./' generator/` and fix each the same way. After fixing, regenerate
   (`python -m generator`) and confirm the regenerated `dictionaries/` files changed only
   in their include lines (`git diff dictionaries/`).
-- [ ] A2.6 Full rebuild + test after A2.1–A2.5 are all merged (do this task last):
+- [x] A2.6 Full rebuild + test after A2.1–A2.5 are all merged (do this task last):
   clean-configure, `cmake --build build --target build_all -j`,
   `ctest --test-dir build --output-on-failure`.
 - Locate (whole block): `grep -rn '"\.\./' src/ include/ generator/`
@@ -171,7 +171,7 @@ test calls `pytest.skip` — a green pytest run is meaningless. Additionally
 `tests/generator/conftest.py` falls back to a stale in-repo `generated_src/` when the
 generator fails, converting "generator broken" into "tests pass".
 
-- [ ] A4.1 Generate and commit the baseline:
+- [x] A4.1 Generate and commit the baseline:
   ```bash
   python -m generator                      # writes generated_src/ (needs network)
   python -m tests.generator.wire_witness generated_src tests/generator/golden/wire_witness.json
@@ -179,7 +179,7 @@ generator fails, converting "generator broken" into "tests pass".
   Inspect the JSON before committing: it must contain non-empty `recovery_tags`,
   dictionary code entries, and vtable data. Commit ONLY the JSON (remember
   `generated_src/` is gitignored and must stay so).
-- [ ] A4.2 Remove the fallback in `tests/generator/conftest.py`. Current state (lines
+- [x] A4.2 Remove the fallback in `tests/generator/conftest.py`. Current state (lines
   ~61–64):
   ```python
   fallback = _REPO_ROOT / "generated_src"
@@ -204,7 +204,7 @@ generator fails, converting "generator broken" into "tests pass".
   reason) only when `shutil.which("c++")` is None. Rationale: the witness reads constants
   with regex and cannot detect emitter bugs that produce non-compiling C++ — this class of
   bug has shipped before.
-- [ ] A4.4 Add a determinism test, `tests/generator/test_determinism.py`: run
+- [x] A4.4 Add a determinism test, `tests/generator/test_determinism.py`: run
   `python -m generator --output-dir <tmpA>` and `--output-dir <tmpB>`, then assert the
   trees are byte-identical (`filecmp.dircmp` recursive, assert no diff_files/left_only/
   right_only). If `--output-dir` is not a supported flag, check
@@ -217,30 +217,276 @@ generator fails, converting "generator broken" into "tests pass".
 ### A5. Verify dictionary code-ID integrity guards (master-codes path)
 
 **Context:** Dictionary code IDs are wire values: once a stream is written with ID N for
-code string S, N must mean S forever. The current pipeline
-(`generator/emit/dictionary.py` → `generator/master_codes.json` → dictionary .cpp files)
-assigns sequential IDs and has an overflow guard (`dictionary.py:137`), but three
-properties need proof, not assumption:
+code string S, N must mean S forever.
 
-- [ ] A5.1 **Uniqueness:** confirm two distinct code strings can never receive the same ID.
+**This was not merely unproven — it was already broken.** Commit `118d6ad` renumbered the
+ledger from 1, dropped 16,436 codes, and added none; every ID changed meaning (`"!="` went
+1 → 3294). The restore rebuilt `generator/master_codes.json` from `b1d8b36`, cross-verified
+byte-for-byte against `dictionaries/FF_Dictionary_Strings.cpp` (whose array index *is* the
+ID), and made `assign_ids()` append-only. See `dictionaries/README.md`.
+
+- [x] A5.1 **Uniqueness:** confirm two distinct code strings can never receive the same ID.
   Read `generator/emit/dictionary.py` (`generate_master_codes`) and
   `generator/emit/master_dictionary.py`; if any path can assign a duplicate ID, add a
   fail-loud guard: build a `dict` of id→label during emission and
   `raise RuntimeError(f"code ID collision: {id} maps to {a!r} and {b!r}")` on clash.
-- [ ] A5.2 **Stability:** confirm regeneration never reassigns an ID already committed in
+- [x] A5.2 **Stability:** confirm regeneration never reassigns an ID already committed in
   `generator/master_codes.json` (i.e. existing entries are loaded and preserved; only new
   labels get new IDs). If not enforced, add the guard and a clear error message.
-- [ ] A5.3 **Reserved values:** confirm no assignable ID can equal `0xFFFFFFFF`
+- [x] A5.3 **Reserved values:** confirm no assignable ID can equal `0xFFFFFFFF`
   (`FF_CODE_NULL`) or have bit 31 set (`FF_CODEABLE_CONCEPT_FLAG = 0x80000000` marks
   custom-string references — see README "Code Assignment Semantics"). The max-ID guard at
   `dictionary.py:137` may already cover this; verify the constant it checks is
   `< 0x80000000`, and add a comment stating WHY (bit 31 is the CodeableConcept flag).
-- [ ] A5.4 Add `tests/generator/test_code_ids.py` with three tests: duplicate-label input
+- [x] A5.4 Add `tests/generator/test_code_ids.py` with three tests: duplicate-label input
   handling, committed-ID stability across two runs, and reserved-bit exclusion. Document
   the three guarantees in the `dictionary.py` module docstring.
 - Acceptance: all three properties either demonstrated by existing code (cite line in the
   test's docstring) or newly guarded; pytest passes.
 - Verify: `pytest tests/generator/test_code_ids.py -q`.
+
+---
+
+### A6. Concurrent bundle ingest — FIXED
+
+`src/FF_Ingestor.cpp` passed a `task_payloads` vector to `Bundle_from_json`
+expecting it to slice the entry array; the generated function only threaded its
+`concurrent_queue` parameter to children and never pushed into it, so the count
+guard always fired. The vector was vestigial — workers already index
+`entry_chunks[idx]`. Removed it and took the count from `entry_chunks`.
+
+- [x] A6.1 Contract decided: `entry_chunks` is the single source of truth.
+- [x] A6.2 `task_payloads` deleted; `Bundle_from_json` called for metadata only.
+- [x] A6.3 Misleading comment corrected.
+- Result: bundles ingest ("bundle ingested : 2 resources"). Tests 5/9/11 now
+  fail on three *different*, deeper issues — see A9, A10, A11.
+
+### A7. Compact read path returned wrong codes — FIXED
+
+`generator/model/structure.py:_compact_slot_size` re-derived the dense slot
+width from `fhir_type`/`data_type` heuristics while the compactor
+(`src/FF_Compactor.cpp:48 compact_slot_size`) switched on `FF_FieldKind`. They
+disagreed on **1,393 of 1,611 slots** — the writer laid out 8-byte slots where
+the reader's table said 0, so every field after the first string/array/block was
+read from the wrong address.
+
+Fixed structurally: `_compact_slot_size` now keys off `_field_kind_expr()`, the
+same `FF_FieldKind` the C++ switch receives, so the two cannot drift apart. Note
+the `return 0` fallback was only 1,366 of the mismatches — 27 more were
+arrays-of-Resource, where the Python checked `fhir_type == "Resource"` before
+`is_array` and returned 10 against the writer's 8.
+
+- [x] A7.1–A7.3 Fixed and verified; `cpp_test_7` and `cpp_test_8` pass.
+- Follow-up: add a generator test asserting every emitted `COMPACT_SLOT_SIZES`
+  entry equals `compact_slot_size(kind)` for its `FF_FieldInfo` kind.
+
+### A8. CodeableConcept system discriminator is never set
+
+**Context:** `generator/emit/codesystems.py:148` initialises
+`external_system_map` and returns it at `:286` **without ever populating it**.
+So all 102 generated `ENCODE_FF_CODE` call sites take the no-system branch
+(`store.py:287`) and `system` defaults to `FF_CodeableConceptSystem::UNKNOWN`.
+
+Every code that misses the dictionary is therefore encoded as UNKNOWN (2-byte
+URL index + raw string) regardless of its actual system. The per-system
+encodings documented in `dictionaries/README.md` — SNOMED as 8-byte uint64,
+RxNorm 4-byte, CPT 2-byte, CVX 1-byte — are specified but not wired up.
+
+**This is now load-bearing.** The licensing boundary routes *all* external
+terminology (SNOMED, LOINC, RxNorm, ICD, CPT, NDC) through this path, so it has
+to work and to round-trip.
+
+- [ ] A8.1 Populate `external_system_map` in `generate_code_systems` by mapping
+      a field's bound ValueSet/CodeSystem URL to its `FF_CodeableConceptSystem`.
+- [ ] A8.2 Verify `SIZE_FF_CODE` (`src/FF_Primitives.cpp:304`) agrees with what
+      `ENCODE_FF_CODE` writes — it currently sizes a dictionary miss as a plain
+      `FF_STRING` while the encoder writes an `FF_CODEABLE_CONCEPT` block.
+      Different layouts, same allocation.
+- [ ] A8.3 Round-trip test per system: ingest → export → compare.
+- Verify: `ctest --test-dir build -R cpp_test_9 --output-on-failure`.
+
+### A9. `insert_at_field` rejected `telecom` (cpp_test_5) — FIXED
+
+**Not a missing feature. The guard was reading a flag that lied.**
+`insert_at_field_json` refused any array whose `FF_FieldKey::array_entries_are_offsets`
+was non-zero. That flag comes from `structure.py:_array_entries_are_offsets_expr`,
+which returns `true` for every block-typed child and `false` for string/code —
+exactly inverted from what `emit/store.py` actually writes: block children are
+`FF_ARRAY::INLINE_BLOCK`, and string/code are the only `FF_ARRAY::OFFSET` arrays.
+So `telecom` (ContactPoint) was flagged as an offset array and rejected.
+
+The guard was also unnecessary. The ArrayField path never touches individual
+entries: the generated `*_from_json` writes the whole array block and only its
+offset is patched into the parent slot. Element layout is re-derived from the
+wire by every reader (`FF_ARRAY::entries_are_pointers`, consumed in
+`ParserOps::standard_entry_as_node` — which overrides the schema flag, and is why
+the read path was always correct despite the inverted value).
+
+- [x] A9.1 Guard deleted; `insert_at_field` now accepts any FF_FIELD_ARRAY target.
+- [ ] A9.2 Follow-up: `array_entries_are_offsets` is now inert everywhere —
+      `standard_node_lookup_field` drops it and `as_node()` re-reads the wire, so
+      the parser (`FF_Parser.cpp:372,589`) and compactor (`FF_Compactor.cpp:180`)
+      pass a value nothing consumes. It is a wrong second source of truth for
+      something `FF_ARRAY::entry_kind()` already states on the wire. Remove it from
+      `FF_FieldInfo`/`FF_FieldKey` and from `emit/views.py`.
+
+### A10. Code fields round-tripped as garbage — FIXED
+
+**Root cause was a dangling `std::string_view`, not the CodeableConcept path.**
+`generator/emit/ingest_mappings.py` emitted, for every `code` field without a
+bound enum:
+
+```cpp
+data.code = std::string(c);   // field is std::string_view
+```
+
+The temporary `std::string` dies at the end of the statement, leaving the view
+pointing at freed memory. The store pass then read whatever was there. Traced by
+instrumenting both sides: the offsets were correct all along
+(`cc_off=504 block_off=419` matching on encode and decode), but `ENCODE_FF_CODE`
+received `'xIG'` instead of `'8867-4'` — the corruption was already in the POD.
+
+Sibling fields were never affected because `string`/`uri` fields assign the view
+directly (`data.system = s;`). Only the `code` branch wrapped it in a temporary.
+Two emitter sites (scalar at ~line 329, array at ~line 243); the `code_enum`
+variants were always safe because the temporary is consumed producing an enum.
+
+The ledger reset did not cause this — it exposed it, by moving LOINC and other
+external codes off the dictionary fast path onto the branch that reads the POD.
+
+- [x] A10.1 Both emitter sites now assign the view directly.
+- Result: `cpp_test_9` passes; `py_roundtrip` passes; OMB race codes
+  (`2106-3`, `2186-5`) and LOINC (`8867-4`) round-trip exactly.
+
+### A13. CPT and CVX payloads widened (Q12) — DONE
+
+**Was:** CPT stored in 2 bytes and CVX in 1, against real ranges of 00100–99499
+and up to ~320. `99213` became `33677`; `300` became `44`. Silent, and latent
+only because A8 keeps every code on the UNKNOWN branch.
+
+**Q12 (Ryan): widen, keep fixed-width numeric.** CPT is now 4 bytes, CVX 2.
+Free to do because no CodeableConcept block has ever been written with those
+systems; it would not have been once A8 landed.
+
+- [x] A13.1 CPT 2 -> 4 bytes, CVX 1 -> 2 bytes.
+- [x] A13.2 Done before A8, per the sequencing note.
+- [x] A13.3 Root cause removed: encode and decode were two independent
+      per-system switches, so the widening needed both edited and the decode
+      side still carried a `char buf[4]` sized for the old `uint8` CVX --
+      enough to render 65535 as "655". Both now drive from one `FF_CC_CODECS`
+      table in `src/FF_Primitives.cpp`, and `Entry::print_scalar_json` calls
+      the shared decoder instead of carrying a third switch that handled only
+      4 of the 17 systems.
+- Verify: `ctest --test-dir build -R cpp_ff_test_cc --output-on-failure`
+  (104 assertions: per-system round-trip, header bytes, cursor advance,
+  out-of-range rejection, and a row-exists check over every enum value).
+
+### A12. `Reference.reference` truncates and corrupts on export
+
+**Context:** one Synthea fixture still round-trips to invalid UTF-8:
+
+```
+expected : "reference":"urn:uuid:13472219-c176-990a-641f-14cf9d4d8480"
+actual   : "reference":"urn:uuid:13472219-c1<garbage>"
+```
+
+Distinct from A10 — `Reference.reference` already assigns its view directly
+(`data.reference = s;`), so the dangling-temporary fix does not apply.
+Reproduces on the single-resource path, so it is not bundle-specific.
+8 of 9 Synthea fixtures round-trip cleanly; this is the ninth.
+
+**Hypothesis, unproven:** simdjson ondemand's `get_string()` returns a view into
+the parser's internal string buffer, which is reused as the parser advances.
+A view captured from a nested sub-object (`Reference_from_json(sub.value_unsafe(),
+...)`) may therefore dangle by the time the store pass runs. The truncation
+pattern — correct prefix, garbage tail — is consistent with buffer reuse. Verify
+before acting on it.
+
+- [ ] A12.1 Confirm or refute the simdjson buffer-reuse hypothesis: log the
+      `string_view` data pointer at ingest and again at store, and see whether
+      it still points inside the live document buffer.
+- [ ] A12.2 If confirmed, this affects every `std::string_view` field reached
+      through a nested object, not just `Reference.reference` — audit the whole
+      zero-copy view strategy against simdjson ondemand's buffer lifetime.
+- Repro: `./build/ff_roundtrip <the AllergyIntolerance entry>` — see
+  `cpp_test_5`'s fixture set.
+
+### A11. Shared-prefix extension URL not reconstructed (cpp_test_11) — FIXED
+
+**Root cause was a dangling `std::string_view`, not the prefix scheme.** The trie,
+the prior chain and `get_url()` were all correct; they were fed garbage.
+
+`collect_extension_urls_pipeline` captured the URL with simdjson **ondemand**
+`get_string()`, which unescapes into the *parser's* internal string buffer. That
+buffer is reused by the very next string parsed from the document — including the
+`unescaped_key()` calls in the remaining iterations of the same loop, before
+`push_url()` is even reached — and is destroyed when `scan_chunk_producer()`
+returns, well before the consumer thread reads the batch.
+
+Every URL therefore arrived blank at the correct length. With no `/` in the view,
+`insert_url_to_trie` split nothing, so the directory held one junk row per URL
+(`prior=-1`, segment = a run of spaces) instead of a shared-prefix chain.
+
+Fixed by taking the URL from `raw_json_token()`, which points into the chunk the
+caller owns for the whole predigest call, with the JSON quotes stripped and
+backslash-escaped URLs skipped (no zero-copy source representation). The directory
+now holds 8 entries for the fixture, with `alpha` and `beta` as siblings under one
+shared `shared-prefix` parent.
+
+Same defect class as A10, and the mechanism A12 hypothesised — now proven here.
+
+- [x] A11.1 Traced; root cause was the cross-thread view, not prefix storage.
+- [x] A11.2 `cpp_test_11` extended with structural assertions: alpha and beta must
+      be distinct leaves sharing one parent entry, so storing whole URLs per entry
+      can no longer pass by satisfying `get_url()` alone.
+
+### A13. simdjson reads now always use a padded buffer — FIXED
+
+`ingest_fhir_json`'s root routing parse called
+`parser.iterate(data, size, size + SIMDJSON_PADDING)`, asserting 64 readable bytes
+past the *caller's* `string_view` — padding the library never owned. simdjson reads
+up to `SIMDJSON_PADDING` past the logical end, so a caller buffer ending near a page
+boundary was an out-of-bounds read. The bundle splitter then made a second padded
+copy of the same bytes.
+
+Fixed **without adding a copy**. `simdjson::padded_string` always allocates and
+memcpy's (`allocate_padded_buffer` + `memcpy`); `simdjson::padded_string_view` is the
+zero-copy form — a `string_view` plus a capacity, i.e. a promise about the caller's
+buffer. `IngestRequest::payload_capacity` lets the caller make that promise, and the
+payload is then parsed in place. Left at 0 it falls back to one padded copy, which is
+logged at Info so the slow path is findable. `ff_ingest` already held a
+`simdjson::padded_string`, so it now declares capacity and copies nothing.
+
+- [x] A13.1 Root parse and splitter share one payload view.
+- [x] A13.2 `IngestRequest::payload_capacity` added; zero-copy when set, logged copy
+      when not. Covered by `ff_test_bundle`, which ingests the same bundle down both
+      paths and asserts the streams agree.
+- [ ] A13.3 Remaining copy: `build_bundle_entry_chunks` still copies every bundle
+      entry into its own `padded_string`. Each entry lies inside the padded payload,
+      so every entry already has ≥ SIMDJSON_PADDING readable bytes after it and the
+      chunk vector could hold `padded_string_view`s instead — removing N copies per
+      bundle. Deliberately not done in the same change as A13.2: that vector is
+      consumed by the worker path implicated in A14, and changing its lifetimes while
+      a live memory-corruption bug sits there would confuse the diagnosis.
+
+### A14. Intermittent worker-thread crash during bundle ingest — OPEN
+
+Found while diagnosing A11; **pre-existing** (reproduced before the A11 fix) and
+**not** fixed by A13. A minimal valid 2-entry bundle crashes ingest on roughly
+two thirds of runs. Not triggered by any current test fixture, so the suite is
+green — this needs a dedicated reproducer.
+
+Evidence (lldb, `EXC_BAD_ACCESS`, several runs):
+- worker threads inside `ingest_fhir_json`'s lambda fault at address `0xffffffff`
+  — a `FF_NULL_UINT32`/`TRIE_NULL` sentinel being used as an address or index;
+- the main thread faults freeing `simdjson::internal::dom_parser_implementation`
+  at `0x656372756f7365ba` — a live heap pointer overwritten with the ASCII bytes
+  `"esource"` from `"resource"` in the payload, i.e. JSON text written over an
+  unrelated heap allocation.
+
+- [ ] A14.1 Build a standalone reproducer and run it under ASan/TSan.
+- [ ] A14.2 Audit `claim_space()` failure handling on the worker path: a
+      `FF_NULL_OFFSET` return used as an offset would match the `0xffffffff` fault.
 
 ---
 
@@ -428,7 +674,7 @@ then deliberately corrupt copies of it:
 
 Order matters: C1 → C2 → C3…C8. `Blocked on Q1` for C1.
 
-- [ ] C1. **`recover_archive(...)` orchestrator** `Blocked on Q1`
+- [ ] C1. **`recover_archive(...)` orchestrator** `Unblocked` (Q1 answered: copy-swap per element)
   Add `FF_RecoveryReport recover_archive(Memory&, FF_RecoveryPolicy)` (free function or
   Builder static — decide and document) in a new `src/FF_Recovery.cpp` +
   declaration in `include/FF_Recovery.hpp` (which today holds only tags/constants — keep
@@ -459,14 +705,14 @@ Order matters: C1 → C2 → C3…C8. `Blocked on Q1` for C1.
   intent) but add an explicit throw with actionable text if a caller then attempts to
   append data tagged for a different FHIR version. Locate where version enters append
   paths before designing this — if version is only header-level, document that instead.
-- [ ] C6. **Amend-path pre-write validation** `Blocked on Q9`: in `amend_pointer` /
-  `amend_resource` / `amend_variant`, validate the target block's RECOVERY tag before
-  writing when policy is ATTEMPT_REPAIR. Also resolve the author-flagged note at
-  `src/FF_Builder.cpp:164` ("NOTE: I don't like this. It's not concurrency protected"):
-  per Q9's answer either (a) document single-threaded-amend as API contract in
-  `include/FF_Builder.hpp` above the amend declarations and delete the NOTE, or
-  (b) replace the non-atomic load/check/store with a CAS
-  (`std::atomic_ref<uint64_t>` compare_exchange from `FF_NULL_OFFSET`).
+- [ ] C6. **Amend-path atomic CAS** `Unblocked` (Q9 answered): in `amend_pointer` /
+  `amend_resource` / `amend_variant`, replace the non-atomic load/check/store with an
+  atomic CAS. Use `std::atomic_ref<uint64_t>` with `compare_exchange` from `FF_NULL_OFFSET`
+  to the new target offset. Remove the author-flagged NOTE at `src/FF_Builder.cpp:164`
+  (`"NOTE: I don't like this. It's not concurrency protected"`). Concurrent enrichment is
+  now a supported operation — document this in `include/FF_Builder.hpp` above the amend
+  declarations. Also add pre-write target-block RECOVERY tag validation when policy is
+  ATTEMPT_REPAIR (from C2).
 - [ ] C7. **Python exception mapping:** in `python/FF_PythonBindings.cpp` (PyStream is
   defined at ~line 64), register a custom exception
   `fastfhir.RecoveryRequired` via `py::register_exception` /
@@ -802,43 +1048,62 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
 - **Q1 (blocks C1, C2):** `recover_archive` atomicity — must repairs be all-or-nothing on
   the original archive, or should recovery always operate on a copy and swap on success?
   Copy-and-swap is safer but doubles peak disk/arena for large bundles.
-  > Answer:
+  > Answer (Ryan, 2026-07-08): **Copy-and-swap, parallelized per data element.**
+  > Treat every data element as a unique entity — rebuild while fixing in parallel,
+  > then `mv` the recovered archive to overwrite the original corrupted file.
 
 - **Q2 (blocks E7):** `include/FastFHIR.hpp` — (a) expand to a true umbrella covering all
   public headers (Memory, Ingestor, FieldKeys), (b) keep the current minimal set and
   document it, or (c) deprecate it in favor of explicit includes?
-  > Answer:
+  > Answer: **Option (b)** — keep FastFHIR.hpp minimal, exposing only the core public API.
+  > A small surface area prevents IDE type-assist overload. Users who need granular control
+  > can add explicit `#include`s for individual headers. Document this explicitly in the
+  > header and in README.
 
 - **Q3 (blocks B5):** Round-trip JSON semantics — is omitting empty arrays (`[]` in,
   absent out) acceptable, and must the null-vs-absent distinction survive round-trip?
-  > Answer:
+  > Answer: Empty arrays are omitted with null-offset entries indicating the optional
+  > entry is absent. The only reason to preallocate empty arrays is when the size is
+  > known in advance and entries will be filled later (e.g. asynchronously). The
+  > null-vs-absent distinction does not need to survive round-trip.
 
 - **Q4:** Is Bazel first-class (CI runs it, gates merges) or best-effort? Decides whether
   E1 includes Bazel jobs and how much A-class work keeps BUILD.bazel in sync.
-  > Answer:
+  > Answer (Ryan, 2026-07-08): **Bazel and CMake are equal priority** — both must be
+  > supported, both must be kept in sync, and CI must run both.
 
 - **Q5 (blocks D0–D3):** Is `https://registry.fastfhir.org` a real endpoint you operate
   (or will before release), and what is its actual API shape? If aspirational, should
   D1–D3 target a local/file-based registry first with HTTP as a pluggable backend?
-  > Answer:
+  > Answer (Ryan, 2026-07-08): **The registry is aspirational at this point.** Keep the
+  > endpoint as a TODO; we will plan its architecture as the library develops. D1–D3
+  > should not target a live HTTP backend yet — build a local/file-based registry
+  > abstraction first that can be swapped for HTTP later.
 
 - **Q6 (blocks E1):** CI platform matrix — Linux + macOS + Windows/MSVC from day one, or
   Linux-only first? (MSVC has historically caught real generator bugs GCC/Clang missed.)
-  > Answer:
+  > Answer (Ryan, 2026-07-08): **All three from day one** — Linux, macOS, Windows/MSVC.
+  > First-class support for all OS and architecture. Use GitHub Actions. Do not defer
+  > any platform; backtracing new errors later is not acceptable.
 
 - **Q7:** Should a known-good `generated_src/` snapshot ever be committed so builds/CI
   work without network access to HL7/packages.fhir.org, or is network-at-configure an
   accepted requirement?
-  > Answer:
+  > Answer (Ryan, 2026-07-08): **Network at configure time is the accepted requirement.**
+  > HL7 owns the FHIR specification; FastFHIR only controls the binary translation of it.
+  > We will not snapshot or redistribute FHIR definitions.
 
 - **Q8:** Priority between Block C (recovery) and Block D (WASM registry) if capacity is
   limited — which lands first?
-  > Answer:
+  > Answer (Ryan, 2026-07-08): **Block C (recovery) first.** Block D is nice infrastructure
+  > but not as critical to the initial rollout.
 
 - **Q9 (blocks C6):** `src/FF_Builder.cpp:164` — is single-threaded mutation (`amend_*`)
   an accepted API contract (then: document it and delete the NOTE), or should the
   already-assigned check become an atomic CAS so concurrent enrichment is safe?
-  > Answer:
+  > Answer (Ryan, 2026-07-08): **Implement atomic compare-and-swap.** The already-assigned
+  > check in `amend_pointer`/`amend_resource`/`amend_variant` must become an atomic CAS
+  > so concurrent enrichment is safe. Delete the NOTE comment once done.
 
 - **Q10 (blocks I2, I5, H3, H5):** License decision. Ryan has approved changing the
   license in principle to ensure adoption (2026-07-08). Stated threat model: a large EHR
@@ -864,20 +1129,43 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
   `FF_CHECKSUM_*` in `include/FF_Primitives.hpp` for an Ed25519 signature footer
   (authenticity, not just integrity)? This is a wire-constant allocation, so it needs
   your explicit value assignment.
-  > Answer:
+  > Answer (Ryan, 2026-07-08): **Deferred.** Needs more discussion. See explanation below.
 
 - **Q12 (blocks F2, I3.5):** Which benchmark results are publishable now — on what
   hardware were the canonical numbers produced, against which competitor library
   versions, and at which FastFHIR-benchmark commit? The README table must be
   reproducible from a stated commit of
   <https://github.com/ryanlandvater/FastFHIR-benchmark>.
-  > Answer:
+  > Answer (Ryan, 2026-07-08): **Review the benchmark repo at `../FastFHIR_Performance/`**
+  > for context. Benchmarks will be published with the specification paper, not now.
 
 - **Q13 (blocks I1):** Wire-format stability statement — is the format already frozen
   (R4/R5 streams written today will parse forever), or is there a planned
   format-freeze milestone that ends the alpha caveat? SPEC.md's compatibility section
   needs the exact wording.
-  > Answer:
+  > Answer (Ryan, 2026-07-08): **The wire format is NOT frozen.** We are in active alpha
+  > development. The alpha caveat stays until a formal format-freeze milestone.
+
+---
+
+## Execution plan (current session)
+
+**Principle:** one task per commit, verify before moving on. Blocks executed in dependency order.
+
+| Phase | Block | Tasks | Status |
+|---|---|---|---|
+| 1 — Build hygiene | A2 | Normalize `#include` paths (A2.1→A2.5), full rebuild (A2.6) | Starting now |
+| 1 — Build hygiene | A3 | Fix stale API examples in `FastFHIR.hpp` doc comment | After A2 |
+| 1 — Build hygiene | A4 | Implement wire-format gate (`tests/generator/test_wire_format.py`) | After A3 |
+| 2 — Round-trip | B5 | JSON round-trip fidelity triage (B5.1, B5.2) | After A4 |
+| 2 — Round-trip | B1–B4, B6 | Remaining B-block tests | After B5 |
+| 3 — Recovery | C1–C2, C6 | Recovery orchestrator + policy + CAS | After B-block |
+| 3 — Recovery | C3–C5, C7–C8 | Header repair, root reconciliation, version guard, Python, telemetry | After C1/C2/C6 |
+| 4 — CI | E1 | GitHub Actions multi-platform CI | After A-block |
+| 4 — Hygiene | E7 | `FastFHIR.hpp` minimal umbrella per Q2 | After E1 |
+| 5 — Spec | I1 | SPEC.md with alpha caveat per Q13 | After B5 |
+| 6 — WASM | D0–D12 | Local registry first per Q5 | After C-block |
+| 7 — Strategic | F, G, H | Benchmarks, security, packaging | After CI + spec |
 
 ---
 

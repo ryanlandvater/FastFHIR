@@ -15,9 +15,9 @@
  */
 
 // MARK: - FastFHIR Core Primitives Implementation
-#include "../include/FF_Utilities.hpp"
-#include "../include/FF_Primitives.hpp"
-#include "../include/FF_Dictionary.hpp"
+#include "FF_Utilities.hpp"
+#include "FF_Primitives.hpp"
+#include "FF_Dictionary.hpp"
 
 // =====================================================================
 // DATA_BLOCK BASE VALIDATION
@@ -338,6 +338,117 @@ static uint32_t _pack_codeable_concept_offset(Offset cc_offset, Offset block_off
     return (static_cast<uint32_t>(static_cast<int32_t>(rel)) & 0x7FFFFFFFu) | FF_CODEABLE_CONCEPT_FLAG;
 }
 
+// =====================================================================
+// CodeableConcept codec table — ONE description per system
+// =====================================================================
+// Encode and decode both drive from this. Neither has its own per-system
+// switch, so a system's payload width, numeric base and output format are
+// stated exactly once.
+//
+// They used to be two independent switches. Widening CPT from 2 to 4 bytes
+// meant editing both, and the decode side still carried a `char buf[4]`
+// sized for the old uint8 CVX -- enough to truncate 65535 to "655". A second
+// switch is a second chance to get it wrong.
+//
+// Adding a system: add a row. Changing a width: change one number.
+struct FF_CC_Codec {
+    FF_CodeableConceptSystem system;
+    uint8_t     payload_bytes;  ///< 0 => variable-length ASCII payload
+    uint8_t     parse_base;     ///< 10, or 16 for DICOM; ignored when variable
+    bool        hex_out;        ///< render as %08X instead of decimal
+    const char *name;           ///< for diagnostics
+};
+
+static constexpr FF_CC_Codec FF_CC_CODECS[] = {
+    // system                              bytes  base  hex    name
+    {FF_CodeableConceptSystem::UNKNOWN,     0,    0,   false, "UNKNOWN"},
+    {FF_CodeableConceptSystem::UCUM,        0,    0,   false, "UCUM"},
+    {FF_CodeableConceptSystem::SNOMED_CT,   8,   10,   false, "SNOMED CT"},
+    {FF_CodeableConceptSystem::RXNORM,      4,   10,   false, "RxNorm"},
+    {FF_CodeableConceptSystem::LOINC,       0,    0,   false, "LOINC"},
+    {FF_CodeableConceptSystem::DICOM,       4,   16,   true,  "DICOM"},
+    {FF_CodeableConceptSystem::CPT,         4,   10,   false, "CPT"},
+    {FF_CodeableConceptSystem::CVX,         2,   10,   false, "CVX"},
+    {FF_CodeableConceptSystem::NDC,         0,    0,   false, "NDC"},
+    {FF_CodeableConceptSystem::ICD_9_CM,    0,    0,   false, "ICD-9-CM"},
+    {FF_CodeableConceptSystem::ICD_10,      0,    0,   false, "ICD-10"},
+    {FF_CodeableConceptSystem::ISO_3166,    0,    0,   false, "ISO 3166"},
+    {FF_CodeableConceptSystem::MDC,         4,   10,   false, "MDC"},
+    {FF_CodeableConceptSystem::UNII,        0,    0,   false, "UNII"},
+    {FF_CodeableConceptSystem::MED_RT,      8,   10,   false, "MED-RT"},
+    {FF_CodeableConceptSystem::PCLOCD,      0,    0,   false, "pCLOCD"},
+    {FF_CodeableConceptSystem::IDMP,        8,   10,   false, "IDMP"},
+};
+
+static constexpr const FF_CC_Codec *ff_cc_codec(FF_CodeableConceptSystem system)
+{
+    for (const auto &c : FF_CC_CODECS)
+        if (c.system == system) return &c;
+    return nullptr;
+}
+
+/// Store `value` little-endian in `bytes` bytes. Width comes from the codec
+/// table, so there is no per-system store logic anywhere else.
+static void ff_cc_store(BYTE *at, uint64_t value, uint8_t bytes)
+{
+    switch (bytes) {
+    case 1: at[0] = static_cast<uint8_t>(value); break;
+    case 2: STORE_U16(at, static_cast<uint16_t>(value)); break;
+    case 4: STORE_U32(at, static_cast<uint32_t>(value)); break;
+    case 8: STORE_U64(at, value); break;
+    default: throw std::runtime_error("FastFHIR: unsupported CodeableConcept payload width.");
+    }
+}
+
+static uint64_t ff_cc_load(const BYTE *at, uint8_t bytes)
+{
+    switch (bytes) {
+    case 1: return at[0];
+    case 2: return LOAD_U16(at);
+    case 4: return LOAD_U32(at);
+    case 8: return LOAD_U64(at);
+    default: return 0;
+    }
+}
+
+// Parse a numeric code and refuse anything the fixed-width payload cannot hold.
+// Narrowing silently is data corruption: CPT is a 2-byte payload but real CPT
+// codes run to 99499, so static_cast<uint16_t>(99213) stores 33677 and the
+// decoder faithfully reports the wrong procedure.
+static uint64_t parse_fixed_width_code_(const std::string& code_str, unsigned payload_bytes,
+                                        const char* system_name, int base = 10)
+{
+    char* end = nullptr;
+    const uint64_t value = strtoull(code_str.c_str(), &end, base);
+    if (end == code_str.c_str() || (end && *end != '\0')) {
+        throw std::runtime_error(std::string("FastFHIR: ") + system_name +
+                                 " code '" + code_str + "' is not a valid number.");
+    }
+    const uint64_t limit = (payload_bytes >= 8) ? UINT64_MAX
+                                                : ((uint64_t{1} << (payload_bytes * 8)) - 1);
+    if (value > limit) {
+        throw std::runtime_error(std::string("FastFHIR: ") + system_name + " code '" + code_str +
+                                 "' does not fit the " + std::to_string(payload_bytes) +
+                                 "-byte payload (max " + std::to_string(limit) +
+                                 "). Storing it would silently truncate to " +
+                                 std::to_string(value & limit) + ".");
+    }
+    return value;
+}
+
+// Write the FF_CODEABLE_CONCEPT header and advance the child-offset cursor.
+// Every system branch in ENCODE_FF_CODE shares this — previously copy-pasted
+// 7 times. If the CC layout changes, this is the ONE place to update.
+static void write_cc_header_(BYTE* ptr, Offset cc_offset, Offset& child_off,
+                             FF_CodeableConceptSystem system, uint8_t payload_len)
+{
+    child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
+    STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
+    STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
+    ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
+    ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
+}
+
 uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_off, const std::string& code_str, uint32_t version, FF_CodeableConceptSystem system) {
     if (code_str.empty()) return FF_CODE_NULL;
 
@@ -347,109 +458,51 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
         return dict_code;
     }
 
-    // ── System-aware CodeableConcept block encoding ──────────
-    // Fixed-width: DICOM(4) SNOMED(8) IDMP(8) RXNORM(4) CPT(2) CVX(1) MDC(4) MED_RT(8)
-    // Variable:    UCUM LOINC NDC ICD_9_CM ICD_10 ISO_3166 UNII PCLOCD
-    // Unknown:     2-byte URL index + raw code string
+    // Everything below is driven by FF_CC_CODECS. There is deliberately no
+    // per-system switch here -- see the table's comment.
+    const FF_CC_Codec *codec = ff_cc_codec(system);
+    if (codec == nullptr) codec = ff_cc_codec(FF_CodeableConceptSystem::UNKNOWN);
 
-    Offset cc_offset = child_off;
-    BYTE* ptr = __base + cc_offset;
+    const Offset cc_offset = child_off;
+    BYTE *ptr = __base + cc_offset;
 
-    switch (system) {
-    case FF_CodeableConceptSystem::DICOM: {
-        char* end = nullptr;
-        uint32_t tag = static_cast<uint32_t>(strtoull(code_str.c_str(), &end, 16));
-        uint8_t payload_len = 4;
-
-        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
-        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
-        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
-        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
-        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
-        STORE_U32(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, tag);
+    if (codec->payload_bytes > 0) {
+        // Fixed-width numeric payload. parse_fixed_width_code_ refuses a value
+        // the width cannot hold rather than narrowing it silently.
+        const uint64_t value =
+            parse_fixed_width_code_(code_str, codec->payload_bytes, codec->name, codec->parse_base);
+        write_cc_header_(ptr, cc_offset, child_off, codec->system, codec->payload_bytes);
+        ff_cc_store(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, value, codec->payload_bytes);
         return _pack_codeable_concept_offset(cc_offset, block_offset);
     }
-    case FF_CodeableConceptSystem::SNOMED_CT:
-    case FF_CodeableConceptSystem::IDMP:
-    case FF_CodeableConceptSystem::MED_RT: {
-        char* end = nullptr;
-        uint64_t concept_id = strtoull(code_str.c_str(), &end, 10);
-        uint8_t payload_len = 8;
 
-        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
-        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
-        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
-        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
-        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
-        STORE_U64(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, concept_id);
+    if (codec->system == FF_CodeableConceptSystem::UNKNOWN) {
+        // 2-byte URL-directory index, then the raw code string.
+        constexpr size_t URL_IDX_BYTES = 2;
+        if (code_str.size() > 255 - URL_IDX_BYTES) {
+            throw std::runtime_error(
+                "FastFHIR: Code string too long for UNKNOWN CodeableConcept (max " +
+                std::to_string(255 - URL_IDX_BYTES) + " bytes, got " +
+                std::to_string(code_str.size()) + ").");
+        }
+        const uint8_t payload_len = static_cast<uint8_t>(URL_IDX_BYTES + code_str.size());
+        write_cc_header_(ptr, cc_offset, child_off, codec->system, payload_len);
+        STORE_U16(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, uint16_t{0});  // 0 = not yet registered
+        std::memcpy(ptr + FF_CODEABLE_CONCEPT::PAYLOAD + URL_IDX_BYTES,
+                    code_str.data(), code_str.size());
         return _pack_codeable_concept_offset(cc_offset, block_offset);
     }
-    case FF_CodeableConceptSystem::RXNORM:
-    case FF_CodeableConceptSystem::MDC: {
-        char* end = nullptr;
-        uint32_t code = static_cast<uint32_t>(strtoull(code_str.c_str(), &end, 10));
-        uint8_t payload_len = 4;
 
-        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
-        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
-        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
-        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
-        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
-        STORE_U32(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, code);
-        return _pack_codeable_concept_offset(cc_offset, block_offset);
+    // Variable-length ASCII payload (UCUM, LOINC, NDC, ICD, ISO, UNII, pCLOCD).
+    if (code_str.size() > 255) {
+        throw std::runtime_error(
+            std::string("FastFHIR: Code string too long for ") + codec->name +
+            " CodeableConcept (max 255 bytes, got " + std::to_string(code_str.size()) + ").");
     }
-    case FF_CodeableConceptSystem::CPT: {
-        char* end = nullptr;
-        uint16_t code = static_cast<uint16_t>(strtoull(code_str.c_str(), &end, 10));
-        uint8_t payload_len = 2;
-
-        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
-        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
-        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
-        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
-        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
-        STORE_U16(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, code);
-        return _pack_codeable_concept_offset(cc_offset, block_offset);
-    }
-    case FF_CodeableConceptSystem::CVX: {
-        char* end = nullptr;
-        uint8_t code = static_cast<uint8_t>(strtoul(code_str.c_str(), &end, 10));
-        uint8_t payload_len = 1;
-
-        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
-        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
-        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
-        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
-        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
-        ptr[FF_CODEABLE_CONCEPT::PAYLOAD] = code;
-        return _pack_codeable_concept_offset(cc_offset, block_offset);
-    }
-    case FF_CodeableConceptSystem::UNKNOWN: {
-        uint16_t url_index = 0;  // 0 = not yet registered
-        uint8_t payload_len = static_cast<uint8_t>(2 + code_str.size());
-
-        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
-        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
-        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
-        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
-        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
-        STORE_U16(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, url_index);
-        std::memcpy(ptr + FF_CODEABLE_CONCEPT::PAYLOAD + 2, code_str.data(), code_str.size());
-        return _pack_codeable_concept_offset(cc_offset, block_offset);
-    }
-    default: {
-        // variable-length string systems — raw ASCII payload
-        uint8_t payload_len = static_cast<uint8_t>(code_str.size());
-
-        child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
-        STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
-        STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
-        ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
-        ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
-        std::memcpy(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, code_str.data(), payload_len);
-        return _pack_codeable_concept_offset(cc_offset, block_offset);
-    }
-    }
+    const uint8_t payload_len = static_cast<uint8_t>(code_str.size());
+    write_cc_header_(ptr, cc_offset, child_off, codec->system, payload_len);
+    std::memcpy(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, code_str.data(), code_str.size());
+    return _pack_codeable_concept_offset(cc_offset, block_offset);
 }
 
 // =====================================================================
@@ -462,60 +515,41 @@ FF_CodeableConceptResult FF_DECODE_CODEABLE_CONCEPT(
     const BYTE* base, Offset offset, uint32_t version)
 {
     using S = FF_CodeableConceptSystem;
-    S sys = static_cast<S>(base[offset + FF_CODEABLE_CONCEPT::SYSTEM]);
-    uint8_t len = base[offset + FF_CODEABLE_CONCEPT::LENGTH];
-    const BYTE* payload = base + offset + FF_CODEABLE_CONCEPT::PAYLOAD;
+    const S sys = static_cast<S>(base[offset + FF_CODEABLE_CONCEPT::SYSTEM]);
+    const uint8_t len = base[offset + FF_CODEABLE_CONCEPT::LENGTH];
+    const BYTE *payload = base + offset + FF_CODEABLE_CONCEPT::PAYLOAD;
 
-    switch (sys) {
-    case S::SNOMED_CT:
-    case S::IDMP:
-    case S::MED_RT: {
-        uint64_t id = LOAD_U64(payload);
+    // Same table the encoder uses -- no second per-system switch.
+    const FF_CC_Codec *codec = ff_cc_codec(sys);
+    if (codec == nullptr) return {S::UNKNOWN, 0, {}};
+
+    if (codec->payload_bytes > 0) {
+        if (len < codec->payload_bytes) return {sys, 0, {}};  // truncated block
+        const uint64_t value = ff_cc_load(payload, codec->payload_bytes);
+        // Sized for the widest payload (uint64 -> 20 digits) so a width change
+        // in the table can never outgrow the buffer.
         thread_local char buf[24];
-        int pos = snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(id));
-        return {sys, id, std::string_view(buf, static_cast<size_t>(pos))};
+        const int pos = codec->hex_out
+                            ? snprintf(buf, sizeof(buf), "%08llX",
+                                       static_cast<unsigned long long>(value))
+                            : snprintf(buf, sizeof(buf), "%llu",
+                                       static_cast<unsigned long long>(value));
+        return {sys, value, std::string_view(buf, static_cast<size_t>(pos))};
     }
-    case S::DICOM: {
-        uint32_t tag = LOAD_U32(payload);
-        thread_local char buf[16];
-        int pos = snprintf(buf, sizeof(buf), "%08X", tag);
-        return {sys, tag, std::string_view(buf, static_cast<size_t>(pos))};
+
+    if (sys == S::UNKNOWN) {
+        // LENGTH covers the 2-byte url index plus the string. Check BEFORE
+        // reading the index, or a truncated block reads past the payload.
+        constexpr uint8_t URL_IDX_BYTES = 2;
+        if (len < URL_IDX_BYTES) return {S::UNKNOWN, 0, {}};
+        const uint16_t url_idx = LOAD_U16(payload);
+        return {sys, url_idx,
+                std::string_view(reinterpret_cast<const char *>(payload + URL_IDX_BYTES),
+                                 static_cast<size_t>(len - URL_IDX_BYTES))};
     }
-    case S::RXNORM:
-    case S::MDC: {
-        uint32_t code = LOAD_U32(payload);
-        thread_local char buf[12];
-        int pos = snprintf(buf, sizeof(buf), "%u", code);
-        return {sys, code, std::string_view(buf, static_cast<size_t>(pos))};
-    }
-    case S::CPT: {
-        uint16_t code = LOAD_U16(payload);
-        thread_local char buf[8];
-        int pos = snprintf(buf, sizeof(buf), "%u", code);
-        return {sys, code, std::string_view(buf, static_cast<size_t>(pos))};
-    }
-    case S::CVX: {
-        uint8_t code = payload[0];
-        thread_local char buf[4];
-        int pos = snprintf(buf, sizeof(buf), "%u", code);
-        return {sys, code, std::string_view(buf, static_cast<size_t>(pos))};
-    }
-    case S::UCUM:
-    case S::LOINC:
-    case S::NDC:
-    case S::ICD_9_CM:
-    case S::ICD_10:
-    case S::ISO_3166:
-    case S::UNII:
-    case S::PCLOCD:
-        return {sys, 0, std::string_view(reinterpret_cast<const char*>(payload), len)};
-    case S::UNKNOWN: {
-        uint16_t url_idx = LOAD_U16(payload);
-        return {sys, url_idx, std::string_view(reinterpret_cast<const char*>(payload + 2), len - 2)};
-    }
-    default:
-        return {S::UNKNOWN, 0, {}};
-    }
+
+    // Variable-length ASCII payload.
+    return {sys, 0, std::string_view(reinterpret_cast<const char *>(payload), len)};
 }
 
 // =====================================================================

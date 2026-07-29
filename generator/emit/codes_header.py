@@ -1,110 +1,291 @@
-"""Generate dictionaries/FF_Codes.hpp from generator/master_codes.json.
+"""Emit dictionaries/FF_Codes.hpp -- the named C++ constants for every code ID.
 
-Uses #define FF_CODE_DEF for clean generated code.
-Descriptor-driven naming for poor code identifiers.
+Two jobs, and it is worth keeping them straight:
+
+  * NAMING (this file) decides what a code is *called* in C++. An identifier is
+    source-level only. Renaming one breaks a recompile; it does not touch a
+    single byte on the wire, and it never moves an ID.
+
+  * NUMBERING (generator/emit/dictionary.py) decides what a code *is* on the
+    wire. That is permanent. See dictionaries/README.md.
+
+Identifiers for codes already in the ledger are read straight out of it, so the
+header is a pure projection of committed state. Only genuinely new codes get a
+name minted here, via assign_identifier().
 """
-import json, re, os
 
-INPUT = os.path.join(os.path.dirname(__file__), "..", "master_codes.json")
+from __future__ import annotations
+
+import json
+import os
+import re
+
+LEDGER = os.path.join(os.path.dirname(__file__), "..", "master_codes.json")
 OUTPUT = os.path.join(os.path.dirname(__file__), "..", "..", "dictionaries", "FF_Codes.hpp")
 
-
-def sanitize(text):
-    syms = {
-        '%':'PERCENT','/':'PER_','*':'TIMES_','+':'PLUS_',"'":'PRIME',
-        '[':'',']':'','{':'','}':'','(':'',')':'','.':'_','=':'EQ_',
-        '<':'LT_','>':'GT_','!':'NOT_','#':'NUM_','@':'AT_','&':'AND_',
-        '~':'TILDE_',':':'_','|':'_','^':'CARET_','$':'DOLLAR_','"':'INCH',
+# Identifiers that are macros in the C/C++ standard library or on Windows. The
+# preprocessor would textually replace them, so they carry a _CODE suffix. This
+# is why the header needs no #undef games -- undef'ing M_E in a public header
+# would sabotage the consumer's own math code.
+RESERVED_MACROS = frozenset(
+    {
+        # <math.h>
+        "DOMAIN",
+        "SING",
+        "OVERFLOW",
+        "UNDERFLOW",
+        "TLOSS",
+        "PLOSS",
+        "HUGE",
+        "HUGE_VAL",
+        "INFINITY",
+        "NAN",
+        "M_E",
+        "M_LOG2E",
+        "M_LOG10E",
+        "M_LN2",
+        "M_LN10",
+        "M_PI",
+        "M_PI_2",
+        "M_PI_4",
+        "M_1_PI",
+        "M_2_PI",
+        "M_2_SQRTPI",
+        "M_SQRT2",
+        "M_SQRT1_2",
+        # <stdio.h> / <stdlib.h> / <stddef.h>
+        "EOF",
+        "NULL",
+        "BUFSIZ",
+        "RAND_MAX",
+        "EXIT_SUCCESS",
+        "EXIT_FAILURE",
+        # <stdbool.h> and common platform spellings
+        "TRUE",
+        "FALSE",
+        "BOOL",
+        # <errno.h> / POSIX control characters
+        "ERROR",
+        "DEL",
+        "NL",
+        "CR",
+        "BS",
+        "FF",
+        "VT",
+        "SP",
+        "ESC",
+        # Windows <windef.h> / <winnt.h>
+        "MIN",
+        "MAX",
+        "IN",
+        "OUT",
+        "OPTIONAL",
+        "CONST",
+        "VOID",
+        "NEAR",
+        "FAR",
+        "PASCAL",
+        "WINAPI",
+        "INTERFACE",
+        "SEVERITY_ERROR",
+        "DIFFERENCE",
+        # <complex.h>
+        "I",
+        "complex",
+        "imaginary",
     }
+)
+
+_SYMBOLS = {
+    "%": "PERCENT_",
+    "/": "PER_",
+    "*": "TIMES_",
+    "+": "PLUS_",
+    "'": "PRIME",
+    "[": "",
+    "]": "",
+    "{": "",
+    "}": "",
+    "(": "",
+    ")": "",
+    ".": "_",
+    "=": "EQ_",
+    "<": "LT_",
+    ">": "GT_",
+    "!": "NOT_",
+    "#": "NUM_",
+    "@": "AT_",
+    "&": "AND_",
+    "~": "TILDE_",
+    ":": "_",
+    "|": "_",
+    "^": "CARET_",
+    "$": "DOLLAR_",
+    '"': "INCH",
+}
+
+
+def _fold(text: str, upper: bool) -> str:
     r = text
-    for s, repl in syms.items(): r = r.replace(s, repl)
-    r = re.sub(r'[^A-Za-z0-9_]', '_', r)
-    r = re.sub(r'_+', '_', r).strip('_').upper()
-    return r or ''
+    for sym, repl in _SYMBOLS.items():
+        r = r.replace(sym, repl)
+    r = re.sub(r"[^A-Za-z0-9_]", "_", r)
+    r = re.sub(r"_+", "_", r).strip("_")
+    return r.upper() if upper else r
 
 
-def code_ident(code, descriptor):
-    """Generate a C++ identifier from a code string, falling back to descriptor."""
-    ident = sanitize(code)
-    # If sanitized code is empty or pure numeric -> use descriptor
+def sanitize(text: str) -> str:
+    """Fold a code or descriptor into an upper-case C++ identifier fragment."""
+    return _fold(text, upper=True)
+
+
+def sanitize_cased(text: str) -> str:
+    """sanitize() without the case fold.
+
+    UCUM is case-sensitive by design -- 'Ms' (megasecond) and 'ms'
+    (millisecond) are different units -- so the fold destroys the only thing
+    that separates them. Used to break ties, never as the default.
+    """
+    return _fold(text, upper=False)
+
+
+def _ident_from(code: str, descriptor: str, upper: bool) -> str:
+    ident = _fold(code, upper)
     if not ident or ident[0].isdigit():
-        desc_ident = sanitize(descriptor)
-        if desc_ident:
-            # If code looks like a version (digits+dots), prefix with V_
-            if re.match(r'^[\d.]+$', code):
-                ident = 'V_' + desc_ident
-            else:
-                ident = desc_ident
-    # Must not start with digit
+        desc = _fold(descriptor, upper)
+        if desc:
+            ident = ("V_" + desc) if re.match(r"^[\d.]+$", code) else desc
     if ident and ident[0].isdigit():
-        ident = 'V_' + ident
-    return ident or 'EMPTY'
+        ident = "V_" + ident
+    return ident or "EMPTY"
 
 
-def generate():
-    with open(INPUT, encoding="utf-8") as f:
-        data = json.load(f)
+def code_ident(code: str, descriptor: str = "") -> str:
+    """Default C++ identifier for a code."""
+    return _ident_from(code, descriptor, upper=True)
 
-    systems = data["systems"]
-    id_map = {}
-    for vm in data["_ids"].values():
-        id_map.update(vm)
+
+def assign_identifier(code: str, descriptor: str, taken: set[str]) -> str:
+    """Mint an identifier for a NEW code that does not collide with `taken`.
+
+    Discriminates on what actually differs between codes -- case, then bracket
+    class -- never on the FHIR display text, which changes whenever HL7 edits a
+    label and would churn the C++ API for no reason.
+    """
+    bracket = "_SB" if "[" in code else ("_CB" if "{" in code else "")
+    cased = _ident_from(code, descriptor, upper=False)
+    for cand in (code_ident(code, descriptor), cased, cased + bracket if bracket else ""):
+        if cand and cand not in taken and cand not in RESERVED_MACROS:
+            return cand
+
+    stem = code_ident(code, descriptor)
+    if stem in RESERVED_MACROS:
+        stem += "_CODE"
+    ident, n = stem, 1
+    while ident in taken:
+        ident = f"{stem}_{n}"
+        n += 1
+    return ident
+
+
+def struct_name(system: str) -> str:
+    """C++ struct name for a FHIR CodeSystem (e.g. 'fdi-surface' -> FDI_SURFACE)."""
+    return sanitize(system) or "UNNAMED"
+
+
+def generate() -> None:
+    """Project the committed ledger into dictionaries/FF_Codes.hpp.
+
+    Scoping is by terminology SOURCE, then by CodeSystem within FHIR:
+
+        FF_CODE::UCUM::MMHG
+        FF_CODE::FHIR::ADMINISTRATIVE_GENDER::MALE
+        FF_CODE::LEGACY::<retired>
+
+    FHIR revision (R4/R5) is deliberately NOT a namespace axis. It is version
+    membership, and that already lives in the per-version lookup tables
+    (FF_R4_DICTIONARY / FF_R5_DICTIONARY / FF_UCUM_DICTIONARY). Duplicating it
+    here would only produce overlapping namespaces -- 908 codes are in both R4
+    and R5, and under shared-ID keying they are the same constant either way.
+    """
+    with open(LEDGER, encoding="utf-8") as f:
+        ledger = json.load(f)
+
+    # scope name -> {str(permanent id): C++ identifier}. A code carries one ID
+    # but is named per scope, so id 15024 is UCUM::LITER and FDI_SURFACE::L.
+    scopes = ledger["scopes"]
+
+    def members(scope: str, indent: str) -> list[str]:
+        out, seen = [], set()
+        for cid, ident in sorted(scopes.get(scope, {}).items(), key=lambda kv: int(kv[0])):
+            if ident in seen:
+                raise RuntimeError(f"{scope}: duplicate identifier {ident!r} (id {cid})")
+            seen.add(ident)
+            out.append(f"{indent}FF_CODE_DEF {ident} = {cid};")
+        return out
 
     lines = [
-        "// Auto-generated from NPM FHIR CodeSystem packages.",
-        "// DO NOT EDIT.",
+        "// Auto-generated from generator/master_codes.json. DO NOT EDIT.",
+        "//",
+        "// Values are PERMANENT wire constants -- they decode every .ffhr archive",
+        "// ever written. Regenerating this file may add constants and may rename",
+        "// them, but must never change a number. See dictionaries/README.md.",
+        "//",
+        "// Scoped by terminology source, then by CodeSystem. FHIR revision is NOT",
+        "// a namespace here -- that is version membership, carried by the",
+        "// FF_R4/R5/UCUM_DICTIONARY lookup tables.",
         "#pragma once",
         "#include <cstdint>",
         "",
-        "namespace FF_CODES {",
+        "namespace FastFHIR::FF_CODE {",
         "",
         "#define FF_CODE_DEF static inline constexpr uint32_t",
         "",
-        "class Token {",
-        "public:",
-        "    constexpr Token(uint32_t val) : _id(val) {}",
-        "    constexpr uint32_t get() const { return _id; }",
-        "private:",
-        "    uint32_t _id;",
-        "};",
+        "// ---- UCUM (unitsofmeasure.org) ----",
+        "namespace UCUM {",
+        *members("UCUM", "    "),
+        "}  // namespace UCUM",
+        "",
+        "// ---- HL7 FHIR CodeSystems ----",
+        "namespace FHIR {",
         "",
     ]
 
-    lines.append("namespace FHIR {")
-    for sn in sorted(systems):
-        if sn.startswith("ucum-"): continue
-        si = sanitize(sn)
-        if not si: continue
-        lines.append(f"struct {si} {{")
-        for e in sorted(systems[sn]["entries"], key=lambda x: x["code"]):
-            t = f"{sn}|{e['code']}"
-            if t in id_map:
-                ci = code_ident(e["code"], e["descriptor"])
-                lines.append(f"    FF_CODE_DEF {ci} = {id_map[t]};")
+    fhir_systems = sorted(s for s in scopes if s.startswith("FHIR::"))
+    for scope in fhir_systems:
+        sn = struct_name(scope.split("::", 1)[1])
+        lines.append(f"struct {sn} {{")
+        lines.extend(members(scope, "    "))
         lines.append("};")
         lines.append("")
-    lines.append("}  // namespace FHIR")
-    lines.append("")
 
-    for sn in sorted(systems):
-        if not sn.startswith("ucum-"): continue
-        ns = "UCUM_" + (sanitize(sn[5:]) or "UNITS")
-        lines.append(f"namespace {ns} {{")
-        for e in sorted(systems[sn]["entries"], key=lambda x: x["code"]):
-            t = f"{sn}|{e['code']}"
-            if t in id_map:
-                ci = code_ident(e["code"], e["descriptor"])
-                lines.append(f"    FF_CODE_DEF {ci} = {id_map[t]};")
-        lines.append("}  // namespace UCUM")
-        lines.append("")
+    lines += ["}  // namespace FHIR", ""]
 
-    lines.append("}  // namespace FF_CODES")
+    # Only emit LEGACY if something is actually retired into it. An empty
+    # namespace is noise in a header people read.
+    if scopes.get("LEGACY"):
+        lines += [
+            "// ---- Retired ----",
+            "// Codes no current HL7 package claims. They keep their IDs forever",
+            "// because stored archives still cite them, but no source grouping",
+            "// survives for them.",
+            "namespace LEGACY {",
+            *members("LEGACY", "    "),
+            "}  // namespace LEGACY",
+            "",
+        ]
+
+    lines += ["}  // namespace FastFHIR::FF_CODE"]
 
     with open(OUTPUT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
-    count = sum(1 for l in lines if "FF_CODE_DEF " in l)
-    print(f"Generated {OUTPUT}  ({count} constants)")
+    total = sum(len(v) for v in scopes.values())
+    print(
+        f"Generated {OUTPUT}  ({total} constants: "
+        f"{len(scopes.get('UCUM', {}))} UCUM, {len(fhir_systems)} FHIR structs, "
+        f"{len(scopes.get('LEGACY', {}))} legacy)"
+    )
 
 
 if __name__ == "__main__":

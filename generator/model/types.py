@@ -38,13 +38,13 @@ class Field:
     """
 
     # --- identity ---
-    name: str                       # sanitized field name used in C++ identifiers
-    orig_name: str                  # original FHIR element name (for path joins)
-    fhir_type: str                  # FHIR type token, e.g. 'string', 'code', 'Reference'
+    name: str  # sanitized field name used in C++ identifiers
+    orig_name: str  # original FHIR element name (for path joins)
+    fhir_type: str  # FHIR type token, e.g. 'string', 'code', 'Reference'
 
     # --- emitted C++ typing ---
-    cpp_type: str                   # view/struct type, e.g. 'Offset', 'uint32_t'
-    data_type: str                  # eager-deserialize data type, e.g. 'std::string_view'
+    cpp_type: str  # view/struct type, e.g. 'Offset', 'uint32_t'
+    data_type: str  # eager-deserialize data type, e.g. 'std::string_view'
 
     # --- shape flags (drive field-kind / recovery / stride decisions) ---
     is_array: bool = False
@@ -60,10 +60,19 @@ class Field:
     extra: dict[str, Any] = dc_field(default_factory=dict)
 
     # Keys this dataclass owns; everything else falls into `extra`.
-    _OWNED = frozenset({
-        "name", "orig_name", "fhir_type", "cpp_type", "data_type",
-        "is_array", "is_choice", "resolved_path", "code_enum",
-    })
+    _OWNED = frozenset(
+        {
+            "name",
+            "orig_name",
+            "fhir_type",
+            "cpp_type",
+            "data_type",
+            "is_array",
+            "is_choice",
+            "resolved_path",
+            "code_enum",
+        }
+    )
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Field:
@@ -113,8 +122,8 @@ class Block:
     canonical key is `layout`.
     """
 
-    path: str                       # dotted FHIR path, e.g. 'Patient.contact'
-    struct_name: str                # emitted C++ struct name, e.g. 'FF_PATIENT'
+    path: str  # dotted FHIR path, e.g. 'Patient.contact'
+    struct_name: str  # emitted C++ struct name, e.g. 'FF_PATIENT'
     layout: list[Field] = dc_field(default_factory=list)
     extra: dict[str, Any] = dc_field(default_factory=dict)
 

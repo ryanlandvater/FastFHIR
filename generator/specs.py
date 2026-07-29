@@ -38,7 +38,9 @@ def fetch_fhir_specs(force_download=False):
 
         if package_dir.exists() and not force_download:
             code_systems = list(package_dir.glob("CodeSystem-*.json"))
-            print(f"[Info] FHIR {version} package already exists ({len(code_systems)} CodeSystems). Skipping download.")
+            print(
+                f"[Info] FHIR {version} package already exists ({len(code_systems)} CodeSystems). Skipping download."
+            )
             continue
 
         # Clean and recreate

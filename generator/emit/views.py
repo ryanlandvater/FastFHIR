@@ -6,8 +6,8 @@ Relocated from ffc.py lines 345-553.  These generate:
   * Reflection dispatch (name -> Node)
 """
 
-from generator.model import type_map as _tm
 from generator.model import structure as _st
+from generator.model import type_map as _tm
 from generator.model.type_map import STRING_TYPES
 from generator.utilities import enclose_namespace
 
@@ -15,105 +15,145 @@ from generator.utilities import enclose_namespace
 def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
     view_name = block_struct_name.replace("FF_", "") + "View"
 
-    hpp = f"template <uint32_t VERSION = FHIR_VERSION_R5>\n"
+    hpp = "template <uint32_t VERSION = FHIR_VERSION_R5>\n"
     hpp += f"struct {view_name} {{\n"
-    hpp += f"    const BYTE* const base;\n"
-    hpp += f"    const Offset offset;\n\n"
-    hpp += f"    inline bool is_null() const {{ return offset == FF_NULL_OFFSET; }}\n\n"
+    hpp += "    const BYTE* const base;\n"
+    hpp += "    const Offset offset;\n\n"
+    hpp += "    inline bool is_null() const { return offset == FF_NULL_OFFSET; }\n\n"
 
     for f in layout:
-        if f['is_array']:
-            ret_type = 'FF_ARRAY'
-        elif f.get('is_choice'):
-            ret_type = 'ChoiceEntry'
-        elif f.get('raw_scalar'):
-            ret_type = f['cpp_type']
-        elif f['fhir_type'] in ('string', 'code') or f['fhir_type'] in STRING_TYPES:
-            ret_type = 'std::string_view'
-        elif f['fhir_type'] in _tm.TYPE_MAP and f['fhir_type'] not in ('DEFAULT', 'Resource', 'CHOICE'):
-            ret_type = f['cpp_type']
-        elif f['fhir_type'] == 'Resource':
-            ret_type = 'ResourceReference'
+        if f["is_array"]:
+            ret_type = "FF_ARRAY"
+        elif f.get("is_choice"):
+            ret_type = "ChoiceEntry"
+        elif f.get("raw_scalar"):
+            ret_type = f["cpp_type"]
+        elif f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES:
+            ret_type = "std::string_view"
+        elif f["fhir_type"] in _tm.TYPE_MAP and f["fhir_type"] not in (
+            "DEFAULT",
+            "Resource",
+            "CHOICE",
+        ):
+            ret_type = f["cpp_type"]
+        elif f["fhir_type"] == "Resource":
+            ret_type = "ResourceReference"
         else:
             child_struct = _st._resolve_ff_struct_name(
-                f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path')
+                f["fhir_type"], f["name"], block_struct_name, f.get("resolved_path")
             )
             ret_type = child_struct.replace("FF_", "") + "View"
 
         hpp += f"    inline auto get_{f['cpp_name']}() const {{\n"
 
-        if f['first_version_idx'] > 0:
+        if f["first_version_idx"] > 0:
             hpp += f"        if constexpr (VERSION < FHIR_VERSION_{f['first_version_name']}) {{\n"
             scalar_types = [
-                'FF_ARRAY', 'std::string_view', 'ResourceReference',
-                'FastFHIR::Reflective::Node', 'ChoiceEntry',
-                'uint8_t', 'uint16_t', 'uint32_t', 'uint64_t',
-                'int32_t', 'int64_t', 'double', 'bool', 'Offset',
+                "FF_ARRAY",
+                "std::string_view",
+                "ResourceReference",
+                "FastFHIR::Reflective::Node",
+                "ChoiceEntry",
+                "uint8_t",
+                "uint16_t",
+                "uint32_t",
+                "uint64_t",
+                "int32_t",
+                "int64_t",
+                "double",
+                "bool",
+                "Offset",
             ]
-            if ret_type in scalar_types or f.get('raw_scalar'):
-                if ret_type == 'FF_ARRAY':
-                    hpp += f"            return FF_ARRAY(FF_NULL_OFFSET, 0, VERSION);\n"
+            if ret_type in scalar_types or f.get("raw_scalar"):
+                if ret_type == "FF_ARRAY":
+                    hpp += "            return FF_ARRAY(FF_NULL_OFFSET, 0, VERSION);\n"
                 else:
                     hpp += f"            return {f['cpp_type'] if f.get('raw_scalar') else ret_type}{{}};\n"
             else:
                 hpp += f"            return {ret_type}<VERSION>{{base, FF_NULL_OFFSET}};\n"
-            hpp += f"        }}\n"
+            hpp += "        }\n"
 
         vtable_off = f"{block_struct_name}::{f['name']}"
 
-        if f['is_array']:
+        if f["is_array"]:
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
-            hpp += f"        return FF_ARRAY(child_off, 0, VERSION);\n"
-        elif f.get('is_choice'):
+            hpp += "        return FF_ARRAY(child_off, 0, VERSION);\n"
+        elif f.get("is_choice"):
             hpp += f"        return Decode::choice(base, offset + {vtable_off});\n"
-        elif f.get('raw_scalar'):
+        elif f.get("raw_scalar"):
             hpp += f"        return {f['macro']}(base + offset + {vtable_off});\n"
-        elif f['fhir_type'] in _tm.TYPE_MAP and f['fhir_type'] not in ('string', 'code', 'DEFAULT', 'Resource', 'CHOICE'):
+        elif f["fhir_type"] in _tm.TYPE_MAP and f["fhir_type"] not in (
+            "string",
+            "code",
+            "DEFAULT",
+            "Resource",
+            "CHOICE",
+        ):
             hpp += f"        return Decode::scalar<{f['cpp_type']}>(base, offset + {vtable_off}, {_st._child_recovery_expr(f, block_struct_name)});\n"
-        elif f['fhir_type'] in ('string', 'code') or f['fhir_type'] in STRING_TYPES:
+        elif f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES:
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
-            hpp += f"        if (child_off == FF_NULL_OFFSET) return std::string_view();\n"
-            hpp += f"        return FF_STRING(child_off, 0, VERSION).read_view(base);\n"
-        elif f['fhir_type'] == 'Resource':
+            hpp += "        if (child_off == FF_NULL_OFFSET) return std::string_view();\n"
+            hpp += "        return FF_STRING(child_off, 0, VERSION).read_view(base);\n"
+        elif f["fhir_type"] == "Resource":
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
             hpp += f"        return ResourceReference{{child_off, static_cast<RECOVERY_TAG>(LOAD_U16(base + offset + {vtable_off} + DATA_BLOCK::RECOVERY))}};\n"
         else:
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
             hpp += f"        return {ret_type}<VERSION>{{base, child_off}};\n"
 
-        hpp += f"    }}\n"
+        hpp += "    }\n"
 
     if extra_methods:
         hpp += extra_methods
-    hpp += f"}};\n\n"
+    hpp += "};\n\n"
     return hpp
 
 
 def generate_field_info_implementation(layout, block_struct_name):
-    cpp = f'const FF_FieldInfo {block_struct_name}::FIELDS[{block_struct_name}::FIELD_COUNT] = {{\n'
+    cpp = f"const FF_FieldInfo {block_struct_name}::FIELDS[{block_struct_name}::FIELD_COUNT] = {{\n"
     for f in layout:
         cpp += (
             f'    {{"{f["orig_name"]}", {_st._field_kind_expr(f)}, '
             f'{block_struct_name}::{f["name"]}, '
-            f'{_st._child_recovery_expr(f, block_struct_name)}, '
-            f'{_st._array_entries_are_offsets_expr(f)}, '
-            f'{_st._compact_slot_size(f)}}},\n'
+            f"{_st._child_recovery_expr(f, block_struct_name)}, "
+            f"{_st._array_entries_are_offsets_expr(f)}}},\n"
         )
-    cpp += '};\n'
-    # Pre-baked compact slot sizes table; zero-padded to next multiple of 8
-    # for SIMD single-shot load safety.
+    cpp += "};\n"
+    # Compact slot widths. The generator emits the field KIND and lets
+    # ff_slot_width() (FF_Primitives.hpp) compute the byte count at compile
+    # time -- it never computes a width itself. That is what keeps this table
+    # and the compactor's dense-slot arithmetic on one definition instead of
+    # two that have to be kept in step.
+    #
+    # Zero-padded to a multiple of 8 so the SIMD dense-offset walk can do a
+    # single unconditional load.
     stride = ((len(layout) + 7) // 8) * 8
-    vals = [str(_st._compact_slot_size(f)) for f in layout] + ['0'] * (stride - len(layout))
-    cpp += f'alignas(8) const uint8_t {block_struct_name}::COMPACT_SLOT_SIZES'
+    vals = [f"ff_slot_width({_st._field_kind_expr(f)})" for f in layout]
+    vals += ["0"] * (stride - len(layout))
+    cpp += f"alignas(8) const uint8_t {block_struct_name}::COMPACT_SLOT_SIZES"
     cpp += f'[{block_struct_name}::COMPACT_SIZES_STRIDE] = {{{", ".join(vals)}}};\n'
-    cpp += f'const FF_FieldInfo* {block_struct_name}::find_field(std::string_view name) const {{\n'
-    cpp += f'    const FF_FieldInfo* fallback_choice = nullptr;\n'
-    cpp += f'    for (size_t i = 0; i < FIELD_COUNT; ++i) {{\n'
-    cpp += f'        if (FIELDS[i].kind == FF_FIELD_CHOICE) fallback_choice = &FIELDS[i];\n'
-    cpp += f'        if (FIELDS[i].name == name) return &FIELDS[i];\n'
-    cpp += f'    }}\n'
-    cpp += f'    return fallback_choice;\n'
-    cpp += f'}}\n'
+
+    # The V-Table slot widths (<FIELD>_S) are a separate, PERMANENT wire
+    # constant -- they fix every field offset in the standard layout. They are
+    # not derived from ff_slot_width(), because a future compact-only packing
+    # change must not silently move a V-Table offset. But they agree today, and
+    # a silent divergence would corrupt data, so the compiler checks it: if you
+    # ever need them to differ, you have to delete the assertion deliberately.
+    for f in layout:
+        cpp += (
+            f"static_assert({block_struct_name}::{f['name']}_S == "
+            f"ff_slot_width({_st._field_kind_expr(f)}),\n"
+            f'              "{block_struct_name}.{f["orig_name"]}: V-Table slot width '
+            f'disagrees with ff_slot_width() for its FF_FieldKind");\n'
+        )
+    cpp += f"const FF_FieldInfo* {block_struct_name}::find_field(std::string_view name) const {{\n"
+    cpp += "    const FF_FieldInfo* fallback_choice = nullptr;\n"
+    cpp += "    for (size_t i = 0; i < FIELD_COUNT; ++i) {\n"
+    cpp += "        if (FIELDS[i].kind == FF_FIELD_CHOICE) fallback_choice = &FIELDS[i];\n"
+    cpp += "        if (FIELDS[i].name == name) return &FIELDS[i];\n"
+    cpp += "    }\n"
+    cpp += "    return fallback_choice;\n"
+    cpp += "}\n"
     return cpp
 
 
@@ -126,7 +166,7 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "// Copyright (c) Ryan Landvater. All rights reserved.\n"
         "// ============================================================\n"
         "#pragma once\n"
-        '#include "../include/FF_Primitives.hpp"\n'
+        '#include "FF_Primitives.hpp"\n'
         "#include <string_view>\n"
         "#include <vector>\n\n"
     )
@@ -146,8 +186,8 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "// This file is autogenerated by FastFHIR. DO NOT EDIT.\n"
         "// Copyright (c) Ryan Landvater. All rights reserved.\n"
         "// ============================================================\n"
-        '#include "../include/FF_Utilities.hpp"\n'
-        '#include "../include/FF_Parser.hpp"\n'
+        '#include "FF_Utilities.hpp"\n'
+        '#include "FF_Parser.hpp"\n'
         '#include "FF_AllTypes.hpp"\n'
         '#include "FF_Reflection.hpp"\n\n'
     )
@@ -210,20 +250,18 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "    switch (recovery) {\n"
     )
     for res in sorted(resources):
-        cpp_body += f"        case FF_{res.upper()}::recovery: return \"{res}\";\n"
+        cpp_body += f'        case FF_{res.upper()}::recovery: return "{res}";\n'
     cpp_body += (
-        "        default: return \"\";\n"
+        '        default: return "";\n'
         "    }\n"
         "}\n\n"
         "const uint8_t* compact_field_sizes(uint16_t recovery) {\n"
         "    switch (recovery) {\n"
     )
     for s_name in sorted(block_struct_names):
-        cpp_body += f"        case {s_name}::recovery: return compact_sizes_for_block<{s_name}>();\n"
-    cpp_body += (
-        "        default: return nullptr;\n"
-        "    }\n"
-        "}\n"
-    )
+        cpp_body += (
+            f"        case {s_name}::recovery: return compact_sizes_for_block<{s_name}>();\n"
+        )
+    cpp_body += "        default: return nullptr;\n" "    }\n" "}\n"
     cpp = cpp_banner + enclose_namespace("FastFHIR", cpp_body)
     return hpp, cpp

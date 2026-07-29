@@ -34,19 +34,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include "FF_Primitives.hpp"
-#include "../dictionaries/FF_Codes.hpp"
+#include "FF_Codes.hpp"
 
-union FF_CodeUnion {
-    uint64_t                    raw;
-    FastFHIR::FF_CODE::UCUM    UCUM;
-    FastFHIR::FF_CODE::R4      R4;
-    FastFHIR::FF_CODE::R5      R5;
-};
-
+/// One row of a per-version lookup table: a permanent code ID and the string
+/// it decodes to. The label always points into FF_DICTIONARY_STRINGS, so the
+/// ID->string meaning has exactly one source of truth.
 struct FF_CodeEntry {
-    FF_CodeUnion  code;
-    const char*   label;
+    uint32_t     code;
+    const char*  label;
 };
 
 extern const char* const FF_DICTIONARY_STRINGS[];
@@ -69,11 +66,13 @@ inline const char* FF_ResolveCode(uint32_t code, uint32_t /*version*/) noexcept 
 
 uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t version) noexcept;
 
-inline FastFHIR::FF_CODE::UCUM FF_GetUCUMCode(std::string_view label) noexcept {
-    return static_cast<FastFHIR::FF_CODE::UCUM>(
-        FF_GetDictionaryCode(std::string(label), FHIR_VERSION_R5));
+/// UCUM unit lookup. Codes are plain uint32_t IDs -- FastFHIR::FF_CODE::UCUM is
+/// a namespace of constants (see dictionaries/FF_Codes.hpp), not a type, because
+/// the same ID is also reachable under its FHIR CodeSystem scope.
+inline uint32_t FF_GetUCUMCode(std::string_view label) noexcept {
+    return FF_GetDictionaryCode(std::string(label), FHIR_VERSION_R5);
 }
 
-inline const char* FF_ResolveUCUMCode(FastFHIR::FF_CODE::UCUM code) noexcept {
-    return FF_ResolveCode(static_cast<uint32_t>(code), FHIR_VERSION_R5);
+inline const char* FF_ResolveUCUMCode(uint32_t code) noexcept {
+    return FF_ResolveCode(code, FHIR_VERSION_R5);
 }

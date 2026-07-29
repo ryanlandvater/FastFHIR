@@ -522,7 +522,7 @@ etc., enumerated in `FF_Primitives.hpp:45–57`).
 #### Version-Aware Offsets (`get_header_size()`)
 
 Each generated FHIR struct exposes `inline Size get_header_size() const`
-(`generator/992`). The function consults the block's recorded
+(emitted by `generator/library.py`). The function consults the block's recorded
 `__version` and returns the V-Table size appropriate to that revision.
 
 For example, an R4 `Patient` block has fewer fields than its R5
@@ -667,14 +667,14 @@ This is the **only** legal kind for:
   different concrete recovery tags and therefore different sizes. (For
   resource arrays, the generator instead emits `INLINE_BLOCK` carrying
   fixed-size 10-byte `ResourceReference` records — see
-  `generator/764` and the wrapper definition in §6.2 — but the
+  `generator/emit/store.py` and the wrapper definition in §6.2 — but the
   *target* of each reference is reached by offset indirection.)
 - **Arrays whose elements would otherwise violate the fixed-stride
   invariant** for any other reason.
 
 The generator emits `STORE_FF_ARRAY_HEADER(__base, child_off,
 FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, n, ToArrayTag(...))` for offset arrays
-(`generator/747`).
+(`generator/emit/store.py`).
 
 ### 5.4 Reading Arrays
 
@@ -1029,41 +1029,50 @@ hand-written FHIR resource code.
 
 ### 9.1 Pipeline Stages
 
-`generator.pipeline.run()`:
+`generator.pipeline.run()` emits into two places with very different contracts:
 
-1. **`fetch_specs.fetch_fhir_specs()`** — pull HL7 StructureDefinitions for
-   every supported FHIR revision into a local `fhir_specs/` tree.
-2. **`ffc._discover_versions(...)`** — enumerate the revisions found
-   (R4, R5, …); the version tuple drives version-aware codegen.
-3. **`ffc.resolve_production_resources(...)`** — produce the closed set of
-   FHIR resource and datatype definitions to compile.
-4. **`ffd.generate_master_dictionary(...)`** — emit the master code
-   dictionary (`FF_Dictionary.hpp`), which maps FHIR `code` values to small
-   integer indices. The dictionary is the substrate for
-   `FF_FIELD_CODE`'s 4-byte slot (top bit reserved as
-   `FF_CODEABLE_CONCEPT_FLAG` for code values not in the dictionary).
-5. **`ffcs.generate_code_systems(...)`** — emit per-CodeSystem C++
-   `enum class` definitions (`FF_CodeSystems.hpp`) so callers get type-safe,
-   IDE-completable code constants.
-6. **`ffc.compile_fhir_library(...)`** — the main code-generation pass.
-   Emits, per resource:
-    - `FF_DataTypes.hpp` — the POD struct definitions used at the C++ API
-      surface (e.g. `PatientData`, `BundleData`).
-    - `FF_FieldKeys.hpp` — the compile-time `FF_FieldKey` constants for
-      every field of every type (the substrate for §8.2).
-    - `FF_Reflection.{hpp,cpp}` — the runtime reflection tables and
-      `ParserOps` instances per resource.
-    - `FF_Recovery.hpp` — the master `RECOVERY_TAG` enumeration, including
-      `RECOVER_FF_SCALAR_BLOCK = 0x0100`, `RECOVER_FF_DATA_TYPE_BLOCK =
-      0x0200`, `RECOVER_ARRAY_BIT = 0x8000`, and the `IsArrayTag` /
-      `GetTypeFromTag` / `ToArrayTag` helpers (`ffc.py:1125–1172`).
-    - The `TypeTraits<T>` specialisations — `size()`, `store()`, `read()`,
-      and `recovery` constant — that bridge each generated POD type to the
-      wire format (§3.3).
-    - Per-resource `get_header_size()` accessors that select R4 vs R5 vs …
-      V-Table sizes (`ffc.py:992`), the realisation of the version-aware
-      header invariant (§4.2).
-7. **Cleanup** — `fhir_specs/` is removed once generation succeeds.
+| Output | Contract |
+|---|---|
+| `dictionaries/` | **Permanent numbering**, committed to git. A code ID is a wire constant that decodes every archive ever written. Append-only. See `dictionaries/README.md`. |
+| `generated_src/` | **Freely regenerable**, gitignored, rebuilt at every configure. Its *V-Table layout* is permanent even though the files are not — that is what `tests/generator/test_wire_format.py` guards. |
+
+The stages:
+
+1. **`specs.fetch_fhir_specs()`** — download the HL7 `r4.core` / `r5.core` NPM
+   packages into `fhir_packages/<version>/package/`. Cached; network is needed
+   only on the first run.
+2. **`emit.dictionary.generate_master_codes(...)`** — scan the packages for
+   FHIR-native codes and reconcile them against the committed ID ledger
+   (`generator/master_codes.json`). **Append-only**: an existing code keeps its
+   ID forever, a new code is appended at `_next_id`, and a code HL7 retires
+   keeps its ID because stored archives still cite it.
+3. **`emit.codes_header.generate()` + `emit.dictionary.generate_dictionary_tables(...)`**
+   — project the ledger into `dictionaries/`: `FF_Codes.hpp` (named constants,
+   scoped by terminology source then CodeSystem), `FF_Dictionary_Strings.cpp`
+   (the ID → string table, where the array index *is* the ID), and the three
+   per-revision lookup tables.
+4. **`model.structure.resolve_production_resources(...)`** — resolve the closed
+   set of resources for the configured profile (`us` / `uk` / `all`).
+5. **`emit.codesystems.generate_code_systems(...)`** — emit per-CodeSystem
+   `enum class` definitions (`FF_CodeSystems.hpp`) for required bindings.
+6. **`library.compile_fhir_library(...)`** — the main pass. Per resource it
+   emits `FF_<Resource>.{hpp,cpp}` and `_internal.hpp`, plus the shared
+   `FF_DataTypes.*`, `FF_FieldKeys.*`, `FF_Reflection.*`, `FF_ResourceTypes.hpp`,
+   the `TypeTraits<T>` specialisations that bridge each POD type to the wire
+   format (§3.3), and the per-resource `get_header_size()` accessors that select
+   the R4 vs R5 V-Table size (§4.2).
+7. **`emit.extensions_known.generate_known_extensions(...)`** — the
+   known-extension filter table.
+
+Two things this pipeline does **not** do, contrary to older documentation:
+
+- It does not generate `FF_Recovery.hpp`. That file is hand-maintained in
+  `include/`; the generator only *validates* tag names against it.
+- It does not delete the spec tree. `fhir_packages/` is a cache and is reused.
+
+Output is deterministic: two runs of the generator produce byte-identical
+trees, so any diff between runs is a real change rather than set-iteration
+noise.
 
 ### 9.2 Why the generator is the architecture
 
@@ -1091,6 +1100,12 @@ generator-only change.
 ---
 
 ## 10. Extension Subsystem: Compiled, WASM, and Passive Routing
+
+> **Status: design, not implemented.** This section specifies the intended
+> extension subsystem. The compiled-extension pass, the WASM registry, and the
+> KIND-discriminated `FF_MODULE_REGISTRY` described below do not exist in the
+> code yet — they are TASKS.md Block D. Read it as a specification to build
+> against, not as a description of current behaviour.
 
 Extensions are the most dynamic part of FHIR — a resource may carry metadata in fields not defined by the base specification. FastFHIR handles three categories of extensions, determined at **predigestion time** and baked into each `FF_EXTENSION` instance via a 4-byte routing word (`EXT_REF`). The routing decision is made once, during `FF_PredigestExtensionURLs()` (Phase 7 of ingest), and the outcome is stored; at read time, there is no re-lookup, no re-dispatch — the path is fixed per instance.
 
@@ -1160,9 +1175,9 @@ inline uint16_t ff_registry_entry_kind(const BYTE* reg_base, uint32_t idx) {
 
 ### 10.4 Generator Path — `compile_extension_library()` Pass
 
-**New ffc.py function:** `compile_extension_library(spec_bundles, ig_specs)` runs as a late stage in `pipeline.run()` (before the current extension-URL predigest setup). It:
+**Proposed:** a `compile_extension_library(spec_bundles, ig_specs)` stage in `generator/library.py`, run late in `pipeline.run()` (before extension-URL predigest setup). It would:
 
-1. **Scans IG StructureDefinitions** — iterates all Extension SDs in US Core, UK Core, and other official IG bundles (stored in `fhir_specs/R4/` and `fhir_specs/R5/`).
+1. **Scan IG StructureDefinitions** — iterate all Extension SDs in US Core, UK Core, and other official IG bundles (under `fhir_packages/R4/package/` and `fhir_packages/R5/package/`).
 2. **Filters for compilation:** Only extensions matching a curated list (e.g. `COMPILED_EXTENSIONS = { 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-race', … }`) are compiled to C++. Others fall back to WASM or passive JSON.
 3. **Emits typed C++ structs:** For each selected extension, generates a struct matching its IG definition (e.g., `FF_USCoreRaceExtensionData`).
 4. **Allocates recovery tags:** Assigns a unique tag from the range `RECOVER_FF_EXTENSION_COMPILED_MIN (0x7000)` to `RECOVER_FF_EXTENSION_COMPILED_MAX (0x7FFF)`.
@@ -1175,10 +1190,10 @@ inline uint16_t ff_registry_entry_kind(const BYTE* reg_base, uint32_t idx) {
    - A sorted array of extension URLs: `constexpr const char* FF_CompiledExtensionURLs[]`.
    - A lookup function: `RECOVERY_TAG FF_FindCompiledExtension(std::string_view url)`.
 
-**Integration in make_lib.py:**
+**Integration in `generator/pipeline.py`:**
 ```python
 # Phase 3 (after resolve_production_resources, before predigest setup)
-compiled_exts = ffc.compile_extension_library(fhir_specs_dir, ig_specs)
+compiled_exts = compile_extension_library(fhir_packages_dir, ig_specs)
 if compiled_exts:
     with open(f'{generated_src}/FF_CompiledExtensions.hpp', 'w') as f:
         f.write(compiled_exts.header_content)
@@ -1241,6 +1256,6 @@ explicit, documented architectural review is a regression.
 | 6 | Variable-stride elements are always `OFFSET`-kind arrays. Fixed-stride elements are `SCALAR` or `INLINE_BLOCK`.| `FF_ARRAY::EntryKind` (§5.3)                             |
 | 7 | `Memory::View` participates in the `shared_ptr` ownership of the arena; raw `string_view` does not.          | `Memory::View::m_vma_ref` (§2.3)                         |
 | 8 | `Builder::finalize` waits for `m_active_mutators == 0` before sealing.                                       | `try_begin_mutation` / `m_finalizing` (§7.1)             |
-| 9 | FHIR resource code lives only in generated headers; the runtime is FHIR-agnostic.                            | `tools/generator/make_lib.py` (§9)                       |
+| 9 | FHIR resource code lives only in generated headers; the runtime is FHIR-agnostic.                            | `generator/pipeline.py` (§9)                             |
 
 

@@ -415,9 +415,8 @@ public:
                 uint32_t raw_code = LOAD_U32(m_base + m_node_offset);
                 if (raw_code == FF_CODE_NULL) return "";
 
-                auto resolved = FF_ResolveCode(raw_code, m_version);
-                if (resolved.label.data()) {
-                    return resolved.label;
+                if (const char* label = FF_ResolveCode(raw_code, m_version)) {
+                    return label;
                 }
 
                 if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
@@ -478,9 +477,8 @@ inline Entry::operator std::string_view() const {
         uint32_t raw_code = LOAD_U32(base + absolute_offset());
         if (raw_code == FF_CODE_NULL) return "";
 
-        auto resolved = FF_ResolveCode(raw_code, m_version);
-                if (resolved.label.data()) {
-            return resolved.label;
+        if (const char* label = FF_ResolveCode(raw_code, m_version)) {
+            return label;
         }
 
         if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {

@@ -515,9 +515,9 @@ static void test_getting_started_231()
         REQUIRE(active, "active should be true after typed key enrichment");
     }
 
-    if (patient.gender != AdministrativeGender::Unknown)
+    if (patient.gender != FF_AdministrativeGender::Unknown)
     {
-        auto gender = FF_AdministrativeGenderToString(patient.gender);
+        auto gender = serialize_AdministrativeGender(patient.gender);
         std::cout << "  gender=" << gender << "\n";
         REQUIRE(std::string_view(gender) == "male", "unexpected gender in getting-started parse");
     }
@@ -612,11 +612,11 @@ static void test_1(const fs::path &patient_json)
     // Inspect via zero-copy snapshot — no heap allocation for the read path
     PatientData data = patient_handle.as_node();
     std::cout << "  id     : " << data.id << "\n";
-    std::cout << "  gender : " << FF_AdministrativeGenderToString(data.gender) << "\n";
+    std::cout << "  gender : " << serialize_AdministrativeGender(data.gender) << "\n";
     std::cout << "  active : " << (data.active == 1 ? "true" : "false") << "\n";
 
     REQUIRE(data.id == "patient-1", "unexpected patient id");
-    REQUIRE(data.gender == AdministrativeGender::Male, "unexpected gender");
+    REQUIRE(data.gender == FF_AdministrativeGender::Male, "unexpected gender");
     REQUIRE(data.active == 1, "expected active=true");
     REQUIRE(!data.name.empty(), "name array is empty");
 
@@ -653,12 +653,12 @@ static void test_2()
 
     PatientData data = root;
     std::cout << "  id       : " << data.id << "\n";
-    std::cout << "  gender   : " << FF_AdministrativeGenderToString(data.gender) << "\n";
+    std::cout << "  gender   : " << serialize_AdministrativeGender(data.gender) << "\n";
     std::cout << "  active   : " << (data.active == 1 ? "true" : "false") << "\n";
     std::cout << "  birthDate: " << data.birthdate << "\n";
 
     REQUIRE(data.id == "patient-1", "unexpected patient id");
-    REQUIRE(data.gender == AdministrativeGender::Male, "unexpected gender");
+    REQUIRE(data.gender == FF_AdministrativeGender::Male, "unexpected gender");
     REQUIRE(data.active == 1, "expected active=true");
     REQUIRE(!data.name.empty(), "name array is empty");
 
@@ -902,7 +902,7 @@ static void test_6()
     std::vector<ObservationData> raw_observations(OBS_COUNT);
     for (size_t i = 0; i < raw_observations.size(); ++i)
     {
-        raw_observations[i].status = ObservationStatus::Preliminary;
+        raw_observations[i].status = FF_ObservationStatus::Preliminary;
     }
 
     auto mem = Memory::create(256 * 1024 * 1024);
@@ -934,7 +934,7 @@ static void test_6()
 
     // 2) Assemble and seal a root Bundle once.
     BundleData bundle{};
-    bundle.type = BundleType::Collection;
+    bundle.type = FF_BundleType::Collection;
     bundle.entry = std::move(entries);
 
     builder.set_root(builder.append_obj(bundle));
@@ -1210,6 +1210,28 @@ static void test_11()
 
     REQUIRE(reconstructed_counts.count(std::string(kFilteredKnown)) == 0,
             "known filtered URL unexpectedly present in URL directory");
+
+    // The prefix must actually be SHARED, not merely reconstructable. Storing each
+    // URL whole in its own entry would satisfy every check above while defeating the
+    // point of the chained-segment directory, so assert the structure: alpha and beta
+    // are distinct leaves hanging off one common parent entry.
+    uint32_t alpha_idx = FF_URL_DIRECTORY::NO_PRIOR;
+    uint32_t beta_idx  = FF_URL_DIRECTORY::NO_PRIOR;
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const std::string url = dir.get_url(parser.data(), i);
+        if (url == kAlpha) alpha_idx = i;
+        else if (url == kBeta) beta_idx = i;
+    }
+    REQUIRE(alpha_idx != FF_URL_DIRECTORY::NO_PRIOR && beta_idx != FF_URL_DIRECTORY::NO_PRIOR,
+            "alpha/beta leaf entries not found in URL directory");
+    REQUIRE(alpha_idx != beta_idx, "alpha and beta collapsed onto one directory entry");
+    REQUIRE(dir.prior_idx(parser.data(), alpha_idx) == dir.prior_idx(parser.data(), beta_idx),
+            "alpha and beta do not share a parent entry — the shared prefix was stored twice");
+    REQUIRE(dir.seg_string(parser.data(), alpha_idx) == "alpha",
+            "alpha leaf segment is not the final path element");
+    REQUIRE(dir.seg_string(parser.data(), beta_idx) == "beta",
+            "beta leaf segment is not the final path element");
 
     std::cout << "  url-directory entries : " << n << "\n";
     std::cout << "  reconstructed alpha   : " << reconstructed_counts.at(std::string(kAlpha)) << "\n";

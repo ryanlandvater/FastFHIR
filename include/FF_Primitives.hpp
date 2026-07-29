@@ -286,6 +286,40 @@ enum FF_FieldKind : uint16_t
     FF_FIELD_CHOICE,
 };
 
+// =====================================================================
+// SLOT WIDTH — the one definition
+// =====================================================================
+// How many bytes a field of this kind occupies in its parent block. This is
+// the SINGLE source of truth; every other spelling of these numbers must be a
+// projection of this function, never an independent derivation:
+//
+//   * the compactor sizes its dense slots with it (src/FF_Compactor.cpp)
+//   * the generated COMPACT_SLOT_SIZES tables are emitted as calls to it, so
+//     the compact reader and writer consume the same constants
+//   * generated blocks static_assert their V-Table widths against it
+//
+// A previous version had the generator re-derive these from FHIR type names
+// while C++ switched on the kind. They disagreed on 1,393 of 1,611 slots and
+// the compact reader read every field after the first string from the wrong
+// address. Do not reintroduce a second derivation -- extend this function.
+constexpr uint8_t ff_slot_width(const FF_FieldKind kind)
+{
+    switch (kind)
+    {
+    case FF_FIELD_BOOL:     return TYPE_SIZE_UINT8;
+    case FF_FIELD_INT32:    return TYPE_SIZE_INT32;
+    case FF_FIELD_UINT32:   return TYPE_SIZE_UINT32;
+    case FF_FIELD_INT64:    return TYPE_SIZE_UINT64;
+    case FF_FIELD_UINT64:   return TYPE_SIZE_UINT64;
+    case FF_FIELD_FLOAT64:  return TYPE_SIZE_FLOAT64;
+    case FF_FIELD_CODE:     return TYPE_SIZE_UINT32;
+    case FF_FIELD_RESOURCE: return TYPE_SIZE_RESOURCE;
+    case FF_FIELD_CHOICE:   return TYPE_SIZE_CHOICE;
+    // STRING, ARRAY, BLOCK and UNKNOWN hold an arena offset.
+    default:                return TYPE_SIZE_OFFSET;
+    }
+}
+
 inline RECOVERY_TAG Kind_to_Recovery(const FF_FieldKind kind)
 {
     switch (kind)
@@ -408,7 +442,6 @@ struct FF_FieldInfo
     uint16_t field_offset = 0;
     RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED;
     uint8_t array_entries_are_offsets = 0;
-    uint8_t compact_size = 0; // pre-baked compact slot size (bytes); 0 = use default
 };
 struct FF_FieldKey
 {

@@ -10,11 +10,11 @@
  * 
  */
 
-#include "../include/FF_Utilities.hpp"
-#include "../include/FF_Parser.hpp"
-#include "../include/FF_SIMD.hpp"
-#include "../include/FF_Dictionary.hpp"
-#include "../generated_src/FF_Reflection.hpp"
+#include "FF_Utilities.hpp"
+#include "FF_Parser.hpp"
+#include "FF_SIMD.hpp"
+#include "FF_Dictionary.hpp"
+#include "FF_Reflection.hpp"
 #include <assert.h>
 
 namespace FastFHIR {
@@ -57,16 +57,9 @@ static const Entry NULL_ENTRY = {nullptr, FF_NULL_OFFSET, 0, FF_RECOVER_UNDEFINE
 static const ParserOps* standard_ops_ptr();
 static const ParserOps* compact_ops_ptr();
 
-static inline uint32_t compact_presence_bytes(size_t field_count) {
-    // Contract from design: field_count / 8 + 1 bytes.
-    return static_cast<uint32_t>(field_count / 8 + 1);
-}
-
-static inline bool compact_presence_contains(const BYTE* presence, size_t field_index) {
-    const size_t byte_index = field_index / 8;
-    const uint8_t bit_mask = static_cast<uint8_t>(1u << (field_index % 8));
-    return (presence[byte_index] & bit_mask) != 0;
-}
+// compact_presence_bytes / compact_presence_contains live in FF_SIMD.hpp --
+// one definition shared with the compactor (writer) so the bitmap layout
+// cannot drift between the two sides.
 
 size_t ParserOps::compact_node_size(const Node& n) {
     // Arrays keep the existing FF_ARRAY layout in compact mode for now.
@@ -473,66 +466,28 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
             uint32_t raw = LOAD_U32(base + slot);
             if (raw == FF_CODE_NULL) { out << "null"; break; }
             if (raw & FF_CODEABLE_CONCEPT_FLAG) {
-                // Sign-extend 31-bit relative offset to dynamic fallback block
-                int32_t rel_off = static_cast<int32_t>(raw << 1) >> 1;
-                Offset block_off = parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
-                // Read SYSTEM byte and payload length
-                FF_CodeableConceptSystem sys = static_cast<FF_CodeableConceptSystem>(
-                    LOAD_U8(base + block_off + 10));
-                uint8_t len = LOAD_U8(base + block_off + 11);
-                const BYTE* payload = base + block_off + 12;
-                switch (sys) {
-                    case FF_CodeableConceptSystem::UNKNOWN:
-                        // Payload: 2-byte URL index + raw code string
-                        if (len >= 2) {
-                            std::string_view code_str(
-                                reinterpret_cast<const char*>(payload + 2), len - 2);
-                            out << '"';
-                            escape_json_string(out, code_str);
-                            out << '"';
-                        } else {
-                            out << "null";
-                        }
-                        break;
-                    case FF_CodeableConceptSystem::UCUM:
-                        // Payload: raw ASCII UCUM expression
-                        out << '"';
-                        escape_json_string(out, std::string_view(
-                            reinterpret_cast<const char*>(payload), len));
-                        out << '"';
-                        break;
-                    case FF_CodeableConceptSystem::SNOMED_CT: {
-                        uint64_t concept_id = LOAD_U64(payload);
-                        char buf[24];
-                        int n = snprintf(buf, sizeof(buf), "%llu",
-                                        static_cast<unsigned long long>(concept_id));
-                        out << '"';
-                        escape_json_string(out, std::string_view(buf, n));
-                        out << '"';
-                        break;
-                    }
-                    case FF_CodeableConceptSystem::DICOM: {
-                        uint32_t tag = LOAD_U32(payload);
-                        char buf[16];
-                        int n = snprintf(buf, sizeof(buf), "%08X", tag);
-                        out << '"';
-                        escape_json_string(out, std::string_view(buf, n));
-                        out << '"';
-                        break;
-                    }
-                    default:
-                        // Unknown system — emit raw payload as string
-                        out << '"';
-                        escape_json_string(out, std::string_view(
-                            reinterpret_cast<const char*>(payload), len));
-                        out << '"';
-                        break;
+                // One decoder, shared with every other read path.
+                //
+                // This used to be a third copy of the per-system switch, and it
+                // had drifted: only UNKNOWN, UCUM, SNOMED_CT and DICOM were
+                // handled, so CPT, CVX, RxNorm, MDC, MED-RT and IDMP fell to a
+                // `default:` that printed their fixed-width binary payload as if
+                // it were ASCII -- raw bytes straight into the JSON.
+                const Offset block_off =
+                    FF_ResolveCodeableConceptOffset(raw, parent_offset);
+                const auto decoded = FF_DECODE_CODEABLE_CONCEPT(base, block_off, version);
+                if (decoded.label.empty()) {
+                    out << "null";
+                } else {
+                    out << '"';
+                    escape_json_string(out, decoded.label);
+                    out << '"';
                 }
             } else {
                 // Dictionary lookup (31-bit index)
-                auto resolved = FF_ResolveCode(raw, version); if (resolved.label.data()) {
+                if (const char* label = FF_ResolveCode(raw, version)) {
                     out << '"';
-                    escape_json_string(out, resolved.label);
+                    escape_json_string(out, label);
                     out << '"';
                 } else {
                     out << "null";

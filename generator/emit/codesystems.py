@@ -19,6 +19,7 @@ import os
 import re
 
 from generator.emit.header import auto_header, write_if_changed
+from generator.model.structure import load_npm_bundle, load_npm_valueset_bundle
 from generator.utilities import enclose_namespace
 
 EXCLUDED_VALUESET_FRAGMENTS: set[str] = {
@@ -207,7 +208,9 @@ def generate_code_systems(
         for v_name, (vss, css) in vs_indices.items():
             name, codes = _get_valueset_codes(vs_url, vss, css)
             if name and codes:
-                if vs_url not in enum_defs or len(codes) > len(enum_defs.get(vs_url, (None, set()))[1]):
+                if vs_url not in enum_defs or len(codes) > len(
+                    enum_defs.get(vs_url, (None, set()))[1]
+                ):
                     enum_defs[vs_url] = (name, codes)
 
     # Build enum names from value set names and assign to paths.
@@ -274,7 +277,7 @@ def generate_code_systems(
             ident = _code_to_identifier(code)
             escaped = code.replace("\\", "\\\\").replace('"', '\\"')
             ns_body += f'    if (sv == "{escaped}") return {enum_name}::{ident};\n'
-        ns_body += f'    return static_cast<{enum_name}>(0);\n'
+        ns_body += f"    return static_cast<{enum_name}>(0);\n"
         ns_body += "}\n\n"
 
     hpp += enclose_namespace("FastFHIR", ns_body)

@@ -2,11 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "../include/FF_Compactor.hpp"
-#include "../include/FF_Queue.hpp"
-#include "../include/FF_Utilities.hpp"
+#include "FF_Compactor.hpp"
+#include "FF_Queue.hpp"
+#include "FF_Utilities.hpp"
+#include "FF_SIMD.hpp"
 
-#include "../generated_src/FF_Reflection.hpp"
+#include "FF_Reflection.hpp"
 #include <cstring>
 #include <vector>
 
@@ -41,24 +42,9 @@ struct ArchiveContext {
         : destination(dst), queue(), injector(queue.get_injector()), consumer(queue.get_consumer()) {}
 };
 
-static inline uint32_t compact_presence_bytes(size_t field_count) {
-    return static_cast<uint32_t>(field_count / 8 + 1);
-}
-
-static inline uint16_t compact_slot_size(FF_FieldKind kind) {
-    switch (kind) {
-        case FF_FIELD_BOOL:    return TYPE_SIZE_UINT8;
-        case FF_FIELD_INT32:   return TYPE_SIZE_INT32;
-        case FF_FIELD_UINT32:  return TYPE_SIZE_UINT32;
-        case FF_FIELD_INT64:   return TYPE_SIZE_UINT64;
-        case FF_FIELD_UINT64:  return TYPE_SIZE_UINT64;
-        case FF_FIELD_FLOAT64: return TYPE_SIZE_FLOAT64;
-        case FF_FIELD_CODE:    return TYPE_SIZE_UINT32;
-        case FF_FIELD_RESOURCE:return TYPE_SIZE_RESOURCE;
-        case FF_FIELD_CHOICE:  return TYPE_SIZE_CHOICE;
-        default:               return TYPE_SIZE_OFFSET;
-    }
-}
+// Slot widths come from ff_slot_width() in FF_Primitives.hpp -- the same
+// function the generated COMPACT_SLOT_SIZES tables are emitted from, so the
+// writer here and the compact reader cannot disagree.
 
 static Offset archive_node(const Reflective::Node& node, ArchiveContext& context);
 static Offset archive_array(const Reflective::Node& node, ArchiveContext& context);
@@ -197,9 +183,12 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
         if (!entry) continue;
 
         present_fields.push_back(PresentField{i, field, entry});
-        dense_bytes += compact_slot_size(field.kind);
+        dense_bytes += ff_slot_width(field.kind);
     }
 
+    // Layout: [DATA_BLOCK header][presence bitmap (pbytes)][dense region].
+    // compact_presence_bytes() is shared with the reader via FF_SIMD.hpp so the
+    // two sides cannot disagree on where the dense region starts.
     const uint32_t pbytes = compact_presence_bytes(fields.size());
     const Size object_size = DATA_BLOCK::HEADER_SIZE + pbytes + dense_bytes;
     const Offset object_off = context.destination.claim_space(object_size);
@@ -301,7 +290,7 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
             }
         }
 
-        dense_off += compact_slot_size(field.kind);
+        dense_off += ff_slot_width(field.kind);
     }
 
     return object_off;

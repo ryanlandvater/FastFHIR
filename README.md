@@ -51,10 +51,10 @@ Cross-language support is available through Python bindings (C++ and Python both
 ## Why FastFHIR?
 
 ### 1. Extreme Performance & Compact Size
-FastFHIR turns data traversal into pure pointer arithmetic, **fundamentally outpacing both legacy text formats and modern serialized binaries**, while dramatically shrinking storage footprint.
+FastFHIR turns data traversal into pure pointer arithmetic, outpacing text formats and avoiding the unpack step of serialized binaries.
 * **O(1) Random Access:** Jump instantly to any deeply nested FHIR field — completely bypassing the O(N) linear scanning of HL7v2 and the O(N) string-hashing and DOM construction of JSON.
 * **Zero-Heap Allocation:** Reading a FastFHIR stream requires 0 heap allocations. A lightweight `Node` viewing lens is passed directly over the raw memory buffer, enabling nanosecond read times from the instant the message hits RAM.
-* **Zero-Copy Engine:** FastFHIR outperforms even Google Research's Protobuf FHIR implementation because it skips the deserialization phase entirely, operating natively at the absolute memory-bandwidth limit without unpacking varints or allocating C++ message objects.
+* **Zero-Copy Engine:** There is no deserialization phase — no varint unpacking, no C++ message objects. The receiver reads the bytes it was sent. Measured at 2.4–3.4x the receiver-side throughput of an `orjson` JSON pipeline across 1.7–162 MB bundles ([FastFHIR-benchmark](https://github.com/ryanlandvater/FastFHIR_Performance), Test 1).
 * **Fraction of Size on Disk:** Optional compact archive mode reduces storage by up to **66%** on sparse resources through presence bitmasks and dense field packing (see [Compact Archives](#7--compact-archives)).
 
 <!-- ![test image](build/test_3.png) -->
@@ -74,11 +74,11 @@ FastFHIR provides **strongly validated, type-safe FHIR encoding** with guarantee
 * **Structured Codes & Extensions:** Extensions are intelligently routed at ingest time — registered extensions are decoded into typed binary fields (WASM-based codecs); unknown extensions are preserved with URL tracking. Codes are strongly enumerated from official FHIR CodeSystems.
 * **Primitive Extensions Preserved Correctly:** FastFHIR supports FHIR's underscore-prefixed primitive extension model, allowing extensions on scalar primitives to survive ingest, validation, traversal, and re-export. This is a critical compatibility requirement that standard Protobuf JSON serializers do not implement.
 
-### 3. Hardware-Level Safety & Security
-**In healthcare, security and safety are non-negotiable.** FastFHIR guarantees deterministic memory management and structural integrity at the OS level.
+### 3. Memory Safety & Integrity
+**In healthcare, safety is non-negotiable.** FastFHIR gives deterministic memory management and structural integrity at the OS level.
 * **OS-Protected Memory:** By utilizing Virtual Memory Arenas (via POSIX `mmap` or Win32 `VirtualAlloc`), FastFHIR ensures pointers remain perfectly stable and memory access is protected by the OS kernel. Legacy formats like JSON expose systems to heap fragmentation and injection attacks; FastFHIR eliminates these vectors entirely.
-* **Strict Polymorphic Type Checking:** The embedded `RECOVERY_TAG` metadata prevents type confusion, garbage reads, and buffer overflows at runtime — guaranteeing safe polymorphic resolution even for untrusted input streams.
-* **Cryptographic Sealing:** Built-in checksum footers (CRC32/MD5/SHA-256/SHA-512) guarantee record immutability and integrity, providing a hardware-verified security layer for clinical data lakes and audit trails.
+* **Strict Polymorphic Type Checking:** The embedded `RECOVERY_TAG` metadata catches type confusion and mis-typed reads at runtime, so a field is never silently reinterpreted as the wrong type. This guards against *malformed* data; the parser has not yet been fuzzed against *hostile* data (TASKS.md G1).
+* **Integrity Footers:** Built-in checksum footers (CRC32/MD5/SHA-256) detect corruption and accidental modification. Note this is *integrity*, not *authenticity* — an attacker who can rewrite payload bytes can recompute the footer. Signed archives are tracked in TASKS.md G4.
 * **Deterministic Memory Layout:** Every byte position is mathematically predetermined. No dynamic allocation, no heap fragmentation, no surprise reallocations — perfect for safety-critical healthcare workflows.
 
 ### 4. Clinical Informatics: Lock-Free Enrichment & Custom Profiles
@@ -1181,10 +1181,10 @@ URL is preserved as raw JSON with full fidelity.
 
 ## Generator Architecture
 
-The generator lives in `generator/` -- a modular package refactored from the
-original `tools/generator/` monolith (the decomposition plan and build
-integration record are preserved in git history as `generator_refactor_plan.md`
-and `refactor_history.md`).
+The generator lives in `generator/`. See
+[`generator/README.md`](generator/README.md) for the module map and pipeline
+stages, and [`dictionaries/README.md`](dictionaries/README.md) for the code-ID
+rules — read that one before touching anything that assigns an ID.
 
 | Module | Purpose |
 |---|---|
@@ -1199,7 +1199,8 @@ and `refactor_history.md`).
 | `generator/emit/deserialize.py` | Eager deserializer generation |
 | `generator/emit/store.py` | SIZE and STORE function generation |
 | `generator/emit/views.py` | Lazy view structs, reflection dispatch |
-| `generator/emit/dictionary.py` | Per-version dictionary .cpp files |
+| `generator/emit/dictionary.py` | **The permanent code-ID ledger** + `dictionaries/*.cpp` emission |
+| `generator/emit/codes_header.py` | `dictionaries/FF_Codes.hpp` — named code constants |
 | `generator/emit/codesystems.py` | FF_CodeSystems.hpp enum generation |
 | `generator/emit/traits.py` | Resource traits header |
 | `generator/emit/ingest_mappings.py` | Ingest mapping generation |
@@ -1222,17 +1223,7 @@ cmake --build build --config Release --target fastfhir_obj -- /m:4
 
 ### Profile Selection
 
-Resource scope constants in `generator/model/type_map.py`:
-
-| File | Purpose |
-|---|---|
-| `fetch_specs.py` | Downloads and extracts required FHIR bundles |
-| `ffd.py` | Builds dictionary artifacts |
-| `ffcs.py` | Builds code-system enums and mapping metadata |
-| `ffc.py` | Emits C++ data/resource structs and read/write logic |
-| `make_lib.py` | Orchestrates the full generation pipeline |
-
-**Resource scope constants** in `ffc.py`:
+Resource scope constants live in `generator/model/type_map.py`:
 
 | Constant | Contents |
 |---|---|

@@ -9,7 +9,7 @@
 
 #include <FF_Primitives.hpp>
 #include <FF_Ops.hpp>
-#include "../generated_src/FF_ResourceTypes.hpp"
+#include "FF_ResourceTypes.hpp"
 #include <cstring>
 
 using namespace FastFHIR;

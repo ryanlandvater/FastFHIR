@@ -183,10 +183,14 @@ int main(int argc, char *argv[])
         Builder builder(memory);
         Ingest::Ingestor ingestor;
 
+        // json_buffer is a simdjson::padded_string, so the SIMDJSON_PADDING slack the
+        // parser needs is already allocated. Declaring the capacity lets the ingestor
+        // parse this buffer in place instead of memcpy'ing the whole document.
         Ingest::IngestRequest request{
             .builder = builder,
             .source_type = source_type,
-            .json_string = payload};
+            .json_string = payload,
+            .payload_capacity = json_buffer.size() + simdjson::SIMDJSON_PADDING};
 
         Reflective::ObjectHandle root_handle(&builder, FF_NULL_OFFSET);
         size_t parsed_count = 0;

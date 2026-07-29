@@ -14,8 +14,8 @@
  * those tables.
  */
 
-#include "../include/FF_Dictionary.hpp"
-#include "../include/FF_Primitives.hpp"  // FF_CODE_NULL, FHIR_VERSION_*
+#include "FF_Dictionary.hpp"
+#include "FF_Primitives.hpp"  // FF_CODE_NULL, FHIR_VERSION_*
 
 #include <algorithm>
 #include <cctype>
@@ -44,7 +44,7 @@ uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t version) noexcept
             Map m; m.reserve(FF_UCUM_DICTIONARY_SIZE * 2);
             for (size_t i = 0; i < FF_UCUM_DICTIONARY_SIZE; ++i) {
                 const char* label = FF_UCUM_DICTIONARY[i].label;
-                auto code = static_cast<uint32_t>(FF_UCUM_DICTIONARY[i].code.raw);
+                auto code = static_cast<uint32_t>(FF_UCUM_DICTIONARY[i].code);
                 m.emplace(label, code);
                 // Lowered key for fuzzy UCUM matching
                 std::string lo(label);
@@ -62,7 +62,7 @@ uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t version) noexcept
         static const Map s_r5_map = [] {
             Map m; m.reserve(FF_R5_DICTIONARY_SIZE);
             for (size_t i = 0; i < FF_R5_DICTIONARY_SIZE; ++i)
-                m.emplace(FF_R5_DICTIONARY[i].label, static_cast<uint32_t>(FF_R5_DICTIONARY[i].code.raw));
+                m.emplace(FF_R5_DICTIONARY[i].label, static_cast<uint32_t>(FF_R5_DICTIONARY[i].code));
             return m;
         }();
         auto it = s_r5_map.find(std::string_view(str));
@@ -71,7 +71,7 @@ uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t version) noexcept
         static const Map s_r4_map = [] {
             Map m; m.reserve(FF_R4_DICTIONARY_SIZE);
             for (size_t i = 0; i < FF_R4_DICTIONARY_SIZE; ++i)
-                m.emplace(FF_R4_DICTIONARY[i].label, static_cast<uint32_t>(FF_R4_DICTIONARY[i].code.raw));
+                m.emplace(FF_R4_DICTIONARY[i].label, static_cast<uint32_t>(FF_R4_DICTIONARY[i].code));
             return m;
         }();
         auto it = s_r4_map.find(std::string_view(str));

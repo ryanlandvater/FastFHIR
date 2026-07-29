@@ -22,14 +22,14 @@ def generate_resource_traits_header(resources):
         "template <RESOURCETYPE T> struct ResourceTypeTraits;\n"
         "template <> struct ResourceTypeTraits<RESOURCETYPE::UNKNOWN> {\n"
         "    static constexpr RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED;\n"
-        "    static constexpr std::string_view name = \"\";\n"
+        '    static constexpr std::string_view name = "";\n'
         "};\n"
     )
     for res in resources:
         body += (
             f"template <> struct ResourceTypeTraits<RESOURCETYPE::{res.upper()}> {{\n"
             f"    static constexpr RECOVERY_TAG recovery = RECOVER_FF_{res.upper()};\n"
-            f"    static constexpr std::string_view name = \"{res}\";\n"
+            f'    static constexpr std::string_view name = "{res}";\n'
             "};\n"
         )
     body += (
@@ -38,17 +38,12 @@ def generate_resource_traits_header(resources):
     )
     for res in resources:
         body += f"        case RECOVER_FF_{res.upper()}: return RESOURCETYPE::{res.upper()};\n"
-    body += (
-        "        default: return RESOURCETYPE::UNKNOWN;\n"
-        "    }\n"
-        "}\n"
-    )
+    body += "        default: return RESOURCETYPE::UNKNOWN;\n" "    }\n" "}\n"
 
     hpp = (
         f"{auto_header}"
         "#pragma once\n"
-        '#include "../include/FF_Primitives.hpp"\n'
-        "#include <string_view>\n\n"
-        + enclose_namespace("FastFHIR", body)
+        '#include "FF_Primitives.hpp"\n'
+        "#include <string_view>\n\n" + enclose_namespace("FastFHIR", body)
     )
     return hpp

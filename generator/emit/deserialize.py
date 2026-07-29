@@ -5,11 +5,11 @@ from generator.model.structure import _child_recovery_expr, _resolve_data_type_n
 
 def _resolve_ff_struct_name(fhir_type, field_name, block_struct_name, resolved_path=None):
     """Resolve a FHIR type to its C++ struct name."""
-    if fhir_type in ('string', 'code') or fhir_type in STRING_TYPES:
-        return 'FF_STRING'
-    if fhir_type in ('BackboneElement', 'Element'):
+    if fhir_type in ("string", "code") or fhir_type in STRING_TYPES:
+        return "FF_STRING"
+    if fhir_type in ("BackboneElement", "Element"):
         if resolved_path:
-            return "FF_" + resolved_path.replace('.', '_').upper()
+            return "FF_" + resolved_path.replace(".", "_").upper()
         return f"{block_struct_name}_{field_name}"
     return f"FF_{fhir_type.upper()}"
 
@@ -17,14 +17,15 @@ def _resolve_ff_struct_name(fhir_type, field_name, block_struct_name, resolved_p
 def generate_eager_deserializer(layout, block_struct_name, data_name):
     cpp = f"    {data_name} data;\n"
     for f in layout:
+        kind = _st._field_kind_expr(f)
         indent = "    "
-        if f['first_version_idx'] > 0:
+        if f["first_version_idx"] > 0:
             cpp += f"    if (__version >= FHIR_VERSION_{f['first_version_name']}) {{\n"
             indent = "        "
         cpp += f"{indent}// --- Deserialize: {f['name']} ---\n"
         vtable_off = f"__offset + {block_struct_name}::{f['name']}"
-        
-        if f.get('is_choice'):
+
+        if kind == "FF_FIELD_CHOICE":
             cpp += f"{indent}{{\n"
             cpp += f"{indent}    RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(__base + {vtable_off} + 8));\n"
             cpp += f"{indent}    data.{f['cpp_name']}.tag = tag;\n"
@@ -43,8 +44,8 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}        }}\n"
             cpp += f"{indent}    }}\n"
             cpp += f"{indent}}}\n"
-            
-        elif f['is_array']:
+
+        elif kind == "FF_FIELD_ARRAY":
             cpp += f"{indent}Offset arr_off_{f['cpp_name']} = LOAD_U64(__base + {vtable_off});\n"
             cpp += f"{indent}if (arr_off_{f['cpp_name']} != FF_NULL_OFFSET) {{\n"
             cpp += f"{indent}    FF_ARRAY arr_{f['cpp_name']}(arr_off_{f['cpp_name']}, __size, __version);\n"
@@ -52,9 +53,9 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}    auto ENTRIES = arr_{f['cpp_name']}.entry_count(__base);\n"
             cpp += f"{indent}    auto blk_item_ptr = arr_{f['cpp_name']}.entries(__base);\n"
             cpp += f"{indent}    for (uint32_t i = 0; i < ENTRIES; ++i, blk_item_ptr += STEP) {{\n"
-            
-            if f['fhir_type'] in ('string', 'code') or f['fhir_type'] in STRING_TYPES:
-                code_enum = f.get('code_enum')
+
+            if f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES:
+                code_enum = f.get("code_enum")
                 cpp += f"{indent}        Offset blk_str_off = LOAD_U64(blk_item_ptr);\n"
                 cpp += f"{indent}        if (blk_str_off != FF_NULL_OFFSET) {{\n"
                 cpp += f"{indent}            FF_STRING blk_str(blk_str_off, __size, __version);\n"
@@ -63,68 +64,69 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
                 else:
                     cpp += f"{indent}            data.{f['cpp_name']}.push_back(blk_str.read_view(__base));\n"
                 cpp += f"{indent}        }}\n"
-            elif f['fhir_type'] == 'Resource':
+            elif f["fhir_type"] == "Resource":
                 cpp += f"{indent}        Offset res_off = LOAD_U64(blk_item_ptr);\n"
                 cpp += f"{indent}        if (res_off != FF_NULL_OFFSET) {{\n"
                 cpp += f"{indent}            RECOVERY_TAG res_tag = static_cast<RECOVERY_TAG>(LOAD_U16(blk_item_ptr + DATA_BLOCK::RECOVERY));\n"
                 cpp += f"{indent}            data.{f['cpp_name']}.push_back(ResourceReference(res_off, res_tag));\n"
                 cpp += f"{indent}        }}\n"
-            elif f['fhir_type'] in SCALAR_PRIMITIVE_TYPES:
-                load_macro = TYPE_MAP[f['fhir_type']]['macro']
-                cpp += f"{indent}        data.{f['cpp_name']}.push_back({load_macro}(blk_item_ptr));\n"
-            elif f['fhir_type'] in STRING_TYPES:
+            elif f["fhir_type"] in SCALAR_PRIMITIVE_TYPES:
+                load_macro = TYPE_MAP[f["fhir_type"]]["macro"]
+                cpp += (
+                    f"{indent}        data.{f['cpp_name']}.push_back({load_macro}(blk_item_ptr));\n"
+                )
+            elif f["fhir_type"] in STRING_TYPES:
                 # STRING_TYPES in arrays use FF_STRING constructor + read_view, not ::deserialize()
                 cpp += f"{indent}        Offset blk_str_off = LOAD_U64(blk_item_ptr);\n"
                 cpp += f"{indent}        if (blk_str_off != FF_NULL_OFFSET) {{\n"
                 cpp += f"{indent}            data.{f['cpp_name']}.push_back(FF_STRING(blk_str_off, __size, __version).read_view(__base));\n"
                 cpp += f"{indent}        }}\n"
             else:
-                child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
+                child_struct = _resolve_ff_struct_name(
+                    f["fhir_type"], f["name"], block_struct_name, f.get("resolved_path")
+                )
                 cpp += f"{indent}        data.{f['cpp_name']}.push_back({child_struct}::deserialize(__base, static_cast<Offset>(blk_item_ptr - __base), __size, __version));\n"
             cpp += f"{indent}    }}\n{indent}}}\n"
-            
-        elif f['fhir_type'] == 'Resource':
+
+        elif kind == "FF_FIELD_RESOURCE":
             cpp += f"{indent}Offset res_off_{f['cpp_name']} = LOAD_U64(__base + {vtable_off});\n"
             cpp += f"{indent}if (res_off_{f['cpp_name']} != FF_NULL_OFFSET) {{\n"
             cpp += f"{indent}    RECOVERY_TAG res_tag_{f['cpp_name']} = static_cast<RECOVERY_TAG>(LOAD_U16(__base + {vtable_off} + DATA_BLOCK::RECOVERY));\n"
             cpp += f"{indent}    data.{f['cpp_name']} = ResourceReference(res_off_{f['cpp_name']}, res_tag_{f['cpp_name']});\n"
             cpp += f"{indent}}}\n"
 
-        elif f['fhir_type'] == 'string':
+        elif kind == "FF_FIELD_STRING":
             cpp += f"{indent}Offset str_off_{f['cpp_name']} = LOAD_U64(__base + {vtable_off});\n"
             cpp += f"{indent}if (str_off_{f['cpp_name']} != FF_NULL_OFFSET) data.{f['cpp_name']} = FF_STRING(str_off_{f['cpp_name']}, __size, __version).read_view(__base);\n"
-            
-        elif f['cpp_type'] == 'Offset':
-            data_type = _resolve_data_type_name(f['fhir_type'], f['orig_name'], block_struct_name, f.get('resolved_path'))
-            child_struct = _resolve_ff_struct_name(f['fhir_type'], f['name'], block_struct_name, f.get('resolved_path'))
-            cpp += f"{indent}Offset blk_off_{f['cpp_name']} = LOAD_U64(__base + {vtable_off});\n"
-            # STRING_TYPES (dateTime, base64Binary, markdown, xhtml, etc.) use
-            # FF_STRING constructor + read_view(), not ::deserialize().
-            if f['fhir_type'] in STRING_TYPES:
-                cpp += f"{indent}if (blk_off_{f['cpp_name']} != FF_NULL_OFFSET) data.{f['cpp_name']} = std::make_unique<{data_type}>(FF_STRING(blk_off_{f['cpp_name']}, __size, __version).read_view(__base));\n"
-            else:
-                cpp += f"{indent}if (blk_off_{f['cpp_name']} != FF_NULL_OFFSET) data.{f['cpp_name']} = std::make_unique<{data_type}>({child_struct}::deserialize(__base, blk_off_{f['cpp_name']}, __size, __version));\n"
-            
-        elif f['fhir_type'] == 'code':
-            code_enum = f.get('code_enum')
+
+        elif kind == "FF_FIELD_CODE":
+            code_enum = f.get("code_enum")
             cpp += f"{indent}{{\n"
             cpp += f"{indent}    uint32_t raw_code = LOAD_U32(__base + {vtable_off});\n"
             cpp += f"{indent}    if (raw_code == FF_CODE_NULL) {{\n"
-            cpp += f"{indent}    }} else auto _cc_resolved = FF_ResolveCode(raw_code, __version); if (_cc_resolved.label.data()) {{\n"
-            if code_enum: cpp += f"{indent}        data.{f['cpp_name']} = {code_enum['parse']}(std::string(_cc_resolved.label));\n"
-            else:         cpp += f"{indent}        data.{f['cpp_name']} = resolved;\n"
+            # FF_ResolveCode returns `const char*` (null when the ID is not a
+            # dictionary entry), so the resolve and the test are one condition.
+            cpp += (
+                f"{indent}    }} else if (const char* _cc_label = "
+                f"FF_ResolveCode(raw_code, __version)) {{\n"
+            )
+            if code_enum:
+                cpp += f"{indent}        data.{f['cpp_name']} = {code_enum['parse']}(std::string(_cc_label));\n"
+            else:
+                cpp += f"{indent}        data.{f['cpp_name']} = _cc_label;\n"
             cpp += f"{indent}    }} else if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {{\n"
             cpp += f"{indent}        Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, __offset);\n"
-            if code_enum: cpp += f"{indent}        data.{f['cpp_name']} = {code_enum['parse']}(std::string(FF_DECODE_CODEABLE_CONCEPT(__base, abs_off, __version).label));\n"
-            else:         cpp += f"{indent}        data.{f['cpp_name']} = FF_DECODE_CODEABLE_CONCEPT(__base, abs_off, __version).label;\n"
+            if code_enum:
+                cpp += f"{indent}        data.{f['cpp_name']} = {code_enum['parse']}(std::string(FF_DECODE_CODEABLE_CONCEPT(__base, abs_off, __version).label));\n"
+            else:
+                cpp += f"{indent}        data.{f['cpp_name']} = FF_DECODE_CODEABLE_CONCEPT(__base, abs_off, __version).label;\n"
             cpp += f"{indent}    }}\n"
             cpp += f"{indent}}}\n"
-            
-        elif f['fhir_type'] in TYPE_MAP and f['fhir_type'] not in ('string', 'code', 'DEFAULT'):
+
+        elif f["fhir_type"] in TYPE_MAP and f["fhir_type"] not in ("string", "code", "DEFAULT"):
             cpp += f"{indent}data.{f['cpp_name']} = FastFHIR::Decode::scalar<{f['cpp_type']}>(__base, {vtable_off}, {_child_recovery_expr(f, block_struct_name)});\n"
-            
-        if f['first_version_idx'] > 0: cpp += f"    }}\n"
+
+        if f["first_version_idx"] > 0:
+            cpp += f"    }}\n"
     cpp += "    return data;\n"
     return cpp
-
-

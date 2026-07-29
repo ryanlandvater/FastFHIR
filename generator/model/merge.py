@@ -31,9 +31,16 @@ from generator.model import structure as _st
 # Keys are (parent_path, field_name). Relocated from ffc.py line 94.
 # ---------------------------------------------------------------------------
 BLOCK_FIELD_OVERRIDES: dict[tuple[str, str], dict] = {
-    ("Extension", "url"): {"cpp_type": "uint32_t", "raw_scalar": True, "fhir_type": "url",
-                           "macro": "LOAD_U32", "size": 4, "size_const": "TYPE_SIZE_UINT32",
-                           "data_type": "uint32_t", "url_idx": True},
+    ("Extension", "url"): {
+        "cpp_type": "uint32_t",
+        "raw_scalar": True,
+        "fhir_type": "url",
+        "macro": "LOAD_U32",
+        "size": 4,
+        "size_const": "TYPE_SIZE_UINT32",
+        "data_type": "uint32_t",
+        "url_idx": True,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -64,9 +71,7 @@ def merge_fhir_versions(schemas_by_version, root_resource):
                 master_blocks[parent_path] = {"layout": [], "seen": set(), "sizes": {}}
             blk = master_blocks[parent_path]
             f_type = _tm.sanitize_fhir_type(
-                el.get("type", [{"code": "BackboneElement"}])[0].get(
-                    "code", "BackboneElement"
-                )
+                el.get("type", [{"code": "BackboneElement"}])[0].get("code", "BackboneElement")
             )
             is_array = el.get("max") == "*"
             if field_name not in blk["seen"]:
@@ -88,9 +93,20 @@ def merge_fhir_versions(schemas_by_version, root_resource):
                 # C++ Keyword Sanitization
                 cpp_safe_name = field_name.lower()
                 if cpp_safe_name in {
-                    "class", "template", "namespace", "operator", "new", "delete",
-                    "default", "struct", "enum", "concept", "requires", "export",
-                    "import", "module",
+                    "class",
+                    "template",
+                    "namespace",
+                    "operator",
+                    "new",
+                    "delete",
+                    "default",
+                    "struct",
+                    "enum",
+                    "concept",
+                    "requires",
+                    "export",
+                    "import",
+                    "module",
                 }:
                     cpp_safe_name += "_"
                 field_entry = {
@@ -134,8 +150,7 @@ def merge_fhir_versions(schemas_by_version, root_resource):
             if direct_root in master_blocks:
                 f["resolved_path"] = direct_root
                 continue
-            candidates = [p for p in master_blocks.keys()
-                          if p.endswith("." + f["orig_name"])]
+            candidates = [p for p in master_blocks.keys() if p.endswith("." + f["orig_name"])]
             if len(candidates) == 1:
                 f["resolved_path"] = candidates[0]
     return master_blocks
@@ -167,12 +182,8 @@ def generate_cxx_for_blocks(master_blocks, versions):
     public_hpp, internal_hpp, cpp = "", "", ""
     traits_hpp = ""
     block_data_names = sorted({path.replace(".", "") + "Data" for path in master_blocks})
-    block_struct_names = sorted({
-        "FF_" + path.replace(".", "_").upper() for path in master_blocks
-    })
-    block_view_names = sorted({
-        s_name.replace("FF_", "") + "View" for s_name in block_struct_names
-    })
+    block_struct_names = sorted({"FF_" + path.replace(".", "_").upper() for path in master_blocks})
+    block_view_names = sorted({s_name.replace("FF_", "") + "View" for s_name in block_struct_names})
     for d_name in block_data_names:
         public_hpp += f"struct {d_name};\n"
     if block_data_names:
@@ -207,7 +218,11 @@ def generate_cxx_for_blocks(master_blocks, versions):
         if path in visited:
             return
         visited.add(path)
-        for dep in get_deps(master_blocks[path]["layout"]):
+        # sorted(): get_deps returns a set, and unordered iteration made the
+        # emitted block ORDER vary between runs (PYTHONHASHSEED). Any
+        # topological order is correct, but only a canonical one lets you diff
+        # two generator runs and trust that a difference is a real change.
+        for dep in sorted(get_deps(master_blocks[path]["layout"])):
             if dep in master_blocks:
                 visit(dep)
         ordered_paths.append(path)
@@ -297,7 +312,9 @@ def generate_cxx_for_blocks(master_blocks, versions):
             internal_hpp += f"        if (__version < FHIR_VERSION_{min_version}) return 0;\n"
         for v in versions:
             if v in sizes:
-                internal_hpp += f"        if (__version <= FHIR_VERSION_{v}) return HEADER_{v}_SIZE;\n"
+                internal_hpp += (
+                    f"        if (__version <= FHIR_VERSION_{v}) return HEADER_{v}_SIZE;\n"
+                )
         internal_hpp += "        return HEADER_SIZE;\n    }\n"
 
         internal_hpp += (
@@ -314,9 +331,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
             "    static const uint8_t COMPACT_SLOT_SIZES[COMPACT_SIZES_STRIDE];"
             "  // pre-baked, 8-aligned\n"
         )
-        internal_hpp += (
-            "    FF_Result validate_full(const BYTE* const __base) const noexcept;\n\n"
-        )
+        internal_hpp += "    FF_Result validate_full(const BYTE* const __base) const noexcept;\n\n"
         internal_hpp += (
             f"    static {d_name} deserialize(const BYTE* const __base,"
             f" Offset __offset, Size __size, uint32_t __version);\n"
@@ -326,7 +341,8 @@ def generate_cxx_for_blocks(master_blocks, versions):
 
         # ── INTERNAL: Zero-copy View Template ─────────────────
         internal_hpp += generate_lazy_view_struct(
-            layout, s_name,
+            layout,
+            s_name,
             extra_methods=VIEW_EXTRA_METHODS.get(path, ""),
         )
 
@@ -341,8 +357,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
 
         # ── PUBLIC: Free-function declarations ────────────────
         public_hpp += (
-            f"Size SIZE_{s_name}(const {d_name}& data,"
-            f" uint32_t __version = FHIR_VERSION_R5);\n"
+            f"Size SIZE_{s_name}(const {d_name}& data," f" uint32_t __version = FHIR_VERSION_R5);\n"
         )
         public_hpp += (
             f"Offset STORE_{s_name}(BYTE* const __base, Offset start_off,"
@@ -354,7 +369,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
         )
 
         # ── PUBLIC: TypeTraits ─────────────────────────────────
-        
+
         traits_hpp += f"template<> struct TypeTraits<{d_name}> {{\n"
         traits_hpp += f"    static constexpr auto recovery = RECOVER_{s_name};\n"
         traits_hpp += (
@@ -372,7 +387,6 @@ def generate_cxx_for_blocks(master_blocks, versions):
             f" {{ return FF_DESERIALIZE_{bridge_name}(base, off, size, v); }}\n"
         )
         traits_hpp += "};\n"
-        
 
         # ── CPP: Implementations ──────────────────────────────
         cpp += (
@@ -416,4 +430,3 @@ def generate_cxx_for_blocks(master_blocks, versions):
 
     public_hpp += traits_hpp
     return public_hpp, internal_hpp, cpp
-

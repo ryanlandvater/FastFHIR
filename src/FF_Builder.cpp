@@ -142,76 +142,77 @@ Reflective::Node Builder::view_node(Offset offset, RECOVERY_TAG recovery, FF_Fie
     return Reflective::Node(m_base, size, m_fhir_rev, offset, recovery, kind);
 }
 
-void Builder::amend_pointer(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset)
+Builder::AmendScope Builder::_amend_prepare(Offset object_offset, size_t field_vtable_offset,
+                                            size_t total_bytes, AssignedProbe probe,
+                                            const char *what)
 {
-    // Mutate the stream. Increment mutators if possible and store auto decrementor (guard) for autodestruction
+    // Take the guard FIRST and hand it back to the caller still open.
+    // finalize() waits for m_active_mutators to reach zero and then seals the
+    // stream, so releasing the guard when this function returns would let
+    // finalize() seal between the check below and the caller's STORE.
     if (!try_begin_mutation())
         throw std::runtime_error("FastFHIR: Builder is finalizing; amend is no longer allowed.");
-    struct MutationGuard {
-        Builder *self;
-        ~MutationGuard() { self->end_mutation(); }
-    } guard{this};
+    AmendScope scope(this, nullptr);
 
-    // Bounds checks
-    size_t capacity = m_memory.capacity();
+    // Bounds, written as subtractions rather than `a + b + c > capacity`.
+    // Offset is 64-bit: a caller passing FF_NULL_OFFSET would wrap the addition
+    // to a small number, pass the test, and hand back a wild pointer to STORE.
+    const size_t capacity = m_memory.capacity();
     if (object_offset > capacity || field_vtable_offset > (capacity - object_offset) ||
-        sizeof(Offset) > (capacity - object_offset - field_vtable_offset))
-        throw std::runtime_error("FastFHIR: Pointer amendment out of bounds.");
-
-    // SAFELY load the current value to check if it has already been assigned
-    Offset current_val = LOAD_U64(m_base + object_offset + field_vtable_offset);
-    
-    // NOTE: I don't like this. It's not concurrency protected and limits functionality
-    if (current_val != FF_NULL_OFFSET) {
-        std::string msg = "FastFHIR: Pointer amendment failed — attempted to insert offset " + std::to_string(new_target_offset) +
-        " into object at offset " + std::to_string(object_offset) + ". This field was already assigned. " +
-        "Attempting to patch an already-assigned pointer risks orphaning elements of the stream.";
-        throw std::runtime_error(msg);
+        total_bytes > (capacity - object_offset - field_vtable_offset)) {
+        throw std::runtime_error(std::string("FastFHIR: ") + what + " amendment out of bounds.");
     }
-    
-    // Standard, non-atomic memory write
-    STORE_U64(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset, new_target_offset);
+
+    BYTE *slot = const_cast<BYTE *>(m_base) + object_offset + field_vtable_offset;
+
+    // Reject an already-assigned slot: patching one orphans whatever the stream
+    // already points at -- the old target stays in the arena, unreferenced.
+    //
+    // NOTE: this read-then-write is not atomic. Two threads amending the same
+    // slot can both observe it unassigned. See TASKS.md C6/Q9.
+    const bool assigned = (probe == AssignedProbe::TagIsZero)
+                              // A variant's 8 payload bytes are raw bits, so any
+                              // value is legal -- only the tag says "set".
+                              ? LOAD_U16(slot + DATA_BLOCK::RECOVERY) != 0
+                              : LOAD_U64(slot) != FF_NULL_OFFSET;
+    if (assigned) {
+        throw std::runtime_error(
+            std::string("FastFHIR: ") + what + " amendment failed — the field at offset " +
+            std::to_string(object_offset) + "+" + std::to_string(field_vtable_offset) +
+            " was already assigned. Patching an assigned slot risks orphaning elements "
+            "of the stream.");
+    }
+
+    // Hand back the SAME guard, not a second one -- constructing a fresh
+    // AmendScope here would leave two objects owning one increment, and both
+    // destructors would call end_mutation().
+    scope.bind(slot);
+    return scope;
+}
+
+void Builder::amend_pointer(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset)
+{
+    AmendScope scope = _amend_prepare(object_offset, field_vtable_offset,
+                                      sizeof(Offset), AssignedProbe::OffsetIsNull, "Pointer");
+    STORE_U64(scope.slot(), new_target_offset);
 }
 
 void Builder::amend_resource(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset, RECOVERY_TAG new_tag)
 {
-    size_t capacity = m_memory.capacity();
-    
-    // Validate bounds for the full 10-byte span
-    if (object_offset > capacity || field_vtable_offset > (capacity - object_offset) ||
-        (sizeof(Offset) + sizeof(RECOVERY_TAG)) > (capacity - object_offset - field_vtable_offset)) {
-        throw std::runtime_error("FastFHIR: Resource amendment out of bounds.");
-    }
-
-    Offset current_val = LOAD_U64(m_base + object_offset + field_vtable_offset);
-    
-    if (current_val != FF_NULL_OFFSET) {
-        throw std::runtime_error("FastFHIR: Resource amendment failed — field already assigned.");
-    }
-    
-    // Write both pieces natively
-    STORE_U64(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset, new_target_offset);
-    STORE_U16(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset + DATA_BLOCK::RECOVERY, new_tag);
+    AmendScope scope = _amend_prepare(object_offset, field_vtable_offset,
+                                      sizeof(Offset) + sizeof(RECOVERY_TAG),
+                                      AssignedProbe::OffsetIsNull, "Resource");
+    STORE_U64(scope.slot(), new_target_offset);
+    STORE_U16(scope.slot() + DATA_BLOCK::RECOVERY, new_tag);
 }
 
 void Builder::amend_variant(Offset object_offset, size_t field_vtable_offset, uint64_t raw_bits, RECOVERY_TAG new_tag)
 {
-    size_t capacity = m_memory.capacity();
-    
-    if (object_offset > capacity || field_vtable_offset > (capacity - object_offset) ||
-        (sizeof(uint64_t) + sizeof(RECOVERY_TAG)) > (capacity - object_offset - field_vtable_offset)) {
-        throw std::runtime_error("FastFHIR: Variant amendment out of bounds.");
-    }
-
-    // Check tag instead of bits to verify if unassigned
-    RECOVERY_TAG current_tag = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + object_offset + field_vtable_offset + 8));
-    
-    if (current_tag != 0) {
-        throw std::runtime_error("FastFHIR: Variant amendment failed — field already assigned.");
-    }
-    
-    STORE_U64(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset, raw_bits);
-    STORE_U16(const_cast<BYTE*>(m_base) + object_offset + field_vtable_offset + 8, new_tag);
+    AmendScope scope = _amend_prepare(object_offset, field_vtable_offset,
+                                      sizeof(uint64_t) + sizeof(RECOVERY_TAG),
+                                      AssignedProbe::TagIsZero, "Variant");
+    STORE_U64(scope.slot(), raw_bits);
+    STORE_U16(scope.slot() + DATA_BLOCK::RECOVERY, new_tag);
 }
 
 // =====================================================================

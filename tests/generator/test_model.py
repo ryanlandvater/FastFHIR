@@ -53,7 +53,7 @@ def test_field_optional_keys_omitted_when_absent():
     """code_enum/resolved_path are emitted only when present (matches `.get`)."""
     f = Field.from_dict(_CODE_FIELD)
     d = f.to_dict()
-    assert "resolved_path" not in d        # was absent in source
+    assert "resolved_path" not in d  # was absent in source
     assert d["code_enum"]["enum"] == "NarrativeStatus"
 
 
@@ -68,4 +68,4 @@ def test_block_roundtrip_preserves_layout_order():
     blk = Block.from_dict("HumanName", "FF_HUMANNAME", raw)
     out = blk.to_dict()
     assert [f["name"] for f in out["layout"]] == ["given", "status"]
-    assert out["header_size"] == 46        # non-layout block keys preserved
+    assert out["header_size"] == 46  # non-layout block keys preserved

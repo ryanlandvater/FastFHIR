@@ -34,7 +34,7 @@ from generator.bindings.python_fields import (
     emit_python_ast_stubs,
     emit_py_typed_marker,
 )
-from generator.utilities import enclose_namespace, parse_recovery_tags
+from generator.utilities import enclose_namespace, validate_recovery_tags
 
 
 def compile_fhir_library(
@@ -59,14 +59,14 @@ def compile_fhir_library(
     for v in versions:
         pkg = os.path.join(input_dir, v, "package")
         if os.path.isdir(pkg):
-            type_bundles.append((v, load_npm_bundle(pkg)))
+            type_bundles.append((v, _st.load_npm_bundle(pkg)))
 
     fwd_decls = {t + "Data" for t in _tm.PRODUCTION_TYPES}
     hpp_head = (
         f"{auto_header}// MARK: - Universal Data Types\n#pragma once\n"
-        '#include "../include/FF_Primitives.hpp"\n'
-        '#include "../include/FF_Utilities.hpp"\n'
-        '#include "../include/FF_Builder.hpp"\n'
+        '#include "FF_Primitives.hpp"\n'
+        '#include "FF_Utilities.hpp"\n'
+        '#include "FF_Builder.hpp"\n'
         '#include "FF_CodeSystems.hpp"\n'
         "#include <vector>\n#include <string_view>\n#include <memory>\n\n"
     )
@@ -79,8 +79,8 @@ def compile_fhir_library(
     hpp_head += "\n"
 
     types_hpp = hpp_head
-    types_cpp = f'{auto_header}#include "FF_DataTypes.hpp"\n#include "FF_DataTypes_internal.hpp"\n#include "../include/FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
-    types_int_hpp = f"{auto_header}#pragma once\n#include \"FF_DataTypes.hpp\"\n\n"
+    types_cpp = f'{auto_header}#include "FF_DataTypes.hpp"\n#include "FF_DataTypes_internal.hpp"\n#include "FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
+    types_int_hpp = f'{auto_header}#pragma once\n#include "FF_DataTypes.hpp"\n\n'
     types_all = list(_tm.PRODUCTION_TYPES)
     all_blocks: dict[str, dict] = {}
     all_type_blocks: dict[str, dict] = {}
@@ -142,11 +142,15 @@ def compile_fhir_library(
                 c_name = _st._field_key_constant_name(orig)
                 owner_ns = _st._block_key_namespace(path)
                 all_field_names.add(c_name)
+                short = _st._field_key_short_name(orig)
                 ns_name = f"{owner_ns}::{c_name}"
                 owner = path.replace(".", "_").upper()
                 if owner not in python_resource_map:
                     python_resource_map[owner] = {}
-                token_registry.setdefault(path, {})[orig] = (len(python_resource_map[owner]), ns_name)
+                token_registry.setdefault(path, {})[orig] = (
+                    len(python_resource_map[owner]),
+                    ns_name,
+                )
                 python_resource_map[owner][orig] = (
                     len(python_resource_map[owner]) - 1,
                     orig,
@@ -169,14 +173,21 @@ def compile_fhir_library(
     # --- Resources ---
     generated_resources: list[str] = []
 
-    # Pre-load resource bundles once
+    # Pre-load resource bundles once. The NPM packages ship individual
+    # StructureDefinition-*.json files, not the profiles-resources.json bundle
+    # the old fhir_specs/ layout had, so synthesise the bundle shape.
     resource_bundles: list[tuple[str, dict]] = []
     for v in versions:
-        p = os.path.join(input_dir, v, "profiles-resources.json")
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                resource_bundles.append((v, json.load(f)))
+        pkg = os.path.join(input_dir, v, "package")
+        if os.path.isdir(pkg):
+            resource_bundles.append((v, _st.load_npm_bundle(pkg)))
+    if not resource_bundles:
+        raise RuntimeError(
+            f"No FHIR packages under {input_dir}/<version>/package -- cannot generate "
+            "resources. Run the generator with network access so specs.py can fetch them."
+        )
 
+    skipped: list[str] = []
     for root_resource in resources:
         print(f"  Generating {root_resource}...")
         schemas_by_version = []
@@ -187,6 +198,9 @@ def compile_fhir_library(
             except ValueError:
                 continue
         if not schemas_by_version:
+            # Absent from every version we loaded. Record it and fail at the end
+            # rather than silently emitting a library with holes in it.
+            skipped.append(root_resource)
             continue
 
         master_resource_blocks = merge_fhir_versions(schemas_by_version, root_resource)
@@ -211,7 +225,7 @@ def compile_fhir_library(
         res_int_hpp += int_hpp
         write_if_changed(os.path.join(output_dir, f"FF_{root_resource}_internal.hpp"), res_int_hpp)
 
-        res_cpp = f'{auto_header}#include "FF_{root_resource}_internal.hpp"\n#include "../include/FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
+        res_cpp = f'{auto_header}#include "FF_{root_resource}_internal.hpp"\n#include "FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
         res_cpp += cpp_body
         write_if_changed(os.path.join(output_dir, f"FF_{root_resource}.cpp"), res_cpp)
         generated_resources.append(root_resource)
@@ -232,7 +246,10 @@ def compile_fhir_library(
                 owner = path.replace(".", "_").upper()
                 if owner not in python_resource_map:
                     python_resource_map[owner] = {}
-                token_registry.setdefault(path, {})[orig] = (len(python_resource_map[owner]), ns_name)
+                token_registry.setdefault(path, {})[orig] = (
+                    len(python_resource_map[owner]),
+                    ns_name,
+                )
                 python_resource_map[owner][orig] = (
                     len(python_resource_map[owner]) - 1,
                     orig,
@@ -245,15 +262,18 @@ def compile_fhir_library(
             if path not in [b[0] for b in block_key_defs]:
                 block_key_defs.append((path, all_blocks[path]["layout"]))
 
+    if skipped:
+        raise RuntimeError(
+            f"{len(skipped)} production resources were not found in any FHIR package "
+            f"and would be silently missing from the library: {skipped}"
+        )
+
     # --- Field Keys ---
     # Emit rich FF_FieldKey constants with full metadata (matching old ffc.py):
     #   1. Global string-name constants (FastFHIR::FieldKeys::FF_ACTIVE)
     #   2. Schema-specific 6-arg keys (FastFHIR::Fields::PATIENT::ACTIVE with rec, kind, offset, child, arr)
     #   3. Registry[] array for runtime iteration
-    field_keys_hpp = (
-        f"{auto_header}#pragma once\n"
-        f'#include "../include/FF_Primitives.hpp"\n\n'
-    )
+    field_keys_hpp = f"{auto_header}#pragma once\n" f'#include "FF_Primitives.hpp"\n\n'
 
     # ── FastFHIR::FieldKeys ──────────────────────────────────────
     # Accumulate body first, then wrap once — no manual open/close tracking.
@@ -265,57 +285,59 @@ def compile_fhir_library(
         if field_name.startswith("FF_"):
             continue
         const_name = _st._field_key_constant_name(field_name)
-        fieldkeys_body += f"    inline constexpr FF_FieldKey {const_name}{{\"{field_name}\"}};\n"
+        fieldkeys_body += f'    inline constexpr FF_FieldKey {const_name}{{"{field_name}"}};\n'
     field_keys_hpp += enclose_namespace("FastFHIR::FieldKeys", fieldkeys_body) + "\n"
 
     # ── FastFHIR::Fields ─────────────────────────────────────────
     # Each block gets its own sub-namespace (e.g. PATIENT, OBSERVATION)
     # wrapped inside the outer FastFHIR::Fields namespace.
     fields_inner = ""
-    
+
     registry_entries: list[str] = []
     seen_blocks: set[str] = set()
-    
+
     for path, layout in sorted(block_key_defs, key=lambda item: item[0]):
         if path in seen_blocks:
             continue
         seen_blocks.add(path)
-        
+
         ns_name = _st._block_key_namespace(path)
         block_struct_name = "FF_" + path.replace(".", "_").upper()
-        
+
         # Accumulate this block's field keys, then wrap in its sub-namespace
         block_body = ""
         for f in layout:
             short_name = _st._field_key_short_name(f["orig_name"])
             child_rec = _st._child_recovery_key_expr(f, block_struct_name)
             arr_offsets = _st._array_entries_are_offsets_expr(f)
-            owner_rec = f"ToArrayTag(RECOVER_{block_struct_name})" if f.get("is_array") else f"RECOVER_{block_struct_name}"
+            owner_rec = (
+                f"ToArrayTag(RECOVER_{block_struct_name})"
+                if f.get("is_array")
+                else f"RECOVER_{block_struct_name}"
+            )
             field_kind = _st._field_kind_expr(f)
-            
+
             block_body += (
                 f"    inline constexpr FF_FieldKey {short_name}"
                 f"{{{owner_rec}, {field_kind}, {f['offset']}, "
                 f"{child_rec}, {arr_offsets}, \"{f['cpp_name']}\"}};\n"
             )
             registry_entries.append(f"        &FastFHIR::Fields::{ns_name}::{short_name}")
-        
+
         fields_inner += enclose_namespace(ns_name, block_body) + "\n"
-    
+
     field_keys_hpp += enclose_namespace("FastFHIR::Fields", fields_inner) + "\n"
-    
+
     cpp_body_fieldkeys = (
         f"    const FF_FieldKey* const Registry[] = {{\n"
         + ",\n".join(registry_entries)
         + f"\n    }};\n\n"
         f"    const size_t RegistrySize = {len(registry_entries)};\n"
     )
-    field_keys_cpp = (
-        f"{auto_header}\n"
-        f'#include "FF_FieldKeys.hpp"\n\n'
-        + enclose_namespace("FastFHIR::FieldKeys", cpp_body_fieldkeys)
+    field_keys_cpp = f"{auto_header}\n" f'#include "FF_FieldKeys.hpp"\n\n' + enclose_namespace(
+        "FastFHIR::FieldKeys", cpp_body_fieldkeys
     )
-    
+
     write_if_changed(os.path.join(output_dir, "FF_FieldKeys.hpp"), field_keys_hpp)
     write_if_changed(os.path.join(output_dir, "FF_FieldKeys.cpp"), field_keys_cpp)
 
@@ -356,8 +378,13 @@ def compile_fhir_library(
     # included afterward.
     write_if_changed(os.path.join(output_dir, "FF_AllTypes.hpp"), all_types_hpp)
 
-    # --- Validate RECOVERY_TAG references against permanent header ---
-    parse_recovery_tags("include/FF_Recovery.hpp")
+    # --- Validate RECOVERY_TAG references against the permanent header ---
+    # include/FF_Recovery.hpp is hand-maintained; the generator only references
+    # its tags, and builds some of those names by concatenation. This checks
+    # every emitted tag actually exists, instead of letting a bad name surface
+    # as a wall of C++ "undeclared identifier" errors.
+    n_tags = validate_recovery_tags(output_dir, "include/FF_Recovery.hpp")
+    print(f"-- Validated {n_tags} RECOVERY_TAG references against include/FF_Recovery.hpp")
 
     # --- Ingest mappings ---
     from generator.emit.ingest_mappings import generate_ingest_mappings
@@ -416,5 +443,3 @@ template<> struct TypeTraits<std::vector<double>> {
 };
 
 """
-
-

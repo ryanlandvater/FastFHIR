@@ -100,11 +100,15 @@ def generate_known_extensions(
     ns_body = ""
     ns_body += "// --- Category 1: profile-native extensions ---\n"
     ns_body += "// Already stored as native vtable fields; always suppressed.\n"
-    ns_body += _url_array(native_sorted, "FF_NATIVE_EXTENSION_URLS", "FF_NATIVE_EXTENSION_URL_COUNT")
+    ns_body += _url_array(
+        native_sorted, "FF_NATIVE_EXTENSION_URLS", "FF_NATIVE_EXTENSION_URL_COUNT"
+    )
     ns_body += "\n\n"
 
     ns_body += "// --- Category 1+2+spec: all known/safe extensions ---\n"
-    ns_body += _url_array(all_known_sorted, "FF_ALL_KNOWN_EXTENSION_URLS", "FF_ALL_KNOWN_EXTENSION_URL_COUNT")
+    ns_body += _url_array(
+        all_known_sorted, "FF_ALL_KNOWN_EXTENSION_URLS", "FF_ALL_KNOWN_EXTENSION_URL_COUNT"
+    )
     ns_body += "\n\n"
 
     ns_body += (
@@ -137,7 +141,4 @@ def generate_known_extensions(
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, "FF_KnownExtensions.hpp")
     write_if_changed(out_path, hpp)
-    print(
-        f"-- Emitted {out_path} "
-        f"({len(all_known_sorted)} known, {len(native_sorted)} native)"
-    )
+    print(f"-- Emitted {out_path} " f"({len(all_known_sorted)} known, {len(native_sorted)} native)")

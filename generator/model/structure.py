@@ -18,18 +18,16 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any
 
 from generator.model.type_map import (
     PRODUCTION_PROFILE_ENV,
     SCALAR_PRIMITIVE_TYPES,
     STRING_TYPES,
     TYPE_MAP,
-    US_CORE_RESOURCES,
     UK_CORE_RESOURCES,
+    US_CORE_RESOURCES,
     _scalar_recovery_tag,
     _version_sort_key,
-    sanitize_fhir_type,
 )
 
 # ---------------------------------------------------------------------------
@@ -51,8 +49,6 @@ INGEST_FIELD_OVERRIDES: dict = {}
 # ---------------------------------------------------------------------------
 
 
-
-
 def load_npm_valueset_bundle(pkg_dir: str) -> dict:
     """Load all ValueSet-*.json AND CodeSystem-*.json files from an NPM
     package directory into a bundle-compatible dict with 'entry' list."""
@@ -63,10 +59,9 @@ def load_npm_valueset_bundle(pkg_dir: str) -> dict:
         if fname.endswith(".json") and (
             fname.startswith("ValueSet-") or fname.startswith("CodeSystem-")
         ):
-            with open(os.path.join(pkg_dir, fname), "r", encoding="utf-8") as f:
+            with open(os.path.join(pkg_dir, fname), encoding="utf-8") as f:
                 entries.append({"resource": json.load(f)})
     return {"entry": entries}
-
 
 
 def load_npm_bundle(pkg_dir: str) -> dict:
@@ -78,7 +73,7 @@ def load_npm_bundle(pkg_dir: str) -> dict:
     for fname in os.listdir(pkg_dir):
         if not fname.startswith("StructureDefinition-") or not fname.endswith(".json"):
             continue
-        with open(os.path.join(pkg_dir, fname), "r", encoding="utf-8") as f:
+        with open(os.path.join(pkg_dir, fname), encoding="utf-8") as f:
             sd = json.load(f)
         entries.append({"resource": sd})
     return {"entry": entries}
@@ -164,6 +159,7 @@ def _block_key_namespace(path: str) -> str:
 # Recovery tag expressions (emitted as C++ enumerator names)
 # ---------------------------------------------------------------------------
 
+
 def _child_recovery_key_expr(f: dict, block_struct_name: str) -> str:
     """Return the RECOVER_FF_* enumerator expression for a field's on-disk child."""
     if f["fhir_type"] == "Resource":
@@ -212,6 +208,7 @@ def _getter_return_type(f: dict, block_struct_name: str) -> str:
 # Field-kind expressions (emitted as FF_FIELD_* enumerators)
 # ---------------------------------------------------------------------------
 
+
 def _field_kind_expr(f: dict) -> str:
     """Return the C++ FF_FIELD_* enumerator for a field's wire-kind."""
     # Choice must be checked first — a choice field may have a fallback
@@ -239,31 +236,11 @@ def _field_kind_expr(f: dict) -> str:
     return "FF_FIELD_UNKNOWN"
 
 
-def _compact_slot_size(f: dict) -> int:
-    """Return the compact binary slot size (bytes) for a field.
-
-    Must match compact_slot_size() in FF_Parser.cpp.  Only the SECOND
-    definition in ffc.py is preserved here (the first was a duplicate
-    shadowed by the second — flagged in generator_refactor_plan.md (deleted; in git history) §1.2).
-    """
-    if f.get("is_choice"):
-        return 10  # TYPE_SIZE_CHOICE
-    if f["fhir_type"] == "Resource":
-        return 10  # TYPE_SIZE_RESOURCE
-    if f["fhir_type"] == "boolean":
-        return 1   # TYPE_SIZE_UINT8
-    if f["fhir_type"] == "code" and not f.get("is_array"):
-        return 4   # TYPE_SIZE_UINT32 (code)
-    if f.get("data_type") == "uint32_t":
-        return 4   # TYPE_SIZE_UINT32/INT32
-    if f.get("data_type") == "uint64_t":
-        return 8   # TYPE_SIZE_UINT64
-    if f.get("data_type") == "double":
-        return 8   # TYPE_SIZE_FLOAT64
-    # Offset arrays store arena-relative offsets (8 bytes each).
-    if f.get("is_array") and f.get("array_entries_are_offsets", False):
-        return 8   # TYPE_SIZE_OFFSET
-    return 0
+# NOTE: there is deliberately no _compact_slot_size() here. Slot widths are
+# defined once, in C++, by ff_slot_width() in include/FF_Primitives.hpp. The
+# emitter writes the field KIND and the compiler computes the width, so this
+# module cannot drift from the compactor. See dictionaries/README.md and
+# candidate_redundancy.md for why that matters.
 
 
 def _child_recovery_expr(f: dict, block_struct_name: str) -> str:
@@ -328,6 +305,7 @@ def _annotate_code_enums(master_blocks: dict, code_enum_map: dict | None) -> Non
 # Version & resource discovery
 # ---------------------------------------------------------------------------
 
+
 def discover_versions(specs_dir: str = "fhir_packages") -> list[str]:
     """Discover available FHIR versions from extracted spec folders."""
     if not os.path.isdir(specs_dir):
@@ -355,7 +333,7 @@ def _discover_resource_names(
         for fname in os.listdir(pkg):
             if not fname.startswith("StructureDefinition-") or not fname.endswith(".json"):
                 continue
-            with open(os.path.join(pkg, fname), "r", encoding="utf-8") as f:
+            with open(os.path.join(pkg, fname), encoding="utf-8") as f:
                 sd = json.load(f)
             if sd.get("resourceType") != "StructureDefinition":
                 continue
@@ -398,7 +376,6 @@ def resolve_production_resources(
             )
     else:
         raise RuntimeError(
-            f"Unknown production profile: '{selected}'. "
-            "Expected one of: us, uk, all."
+            f"Unknown production profile: '{selected}'. " "Expected one of: us, uk, all."
         )
     return resources

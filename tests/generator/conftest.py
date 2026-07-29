@@ -1,15 +1,14 @@
 """Pytest fixtures for the generator wire-format gate.
 
 `regenerated_dir` yields a path to a freshly generated `generated_src/` tree.
-Resolution order (first that works wins):
 
   1. FASTFHIR_GENERATED_DIR env var, if set (CI may pre-generate).
-  2. Run `python -m generator --output-dir <tmp>` into a session tmp dir.
-  3. Fall back to the in-repo `generated_src/` (lets the gate run against the
-     current tree even before the new package can self-invoke).
+  2. Otherwise run `python -m generator --output-dir <tmp>`.
 
-The fallback means the witness test is meaningful from day one: it pins the
-CURRENT generated tree as the baseline, then every refactor re-checks against it.
+There is deliberately NO fallback to the in-repo `generated_src/`. That fallback
+used to turn "the generator is broken" into "the tests pass", by silently
+comparing a stale tree against a baseline derived from that same stale tree.
+A generator that will not run is a failure, not a skip.
 """
 
 from __future__ import annotations
@@ -26,25 +25,29 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).parent))
 
 
-def _try_regenerate(tmp: Path) -> Path | None:
-    """Attempt `python -m generator` into `tmp`. Return tmp on success, else None."""
+def _regenerate(tmp: Path) -> Path:
+    """Run `python -m generator` into `tmp`. Fail loudly if it cannot."""
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "generator", "--output-dir", str(tmp)],
             cwd=_REPO_ROOT,
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=1800,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not run `python -m generator`: {exc}") from exc
+
     if proc.returncode != 0:
-        # Surface the failure in -q output without hard-failing collection;
-        # the fallback path keeps the gate usable during migration.
-        print(proc.stdout)
-        print(proc.stderr, file=sys.stderr)
-        return None
-    return tmp if any(tmp.glob("*.hpp")) else None
+        if "urlopen" in proc.stderr or "Download failed" in proc.stdout:
+            pytest.skip("generator needs network access to packages.fhir.org")
+        raise RuntimeError(
+            f"`python -m generator` exited {proc.returncode}; fix the generator before "
+            f"running the wire gate.\nstderr tail:\n{proc.stderr[-2000:]}"
+        )
+    if not any(tmp.glob("*.hpp")):
+        raise RuntimeError(f"generator reported success but wrote no headers into {tmp}")
+    return tmp
 
 
 @pytest.fixture(scope="session")
@@ -53,12 +56,4 @@ def regenerated_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     if env_dir and Path(env_dir).is_dir():
         return Path(env_dir)
 
-    tmp = tmp_path_factory.mktemp("generated")
-    regenerated = _try_regenerate(tmp)
-    if regenerated is not None:
-        return regenerated
-
-    fallback = _REPO_ROOT / "generated_src"
-    if not fallback.is_dir():
-        pytest.skip("no generated_src/ and `python -m generator` unavailable")
-    return fallback
+    return _regenerate(tmp_path_factory.mktemp("generated"))

@@ -50,6 +50,27 @@ struct IngestRequest {
     FastFHIR::Builder& builder;
     SourceType source_type;
     std::string_view json_string;
+
+    /**
+     * @brief Readable bytes at json_string.data(), including slack past json_string.size().
+     *
+     * simdjson reads up to simdjson::SIMDJSON_PADDING bytes past the logical end of a
+     * document, so it needs that slack to exist. Set this to the real allocated size of
+     * your buffer and the payload is parsed **in place, with no copy**:
+     *
+     *   simdjson::padded_string doc = simdjson::padded_string::load(path);
+     *   IngestRequest req{builder, SourceType::FHIR_JSON,
+     *                     std::string_view(doc.data(), doc.length()),
+     *                     doc.length() + simdjson::SIMDJSON_PADDING};
+     *
+     * A std::string works too, since its buffer is contiguous:
+     *   req.payload_capacity = s.capacity() + 1;   // only if capacity() - size() >= PADDING
+     *
+     * Left at 0 (the default) the ingestor makes one padded copy of the payload. That is
+     * always safe, so existing callers keep working unchanged — it just costs a memcpy of
+     * the whole document.
+     */
+    size_t payload_capacity = 0;
 };
 
 class Ingestor {
@@ -86,9 +107,10 @@ public:
      * @param parent_object The mutable handle to the specific resource being amended.
      * @param key The field token for the field within parent_object being amended.
      * @param payload The raw string to parse.
-     * @note Runtime supports FF_FIELD_BLOCK targets and FF_FIELD_ARRAY targets whose entries
-     *       are inline blocks (`array_entries_are_offsets == 0`). Offset-array insertion is
-     *       rejected with FF_FAILURE until implemented.
+     * @note Runtime supports FF_FIELD_BLOCK and FF_FIELD_ARRAY targets. Array element
+     *       layout is irrelevant here: the whole array block is written by the generated
+     *       *_from_json and only its offset is patched into the parent slot, and readers
+     *       re-derive the element layout from the FF_ARRAY header on the wire.
      */
     FF_Result insert_at_field(Reflective::ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload, SourceType fmt = SourceType::FHIR_JSON);
 

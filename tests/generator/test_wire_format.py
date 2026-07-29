@@ -59,15 +59,15 @@ def test_vtable_layout_stable(regenerated_dir: Path, baseline: dict) -> None:
         f"added={set(current) - set(expected)} removed={set(expected) - set(current)}"
     )
     for block in sorted(expected):
-        assert current[block]["order"] == expected[block]["order"], (
-            f"{block}: field ORDER drifted (offsets shift) -> {current[block]['order']}"
-        )
-        assert current[block]["sizes"] == expected[block]["sizes"], (
-            f"{block}: field SIZE constants drifted -> {current[block]['sizes']}"
-        )
-        assert current[block]["header_sizes"] == expected[block]["header_sizes"], (
-            f"{block}: HEADER_*_SIZE drifted -> {current[block]['header_sizes']}"
-        )
+        assert (
+            current[block]["order"] == expected[block]["order"]
+        ), f"{block}: field ORDER drifted (offsets shift) -> {current[block]['order']}"
+        assert (
+            current[block]["sizes"] == expected[block]["sizes"]
+        ), f"{block}: field SIZE constants drifted -> {current[block]['sizes']}"
+        assert (
+            current[block]["header_sizes"] == expected[block]["header_sizes"]
+        ), f"{block}: HEADER_*_SIZE drifted -> {current[block]['header_sizes']}"
 
 
 def _symmetric_diff(a: dict, b: dict) -> dict:

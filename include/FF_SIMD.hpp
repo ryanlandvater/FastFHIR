@@ -253,6 +253,24 @@ static inline uint64_t ff_compact_dense_offset(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// compact_presence helpers — shared by writer and reader
+// ─────────────────────────────────────────────────────────────────────────────
+// Compact objects pack a presence bitmap immediately after the DATA_BLOCK
+// header.  Writer (Compactor) and reader (Parser) must agree on the formula
+// and the bit-indexing convention — these functions are the single definition.
+
+static inline uint32_t compact_presence_bytes(size_t field_count) {
+    return static_cast<uint32_t>(field_count / 8 + 1);
+}
+
+static inline bool compact_presence_contains(const uint8_t* presence,
+                                             size_t field_index) {
+    const size_t  byte_index = field_index / 8;
+    const uint8_t bit_mask   = static_cast<uint8_t>(1u << (field_index % 8));
+    return (presence[byte_index] & bit_mask) != 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ff_match_mask_u64x8
 // ─────────────────────────────────────────────────────────────────────────────
 // Compare a fixed array of exactly 8 uint64_t values against `needle`.

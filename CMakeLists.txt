@@ -48,6 +48,7 @@ include(cmake/openssl.cmake)
 
 # ── Paths ──────────────────────────────────────────────────────
 set(FASTFHIR_INCLUDE_DIR   "${CMAKE_CURRENT_SOURCE_DIR}/include")
+set(FASTFHIR_DICT_DIR      "${CMAKE_CURRENT_SOURCE_DIR}/dictionaries")
 set(FASTFHIR_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated_src")
 
 # ── Source files ────────────────────────────────────────────────
@@ -101,6 +102,7 @@ add_library(fastfhir_obj OBJECT
 )
 target_include_directories(fastfhir_obj PUBLIC
     $<BUILD_INTERFACE:${FASTFHIR_INCLUDE_DIR}>
+    $<BUILD_INTERFACE:${FASTFHIR_DICT_DIR}>
     $<BUILD_INTERFACE:${FASTFHIR_GENERATED_DIR}>
 )
 target_compile_features(fastfhir_obj PUBLIC cxx_std_20)
@@ -124,6 +126,7 @@ add_library(FastFHIR::fastfhir ALIAS fastfhir)
 target_compile_features(fastfhir PUBLIC cxx_std_20)
 target_include_directories(fastfhir PUBLIC
     $<BUILD_INTERFACE:${FASTFHIR_INCLUDE_DIR}>
+    $<BUILD_INTERFACE:${FASTFHIR_DICT_DIR}>
     $<BUILD_INTERFACE:${FASTFHIR_GENERATED_DIR}>
     $<INSTALL_INTERFACE:include>
 )
@@ -162,7 +165,7 @@ if(FASTFHIR_BUILD_INGESTOR)
         ${FASTFHIR_GENERATED_DIR}/FF_IngestMappings.cpp
     )
     target_include_directories(fastfhir_ingest_obj PUBLIC
-        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
+        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR}
     )
     target_link_libraries(fastfhir_ingest_obj PUBLIC fastfhir_obj simdjson::simdjson)
 
@@ -175,18 +178,18 @@ if(FASTFHIR_BUILD_INGESTOR)
     target_link_libraries(fastfhir_ingestor PUBLIC fastfhir simdjson::simdjson)
     add_library(FastFHIR::ingestor ALIAS fastfhir_ingestor)
 
-    add_executable(ff_ingest tools/ingestor/ff_ingest.cpp)
-    target_include_directories(ff_ingest PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
+    add_executable(ff_ingest tools/ingestor/FF_Ingest.cpp)
+    target_include_directories(ff_ingest PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR})
     target_link_libraries(ff_ingest PRIVATE fastfhir_ingestor OpenSSL::Crypto)
 endif()
 
 # ── CLI tools ───────────────────────────────────────────────────
 add_executable(ff_export tools/exporter/FF_Export.cpp)
-target_include_directories(ff_export PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
+target_include_directories(ff_export PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR})
 target_link_libraries(ff_export PRIVATE $<TARGET_OBJECTS:fastfhir_obj>)
 
 add_executable(ff_compact tools/compactor/FF_Compact.cpp)
-target_include_directories(ff_compact PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
+target_include_directories(ff_compact PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR})
 target_link_libraries(ff_compact PRIVATE $<TARGET_OBJECTS:fastfhir_obj> OpenSSL::Crypto)
 target_compile_definitions(ff_compact PRIVATE FASTFHIR_HAS_OPENSSL)
 
@@ -199,7 +202,7 @@ if(FASTFHIR_BUILD_TESTS)
     function(add_ff_cpp_test NAME SOURCE)
         add_executable(${NAME} ${SOURCE})
         target_include_directories(${NAME} PRIVATE
-            ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
+            ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR}
         )
         target_compile_definitions(${NAME} PRIVATE
             FF_TEST_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/tests/cpp"
@@ -237,7 +240,7 @@ if(FASTFHIR_BUILD_TESTS)
     # ── test_readme (full examples suite) ──────────────────────────
     add_executable(ff_test_readme tests/cpp/test_readme.cpp)
     target_include_directories(ff_test_readme PRIVATE
-        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR} ${ASIO_INCLUDE_DIR}
+        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR} ${ASIO_INCLUDE_DIR}
     )
     target_compile_definitions(ff_test_readme PRIVATE
         ASIO_STANDALONE
@@ -251,7 +254,7 @@ if(FASTFHIR_BUILD_TESTS)
     # ── Round-trip harness (invoked by Python DOM parity tests) ──
     add_executable(ff_roundtrip tests/cpp/ff_roundtrip.cpp)
     target_include_directories(ff_roundtrip PRIVATE
-        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
+        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR}
     )
     target_link_libraries(ff_roundtrip PRIVATE fastfhir_ingestor OpenSSL::Crypto)
 
@@ -262,9 +265,20 @@ if(FASTFHIR_BUILD_TESTS)
     # ── Unit tests ─────────────────────────────────────────────────
     add_ff_cpp_test(ff_test_primitives tests/cpp/test_primitives.cpp)
     add_ff_cpp_test(ff_test_memory     tests/cpp/test_memory.cpp)
+    add_ff_cpp_test(ff_test_amend      tests/cpp/test_amend.cpp)
+    add_ff_cpp_test(ff_test_cc         tests/cpp/test_codeable_concept.cpp)
+    add_ff_cpp_test(ff_test_bundle     tests/cpp/test_bundle_ingest.cpp)
+    # Unlike the other standalone suites this one drives the JSON ingestor.
+    target_link_libraries(ff_test_bundle PRIVATE fastfhir_ingestor simdjson::simdjson)
     add_ff_cpp_test(ff_test_simd       tests/cpp/test_simd.cpp)
 
     # ── CTest entries ──────────────────────────────────────────────
+    # Standalone self-contained suites. These were built but never registered,
+    # so they compiled and never ran; add_ff_cpp_test only creates the target.
+    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle)
+        add_test(NAME "cpp_${_standalone}" COMMAND ${_standalone})
+    endforeach()
+
     macro(_add_cpp_test NAME FILTER)
         add_test(NAME "cpp_${NAME}"
             COMMAND ff_test_readme --filter "${FILTER}")
@@ -377,7 +391,7 @@ if(FASTFHIR_BUILD_PYTHON_BINDINGS)
     )
     set_property(TARGET fastfhir_python PROPERTY OUTPUT_NAME _core)
     target_include_directories(fastfhir_python PRIVATE
-        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
+        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR}
     )
     target_compile_definitions(fastfhir_python PRIVATE
         FASTFHIR_VERSION_MAJOR=${FASTFHIR_VERSION_MAJOR}
@@ -405,7 +419,7 @@ install(FILES
     ${FASTFHIR_INCLUDE_DIR}/FF_Builder.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.hpp
-    ${FASTFHIR_GENERATED_DIR}/FF_Recovery.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Recovery.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_ResourceTypes.hpp
     DESTINATION include
 )
@@ -419,7 +433,7 @@ install(EXPORT FastFHIRTargets
     DESTINATION lib/cmake/FastFHIR)
 
 # ── Convenience target ─────────────────────────────────────────
-set(_BUILD_ALL fastfhir ff_export)
+set(_BUILD_ALL fastfhir ff_export ff_compact)
 if(FASTFHIR_BUILD_INGESTOR)
     list(APPEND _BUILD_ALL fastfhir_ingestor ff_ingest)
 endif()

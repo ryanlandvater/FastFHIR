@@ -77,6 +77,54 @@ namespace FastFHIR
         bool try_begin_mutation();
         void end_mutation();
 
+        /// How a slot signals "already assigned", which differs by slot shape.
+        enum class AssignedProbe {
+            OffsetIsNull,  ///< 8-byte value must be FF_NULL_OFFSET (pointer / resource)
+            TagIsZero,     ///< 2-byte RECOVERY_TAG must be 0 (variant: bits alone are ambiguous)
+        };
+
+        /// Holds the mutation guard open across the caller's write.
+        ///
+        /// finalize() waits for m_active_mutators to reach zero and then seals
+        /// the stream. The guard must therefore outlive the STORE, not just the
+        /// validation -- if it is released when the validating function returns,
+        /// finalize() can seal between the check and the write, and the write
+        /// lands in an already-checksummed archive.
+        class AmendScope {
+            Builder* m_owner;  ///< null once moved-from
+            BYTE* m_slot;
+
+        public:
+            AmendScope(Builder* owner, BYTE* slot) noexcept : m_owner(owner), m_slot(slot) {}
+            AmendScope(AmendScope&& other) noexcept : m_owner(other.m_owner), m_slot(other.m_slot)
+            {
+                other.m_owner = nullptr;
+            }
+            AmendScope(const AmendScope&) = delete;
+            AmendScope& operator=(const AmendScope&) = delete;
+            AmendScope& operator=(AmendScope&&) = delete;
+            ~AmendScope()
+            {
+                if (m_owner) m_owner->end_mutation();
+            }
+
+            /// Mutable pointer to the V-Table slot being amended.
+            BYTE* slot() const noexcept { return m_slot; }
+
+            /// Set once validation has located the slot. Kept separate from the
+            /// constructor so the guard can be taken *before* the checks that
+            /// may throw -- a throw must still release it.
+            void bind(BYTE* slot) noexcept { m_slot = slot; }
+        };
+
+        /// Everything the three amend_* entry points share: take the mutation
+        /// guard, bounds-check the span, and reject an already-assigned slot.
+        ///
+        /// Returns the guard by value so it stays open while the caller writes.
+        AmendScope _amend_prepare(Offset object_offset, size_t field_vtable_offset,
+                                  size_t total_bytes, AssignedProbe probe,
+                                  const char* what);
+
     public:
         Builder(const Builder &) = delete;
         Builder &operator=(const Builder &) = delete;

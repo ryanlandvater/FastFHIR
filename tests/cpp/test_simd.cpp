@@ -54,7 +54,7 @@ static int g_tests = 0, g_passed = 0;
     } while (false)
 
 // Include the header under test — all SIMD helpers are inline.
-#include "../include/FF_SIMD.hpp"
+#include "FF_SIMD.hpp"
 
 // ─── Deterministic RNG for repeatable tests ────────────────────────────────
 static std::mt19937_64 rng(42);

@@ -1,0 +1,5164 @@
+{
+  "codes": {},
+  "tags": {},
+  "vtables": {
+    "FF_ADDRESS": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 98,
+        "HEADER_R5_SIZE": 98
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "USE",
+        "TYPE",
+        "TEXT",
+        "LINE",
+        "CITY",
+        "DISTRICT",
+        "STATE",
+        "POSTALCODE",
+        "COUNTRY",
+        "PERIOD"
+      ],
+      "sizes": {
+        "CITY_S": "TYPE_SIZE_OFFSET",
+        "COUNTRY_S": "TYPE_SIZE_OFFSET",
+        "DISTRICT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LINE_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "POSTALCODE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "STATE_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_UINT32",
+        "USE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_AGE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "VALUE",
+        "COMPARATOR",
+        "UNIT",
+        "SYSTEM",
+        "CODE"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_UINT32",
+        "COMPARATOR_S": "TYPE_SIZE_UINT32",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SYSTEM_S": "TYPE_SIZE_OFFSET",
+        "UNIT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_FLOAT64"
+      }
+    },
+    "FF_ALLERGYINTOLERANCE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 192,
+        "HEADER_R5_SIZE": 200
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "CLINICALSTATUS",
+        "VERIFICATIONSTATUS",
+        "TYPE",
+        "CATEGORY",
+        "CRITICALITY",
+        "CODE",
+        "PATIENT",
+        "ENCOUNTER",
+        "ONSET",
+        "RECORDEDDATE",
+        "RECORDER",
+        "ASSERTER",
+        "LASTOCCURRENCE",
+        "NOTE",
+        "REACTION",
+        "PARTICIPANT"
+      ],
+      "sizes": {
+        "ASSERTER_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CLINICALSTATUS_S": "TYPE_SIZE_OFFSET",
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CRITICALITY_S": "TYPE_SIZE_UINT32",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LASTOCCURRENCE_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "ONSET_S": "TYPE_SIZE_CHOICE",
+        "PARTICIPANT_S": "TYPE_SIZE_OFFSET",
+        "PATIENT_S": "TYPE_SIZE_OFFSET",
+        "REACTION_S": "TYPE_SIZE_OFFSET",
+        "RECORDEDDATE_S": "TYPE_SIZE_OFFSET",
+        "RECORDER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VERIFICATIONSTATUS_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_ALLERGYINTOLERANCE_PARTICIPANT": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "FUNCTION",
+        "ACTOR"
+      ],
+      "sizes": {
+        "ACTOR_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FUNCTION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ALLERGYINTOLERANCE_REACTION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 86,
+        "HEADER_R5_SIZE": 86
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SUBSTANCE",
+        "MANIFESTATION",
+        "DESCRIPTION",
+        "ONSET",
+        "SEVERITY",
+        "EXPOSUREROUTE",
+        "NOTE"
+      ],
+      "sizes": {
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "EXPOSUREROUTE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MANIFESTATION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "ONSET_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SEVERITY_S": "TYPE_SIZE_UINT32",
+        "SUBSTANCE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ANNOTATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 52,
+        "HEADER_R5_SIZE": 52
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "AUTHOR",
+        "TIME",
+        "TEXT"
+      ],
+      "sizes": {
+        "AUTHOR_S": "TYPE_SIZE_CHOICE",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TIME_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ATTACHMENT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 78,
+        "HEADER_R5_SIZE": 102
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "CONTENTTYPE",
+        "LANGUAGE",
+        "DATA",
+        "URL",
+        "SIZE",
+        "HASH",
+        "TITLE",
+        "CREATION",
+        "HEIGHT",
+        "WIDTH",
+        "FRAMES",
+        "DURATION",
+        "PAGES"
+      ],
+      "sizes": {
+        "CONTENTTYPE_S": "TYPE_SIZE_UINT32",
+        "CREATION_S": "TYPE_SIZE_OFFSET",
+        "DATA_S": "TYPE_SIZE_OFFSET",
+        "DURATION_S": "TYPE_SIZE_FLOAT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FRAMES_S": "TYPE_SIZE_UINT32",
+        "HASH_S": "TYPE_SIZE_OFFSET",
+        "HEIGHT_S": "TYPE_SIZE_UINT32",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "PAGES_S": "TYPE_SIZE_UINT32",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SIZE_S": "TYPE_SIZE_UINT32",
+        "TITLE_S": "TYPE_SIZE_OFFSET",
+        "URL_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "WIDTH_S": "TYPE_SIZE_UINT32"
+      }
+    },
+    "FF_AVAILABILITY": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 42
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "AVAILABLETIME",
+        "NOTAVAILABLETIME"
+      ],
+      "sizes": {
+        "AVAILABLETIME_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "NOTAVAILABLETIME_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_AVAILABILITY_AVAILABLETIME": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 51
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "DAYSOFWEEK",
+        "ALLDAY",
+        "AVAILABLESTARTTIME",
+        "AVAILABLEENDTIME"
+      ],
+      "sizes": {
+        "ALLDAY_S": "TYPE_SIZE_UINT8",
+        "AVAILABLEENDTIME_S": "TYPE_SIZE_OFFSET",
+        "AVAILABLESTARTTIME_S": "TYPE_SIZE_OFFSET",
+        "DAYSOFWEEK_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_AVAILABILITY_NOTAVAILABLETIME": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 42
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "DESCRIPTION",
+        "DURING"
+      ],
+      "sizes": {
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "DURING_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_BUNDLE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 86,
+        "HEADER_R5_SIZE": 96
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "IDENTIFIER",
+        "TYPE",
+        "TIMESTAMP",
+        "TOTAL",
+        "LINK",
+        "ENTRY",
+        "SIGNATURE",
+        "ISSUES"
+      ],
+      "sizes": {
+        "ENTRY_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "ISSUES_S": "TYPE_SIZE_RESOURCE",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LINK_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SIGNATURE_S": "TYPE_SIZE_OFFSET",
+        "TIMESTAMP_S": "TYPE_SIZE_OFFSET",
+        "TOTAL_S": "TYPE_SIZE_UINT32",
+        "TYPE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_BUNDLE_ENTRY": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 84,
+        "HEADER_R5_SIZE": 84
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "LINK",
+        "FULLURL",
+        "RESOURCE",
+        "SEARCH",
+        "REQUEST",
+        "RESPONSE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FULLURL_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LINK_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REQUEST_S": "TYPE_SIZE_OFFSET",
+        "RESOURCE_S": "TYPE_SIZE_RESOURCE",
+        "RESPONSE_S": "TYPE_SIZE_OFFSET",
+        "SEARCH_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_BUNDLE_ENTRY_REQUEST": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 78,
+        "HEADER_R5_SIZE": 78
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "METHOD",
+        "URL",
+        "IFNONEMATCH",
+        "IFMODIFIEDSINCE",
+        "IFMATCH",
+        "IFNONEEXIST"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IFMATCH_S": "TYPE_SIZE_OFFSET",
+        "IFMODIFIEDSINCE_S": "TYPE_SIZE_OFFSET",
+        "IFNONEEXIST_S": "TYPE_SIZE_OFFSET",
+        "IFNONEMATCH_S": "TYPE_SIZE_OFFSET",
+        "METHOD_S": "TYPE_SIZE_UINT32",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "URL_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_BUNDLE_ENTRY_RESPONSE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 76,
+        "HEADER_R5_SIZE": 76
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "STATUS",
+        "LOCATION",
+        "ETAG",
+        "LASTMODIFIED",
+        "OUTCOME"
+      ],
+      "sizes": {
+        "ETAG_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LASTMODIFIED_S": "TYPE_SIZE_OFFSET",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "OUTCOME_S": "TYPE_SIZE_RESOURCE",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "STATUS_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_BUNDLE_ENTRY_SEARCH": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 46,
+        "HEADER_R5_SIZE": 46
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "MODE",
+        "SCORE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODE_S": "TYPE_SIZE_UINT32",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SCORE_S": "TYPE_SIZE_FLOAT64",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_BUNDLE_LINK": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "RELATION",
+        "URL"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RELATION_S": "TYPE_SIZE_OFFSET",
+        "URL_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CAREPLAN": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 246,
+        "HEADER_R5_SIZE": 254
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "INSTANTIATESCANONICAL",
+        "INSTANTIATESURI",
+        "BASEDON",
+        "REPLACES",
+        "PARTOF",
+        "STATUS",
+        "INTENT",
+        "CATEGORY",
+        "TITLE",
+        "DESCRIPTION",
+        "SUBJECT",
+        "ENCOUNTER",
+        "PERIOD",
+        "CREATED",
+        "AUTHOR",
+        "CONTRIBUTOR",
+        "CARETEAM",
+        "ADDRESSES",
+        "SUPPORTINGINFO",
+        "GOAL",
+        "ACTIVITY",
+        "NOTE",
+        "CUSTODIAN"
+      ],
+      "sizes": {
+        "ACTIVITY_S": "TYPE_SIZE_OFFSET",
+        "ADDRESSES_S": "TYPE_SIZE_OFFSET",
+        "AUTHOR_S": "TYPE_SIZE_OFFSET",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CARETEAM_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CONTRIBUTOR_S": "TYPE_SIZE_OFFSET",
+        "CREATED_S": "TYPE_SIZE_OFFSET",
+        "CUSTODIAN_S": "TYPE_SIZE_OFFSET",
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "GOAL_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATESCANONICAL_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATESURI_S": "TYPE_SIZE_OFFSET",
+        "INTENT_S": "TYPE_SIZE_UINT32",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "PARTOF_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REPLACES_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "SUPPORTINGINFO_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TITLE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CAREPLAN_ACTIVITY": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 74,
+        "HEADER_R5_SIZE": 90
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "OUTCOMECODEABLECONCEPT",
+        "OUTCOMEREFERENCE",
+        "PROGRESS",
+        "REFERENCE",
+        "DETAIL",
+        "PERFORMEDACTIVITY",
+        "PLANNEDACTIVITYREFERENCE"
+      ],
+      "sizes": {
+        "DETAIL_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "OUTCOMECODEABLECONCEPT_S": "TYPE_SIZE_OFFSET",
+        "OUTCOMEREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "PERFORMEDACTIVITY_S": "TYPE_SIZE_OFFSET",
+        "PLANNEDACTIVITYREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "PROGRESS_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERENCE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CAREPLAN_ACTIVITY_DETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 159
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "KIND",
+        "INSTANTIATESCANONICAL",
+        "INSTANTIATESURI",
+        "CODE",
+        "REASONCODE",
+        "REASONREFERENCE",
+        "GOAL",
+        "STATUS",
+        "STATUSREASON",
+        "DONOTPERFORM",
+        "SCHEDULED",
+        "LOCATION",
+        "PERFORMER",
+        "PRODUCT",
+        "DAILYAMOUNT",
+        "QUANTITY",
+        "DESCRIPTION"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "DAILYAMOUNT_S": "TYPE_SIZE_OFFSET",
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "DONOTPERFORM_S": "TYPE_SIZE_UINT8",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "GOAL_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATESCANONICAL_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATESURI_S": "TYPE_SIZE_OFFSET",
+        "KIND_S": "TYPE_SIZE_UINT32",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PERFORMER_S": "TYPE_SIZE_OFFSET",
+        "PRODUCT_S": "TYPE_SIZE_CHOICE",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "REASONCODE_S": "TYPE_SIZE_OFFSET",
+        "REASONREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SCHEDULED_S": "TYPE_SIZE_CHOICE",
+        "STATUSREASON_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CARETEAM": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 170,
+        "HEADER_R5_SIZE": 178
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "CATEGORY",
+        "NAME",
+        "SUBJECT",
+        "ENCOUNTER",
+        "PERIOD",
+        "PARTICIPANT",
+        "REASONCODE",
+        "REASONREFERENCE",
+        "MANAGINGORGANIZATION",
+        "TELECOM",
+        "NOTE",
+        "REASON"
+      ],
+      "sizes": {
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "MANAGINGORGANIZATION_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "PARTICIPANT_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "REASONCODE_S": "TYPE_SIZE_OFFSET",
+        "REASONREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "TELECOM_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CARETEAM_PARTICIPANT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 66,
+        "HEADER_R5_SIZE": 76
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "ROLE",
+        "MEMBER",
+        "ONBEHALFOF",
+        "PERIOD",
+        "COVERAGE"
+      ],
+      "sizes": {
+        "COVERAGE_S": "TYPE_SIZE_CHOICE",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MEMBER_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ONBEHALFOF_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "ROLE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CODEABLECONCEPT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 42,
+        "HEADER_R5_SIZE": 42
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "CODING",
+        "TEXT"
+      ],
+      "sizes": {
+        "CODING_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CODEABLEREFERENCE": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 42
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "CONCEPT",
+        "REFERENCE"
+      ],
+      "sizes": {
+        "CONCEPT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERENCE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CODING": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 55,
+        "HEADER_R5_SIZE": 55
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "SYSTEM",
+        "VERSION",
+        "CODE",
+        "DISPLAY",
+        "USERSELECTED"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_UINT32",
+        "DISPLAY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SYSTEM_S": "TYPE_SIZE_OFFSET",
+        "USERSELECTED_S": "TYPE_SIZE_UINT8",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VERSION_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_CONDITION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 210,
+        "HEADER_R5_SIZE": 218
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "CLINICALSTATUS",
+        "VERIFICATIONSTATUS",
+        "CATEGORY",
+        "SEVERITY",
+        "CODE",
+        "BODYSITE",
+        "SUBJECT",
+        "ENCOUNTER",
+        "ONSET",
+        "ABATEMENT",
+        "RECORDEDDATE",
+        "RECORDER",
+        "ASSERTER",
+        "STAGE",
+        "EVIDENCE",
+        "NOTE",
+        "PARTICIPANT"
+      ],
+      "sizes": {
+        "ABATEMENT_S": "TYPE_SIZE_CHOICE",
+        "ASSERTER_S": "TYPE_SIZE_OFFSET",
+        "BODYSITE_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CLINICALSTATUS_S": "TYPE_SIZE_OFFSET",
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EVIDENCE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "ONSET_S": "TYPE_SIZE_CHOICE",
+        "PARTICIPANT_S": "TYPE_SIZE_OFFSET",
+        "RECORDEDDATE_S": "TYPE_SIZE_OFFSET",
+        "RECORDER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SEVERITY_S": "TYPE_SIZE_OFFSET",
+        "STAGE_S": "TYPE_SIZE_OFFSET",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VERIFICATIONSTATUS_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_CONDITION_EVIDENCE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CODE",
+        "DETAIL"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "DETAIL_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CONDITION_PARTICIPANT": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "FUNCTION",
+        "ACTOR"
+      ],
+      "sizes": {
+        "ACTOR_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FUNCTION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CONDITION_STAGE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SUMMARY",
+        "ASSESSMENT",
+        "TYPE"
+      ],
+      "sizes": {
+        "ASSESSMENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SUMMARY_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CONTACTPOINT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 54,
+        "HEADER_R5_SIZE": 54
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "SYSTEM",
+        "VALUE",
+        "USE",
+        "RANK",
+        "PERIOD"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RANK_S": "TYPE_SIZE_UINT32",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SYSTEM_S": "TYPE_SIZE_UINT32",
+        "USE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_COUNT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "VALUE",
+        "COMPARATOR",
+        "UNIT",
+        "SYSTEM",
+        "CODE"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_UINT32",
+        "COMPARATOR_S": "TYPE_SIZE_UINT32",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SYSTEM_S": "TYPE_SIZE_OFFSET",
+        "UNIT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_FLOAT64"
+      }
+    },
+    "FF_COVERAGE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 191,
+        "HEADER_R5_SIZE": 219
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "TYPE",
+        "POLICYHOLDER",
+        "SUBSCRIBER",
+        "SUBSCRIBERID",
+        "BENEFICIARY",
+        "DEPENDENT",
+        "RELATIONSHIP",
+        "PERIOD",
+        "PAYOR",
+        "CLASS",
+        "ORDER",
+        "NETWORK",
+        "COSTTOBENEFICIARY",
+        "SUBROGATION",
+        "CONTRACT",
+        "KIND",
+        "PAYMENTBY",
+        "INSURER",
+        "INSURANCEPLAN"
+      ],
+      "sizes": {
+        "BENEFICIARY_S": "TYPE_SIZE_OFFSET",
+        "CLASS_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CONTRACT_S": "TYPE_SIZE_OFFSET",
+        "COSTTOBENEFICIARY_S": "TYPE_SIZE_OFFSET",
+        "DEPENDENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INSURANCEPLAN_S": "TYPE_SIZE_OFFSET",
+        "INSURER_S": "TYPE_SIZE_OFFSET",
+        "KIND_S": "TYPE_SIZE_UINT32",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NETWORK_S": "TYPE_SIZE_OFFSET",
+        "ORDER_S": "TYPE_SIZE_UINT32",
+        "PAYMENTBY_S": "TYPE_SIZE_OFFSET",
+        "PAYOR_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "POLICYHOLDER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RELATIONSHIP_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBROGATION_S": "TYPE_SIZE_UINT8",
+        "SUBSCRIBERID_S": "TYPE_SIZE_OFFSET",
+        "SUBSCRIBER_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_COVERAGE_CLASS": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "VALUE",
+        "NAME"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_COVERAGE_COSTTOBENEFICIARY": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 60,
+        "HEADER_R5_SIZE": 92
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "VALUE",
+        "EXCEPTION",
+        "CATEGORY",
+        "NETWORK",
+        "UNIT",
+        "TERM"
+      ],
+      "sizes": {
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "EXCEPTION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NETWORK_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TERM_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "UNIT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_COVERAGE_COSTTOBENEFICIARY_EXCEPTION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "PERIOD"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_COVERAGE_PAYMENTBY": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "PARTY",
+        "RESPONSIBILITY"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PARTY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RESPONSIBILITY_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DEVICE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 274,
+        "HEADER_R5_SIZE": 362
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "DEFINITION",
+        "UDICARRIER",
+        "STATUS",
+        "STATUSREASON",
+        "DISTINCTIDENTIFIER",
+        "MANUFACTURER",
+        "MANUFACTUREDATE",
+        "EXPIRATIONDATE",
+        "LOTNUMBER",
+        "SERIALNUMBER",
+        "DEVICENAME",
+        "MODELNUMBER",
+        "PARTNUMBER",
+        "TYPE",
+        "SPECIALIZATION",
+        "VERSION",
+        "PROPERTY",
+        "PATIENT",
+        "OWNER",
+        "CONTACT",
+        "LOCATION",
+        "URL",
+        "NOTE",
+        "SAFETY",
+        "PARENT",
+        "DISPLAYNAME",
+        "AVAILABILITYSTATUS",
+        "BIOLOGICALSOURCEEVENT",
+        "NAME",
+        "CATEGORY",
+        "CONFORMSTO",
+        "MODE",
+        "CYCLE",
+        "DURATION",
+        "ENDPOINT",
+        "GATEWAY"
+      ],
+      "sizes": {
+        "AVAILABILITYSTATUS_S": "TYPE_SIZE_OFFSET",
+        "BIOLOGICALSOURCEEVENT_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CONFORMSTO_S": "TYPE_SIZE_OFFSET",
+        "CONTACT_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CYCLE_S": "TYPE_SIZE_OFFSET",
+        "DEFINITION_S": "TYPE_SIZE_OFFSET",
+        "DEVICENAME_S": "TYPE_SIZE_OFFSET",
+        "DISPLAYNAME_S": "TYPE_SIZE_OFFSET",
+        "DISTINCTIDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "DURATION_S": "TYPE_SIZE_OFFSET",
+        "ENDPOINT_S": "TYPE_SIZE_OFFSET",
+        "EXPIRATIONDATE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "GATEWAY_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "LOTNUMBER_S": "TYPE_SIZE_OFFSET",
+        "MANUFACTUREDATE_S": "TYPE_SIZE_OFFSET",
+        "MANUFACTURER_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODELNUMBER_S": "TYPE_SIZE_OFFSET",
+        "MODE_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "OWNER_S": "TYPE_SIZE_OFFSET",
+        "PARENT_S": "TYPE_SIZE_OFFSET",
+        "PARTNUMBER_S": "TYPE_SIZE_OFFSET",
+        "PATIENT_S": "TYPE_SIZE_OFFSET",
+        "PROPERTY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SAFETY_S": "TYPE_SIZE_OFFSET",
+        "SERIALNUMBER_S": "TYPE_SIZE_OFFSET",
+        "SPECIALIZATION_S": "TYPE_SIZE_OFFSET",
+        "STATUSREASON_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "UDICARRIER_S": "TYPE_SIZE_OFFSET",
+        "URL_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VERSION_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_DEVICE_CONFORMSTO": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CATEGORY",
+        "SPECIFICATION",
+        "VERSION"
+      ],
+      "sizes": {
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SPECIFICATION_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VERSION_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_DEVICE_DEVICENAME": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 46
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "NAME",
+        "TYPE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DEVICE_NAME": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 47
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "VALUE",
+        "TYPE",
+        "DISPLAY"
+      ],
+      "sizes": {
+        "DISPLAY_S": "TYPE_SIZE_UINT8",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_DEVICE_PROPERTY": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 68
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "VALUEQUANTITY",
+        "VALUECODE",
+        "VALUE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUECODE_S": "TYPE_SIZE_OFFSET",
+        "VALUEQUANTITY_S": "TYPE_SIZE_OFFSET",
+        "VALUE_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_DEVICE_SPECIALIZATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SYSTEMTYPE",
+        "VERSION"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SYSTEMTYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VERSION_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_DEVICE_UDICARRIER": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 78,
+        "HEADER_R5_SIZE": 78
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DEVICEIDENTIFIER",
+        "ISSUER",
+        "JURISDICTION",
+        "CARRIERAIDC",
+        "CARRIERHRF",
+        "ENTRYTYPE"
+      ],
+      "sizes": {
+        "CARRIERAIDC_S": "TYPE_SIZE_OFFSET",
+        "CARRIERHRF_S": "TYPE_SIZE_OFFSET",
+        "DEVICEIDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ENTRYTYPE_S": "TYPE_SIZE_UINT32",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ISSUER_S": "TYPE_SIZE_OFFSET",
+        "JURISDICTION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DEVICE_VERSION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 66
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "COMPONENT",
+        "VALUE",
+        "INSTALLDATE"
+      ],
+      "sizes": {
+        "COMPONENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "INSTALLDATE_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_DIAGNOSTICREPORT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 212,
+        "HEADER_R5_SIZE": 244
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "BASEDON",
+        "STATUS",
+        "CATEGORY",
+        "CODE",
+        "SUBJECT",
+        "ENCOUNTER",
+        "EFFECTIVE",
+        "ISSUED",
+        "PERFORMER",
+        "RESULTSINTERPRETER",
+        "SPECIMEN",
+        "RESULT",
+        "IMAGINGSTUDY",
+        "MEDIA",
+        "CONCLUSION",
+        "CONCLUSIONCODE",
+        "PRESENTEDFORM",
+        "NOTE",
+        "STUDY",
+        "SUPPORTINGINFO",
+        "COMPOSITION"
+      ],
+      "sizes": {
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "COMPOSITION_S": "TYPE_SIZE_OFFSET",
+        "CONCLUSIONCODE_S": "TYPE_SIZE_OFFSET",
+        "CONCLUSION_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "EFFECTIVE_S": "TYPE_SIZE_CHOICE",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMAGINGSTUDY_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "ISSUED_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "MEDIA_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "PERFORMER_S": "TYPE_SIZE_OFFSET",
+        "PRESENTEDFORM_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RESULTSINTERPRETER_S": "TYPE_SIZE_OFFSET",
+        "RESULT_S": "TYPE_SIZE_OFFSET",
+        "SPECIMEN_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "STUDY_S": "TYPE_SIZE_OFFSET",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "SUPPORTINGINFO_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DIAGNOSTICREPORT_MEDIA": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "COMMENT",
+        "LINK"
+      ],
+      "sizes": {
+        "COMMENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LINK_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DIAGNOSTICREPORT_SUPPORTINGINFO": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "REFERENCE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERENCE_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DISTANCE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "VALUE",
+        "COMPARATOR",
+        "UNIT",
+        "SYSTEM",
+        "CODE"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_UINT32",
+        "COMPARATOR_S": "TYPE_SIZE_UINT32",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SYSTEM_S": "TYPE_SIZE_OFFSET",
+        "UNIT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_FLOAT64"
+      }
+    },
+    "FF_DOCUMENTREFERENCE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 190,
+        "HEADER_R5_SIZE": 262
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "MASTERIDENTIFIER",
+        "IDENTIFIER",
+        "STATUS",
+        "DOCSTATUS",
+        "TYPE",
+        "CATEGORY",
+        "SUBJECT",
+        "DATE",
+        "AUTHOR",
+        "AUTHENTICATOR",
+        "CUSTODIAN",
+        "RELATESTO",
+        "DESCRIPTION",
+        "SECURITYLABEL",
+        "CONTENT",
+        "CONTEXT",
+        "VERSION",
+        "BASEDON",
+        "MODALITY",
+        "EVENT",
+        "BODYSITE",
+        "FACILITYTYPE",
+        "PRACTICESETTING",
+        "PERIOD",
+        "ATTESTER"
+      ],
+      "sizes": {
+        "ATTESTER_S": "TYPE_SIZE_OFFSET",
+        "AUTHENTICATOR_S": "TYPE_SIZE_OFFSET",
+        "AUTHOR_S": "TYPE_SIZE_OFFSET",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "BODYSITE_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CONTENT_S": "TYPE_SIZE_OFFSET",
+        "CONTEXT_S": "TYPE_SIZE_OFFSET",
+        "CUSTODIAN_S": "TYPE_SIZE_OFFSET",
+        "DATE_S": "TYPE_SIZE_OFFSET",
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "DOCSTATUS_S": "TYPE_SIZE_UINT32",
+        "EVENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACILITYTYPE_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "MASTERIDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODALITY_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "PRACTICESETTING_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RELATESTO_S": "TYPE_SIZE_OFFSET",
+        "SECURITYLABEL_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VERSION_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_DOCUMENTREFERENCE_ATTESTER": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "MODE",
+        "TIME",
+        "PARTY"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODE_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PARTY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TIME_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DOCUMENTREFERENCE_CONTENT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "ATTACHMENT",
+        "FORMAT",
+        "PROFILE"
+      ],
+      "sizes": {
+        "ATTACHMENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FORMAT_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PROFILE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DOCUMENTREFERENCE_CONTENT_PROFILE": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 44
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "VALUE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_DOCUMENTREFERENCE_CONTEXT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 90
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "ENCOUNTER",
+        "EVENT",
+        "PERIOD",
+        "FACILITYTYPE",
+        "PRACTICESETTING",
+        "SOURCEPATIENTINFO",
+        "RELATED"
+      ],
+      "sizes": {
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EVENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACILITYTYPE_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "PRACTICESETTING_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RELATED_S": "TYPE_SIZE_OFFSET",
+        "SOURCEPATIENTINFO_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DOCUMENTREFERENCE_RELATESTO": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 46,
+        "HEADER_R5_SIZE": 46
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CODE",
+        "TARGET"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_UINT32",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TARGET_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DOSAGE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 136,
+        "HEADER_R5_SIZE": 144
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "TEXT",
+        "ADDITIONALINSTRUCTION",
+        "PATIENTINSTRUCTION",
+        "TIMING",
+        "ASNEEDED",
+        "SITE",
+        "ROUTE",
+        "METHOD",
+        "DOSEANDRATE",
+        "MAXDOSEPERPERIOD",
+        "MAXDOSEPERADMINISTRATION",
+        "MAXDOSEPERLIFETIME",
+        "ASNEEDEDFOR"
+      ],
+      "sizes": {
+        "ADDITIONALINSTRUCTION_S": "TYPE_SIZE_OFFSET",
+        "ASNEEDEDFOR_S": "TYPE_SIZE_OFFSET",
+        "ASNEEDED_S": "TYPE_SIZE_CHOICE",
+        "DOSEANDRATE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MAXDOSEPERADMINISTRATION_S": "TYPE_SIZE_OFFSET",
+        "MAXDOSEPERLIFETIME_S": "TYPE_SIZE_OFFSET",
+        "MAXDOSEPERPERIOD_S": "TYPE_SIZE_OFFSET",
+        "METHOD_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PATIENTINSTRUCTION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "ROUTE_S": "TYPE_SIZE_OFFSET",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "SITE_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TIMING_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DOSAGE_DOSEANDRATE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 54,
+        "HEADER_R5_SIZE": 54
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "TYPE",
+        "DOSE",
+        "RATE"
+      ],
+      "sizes": {
+        "DOSE_S": "TYPE_SIZE_CHOICE",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RATE_S": "TYPE_SIZE_CHOICE",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_DURATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "VALUE",
+        "COMPARATOR",
+        "UNIT",
+        "SYSTEM",
+        "CODE"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_UINT32",
+        "COMPARATOR_S": "TYPE_SIZE_UINT32",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SYSTEM_S": "TYPE_SIZE_OFFSET",
+        "UNIT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_FLOAT64"
+      }
+    },
+    "FF_ENCOUNTER": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 250,
+        "HEADER_R5_SIZE": 338
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "STATUSHISTORY",
+        "CLASS",
+        "CLASSHISTORY",
+        "TYPE",
+        "SERVICETYPE",
+        "PRIORITY",
+        "SUBJECT",
+        "EPISODEOFCARE",
+        "BASEDON",
+        "PARTICIPANT",
+        "APPOINTMENT",
+        "PERIOD",
+        "LENGTH",
+        "REASONCODE",
+        "REASONREFERENCE",
+        "DIAGNOSIS",
+        "ACCOUNT",
+        "HOSPITALIZATION",
+        "LOCATION",
+        "SERVICEPROVIDER",
+        "PARTOF",
+        "SUBJECTSTATUS",
+        "CARETEAM",
+        "VIRTUALSERVICE",
+        "ACTUALPERIOD",
+        "PLANNEDSTARTDATE",
+        "PLANNEDENDDATE",
+        "REASON",
+        "DIETPREFERENCE",
+        "SPECIALARRANGEMENT",
+        "SPECIALCOURTESY",
+        "ADMISSION"
+      ],
+      "sizes": {
+        "ACCOUNT_S": "TYPE_SIZE_OFFSET",
+        "ACTUALPERIOD_S": "TYPE_SIZE_OFFSET",
+        "ADMISSION_S": "TYPE_SIZE_OFFSET",
+        "APPOINTMENT_S": "TYPE_SIZE_OFFSET",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CARETEAM_S": "TYPE_SIZE_OFFSET",
+        "CLASSHISTORY_S": "TYPE_SIZE_OFFSET",
+        "CLASS_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "DIAGNOSIS_S": "TYPE_SIZE_OFFSET",
+        "DIETPREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "EPISODEOFCARE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "HOSPITALIZATION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LENGTH_S": "TYPE_SIZE_OFFSET",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PARTICIPANT_S": "TYPE_SIZE_OFFSET",
+        "PARTOF_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "PLANNEDENDDATE_S": "TYPE_SIZE_OFFSET",
+        "PLANNEDSTARTDATE_S": "TYPE_SIZE_OFFSET",
+        "PRIORITY_S": "TYPE_SIZE_OFFSET",
+        "REASONCODE_S": "TYPE_SIZE_OFFSET",
+        "REASONREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SERVICEPROVIDER_S": "TYPE_SIZE_OFFSET",
+        "SERVICETYPE_S": "TYPE_SIZE_OFFSET",
+        "SPECIALARRANGEMENT_S": "TYPE_SIZE_OFFSET",
+        "SPECIALCOURTESY_S": "TYPE_SIZE_OFFSET",
+        "STATUSHISTORY_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECTSTATUS_S": "TYPE_SIZE_OFFSET",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VIRTUALSERVICE_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_ENCOUNTER_ADMISSION": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 82
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "PREADMISSIONIDENTIFIER",
+        "ORIGIN",
+        "ADMITSOURCE",
+        "READMISSION",
+        "DESTINATION",
+        "DISCHARGEDISPOSITION"
+      ],
+      "sizes": {
+        "ADMITSOURCE_S": "TYPE_SIZE_OFFSET",
+        "DESTINATION_S": "TYPE_SIZE_OFFSET",
+        "DISCHARGEDISPOSITION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ORIGIN_S": "TYPE_SIZE_OFFSET",
+        "PREADMISSIONIDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "READMISSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ENCOUNTER_CLASSHISTORY": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CLASS",
+        "PERIOD"
+      ],
+      "sizes": {
+        "CLASS_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ENCOUNTER_DIAGNOSIS": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 54,
+        "HEADER_R5_SIZE": 54
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CONDITION",
+        "USE",
+        "RANK"
+      ],
+      "sizes": {
+        "CONDITION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RANK_S": "TYPE_SIZE_UINT32",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "USE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ENCOUNTER_HOSPITALIZATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 106
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "PREADMISSIONIDENTIFIER",
+        "ORIGIN",
+        "ADMITSOURCE",
+        "READMISSION",
+        "DIETPREFERENCE",
+        "SPECIALCOURTESY",
+        "SPECIALARRANGEMENT",
+        "DESTINATION",
+        "DISCHARGEDISPOSITION"
+      ],
+      "sizes": {
+        "ADMITSOURCE_S": "TYPE_SIZE_OFFSET",
+        "DESTINATION_S": "TYPE_SIZE_OFFSET",
+        "DIETPREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "DISCHARGEDISPOSITION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ORIGIN_S": "TYPE_SIZE_OFFSET",
+        "PREADMISSIONIDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "READMISSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SPECIALARRANGEMENT_S": "TYPE_SIZE_OFFSET",
+        "SPECIALCOURTESY_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ENCOUNTER_LOCATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 62,
+        "HEADER_R5_SIZE": 70
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "LOCATION",
+        "STATUS",
+        "PHYSICALTYPE",
+        "PERIOD",
+        "FORM"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FORM_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "PHYSICALTYPE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ENCOUNTER_PARTICIPANT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 66
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "PERIOD",
+        "INDIVIDUAL",
+        "ACTOR"
+      ],
+      "sizes": {
+        "ACTOR_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "INDIVIDUAL_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ENCOUNTER_REASON": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "USE",
+        "VALUE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "USE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_ENCOUNTER_STATUSHISTORY": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 46
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "STATUS",
+        "PERIOD"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXTENDEDCONTACTDETAIL": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 74
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "PURPOSE",
+        "NAME",
+        "TELECOM",
+        "ADDRESS",
+        "ORGANIZATION",
+        "PERIOD"
+      ],
+      "sizes": {
+        "ADDRESS_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "ORGANIZATION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "PURPOSE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TELECOM_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXTENSION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 40,
+        "HEADER_R5_SIZE": 40
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "URL",
+        "VALUE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "URL_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_GOAL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 196,
+        "HEADER_R5_SIZE": 213
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "LIFECYCLESTATUS",
+        "ACHIEVEMENTSTATUS",
+        "CATEGORY",
+        "PRIORITY",
+        "DESCRIPTION",
+        "SUBJECT",
+        "START",
+        "TARGET",
+        "STATUSDATE",
+        "STATUSREASON",
+        "EXPRESSEDBY",
+        "ADDRESSES",
+        "NOTE",
+        "OUTCOMECODE",
+        "OUTCOMEREFERENCE",
+        "CONTINUOUS",
+        "SOURCE",
+        "OUTCOME"
+      ],
+      "sizes": {
+        "ACHIEVEMENTSTATUS_S": "TYPE_SIZE_OFFSET",
+        "ADDRESSES_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CONTINUOUS_S": "TYPE_SIZE_UINT8",
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "EXPRESSEDBY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LIFECYCLESTATUS_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "OUTCOMECODE_S": "TYPE_SIZE_OFFSET",
+        "OUTCOMEREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "OUTCOME_S": "TYPE_SIZE_OFFSET",
+        "PRIORITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SOURCE_S": "TYPE_SIZE_OFFSET",
+        "START_S": "TYPE_SIZE_CHOICE",
+        "STATUSDATE_S": "TYPE_SIZE_OFFSET",
+        "STATUSREASON_S": "TYPE_SIZE_OFFSET",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "TARGET_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_GOAL_TARGET": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 62,
+        "HEADER_R5_SIZE": 62
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "MEASURE",
+        "DETAIL",
+        "DUE"
+      ],
+      "sizes": {
+        "DETAIL_S": "TYPE_SIZE_CHOICE",
+        "DUE_S": "TYPE_SIZE_CHOICE",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MEASURE_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_HUMANNAME": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 78,
+        "HEADER_R5_SIZE": 78
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "USE",
+        "TEXT",
+        "FAMILY",
+        "GIVEN",
+        "PREFIX",
+        "SUFFIX",
+        "PERIOD"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FAMILY_S": "TYPE_SIZE_OFFSET",
+        "GIVEN_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "PREFIX_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SUFFIX_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "USE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_IDENTIFIER": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 70,
+        "HEADER_R5_SIZE": 70
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "USE",
+        "TYPE",
+        "SYSTEM",
+        "VALUE",
+        "PERIOD",
+        "ASSIGNER"
+      ],
+      "sizes": {
+        "ASSIGNER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SYSTEM_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "USE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_IMMUNIZATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 278,
+        "HEADER_R5_SIZE": 318
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "STATUSREASON",
+        "VACCINECODE",
+        "PATIENT",
+        "ENCOUNTER",
+        "OCCURRENCE",
+        "RECORDED",
+        "PRIMARYSOURCE",
+        "REPORTORIGIN",
+        "LOCATION",
+        "MANUFACTURER",
+        "LOTNUMBER",
+        "EXPIRATIONDATE",
+        "SITE",
+        "ROUTE",
+        "DOSEQUANTITY",
+        "PERFORMER",
+        "NOTE",
+        "REASONCODE",
+        "REASONREFERENCE",
+        "ISSUBPOTENT",
+        "SUBPOTENTREASON",
+        "EDUCATION",
+        "PROGRAMELIGIBILITY",
+        "FUNDINGSOURCE",
+        "REACTION",
+        "PROTOCOLAPPLIED",
+        "BASEDON",
+        "ADMINISTEREDPRODUCT",
+        "SUPPORTINGINFORMATION",
+        "INFORMATIONSOURCE",
+        "REASON"
+      ],
+      "sizes": {
+        "ADMINISTEREDPRODUCT_S": "TYPE_SIZE_OFFSET",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "DOSEQUANTITY_S": "TYPE_SIZE_OFFSET",
+        "EDUCATION_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXPIRATIONDATE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FUNDINGSOURCE_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INFORMATIONSOURCE_S": "TYPE_SIZE_OFFSET",
+        "ISSUBPOTENT_S": "TYPE_SIZE_UINT8",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "LOTNUMBER_S": "TYPE_SIZE_OFFSET",
+        "MANUFACTURER_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "OCCURRENCE_S": "TYPE_SIZE_CHOICE",
+        "PATIENT_S": "TYPE_SIZE_OFFSET",
+        "PERFORMER_S": "TYPE_SIZE_OFFSET",
+        "PRIMARYSOURCE_S": "TYPE_SIZE_UINT8",
+        "PROGRAMELIGIBILITY_S": "TYPE_SIZE_OFFSET",
+        "PROTOCOLAPPLIED_S": "TYPE_SIZE_OFFSET",
+        "REACTION_S": "TYPE_SIZE_OFFSET",
+        "REASONCODE_S": "TYPE_SIZE_OFFSET",
+        "REASONREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECORDED_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REPORTORIGIN_S": "TYPE_SIZE_OFFSET",
+        "ROUTE_S": "TYPE_SIZE_OFFSET",
+        "SITE_S": "TYPE_SIZE_OFFSET",
+        "STATUSREASON_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBPOTENTREASON_S": "TYPE_SIZE_OFFSET",
+        "SUPPORTINGINFORMATION_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VACCINECODE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_IMMUNIZATION_EDUCATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 66
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DOCUMENTTYPE",
+        "REFERENCE",
+        "PUBLICATIONDATE",
+        "PRESENTATIONDATE"
+      ],
+      "sizes": {
+        "DOCUMENTTYPE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PRESENTATIONDATE_S": "TYPE_SIZE_OFFSET",
+        "PUBLICATIONDATE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERENCE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_IMMUNIZATION_PERFORMER": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "FUNCTION",
+        "ACTOR"
+      ],
+      "sizes": {
+        "ACTOR_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FUNCTION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_IMMUNIZATION_PROGRAMELIGIBILITY": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "PROGRAM",
+        "PROGRAMSTATUS"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PROGRAMSTATUS_S": "TYPE_SIZE_OFFSET",
+        "PROGRAM_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_IMMUNIZATION_PROTOCOLAPPLIED": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 78,
+        "HEADER_R5_SIZE": 78
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SERIES",
+        "AUTHORITY",
+        "TARGETDISEASE",
+        "DOSENUMBER",
+        "SERIESDOSES"
+      ],
+      "sizes": {
+        "AUTHORITY_S": "TYPE_SIZE_OFFSET",
+        "DOSENUMBER_S": "TYPE_SIZE_CHOICE",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SERIESDOSES_S": "TYPE_SIZE_CHOICE",
+        "SERIES_S": "TYPE_SIZE_OFFSET",
+        "TARGETDISEASE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_IMMUNIZATION_REACTION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 51,
+        "HEADER_R5_SIZE": 59
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DATE",
+        "DETAIL",
+        "REPORTED",
+        "MANIFESTATION"
+      ],
+      "sizes": {
+        "DATE_S": "TYPE_SIZE_OFFSET",
+        "DETAIL_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MANIFESTATION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REPORTED_S": "TYPE_SIZE_UINT8",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_LOCATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 198,
+        "HEADER_R5_SIZE": 230
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "OPERATIONALSTATUS",
+        "NAME",
+        "ALIAS",
+        "DESCRIPTION",
+        "MODE",
+        "TYPE",
+        "TELECOM",
+        "ADDRESS",
+        "PHYSICALTYPE",
+        "POSITION",
+        "MANAGINGORGANIZATION",
+        "PARTOF",
+        "HOURSOFOPERATION",
+        "AVAILABILITYEXCEPTIONS",
+        "ENDPOINT",
+        "CONTACT",
+        "FORM",
+        "CHARACTERISTIC",
+        "VIRTUALSERVICE"
+      ],
+      "sizes": {
+        "ADDRESS_S": "TYPE_SIZE_OFFSET",
+        "ALIAS_S": "TYPE_SIZE_OFFSET",
+        "AVAILABILITYEXCEPTIONS_S": "TYPE_SIZE_OFFSET",
+        "CHARACTERISTIC_S": "TYPE_SIZE_OFFSET",
+        "CONTACT_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "ENDPOINT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FORM_S": "TYPE_SIZE_OFFSET",
+        "HOURSOFOPERATION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "MANAGINGORGANIZATION_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODE_S": "TYPE_SIZE_UINT32",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "OPERATIONALSTATUS_S": "TYPE_SIZE_OFFSET",
+        "PARTOF_S": "TYPE_SIZE_OFFSET",
+        "PHYSICALTYPE_S": "TYPE_SIZE_OFFSET",
+        "POSITION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "TELECOM_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VIRTUALSERVICE_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_LOCATION_HOURSOFOPERATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 59
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DAYSOFWEEK",
+        "ALLDAY",
+        "OPENINGTIME",
+        "CLOSINGTIME"
+      ],
+      "sizes": {
+        "ALLDAY_S": "TYPE_SIZE_UINT8",
+        "CLOSINGTIME_S": "TYPE_SIZE_OFFSET",
+        "DAYSOFWEEK_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "OPENINGTIME_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_LOCATION_POSITION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "LONGITUDE",
+        "LATITUDE",
+        "ALTITUDE"
+      ],
+      "sizes": {
+        "ALTITUDE_S": "TYPE_SIZE_FLOAT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LATITUDE_S": "TYPE_SIZE_FLOAT64",
+        "LONGITUDE_S": "TYPE_SIZE_FLOAT64",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_MEDICATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 130,
+        "HEADER_R5_SIZE": 162
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "CODE",
+        "STATUS",
+        "MANUFACTURER",
+        "FORM",
+        "AMOUNT",
+        "INGREDIENT",
+        "BATCH",
+        "MARKETINGAUTHORIZATIONHOLDER",
+        "DOSEFORM",
+        "TOTALVOLUME",
+        "DEFINITION"
+      ],
+      "sizes": {
+        "AMOUNT_S": "TYPE_SIZE_OFFSET",
+        "BATCH_S": "TYPE_SIZE_OFFSET",
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "DEFINITION_S": "TYPE_SIZE_OFFSET",
+        "DOSEFORM_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FORM_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INGREDIENT_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "MANUFACTURER_S": "TYPE_SIZE_OFFSET",
+        "MARKETINGAUTHORIZATIONHOLDER_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TOTALVOLUME_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_MEDICATIONDISPENSE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 262,
+        "HEADER_R5_SIZE": 310
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "PARTOF",
+        "STATUS",
+        "STATUSREASON",
+        "CATEGORY",
+        "MEDICATION",
+        "SUBJECT",
+        "CONTEXT",
+        "SUPPORTINGINFORMATION",
+        "PERFORMER",
+        "LOCATION",
+        "AUTHORIZINGPRESCRIPTION",
+        "TYPE",
+        "QUANTITY",
+        "DAYSSUPPLY",
+        "WHENPREPARED",
+        "WHENHANDEDOVER",
+        "DESTINATION",
+        "RECEIVER",
+        "NOTE",
+        "DOSAGEINSTRUCTION",
+        "SUBSTITUTION",
+        "DETECTEDISSUE",
+        "EVENTHISTORY",
+        "BASEDON",
+        "NOTPERFORMEDREASON",
+        "STATUSCHANGED",
+        "ENCOUNTER",
+        "RECORDED",
+        "RENDEREDDOSAGEINSTRUCTION"
+      ],
+      "sizes": {
+        "AUTHORIZINGPRESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CONTEXT_S": "TYPE_SIZE_OFFSET",
+        "DAYSSUPPLY_S": "TYPE_SIZE_OFFSET",
+        "DESTINATION_S": "TYPE_SIZE_OFFSET",
+        "DETECTEDISSUE_S": "TYPE_SIZE_OFFSET",
+        "DOSAGEINSTRUCTION_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EVENTHISTORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "MEDICATION_S": "TYPE_SIZE_CHOICE",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "NOTPERFORMEDREASON_S": "TYPE_SIZE_OFFSET",
+        "PARTOF_S": "TYPE_SIZE_OFFSET",
+        "PERFORMER_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECEIVER_S": "TYPE_SIZE_OFFSET",
+        "RECORDED_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RENDEREDDOSAGEINSTRUCTION_S": "TYPE_SIZE_OFFSET",
+        "STATUSCHANGED_S": "TYPE_SIZE_OFFSET",
+        "STATUSREASON_S": "TYPE_SIZE_CHOICE",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "SUBSTITUTION_S": "TYPE_SIZE_OFFSET",
+        "SUPPORTINGINFORMATION_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "WHENHANDEDOVER_S": "TYPE_SIZE_OFFSET",
+        "WHENPREPARED_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_MEDICATIONDISPENSE_PERFORMER": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "FUNCTION",
+        "ACTOR"
+      ],
+      "sizes": {
+        "ACTOR_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FUNCTION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_MEDICATIONDISPENSE_SUBSTITUTION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 59,
+        "HEADER_R5_SIZE": 59
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "WASSUBSTITUTED",
+        "TYPE",
+        "REASON",
+        "RESPONSIBLEPARTY"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RESPONSIBLEPARTY_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "WASSUBSTITUTED_S": "TYPE_SIZE_UINT8"
+      }
+    },
+    "FF_MEDICATIONREQUEST": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 311,
+        "HEADER_R5_SIZE": 359
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "STATUSREASON",
+        "INTENT",
+        "CATEGORY",
+        "PRIORITY",
+        "DONOTPERFORM",
+        "REPORTED",
+        "MEDICATION",
+        "SUBJECT",
+        "ENCOUNTER",
+        "SUPPORTINGINFORMATION",
+        "AUTHOREDON",
+        "REQUESTER",
+        "PERFORMER",
+        "PERFORMERTYPE",
+        "RECORDER",
+        "REASONCODE",
+        "REASONREFERENCE",
+        "INSTANTIATESCANONICAL",
+        "INSTANTIATESURI",
+        "BASEDON",
+        "GROUPIDENTIFIER",
+        "COURSEOFTHERAPYTYPE",
+        "INSURANCE",
+        "NOTE",
+        "DOSAGEINSTRUCTION",
+        "DISPENSEREQUEST",
+        "SUBSTITUTION",
+        "PRIORPRESCRIPTION",
+        "DETECTEDISSUE",
+        "EVENTHISTORY",
+        "STATUSCHANGED",
+        "INFORMATIONSOURCE",
+        "DEVICE",
+        "REASON",
+        "RENDEREDDOSAGEINSTRUCTION",
+        "EFFECTIVEDOSEPERIOD"
+      ],
+      "sizes": {
+        "AUTHOREDON_S": "TYPE_SIZE_OFFSET",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "COURSEOFTHERAPYTYPE_S": "TYPE_SIZE_OFFSET",
+        "DETECTEDISSUE_S": "TYPE_SIZE_OFFSET",
+        "DEVICE_S": "TYPE_SIZE_OFFSET",
+        "DISPENSEREQUEST_S": "TYPE_SIZE_OFFSET",
+        "DONOTPERFORM_S": "TYPE_SIZE_UINT8",
+        "DOSAGEINSTRUCTION_S": "TYPE_SIZE_OFFSET",
+        "EFFECTIVEDOSEPERIOD_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EVENTHISTORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "GROUPIDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INFORMATIONSOURCE_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATESCANONICAL_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATESURI_S": "TYPE_SIZE_OFFSET",
+        "INSURANCE_S": "TYPE_SIZE_OFFSET",
+        "INTENT_S": "TYPE_SIZE_UINT32",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "MEDICATION_S": "TYPE_SIZE_CHOICE",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "PERFORMERTYPE_S": "TYPE_SIZE_OFFSET",
+        "PERFORMER_S": "TYPE_SIZE_OFFSET",
+        "PRIORITY_S": "TYPE_SIZE_UINT32",
+        "PRIORPRESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "REASONCODE_S": "TYPE_SIZE_OFFSET",
+        "REASONREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECORDER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RENDEREDDOSAGEINSTRUCTION_S": "TYPE_SIZE_OFFSET",
+        "REPORTED_S": "TYPE_SIZE_CHOICE",
+        "REQUESTER_S": "TYPE_SIZE_OFFSET",
+        "STATUSCHANGED_S": "TYPE_SIZE_OFFSET",
+        "STATUSREASON_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "SUBSTITUTION_S": "TYPE_SIZE_OFFSET",
+        "SUPPORTINGINFORMATION_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_MEDICATIONREQUEST_DISPENSEREQUEST": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 86,
+        "HEADER_R5_SIZE": 110
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "INITIALFILL",
+        "DISPENSEINTERVAL",
+        "VALIDITYPERIOD",
+        "NUMBEROFREPEATSALLOWED",
+        "QUANTITY",
+        "EXPECTEDSUPPLYDURATION",
+        "PERFORMER",
+        "DISPENSER",
+        "DISPENSERINSTRUCTION",
+        "DOSEADMINISTRATIONAID"
+      ],
+      "sizes": {
+        "DISPENSEINTERVAL_S": "TYPE_SIZE_OFFSET",
+        "DISPENSERINSTRUCTION_S": "TYPE_SIZE_OFFSET",
+        "DISPENSER_S": "TYPE_SIZE_OFFSET",
+        "DOSEADMINISTRATIONAID_S": "TYPE_SIZE_OFFSET",
+        "EXPECTEDSUPPLYDURATION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "INITIALFILL_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NUMBEROFREPEATSALLOWED_S": "TYPE_SIZE_UINT32",
+        "PERFORMER_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALIDITYPERIOD_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_MEDICATIONREQUEST_DISPENSEREQUEST_INITIALFILL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "QUANTITY",
+        "DURATION"
+      ],
+      "sizes": {
+        "DURATION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_MEDICATIONREQUEST_SUBSTITUTION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 52,
+        "HEADER_R5_SIZE": 52
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "ALLOWED",
+        "REASON"
+      ],
+      "sizes": {
+        "ALLOWED_S": "TYPE_SIZE_CHOICE",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_MEDICATIONSTATEMENT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 206,
+        "HEADER_R5_SIZE": 246
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "BASEDON",
+        "PARTOF",
+        "STATUS",
+        "STATUSREASON",
+        "CATEGORY",
+        "MEDICATION",
+        "SUBJECT",
+        "CONTEXT",
+        "EFFECTIVE",
+        "DATEASSERTED",
+        "INFORMATIONSOURCE",
+        "DERIVEDFROM",
+        "REASONCODE",
+        "REASONREFERENCE",
+        "NOTE",
+        "DOSAGE",
+        "ENCOUNTER",
+        "REASON",
+        "RELATEDCLINICALINFORMATION",
+        "RENDEREDDOSAGEINSTRUCTION",
+        "ADHERENCE"
+      ],
+      "sizes": {
+        "ADHERENCE_S": "TYPE_SIZE_OFFSET",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CONTEXT_S": "TYPE_SIZE_OFFSET",
+        "DATEASSERTED_S": "TYPE_SIZE_OFFSET",
+        "DERIVEDFROM_S": "TYPE_SIZE_OFFSET",
+        "DOSAGE_S": "TYPE_SIZE_OFFSET",
+        "EFFECTIVE_S": "TYPE_SIZE_CHOICE",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INFORMATIONSOURCE_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "MEDICATION_S": "TYPE_SIZE_CHOICE",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "PARTOF_S": "TYPE_SIZE_OFFSET",
+        "REASONCODE_S": "TYPE_SIZE_OFFSET",
+        "REASONREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RELATEDCLINICALINFORMATION_S": "TYPE_SIZE_OFFSET",
+        "RENDEREDDOSAGEINSTRUCTION_S": "TYPE_SIZE_OFFSET",
+        "STATUSREASON_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_MEDICATIONSTATEMENT_ADHERENCE": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CODE",
+        "REASON"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_MEDICATION_BATCH": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "LOTNUMBER",
+        "EXPIRATIONDATE"
+      ],
+      "sizes": {
+        "EXPIRATIONDATE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LOTNUMBER_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_MEDICATION_INGREDIENT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 53,
+        "HEADER_R5_SIZE": 53
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "ITEM",
+        "ISACTIVE",
+        "STRENGTH"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ISACTIVE_S": "TYPE_SIZE_UINT8",
+        "ITEM_S": "TYPE_SIZE_CHOICE",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "STRENGTH_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_META": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 74,
+        "HEADER_R5_SIZE": 74
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "VERSIONID",
+        "LASTUPDATED",
+        "SOURCE",
+        "PROFILE",
+        "SECURITY",
+        "TAG"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LASTUPDATED_S": "TYPE_SIZE_OFFSET",
+        "PROFILE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SECURITY_S": "TYPE_SIZE_OFFSET",
+        "SOURCE_S": "TYPE_SIZE_OFFSET",
+        "TAG_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VERSIONID_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_NARRATIVE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 38,
+        "HEADER_R5_SIZE": 38
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "STATUS",
+        "DIV"
+      ],
+      "sizes": {
+        "DIV_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_OBSERVATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 262,
+        "HEADER_R5_SIZE": 288
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "BASEDON",
+        "PARTOF",
+        "STATUS",
+        "CATEGORY",
+        "CODE",
+        "SUBJECT",
+        "FOCUS",
+        "ENCOUNTER",
+        "EFFECTIVE",
+        "ISSUED",
+        "PERFORMER",
+        "VALUE",
+        "DATAABSENTREASON",
+        "INTERPRETATION",
+        "NOTE",
+        "BODYSITE",
+        "METHOD",
+        "SPECIMEN",
+        "DEVICE",
+        "REFERENCERANGE",
+        "HASMEMBER",
+        "DERIVEDFROM",
+        "COMPONENT",
+        "INSTANTIATES",
+        "TRIGGEREDBY",
+        "BODYSTRUCTURE"
+      ],
+      "sizes": {
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "BODYSITE_S": "TYPE_SIZE_OFFSET",
+        "BODYSTRUCTURE_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "COMPONENT_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "DATAABSENTREASON_S": "TYPE_SIZE_OFFSET",
+        "DERIVEDFROM_S": "TYPE_SIZE_OFFSET",
+        "DEVICE_S": "TYPE_SIZE_OFFSET",
+        "EFFECTIVE_S": "TYPE_SIZE_CHOICE",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FOCUS_S": "TYPE_SIZE_OFFSET",
+        "HASMEMBER_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATES_S": "TYPE_SIZE_CHOICE",
+        "INTERPRETATION_S": "TYPE_SIZE_OFFSET",
+        "ISSUED_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "METHOD_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "PARTOF_S": "TYPE_SIZE_OFFSET",
+        "PERFORMER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERENCERANGE_S": "TYPE_SIZE_OFFSET",
+        "SPECIMEN_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TRIGGEREDBY_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_OBSERVATION_COMPONENT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 76,
+        "HEADER_R5_SIZE": 76
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CODE",
+        "VALUE",
+        "DATAABSENTREASON",
+        "INTERPRETATION",
+        "REFERENCERANGE"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "DATAABSENTREASON_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "INTERPRETATION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERENCERANGE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_OBSERVATION_REFERENCERANGE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 82,
+        "HEADER_R5_SIZE": 90
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "LOW",
+        "HIGH",
+        "TYPE",
+        "APPLIESTO",
+        "AGE",
+        "TEXT",
+        "NORMALVALUE"
+      ],
+      "sizes": {
+        "AGE_S": "TYPE_SIZE_OFFSET",
+        "APPLIESTO_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "HIGH_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LOW_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NORMALVALUE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_OBSERVATION_TRIGGEREDBY": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 54
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "OBSERVATION",
+        "TYPE",
+        "REASON"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "OBSERVATION_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ORGANIZATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 143,
+        "HEADER_R5_SIZE": 159
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "ACTIVE",
+        "TYPE",
+        "NAME",
+        "ALIAS",
+        "TELECOM",
+        "ADDRESS",
+        "PARTOF",
+        "CONTACT",
+        "ENDPOINT",
+        "DESCRIPTION",
+        "QUALIFICATION"
+      ],
+      "sizes": {
+        "ACTIVE_S": "TYPE_SIZE_UINT8",
+        "ADDRESS_S": "TYPE_SIZE_OFFSET",
+        "ALIAS_S": "TYPE_SIZE_OFFSET",
+        "CONTACT_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "ENDPOINT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "PARTOF_S": "TYPE_SIZE_OFFSET",
+        "QUALIFICATION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TELECOM_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ORGANIZATION_CONTACT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 66
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "PURPOSE",
+        "NAME",
+        "TELECOM",
+        "ADDRESS"
+      ],
+      "sizes": {
+        "ADDRESS_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "PURPOSE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TELECOM_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_ORGANIZATION_QUALIFICATION": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 66
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "CODE",
+        "PERIOD",
+        "ISSUER"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ISSUER_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PATIENT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 191,
+        "HEADER_R5_SIZE": 191
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "ACTIVE",
+        "NAME",
+        "TELECOM",
+        "GENDER",
+        "BIRTHDATE",
+        "DECEASED",
+        "ADDRESS",
+        "MARITALSTATUS",
+        "MULTIPLEBIRTH",
+        "PHOTO",
+        "CONTACT",
+        "COMMUNICATION",
+        "GENERALPRACTITIONER",
+        "MANAGINGORGANIZATION",
+        "LINK"
+      ],
+      "sizes": {
+        "ACTIVE_S": "TYPE_SIZE_UINT8",
+        "ADDRESS_S": "TYPE_SIZE_OFFSET",
+        "BIRTHDATE_S": "TYPE_SIZE_OFFSET",
+        "COMMUNICATION_S": "TYPE_SIZE_OFFSET",
+        "CONTACT_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "DECEASED_S": "TYPE_SIZE_CHOICE",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "GENDER_S": "TYPE_SIZE_UINT32",
+        "GENERALPRACTITIONER_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LINK_S": "TYPE_SIZE_OFFSET",
+        "MANAGINGORGANIZATION_S": "TYPE_SIZE_OFFSET",
+        "MARITALSTATUS_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MULTIPLEBIRTH_S": "TYPE_SIZE_CHOICE",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "PHOTO_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TELECOM_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PATIENT_COMMUNICATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 43,
+        "HEADER_R5_SIZE": 43
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "LANGUAGE",
+        "PREFERRED"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PREFERRED_S": "TYPE_SIZE_UINT8",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PATIENT_CONTACT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 86,
+        "HEADER_R5_SIZE": 86
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "RELATIONSHIP",
+        "NAME",
+        "TELECOM",
+        "ADDRESS",
+        "GENDER",
+        "ORGANIZATION",
+        "PERIOD"
+      ],
+      "sizes": {
+        "ADDRESS_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "GENDER_S": "TYPE_SIZE_UINT32",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "ORGANIZATION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RELATIONSHIP_S": "TYPE_SIZE_OFFSET",
+        "TELECOM_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PATIENT_LINK": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 46,
+        "HEADER_R5_SIZE": 46
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "OTHER",
+        "TYPE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "OTHER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PERIOD": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 42,
+        "HEADER_R5_SIZE": 42
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "START",
+        "END"
+      ],
+      "sizes": {
+        "END_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "START_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PRACTITIONER": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 139,
+        "HEADER_R5_SIZE": 149
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "ACTIVE",
+        "NAME",
+        "TELECOM",
+        "ADDRESS",
+        "GENDER",
+        "BIRTHDATE",
+        "PHOTO",
+        "QUALIFICATION",
+        "COMMUNICATION",
+        "DECEASED"
+      ],
+      "sizes": {
+        "ACTIVE_S": "TYPE_SIZE_UINT8",
+        "ADDRESS_S": "TYPE_SIZE_OFFSET",
+        "BIRTHDATE_S": "TYPE_SIZE_OFFSET",
+        "COMMUNICATION_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "DECEASED_S": "TYPE_SIZE_CHOICE",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "GENDER_S": "TYPE_SIZE_UINT32",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "PHOTO_S": "TYPE_SIZE_OFFSET",
+        "QUALIFICATION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TELECOM_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PRACTITIONERROLE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 175,
+        "HEADER_R5_SIZE": 207
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "ACTIVE",
+        "PERIOD",
+        "PRACTITIONER",
+        "ORGANIZATION",
+        "CODE",
+        "SPECIALTY",
+        "LOCATION",
+        "HEALTHCARESERVICE",
+        "TELECOM",
+        "AVAILABLETIME",
+        "NOTAVAILABLE",
+        "AVAILABILITYEXCEPTIONS",
+        "ENDPOINT",
+        "CONTACT",
+        "CHARACTERISTIC",
+        "COMMUNICATION",
+        "AVAILABILITY"
+      ],
+      "sizes": {
+        "ACTIVE_S": "TYPE_SIZE_UINT8",
+        "AVAILABILITYEXCEPTIONS_S": "TYPE_SIZE_OFFSET",
+        "AVAILABILITY_S": "TYPE_SIZE_OFFSET",
+        "AVAILABLETIME_S": "TYPE_SIZE_OFFSET",
+        "CHARACTERISTIC_S": "TYPE_SIZE_OFFSET",
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "COMMUNICATION_S": "TYPE_SIZE_OFFSET",
+        "CONTACT_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "ENDPOINT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "HEALTHCARESERVICE_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTAVAILABLE_S": "TYPE_SIZE_OFFSET",
+        "ORGANIZATION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "PRACTITIONER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SPECIALTY_S": "TYPE_SIZE_OFFSET",
+        "TELECOM_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PRACTITIONERROLE_AVAILABLETIME": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 59
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DAYSOFWEEK",
+        "ALLDAY",
+        "AVAILABLESTARTTIME",
+        "AVAILABLEENDTIME"
+      ],
+      "sizes": {
+        "ALLDAY_S": "TYPE_SIZE_UINT8",
+        "AVAILABLEENDTIME_S": "TYPE_SIZE_OFFSET",
+        "AVAILABLESTARTTIME_S": "TYPE_SIZE_OFFSET",
+        "DAYSOFWEEK_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PRACTITIONERROLE_NOTAVAILABLE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DESCRIPTION",
+        "DURING"
+      ],
+      "sizes": {
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "DURING_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PRACTITIONER_COMMUNICATION": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 43
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "LANGUAGE",
+        "PREFERRED"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PREFERRED_S": "TYPE_SIZE_UINT8",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PRACTITIONER_QUALIFICATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 66,
+        "HEADER_R5_SIZE": 66
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "CODE",
+        "PERIOD",
+        "ISSUER"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ISSUER_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PROCEDURE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 292,
+        "HEADER_R5_SIZE": 352
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "INSTANTIATESCANONICAL",
+        "INSTANTIATESURI",
+        "BASEDON",
+        "PARTOF",
+        "STATUS",
+        "STATUSREASON",
+        "CATEGORY",
+        "CODE",
+        "SUBJECT",
+        "ENCOUNTER",
+        "PERFORMED",
+        "RECORDER",
+        "ASSERTER",
+        "PERFORMER",
+        "LOCATION",
+        "REASONCODE",
+        "REASONREFERENCE",
+        "BODYSITE",
+        "OUTCOME",
+        "REPORT",
+        "COMPLICATION",
+        "COMPLICATIONDETAIL",
+        "FOLLOWUP",
+        "NOTE",
+        "FOCALDEVICE",
+        "USEDREFERENCE",
+        "USEDCODE",
+        "FOCUS",
+        "OCCURRENCE",
+        "RECORDED",
+        "REPORTED",
+        "REASON",
+        "USED",
+        "SUPPORTINGINFO"
+      ],
+      "sizes": {
+        "ASSERTER_S": "TYPE_SIZE_OFFSET",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "BODYSITE_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "COMPLICATIONDETAIL_S": "TYPE_SIZE_OFFSET",
+        "COMPLICATION_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FOCALDEVICE_S": "TYPE_SIZE_OFFSET",
+        "FOCUS_S": "TYPE_SIZE_OFFSET",
+        "FOLLOWUP_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATESCANONICAL_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATESURI_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "OCCURRENCE_S": "TYPE_SIZE_CHOICE",
+        "OUTCOME_S": "TYPE_SIZE_OFFSET",
+        "PARTOF_S": "TYPE_SIZE_OFFSET",
+        "PERFORMED_S": "TYPE_SIZE_CHOICE",
+        "PERFORMER_S": "TYPE_SIZE_OFFSET",
+        "REASONCODE_S": "TYPE_SIZE_OFFSET",
+        "REASONREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECORDED_S": "TYPE_SIZE_OFFSET",
+        "RECORDER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REPORTED_S": "TYPE_SIZE_CHOICE",
+        "REPORT_S": "TYPE_SIZE_OFFSET",
+        "STATUSREASON_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "SUPPORTINGINFO_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "USEDCODE_S": "TYPE_SIZE_OFFSET",
+        "USEDREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "USED_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PROCEDURE_FOCALDEVICE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "ACTION",
+        "MANIPULATED"
+      ],
+      "sizes": {
+        "ACTION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MANIPULATED_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PROCEDURE_PERFORMER": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 66
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "FUNCTION",
+        "ACTOR",
+        "ONBEHALFOF",
+        "PERIOD"
+      ],
+      "sizes": {
+        "ACTOR_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FUNCTION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ONBEHALFOF_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PROVENANCE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 152,
+        "HEADER_R5_SIZE": 184
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TARGET",
+        "OCCURRED",
+        "RECORDED",
+        "POLICY",
+        "LOCATION",
+        "REASON",
+        "ACTIVITY",
+        "AGENT",
+        "ENTITY",
+        "SIGNATURE",
+        "AUTHORIZATION",
+        "BASEDON",
+        "PATIENT",
+        "ENCOUNTER"
+      ],
+      "sizes": {
+        "ACTIVITY_S": "TYPE_SIZE_OFFSET",
+        "AGENT_S": "TYPE_SIZE_OFFSET",
+        "AUTHORIZATION_S": "TYPE_SIZE_OFFSET",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "ENTITY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "OCCURRED_S": "TYPE_SIZE_CHOICE",
+        "PATIENT_S": "TYPE_SIZE_OFFSET",
+        "POLICY_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECORDED_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SIGNATURE_S": "TYPE_SIZE_OFFSET",
+        "TARGET_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PROVENANCE_AGENT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 66,
+        "HEADER_R5_SIZE": 66
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "ROLE",
+        "WHO",
+        "ONBEHALFOF"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ONBEHALFOF_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "ROLE_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "WHO_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_PROVENANCE_ENTITY": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 54,
+        "HEADER_R5_SIZE": 54
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "ROLE",
+        "WHAT",
+        "AGENT"
+      ],
+      "sizes": {
+        "AGENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "ROLE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "WHAT_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_QUANTITY": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "VALUE",
+        "COMPARATOR",
+        "UNIT",
+        "SYSTEM",
+        "CODE"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_UINT32",
+        "COMPARATOR_S": "TYPE_SIZE_UINT32",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SYSTEM_S": "TYPE_SIZE_OFFSET",
+        "UNIT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_FLOAT64"
+      }
+    },
+    "FF_QUESTIONNAIRERESPONSE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 154,
+        "HEADER_R5_SIZE": 154
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "BASEDON",
+        "PARTOF",
+        "QUESTIONNAIRE",
+        "STATUS",
+        "SUBJECT",
+        "ENCOUNTER",
+        "AUTHORED",
+        "AUTHOR",
+        "SOURCE",
+        "ITEM"
+      ],
+      "sizes": {
+        "AUTHORED_S": "TYPE_SIZE_OFFSET",
+        "AUTHOR_S": "TYPE_SIZE_OFFSET",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "ITEM_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PARTOF_S": "TYPE_SIZE_OFFSET",
+        "QUESTIONNAIRE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SOURCE_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_QUESTIONNAIRERESPONSE_ITEM": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 74,
+        "HEADER_R5_SIZE": 74
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "LINKID",
+        "DEFINITION",
+        "TEXT",
+        "ANSWER",
+        "ITEM"
+      ],
+      "sizes": {
+        "ANSWER_S": "TYPE_SIZE_OFFSET",
+        "DEFINITION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ITEM_S": "TYPE_SIZE_OFFSET",
+        "LINKID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_QUESTIONNAIRERESPONSE_ITEM_ANSWER": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 52,
+        "HEADER_R5_SIZE": 52
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "VALUE",
+        "ITEM"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ITEM_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_RANGE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 42,
+        "HEADER_R5_SIZE": 42
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "LOW",
+        "HIGH"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "HIGH_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LOW_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_RATIO": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 42,
+        "HEADER_R5_SIZE": 42
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "NUMERATOR",
+        "DENOMINATOR"
+      ],
+      "sizes": {
+        "DENOMINATOR_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "NUMERATOR_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_REFERENCE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "REFERENCE",
+        "TYPE",
+        "IDENTIFIER",
+        "DISPLAY"
+      ],
+      "sizes": {
+        "DISPLAY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERENCE_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_RELATEDPERSON": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 155,
+        "HEADER_R5_SIZE": 155
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "ACTIVE",
+        "PATIENT",
+        "RELATIONSHIP",
+        "NAME",
+        "TELECOM",
+        "GENDER",
+        "BIRTHDATE",
+        "ADDRESS",
+        "PHOTO",
+        "PERIOD",
+        "COMMUNICATION"
+      ],
+      "sizes": {
+        "ACTIVE_S": "TYPE_SIZE_UINT8",
+        "ADDRESS_S": "TYPE_SIZE_OFFSET",
+        "BIRTHDATE_S": "TYPE_SIZE_OFFSET",
+        "COMMUNICATION_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "GENDER_S": "TYPE_SIZE_UINT32",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "PATIENT_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "PHOTO_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RELATIONSHIP_S": "TYPE_SIZE_OFFSET",
+        "TELECOM_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_RELATEDPERSON_COMMUNICATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 43,
+        "HEADER_R5_SIZE": 43
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "LANGUAGE",
+        "PREFERRED"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PREFERRED_S": "TYPE_SIZE_UINT8",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SAMPLEDDATA": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 78,
+        "HEADER_R5_SIZE": 106
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "ORIGIN",
+        "PERIOD",
+        "FACTOR",
+        "LOWERLIMIT",
+        "UPPERLIMIT",
+        "DIMENSIONS",
+        "DATA",
+        "INTERVAL",
+        "INTERVALUNIT",
+        "CODEMAP",
+        "OFFSETS"
+      ],
+      "sizes": {
+        "CODEMAP_S": "TYPE_SIZE_OFFSET",
+        "DATA_S": "TYPE_SIZE_OFFSET",
+        "DIMENSIONS_S": "TYPE_SIZE_UINT32",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_FLOAT64",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "INTERVALUNIT_S": "TYPE_SIZE_UINT32",
+        "INTERVAL_S": "TYPE_SIZE_FLOAT64",
+        "LOWERLIMIT_S": "TYPE_SIZE_FLOAT64",
+        "OFFSETS_S": "TYPE_SIZE_OFFSET",
+        "ORIGIN_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_FLOAT64",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "UPPERLIMIT_S": "TYPE_SIZE_FLOAT64",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SERVICEREQUEST": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 321,
+        "HEADER_R5_SIZE": 353
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "INSTANTIATESCANONICAL",
+        "INSTANTIATESURI",
+        "BASEDON",
+        "REPLACES",
+        "REQUISITION",
+        "STATUS",
+        "INTENT",
+        "CATEGORY",
+        "PRIORITY",
+        "DONOTPERFORM",
+        "CODE",
+        "ORDERDETAIL",
+        "QUANTITY",
+        "SUBJECT",
+        "ENCOUNTER",
+        "OCCURRENCE",
+        "ASNEEDED",
+        "AUTHOREDON",
+        "REQUESTER",
+        "PERFORMERTYPE",
+        "PERFORMER",
+        "LOCATIONCODE",
+        "LOCATIONREFERENCE",
+        "REASONCODE",
+        "REASONREFERENCE",
+        "INSURANCE",
+        "SUPPORTINGINFO",
+        "SPECIMEN",
+        "BODYSITE",
+        "NOTE",
+        "PATIENTINSTRUCTION",
+        "RELEVANTHISTORY",
+        "FOCUS",
+        "LOCATION",
+        "REASON",
+        "BODYSTRUCTURE"
+      ],
+      "sizes": {
+        "ASNEEDED_S": "TYPE_SIZE_CHOICE",
+        "AUTHOREDON_S": "TYPE_SIZE_OFFSET",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "BODYSITE_S": "TYPE_SIZE_OFFSET",
+        "BODYSTRUCTURE_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "DONOTPERFORM_S": "TYPE_SIZE_UINT8",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FOCUS_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATESCANONICAL_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATESURI_S": "TYPE_SIZE_OFFSET",
+        "INSURANCE_S": "TYPE_SIZE_OFFSET",
+        "INTENT_S": "TYPE_SIZE_UINT32",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LOCATIONCODE_S": "TYPE_SIZE_OFFSET",
+        "LOCATIONREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "OCCURRENCE_S": "TYPE_SIZE_CHOICE",
+        "ORDERDETAIL_S": "TYPE_SIZE_OFFSET",
+        "PATIENTINSTRUCTION_S": "TYPE_SIZE_OFFSET",
+        "PERFORMERTYPE_S": "TYPE_SIZE_OFFSET",
+        "PERFORMER_S": "TYPE_SIZE_OFFSET",
+        "PRIORITY_S": "TYPE_SIZE_UINT32",
+        "QUANTITY_S": "TYPE_SIZE_CHOICE",
+        "REASONCODE_S": "TYPE_SIZE_OFFSET",
+        "REASONREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RELEVANTHISTORY_S": "TYPE_SIZE_OFFSET",
+        "REPLACES_S": "TYPE_SIZE_OFFSET",
+        "REQUESTER_S": "TYPE_SIZE_OFFSET",
+        "REQUISITION_S": "TYPE_SIZE_OFFSET",
+        "SPECIMEN_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "SUPPORTINGINFO_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SERVICEREQUEST_ORDERDETAIL": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "PARAMETERFOCUS",
+        "PARAMETER"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PARAMETERFOCUS_S": "TYPE_SIZE_OFFSET",
+        "PARAMETER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SERVICEREQUEST_ORDERDETAIL_PARAMETER": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 52
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CODE",
+        "VALUE"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_SERVICEREQUEST_PATIENTINSTRUCTION": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 44
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "INSTRUCTION"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "INSTRUCTION_S": "TYPE_SIZE_CHOICE",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SIGNATURE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 74,
+        "HEADER_R5_SIZE": 74
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "TYPE",
+        "WHEN",
+        "WHO",
+        "ONBEHALFOF",
+        "TARGETFORMAT",
+        "SIGFORMAT",
+        "DATA"
+      ],
+      "sizes": {
+        "DATA_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ONBEHALFOF_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SIGFORMAT_S": "TYPE_SIZE_UINT32",
+        "TARGETFORMAT_S": "TYPE_SIZE_UINT32",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "WHEN_S": "TYPE_SIZE_OFFSET",
+        "WHO_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_SPECIMEN": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 170,
+        "HEADER_R5_SIZE": 190
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "ACCESSIONIDENTIFIER",
+        "STATUS",
+        "TYPE",
+        "SUBJECT",
+        "RECEIVEDTIME",
+        "PARENT",
+        "REQUEST",
+        "COLLECTION",
+        "PROCESSING",
+        "CONTAINER",
+        "CONDITION",
+        "NOTE",
+        "COMBINED",
+        "ROLE",
+        "FEATURE"
+      ],
+      "sizes": {
+        "ACCESSIONIDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "COLLECTION_S": "TYPE_SIZE_OFFSET",
+        "COMBINED_S": "TYPE_SIZE_UINT32",
+        "CONDITION_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CONTAINER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FEATURE_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "PARENT_S": "TYPE_SIZE_OFFSET",
+        "PROCESSING_S": "TYPE_SIZE_OFFSET",
+        "RECEIVEDTIME_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REQUEST_S": "TYPE_SIZE_OFFSET",
+        "ROLE_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SPECIMEN_COLLECTION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 94,
+        "HEADER_R5_SIZE": 110
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "COLLECTOR",
+        "COLLECTED",
+        "DURATION",
+        "QUANTITY",
+        "METHOD",
+        "BODYSITE",
+        "FASTINGSTATUS",
+        "DEVICE",
+        "PROCEDURE"
+      ],
+      "sizes": {
+        "BODYSITE_S": "TYPE_SIZE_OFFSET",
+        "COLLECTED_S": "TYPE_SIZE_CHOICE",
+        "COLLECTOR_S": "TYPE_SIZE_OFFSET",
+        "DEVICE_S": "TYPE_SIZE_OFFSET",
+        "DURATION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FASTINGSTATUS_S": "TYPE_SIZE_CHOICE",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "METHOD_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PROCEDURE_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SPECIMEN_CONTAINER": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 84,
+        "HEADER_R5_SIZE": 100
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "DESCRIPTION",
+        "TYPE",
+        "CAPACITY",
+        "SPECIMENQUANTITY",
+        "ADDITIVE",
+        "DEVICE",
+        "LOCATION"
+      ],
+      "sizes": {
+        "ADDITIVE_S": "TYPE_SIZE_CHOICE",
+        "CAPACITY_S": "TYPE_SIZE_OFFSET",
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "DEVICE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SPECIMENQUANTITY_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SPECIMEN_FEATURE": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "DESCRIPTION"
+      ],
+      "sizes": {
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SPECIMEN_PROCESSING": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 68,
+        "HEADER_R5_SIZE": 76
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DESCRIPTION",
+        "PROCEDURE",
+        "ADDITIVE",
+        "TIME",
+        "METHOD"
+      ],
+      "sizes": {
+        "ADDITIVE_S": "TYPE_SIZE_OFFSET",
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "METHOD_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PROCEDURE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TIME_S": "TYPE_SIZE_CHOICE",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_TIMING": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "EVENT",
+        "REPEAT",
+        "CODE"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "EVENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REPEAT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_TIMING_REPEAT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 120,
+        "HEADER_R5_SIZE": 120
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "BOUNDS",
+        "COUNT",
+        "COUNTMAX",
+        "DURATION",
+        "DURATIONMAX",
+        "DURATIONUNIT",
+        "FREQUENCY",
+        "FREQUENCYMAX",
+        "PERIOD",
+        "PERIODMAX",
+        "PERIODUNIT",
+        "DAYOFWEEK",
+        "TIMEOFDAY",
+        "WHEN",
+        "OFFSET"
+      ],
+      "sizes": {
+        "BOUNDS_S": "TYPE_SIZE_CHOICE",
+        "COUNTMAX_S": "TYPE_SIZE_UINT32",
+        "COUNT_S": "TYPE_SIZE_UINT32",
+        "DAYOFWEEK_S": "TYPE_SIZE_OFFSET",
+        "DURATIONMAX_S": "TYPE_SIZE_FLOAT64",
+        "DURATIONUNIT_S": "TYPE_SIZE_UINT32",
+        "DURATION_S": "TYPE_SIZE_FLOAT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FREQUENCYMAX_S": "TYPE_SIZE_UINT32",
+        "FREQUENCY_S": "TYPE_SIZE_UINT32",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "OFFSET_S": "TYPE_SIZE_UINT32",
+        "PERIODMAX_S": "TYPE_SIZE_FLOAT64",
+        "PERIODUNIT_S": "TYPE_SIZE_UINT32",
+        "PERIOD_S": "TYPE_SIZE_FLOAT64",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TIMEOFDAY_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "WHEN_S": "TYPE_SIZE_OFFSET"
+      }
+    },
+    "FF_VIRTUALSERVICEDETAIL": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 64
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "CHANNELTYPE",
+        "ADDRESS",
+        "ADDITIONALINFO",
+        "MAXPARTICIPANTS",
+        "SESSIONKEY"
+      ],
+      "sizes": {
+        "ADDITIONALINFO_S": "TYPE_SIZE_OFFSET",
+        "ADDRESS_S": "TYPE_SIZE_CHOICE",
+        "CHANNELTYPE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MAXPARTICIPANTS_S": "TYPE_SIZE_UINT32",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SESSIONKEY_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    }
+  }
+}
