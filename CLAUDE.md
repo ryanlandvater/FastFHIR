@@ -12,6 +12,12 @@ maintainer direction. New source files copy the MPL header from any file in `src
 **Pending work lives in `TASKS.md`** — read its Execution contract before claiming a task.
 Blocks A–E are engineering debt (build fixes, tests, recovery, WASM, hygiene); Blocks F–I
 are strategic (benchmark publication, security hardening, packaging, specification).
+Block J is a **planned, unstarted** feature — external code systems (LOINC, SNOMED, …) in
+two halves: generated compile-time headers (`FF_EXTERNAL_CODE::LOINC::X`) and optional
+runtime validation layers discovered Vulkan-style, where a missing layer just means the
+check does not run. Neither ever enters the permanent ledger or the wire format. Q14 and
+Q16 are answered; Q15 (acquisition) is still open. Read its J0 preamble before writing
+any of it.
 The former checklist/plan docs (audit, integration-revision, project-progress,
 generator-refactor, unification, refactor-history) were consolidated into TASKS.md and
 deleted; consult git history if you need them.
@@ -55,10 +61,12 @@ pytest tests/generator -q
 # If the wire format has intentionally changed (new block field, new vtable
 # offset, new recovery tag, new code ID), the golden reference must be
 # committed alongside the change:
-#   pytest tests/generator --update-golden
+#   python -m tests.generator.wire_witness generated_src \
+#       tests/generator/golden/wire_witness.json
 # Then `git add tests/generator/golden/wire_witness.json` in the same commit.
 # A golden update without a corresponding generator or C++ change is a red
-# flag — the gate exists to catch unintended drift.
+# flag — the gate exists to catch unintended drift. The witness script
+# refuses to overwrite if the output matches the existing golden.
 
 # Python lint/format (generator code only — generated C++ is out of scope)
 ruff check generator tests/generator && black --check generator tests/generator

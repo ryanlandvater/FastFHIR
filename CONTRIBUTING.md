@@ -30,9 +30,12 @@ pytest tests/generator -q                     # generator wire-format gate
 # The wire-format gate compares against tests/generator/golden/wire_witness.json.
 # If your change intentionally alters the generated layout (new block field,
 # new vtable offset, new recovery tag, new code ID), update the golden file:
-#   pytest tests/generator --update-golden
+#   python -m tests.generator.wire_witness generated_src \
+#       tests/generator/golden/wire_witness.json
 # Commit the updated golden alongside the generator/C++ change in the same PR.
 # A golden update without a corresponding source change is a red flag.
+# The witness script refuses to overwrite if the output matches the existing
+# golden.
 ruff check generator tests/generator && black --check generator tests/generator
 ```
 

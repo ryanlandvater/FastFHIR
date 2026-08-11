@@ -23,6 +23,7 @@ import re
 LEDGER = os.path.join(os.path.dirname(__file__), "..", "master_codes.json")
 OUTPUT = os.path.join(os.path.dirname(__file__), "..", "..", "dictionaries", "FF_Codes.hpp")
 
+
 # Identifiers that are macros in the C/C++ standard library or on Windows. The
 # preprocessor would textually replace them, so they carry a _CODE suffix. This
 # is why the header needs no #undef games -- undef'ing M_E in a public header
@@ -277,6 +278,7 @@ def generate() -> None:
 
     lines += ["}  // namespace FastFHIR::FF_CODE"]
 
+    os.makedirs(os.path.dirname(OUTPUT), exist_ok=True)
     with open(OUTPUT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 

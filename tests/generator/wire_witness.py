@@ -108,16 +108,93 @@ def witness(generated_dir: Path) -> dict:
     return out
 
 
+def _check_permanence(current_raw: dict, existing_raw: dict, label: str) -> list[str]:
+    """Return a list of violations where an existing key changed or was deleted.
+
+    *additions* (key in current but not in existing) are allowed.
+    *changes* (same key, different value) or *deletions* (key in existing but
+    not in current) are wire-format breaks and must be rejected.
+
+    For *vtables*, drills into per-block ``order``, ``sizes``, and
+    ``header_sizes`` so the error message pinpoints the exact field.
+    """
+    errors: list[str] = []
+    for key, old_val in existing_raw.items():
+        if key not in current_raw:
+            errors.append(f"  DELETED {label}.{key} — removal changes the wire format for existing streams")
+            continue
+        new_val = current_raw[key]
+        if label == "vtables":
+            # Drill into per-block sub-structures
+            for sub in ("order", "sizes", "header_sizes"):
+                old_sub = old_val.get(sub, {}) if isinstance(old_val.get(sub), dict) else old_val.get(sub, [])
+                new_sub = new_val.get(sub, {}) if isinstance(new_val.get(sub), dict) else new_val.get(sub, [])
+                if isinstance(old_sub, list):
+                    if old_sub != new_sub:
+                        errors.append(
+                            f"  CHANGED {label}.{key}.{sub}: order changed → "
+                            f"wire offsets shift for existing streams"
+                        )
+                else:
+                    for k, v in old_sub.items():
+                        if k not in new_sub:
+                            errors.append(f"  DELETED {label}.{key}.{sub}.{k} — wire constant removed")
+                        elif new_sub[k] != v:
+                            errors.append(
+                                f"  CHANGED {label}.{key}.{sub}.{k}: {v!r} → {new_sub[k]!r}"
+                                f" — wire constants are permanent"
+                            )
+        else:
+            if new_val != old_val:
+                errors.append(
+                    f"  CHANGED {label}.{key}: {old_val!r} → {new_val!r}"
+                    f" — wire constants are permanent"
+                )
+    return errors
+
+
 def dump(generated_dir: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(
-        json.dumps(witness(generated_dir), indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    current_raw = witness(generated_dir)
+    current = json.dumps(current_raw, indent=2, sort_keys=True)
+
+    if dest.exists():
+        existing_raw = json.loads(dest.read_text(encoding="utf-8"))
+        existing = json.dumps(existing_raw, indent=2, sort_keys=True)
+
+        if existing == current:
+            print(f"  wire witness unchanged — {dest.name} already matches.")
+            print(f"  (no need to update: the gate would pass with the existing golden.)")
+            return
+
+        # Check permanence before allowing any update
+        errors: list[str] = []
+        for section in ("tags", "codes", "vtables"):
+            errors.extend(_check_permanence(current_raw[section], existing_raw[section], section))
+        if errors:
+            for err in errors:
+                print(err)
+            raise SystemExit(
+                "\nERROR: wire constants above changed or were deleted.\n"
+                "Permanent wire constants cannot be modified once committed.\n"
+                "If this is intentional (e.g. a new feature branch that changes\n"
+                "the wire format version), use --force to override."
+            )
+
+        print(f"  wire witness CHANGED — {dest.name} needs updating.")
+        import difflib
+        for line in difflib.unified_diff(
+            existing.splitlines(), current.splitlines(),
+            fromfile="existing", tofile="new", lineterm=""
+        ):
+            print(line)
+
+    # New file or content changed — write the updated golden
+    dest.write_text(current, encoding="utf-8")
+    print(f"  wire witness written: {dest}")
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         raise SystemExit("usage: wire_witness.py <generated_dir> <out.json>")
     dump(Path(sys.argv[1]), Path(sys.argv[2]))
-    print(f"wire witness written: {sys.argv[2]}")

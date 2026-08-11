@@ -1041,6 +1041,354 @@ in FastFHIR targets.
 
 ---
 
+## Block J — External code systems: generated headers + optional validation layers
+
+> **Status: specification stub.** Nothing here is implemented. Q14 and Q16 are answered
+> (2026-07-30) and their decisions are folded in below. Q15 (acquisition) has research
+> recorded under it but still needs Ryan's pick. Read this whole preamble before touching
+> anything — the licensing and ledger constraints are why the feature is shaped this way
+> and are not negotiable by an implementer.
+
+### J0. What this is, and why it cannot break anything
+
+External code systems (LOINC, SNOMED CT, RxNorm, ICD-10, …) get support in **two
+separable halves**. They ship independently and neither requires the other:
+
+1. **Compile-time: generated constant headers.** `#include <FastFHIR/ExternalCodes/LOINC.hpp>`
+   gives `FF_EXTERNAL_CODE::LOINC::SODIUM_MOLAR` — the same shape as the generated
+   `Fields::` keys, with full IDE type assist. Pure `constexpr`; no runtime dependency,
+   no layer required. **This is the half that prevents mistakes**, per Q16: a named
+   constant cannot be mistyped, a hand-written string can.
+2. **Runtime: optional validation layers.** A layer is a dylib discovered at runtime,
+   modelled on the Vulkan layer loader (Q14). Present → codes for that system are
+   validated against the real release **as they are written** (J4), inline at the encode
+   site. Absent → the checks simply do not run. Absence is never an error and never fails
+   an ingest, and a failed check warns loudly (J5) but never rejects the write.
+
+   The two halves reinforce each other: a code written from a `FF_EXTERNAL_CODE::…`
+   constant passes by construction, because the constant came from the release the layer
+   validates against. The inline check exists to catch the hand-typed string.
+
+Both halves are built on the user's machine from a release **they** are licensed to use.
+
+**FastFHIR natively does not adjudicate these codes and never ships their values.** Both
+halves are a convenience over data the user already has rights to. This is the same
+boundary `generator/master_codes.json` already enforces via `_assert_redistributable`.
+
+**Coverage commitment: every CodeableConcept system FastFHIR supports gets external code
+validation.** Not a favoured subset. `FF_CodeableConceptSystem`
+(`include/FF_Primitives.hpp:86`) is the definitive list, and every value in it must have a
+declared validation story before this block is done:
+
+| Systems | Validation story |
+|---|---|
+| SNOMED CT, RxNorm, LOINC, DICOM, CPT, CVX, NDC, ICD-9-CM, ICD-10, ISO 3166, MDC, UNII, MED-RT, pCLOCD, IDMP (15) | Membership layer + generated `FF_EXTERNAL_CODE` header |
+| UCUM | **Built-in, not a layer — and fully validated.** Expressions are composable (`mg/dL`, `10*6/uL`), so the check is a grammar parse plus atom membership rather than a table lookup (J4.7). UCUM is formally specified and publishes its own conformance suite, so this is the *strongest* validation in the block, not a weaker one. Needs no user-supplied data. |
+| UNKNOWN | Sentinel for "no system identified" — nothing to validate against, by definition. |
+| FHIR_DICTIONARY | Already validated by construction: the code resolved to a permanent ledger ID. |
+
+Two things this commitment does **not** mean, and both must stay clear in any user-facing
+wording (I3 claims alignment applies):
+
+- It does not mean FastFHIR supplies the data. For most of these the user brings the
+  release (J2, Tier A). CPT in particular is AMA-licensed and paid — we can never ship or
+  fetch it, so its layer only exists for a user who already holds a licensed release.
+- It does not mean a layer must exist for a system to be *usable*. Codes for every system
+  encode and round-trip today with no layer at all; a layer adds checking, never
+  capability.
+
+The enforcing mechanism is J8.5, not good intentions: a test that fails when a value is
+added to `FF_CodeableConceptSystem` without a validation story. This codebase has already
+been bitten once by exactly this — `FF_CC_CODECS` covered all 17 systems while
+`print_scalar_json` covered 4, and nothing caught the gap.
+
+Three properties make this safe, and an implementer must preserve all three:
+
+1. **Nothing here adds wire format or can invalidate a stored stream.** The wire already
+   carries external codes natively: `FF_CodeableConceptSystem`
+   (`include/FF_Primitives.hpp:86`) has 17 permanent systems, and `FF_CC_CODECS`
+   (`src/FF_Primitives.cpp:362`) gives each one its payload encoding — SNOMED CT is an
+   8-byte native concept ID, RxNorm 4-byte, DICOM 4-byte hex, LOINC/NDC/ICD variable
+   ASCII. Those codes are *self-encoding*; they need no FastFHIR-assigned ID. Headers and
+   layers therefore allocate nothing on the wire. A stream written with a layer loaded
+   must be byte-identical to one written without it (J7.3).
+2. **Nothing here touches the permanent ledger.** `generator/master_codes.json` and
+   `dictionaries/` stay HL7 FHIR + UCUM only. No entry, no `_next_id` consumption, not
+   produced by `python -m generator`. Output is a build artifact like `generated_src/`,
+   gitignored, never committed. (Execution contract rule 5 and `dictionaries/README.md`
+   already forbid the alternative.)
+3. **This project never redistributes the data.** Release files, generated headers and
+   compiled layers all stay on the user's machine. This is not optional caution: SNOMED
+   CT redistribution requires *FastFHIR* to be an Affiliate **and** to issue and track a
+   sublicence for every downstream user (see Q15 research). We will not take that on.
+
+**Naming.** The runtime dylibs are **layers** (Vulkan's term, per Q14). The compile-time
+headers are **external code headers**, namespace `FF_EXTERNAL_CODE`. Do *not* call either
+an "extension" in code or docs — that word is already taken twice here: FHIR `Extension`
+elements (`FF_EXTENSION` blocks, `Extension.url`, `FF_URL_DIRECTORY`) and Block D's WASM
+extension codec modules (`EXT_REF`, the module registry). A third meaning would be a bug
+factory.
+
+**Relationship to existing design.** `terminology_layer_architecture.md` §6 already
+specifies a validator dispatch table (`FF_CodeValidator`,
+`FF_EXTERNAL_VALIDATOR_TABLE`, `include/FF_Terminology.hpp`). Those validators are
+*syntactic* — format and check-digit only. A layer is the *membership* check that sits
+behind the same table: "is this actually a LOINC code in release 2.77", plus the display
+name. Extend §6; do not invent a parallel mechanism. Note that §6 calls the enum
+`FF_ExternalCodeSystem` while the implemented enum is `FF_CodeableConceptSystem` —
+reconcile the doc when you touch it.
+
+**Sequencing.** J4 and J5 depend on **A8** (`external_system_map` is never populated, so
+every code currently encodes as `UNKNOWN`). Until A8 lands there is no reliable way to
+route a field to the right layer at runtime. J1, J2, J3, J6 and J8 can proceed before A8.
+
+### J1. Layer model — **Q14 answered: Vulkan-style runtime layers**
+
+Runtime-loaded dylibs discovered like Vulkan validation layers: available → used; not
+present → the checks are skipped, silently and successfully. The analogy is apt in a
+second way worth preserving — Vulkan validation layers are a development-time correctness
+aid, not a production hot-path feature. Terminology validation should carry the same
+expectation.
+
+- [ ] J1.1 Layer discovery: manifest files (JSON, naming the system, release version,
+      licence and dylib path) found on a search path, with an env-var override
+      (`FASTFHIR_LAYER_PATH`, mirroring `VK_LAYER_PATH`). Decide implicit (auto-enable
+      what is found) vs explicit (host must ask by name). Vulkan supports both; implicit
+      matches "if it's available we can use it".
+- [ ] J1.2 Stable C ABI for the layer boundary, versioned. A layer built against one
+      FastFHIR release must not silently misbehave against another — refuse to load on
+      ABI mismatch and log it (see J5).
+- [ ] J1.3 Absence must be a no-op, never an error: no layer for a system means codes for
+      that system are simply not membership-checked. Never fail an ingest because a layer
+      is missing. Test this explicitly.
+- [ ] J1.4 `terminology_layers.md` (new doc) capturing the model and J0's three
+      invariants. Link from `CLAUDE.md`'s repo map.
+
+### J2. Acquisition — **Q15 answered: local data only; no server layer for now**
+
+Sources differ enough that one policy cannot cover them. Citations under Q15.
+
+**Decision (Ryan, 2026-07-30): Tier A is the default and the only tier built for now.
+Tier D (terminology server) is deferred, not deleted.**
+
+- [ ] J2.1 Per-system manifest declaring: acquisition tier, release version, licence
+      identifier, checksum, and whether unattended download is permitted **at all**.
+- [ ] J2.2 Build **Tier A** now; leave B and C as manifest-declared options to add when
+      a user actually needs them.
+      - **Tier A — user-supplied release file (DEFAULT).** The user points at a release
+        they already hold. Works offline, works air-gapped, and is the only tier that
+        covers sources which can never be automated (CPT is AMA-licensed and paid).
+      - **Tier B — authenticated download with the user's own credentials.** NLM's UTS
+        Download API issues per-user API keys and can fetch SNOMED CT, RxNorm and UMLS
+        releases in one command. FastFHIR never holds the key or the data. Convenience
+        only — Tier A already covers these sources.
+      - **Tier C — unauthenticated download.** Legitimate only for public-domain sources
+        (ICD-10-CM from CMS/NCHS, NDC from FDA, CVX from CDC).
+- [ ] J2.3 **Tier D — terminology-server layer. DEFERRED.** Do not build it now, and do
+      not design it out either. Rationale for deferring: it makes ingest depend on a
+      network service, it is unusable in the air-gapped hospital deployments that are a
+      core target, there is no production-grade public server (HL7 states tx.fhir.org
+      "is not suitable for use as a production terminology server"), and measured server
+      quality varies enormously (composite scores 100% → 6% across five servers in the
+      Health Samurai TX benchmark).
+      **Note the cost of deferring:** a non-Affiliate SNOMED user cannot legally hold the
+      release, so Tier A is unavailable to them and a server layer is their only route.
+      They get no SNOMED support until Tier D exists.
+      **Why a server is disqualified rather than merely slower:** validation runs *inline
+      on the write path* (J4), so a server-backed layer would put a network round-trip
+      inside `ENCODE_FF_CODE`. That is not a tuning problem, it is the wrong shape. A
+      local table lookup in the same position is fine. If Tier D is ever revisited it
+      cannot reuse the inline call site and would need a separate out-of-band mode — which
+      is a different feature, not a swap.
+      Concrete requirement on J1.2 today: keep the layer C ABI a *call* ("is this code
+      valid"), not a data handoff ("give me your sorted array"). That keeps the layer
+      implementation free to change without touching the boundary.
+- [ ] J2.3 Build step that turns a release file into generated C++ under the build tree
+      (mirroring how the generator writes `generated_src/`). Deterministic — two runs
+      byte-identical — and **fail loud** when the file is missing or the checksum does
+      not match. Never silently emit an empty table; that is precisely the failure mode
+      `dictionaries/FF_SNOMED_Concepts.cpp` has today (J8).
+- [ ] J2.4 Gitignore all generated headers and layer binaries; CI check that none is ever
+      committed.
+
+### J3. Generated external code headers (compile-time half — no A8 needed)
+
+This is the half Q16 calls "impossible to mess up". It works with no layer loaded.
+
+- [ ] J3.1 Emit one header per system at `FastFHIR/ExternalCodes/<SYSTEM>.hpp`, namespace
+      `FF_EXTERNAL_CODE::<SYSTEM>::<NAME>`, following the generated `Fields::` keys as the
+      precedent for a large generated constant header.
+- [ ] J3.2 Constant *values* are the terminology's own codes, in the **same representation
+      the wire uses** for that system so no re-parse is needed: SNOMED `uint64_t`, RxNorm
+      `uint32_t`, LOINC ASCII. Derive that from `FF_CC_CODECS` — never re-derive
+      per-system widths in a second place. That exact duplication caused A7 and A9.
+- [ ] J3.3 Reuse `emit/codes_header.py`'s `assign_identifier` ladder and `RESERVED_MACROS`
+      guard rather than writing a second identifier sanitiser.
+- [ ] J3.4 State in every generated header that constant *names* are source-level only and
+      may change between releases, while *values* belong to the terminology. Neither is a
+      wire constant. Nobody should mistake these for the ledger.
+- [ ] J3.5 **Split large systems by hierarchy, do not curate a subset (Ryan,
+      2026-07-30).** Emitting all ~350k SNOMED concepts in one header would wreck IDE type
+      assist, but curating a global subset would just make the useful code the one that is
+      missing. Instead split along the terminology's own hierarchy and let the caller
+      include only what they need — e.g.
+      `FastFHIR/ExternalCodes/SNOMED/ClinicalFinding.hpp`. Requirements: the split must be
+      derived from the release's own hierarchy (never hand-partitioned), an umbrella
+      `SNOMED.hpp` should exist for callers who genuinely want everything, and the same
+      constant must not appear in two sub-headers with different names. Systems small
+      enough (LOINC, RxNorm, CVX) stay a single header. Measure compile time per
+      sub-header.
+
+### J4. Validation on the write path — *needs A8*
+
+**Validation runs during writes when a layer is present and linked (Ryan, 2026-07-30).**
+Not post-seal, not out-of-band. The code is checked at the point it is encoded, so the
+warning names the field being written while that context still exists.
+
+This is affordable because of what it is checking against: a local table lookup, and — for
+anyone using the `FF_EXTERNAL_CODE::…` constants — a check that passes by construction,
+since the constants were generated from the same release the layer validates against. The
+cost is paid to catch hand-typed codes, which is exactly where the risk is (Q16).
+
+- [ ] J4.1 Hook the check at the `ENCODE_FF_CODE` call site, routed through
+      `terminology_layer_architecture.md` §6's existing table, so a loaded layer upgrades a
+      system from syntactic to membership validation and an absent one degrades to today's
+      syntactic check. One dispatch path, not two.
+- [ ] J4.2 Layer lookup resolved once per system, not per code — an indirect call per code
+      is acceptable, a dylib symbol lookup per code is not.
+- [ ] J4.3 The check must be allocation-free and must not throw; it runs on the write hot
+      path. A failure produces a warning (J5), never an exception, never a rejected write.
+- [ ] J4.4 Benchmark the inline cost with a layer loaded vs not, on a bundle with many
+      distinct codes, and record it. Per the benchmark rule, do not assert "negligible" —
+      measure it. If it proves material, the fallback is a per-system enable flag, not
+      moving validation off the write path.
+- [ ] J4.5 Concurrency: `claim_space()` appends are lock-free and validation sits beside
+      them, so a layer's validate entry point must be reentrant and thread-safe. State
+      this in the layer ABI contract (J1.2) — a layer that is not is a layer that will
+      corrupt a concurrent ingest.
+- [ ] J4.6 **Cover all 15 external systems**, per the J0 coverage commitment — not just
+      the well-known four. Priority order by real-world frequency (LOINC, SNOMED CT,
+      RxNorm, ICD-10 first) is fine, but the block is not done until every value in
+      `FF_CodeableConceptSystem` has a layer or a documented reason it needs none.
+      Several are small and public-domain (CVX, ISO 3166, MDC), so they are cheap wins,
+      not afterthoughts.
+- [ ] J4.7 **UCUM: built-in validation, no layer and no user-supplied data.** UCUM is not
+      an enumerable set — `mg/dL`, `10*6/uL`, `{beats}/min` are constructed — but it is
+      fully specified, so expressions *can* be validated. UCUM publishes a formal grammar
+      (LL(*), expressed in ANTLR) and a machine-readable definition file.
+      Validation is **two things, not one**:
+      1. **Grammar parse** of the expression: `.` multiply, `/` divide (including a leading
+         `/` as in `/min`), integer exponents (`m2`, `cm3`), `*` exponent form (`10*6`),
+         parentheses for grouping, numeric factors, `[...]` non-metric atoms (`[in_i]`,
+         `[pH]`), and `{...}` annotations which are syntactically required to balance but
+         semantically void (`{cells}`).
+      2. **Atom membership** for every atom the parse yields, plus the prefix rule: **only
+         metric atoms may take a prefix** — `kW` is legal, kilo-feet is not. Case matters
+         (`Ms` megasecond vs `ms` millisecond); `emit/codes_header.py:146` already records
+         this for naming.
+- [ ] J4.8 **The data for J4.7 is not in the repo yet.** The 1,384 UCUM constants in
+      `dictionaries/FF_Codes.hpp` (namespace `UCUM`, lines 18–1403) are *whole expressions*
+      harvested from FHIR value sets — `PERCENT`, `PERCENT_PER_100WBC` — each mapped to a
+      permanent ledger ID. They are the wrong shape for parsing and cover only what FHIR
+      happens to use. Grammar validation needs the UCUM **atom and prefix** tables (~300
+      atoms, 24 prefixes) from `ucum-essence.xml`, which the generator does not currently
+      fetch. Add that fetch, and emit atoms/prefixes as a separate table.
+      **This does not touch the ledger:** atoms are parser inputs, not codes, and get no
+      ID. The existing 1,384 expression IDs stay exactly as they are — see J0 invariant 2
+      and `_assert_redistributable`, which already permits UCUM as in-scope.
+- [ ] J4.9 Honour J4.3 in the parser: allocation-free and non-throwing, since it runs on
+      the write path. A recursive-descent parser over a `string_view` with a bounded stack
+      satisfies this; do not reach for regex or build an AST on the heap.
+- [ ] J4.10 Out of scope for now, worth recording: UCUM also supports canonicalisation, so
+      a future check could verify a unit is *commensurable* with what a field expects (a
+      body-weight `Quantity` should be a mass, not a volume). That is a stronger and more
+      useful check than well-formedness, but it needs conversion factors, not just atoms.
+
+### J5. Failure policy — **Q16 answered: loud logged warning, never a drop**
+
+Store the code, never reject the write, never silently discard clinical data — but the
+warning has to be impossible to miss. Emitted inline from the write path (J4), so it can
+name the field being written and not just the code.
+
+- [ ] J5.1 `ConcurrentLogger` (`include/FF_Logger.hpp:33`) currently exposes a single
+      `log(std::string_view)`; severity is convention only, expressed as a `"[Info] "`
+      prefix in the message text. There is no way to be loud. Add real severity levels
+      (at least Info / Warning / Critical) so a terminology failure can be surfaced
+      distinctly and counted.
+- [ ] J5.2 Surface a per-ingest count of failed codes in the result, so a caller sees
+      "1,412 codes failed LOINC membership" without scraping the log text.
+- [ ] J5.3 Message must name the system, the offending code, and the release version the
+      layer was built from — a code that is valid in LOINC 2.80 and absent from 2.77 is a
+      version problem, not a data problem, and the message should make that obvious.
+- [ ] J5.4 Never let validation failure alter what is written. The stream must be
+      byte-identical either way (J7.3).
+
+### J6. Display lookup — *needs A8*
+
+- [ ] J6.1 `code → display` lookup served by a loaded layer, returning
+      `std::string_view` into the layer's static table. No allocation, matching the
+      read-path rule in CLAUDE.md. With no layer loaded the lookup returns empty rather
+      than failing.
+
+### J7. Licensing gate
+
+- [ ] J7.1 Building a system's header or layer requires explicit opt-in naming the
+      licence (e.g. `-DFASTFHIR_EXTERNAL_CODES_SNOMED=ON` plus an acknowledgement
+      variable). Never default to ON.
+- [ ] J7.2 Record each enabled system, its release version and its licence in
+      `THIRD_PARTY_NOTICES.md` at configure time — as *user-side* notices, clearly
+      distinct from what FastFHIR itself ships.
+- [ ] J7.3 Counsel review before publishing. The Q15 research says LOINC is royalty-free
+      and redistributable with attribution, while SNOMED CT redistribution requires
+      Affiliate status plus sublicence issuance and tracking. Confirm that build-time
+      compilation of a user's own licensed release, on the user's own machine, is clear
+      of both. Do not ship on an assumption.
+
+### J8. Tests
+
+- [ ] J8.1 A synthetic fake system (a handful of invented codes under a test-only
+      `FF_CodeableConceptSystem` value) so the whole mechanism — header generation, layer
+      discovery, load, absence — is testable in CI with no licensed data at all.
+- [ ] J8.2 Assert the ledger invariant directly: enabling any external code system must
+      leave `generator/master_codes.json` byte-identical. This is the guard that stops a
+      future change from quietly routing external codes into the permanent ledger.
+- [ ] J8.3 Assert a stream written with a layer loaded is byte-identical to one written
+      without it, for the same input. Layers validate and look up; they never encode.
+- [ ] J8.4 Assert the missing-layer path: no layer present → ingest succeeds, no warning
+      about validity, no crash (J1.3).
+- [ ] J8.5 **UCUM: use the official conformance suite, do not invent test cases.** UCUM
+      publishes `UcumFunctionalTests.xml` (Eclipse Public License 1.0) — the same suite
+      other implementations certify against. Wire it into the test run so the parser is
+      measured against the specification's own cases rather than the ones we happened to
+      think of. Check the EPL-1.0 terms before vendoring the file; fetching it at
+      configure time like the FHIR packages avoids the question entirely.
+      Include the negative cases: `kft` (prefix on a non-metric atom) and an unbalanced
+      `{annotation` must both be rejected.
+- [ ] J8.6 **Coverage gate for the J0 commitment.** Enumerate `FF_CodeableConceptSystem`
+      from `include/FF_Primitives.hpp` and assert every value is accounted for in the
+      validation registry — a membership layer, the built-in UCUM grammar (J4.7), or an
+      explicit documented exemption (`UNKNOWN`, `FHIR_DICTIONARY`). Adding a system to the
+      enum without a validation story must fail this test.
+      Model it on `tests/generator/test_compact_layout.py::test_ff_slot_width_covers_every_field_kind`,
+      which does exactly this for `FF_FieldKind`. The failure mode it prevents is the one
+      that already happened: `FF_CC_CODECS` handled all 17 systems while
+      `print_scalar_json` handled 4, silently, because nothing compared the two lists.
+      Note this gate must pass with **no licensed data present**, so it checks registry
+      wiring, not table contents.
+
+### J9. Retire the misleading placeholder
+
+- [ ] J9.1 `dictionaries/FF_SNOMED_Concepts.cpp` is a 19-line stub with an empty array,
+      compiled into the library, whose header comment says "Populate from SNOMED CT RF2
+      release data". That instruction now contradicts the scope rule in
+      `master_codes.json:_scope` — SNOMED values must never live in `dictionaries/`.
+      Either delete the file and its build entry, or reduce it to a comment pointing here.
+
+- Verify (block): per task. J3 and J8 are the first that can produce a running artifact,
+  since neither needs licensed data (J8.1's fake system) or A8.
+
+---
+
 ## Questions for Ryan
 
 Answers unblock the tasks referencing them. Write answers inline after `> Answer:`.
@@ -1145,6 +1493,79 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
   needs the exact wording.
   > Answer (Ryan, 2026-07-08): **The wire format is NOT frozen.** We are in active alpha
   > development. The alpha caveat stays until a formal format-freeze milestone.
+
+- **Q14 (blocks J1):** Terminology pack granularity and link model — one pack per
+  CodeSystem (`fastfhir_loinc`, `fastfhir_snomed`, matching `FF_CodeableConceptSystem`
+  1:1), or coarser? And static library per pack behind a CMake option, or runtime-loaded
+  plugin? A static library keeps the named constants compile-time and costs nothing when
+  unlinked, which is what "type assist" needs; a plugin would push constants to runtime
+  lookup. Also confirm the term "pack" — "extension" collides with FHIR `Extension`
+  elements and with Block D's WASM extension codecs.
+  > Answer: I would like to do a runtime loaded plugin like a dylib but I want to use the layer model used by Vulkan. If the layer is available we can use it but if it's not loaded at runtime ignore the checks. The same is true for these external code extension public headers. We will have them generated so they can work like field keys FF_EXTERNAL_CODE::LOINC::SODIUM_MOLAR_whatever... can be done programatically by including #include FastFHIR/ExternalCodes/LOINC.hpp
+
+- **Q15 (blocks J2):** Acquisition. LOINC and SNOMED CT both require a registered account,
+  so neither can be downloaded unattended. Should the default path be **user-supplies-the-
+  release-file** (FastFHIR only compiles what is already on disk), with automated download
+  offered solely for sources that permit it (e.g. ICD-10 CM from CMS)? Or should there be
+  no download path at all?
+  > Answer: This is tough. I guess they should have to point to the spec. Please do more research on solutions to this.
+  >
+  > Answer (Ryan, 2026-07-30, after the research below): **Tier A — the user points at a
+  > release file they already hold. Local data only.** A terminology server is rejected as
+  > the default: it slows things down and makes ingest depend on a network service.
+  > Tier D is deferred rather than designed out (see J2.3), because a non-Affiliate SNOMED
+  > user has no other route and may need it later.
+  >
+  > The decisive constraint is in J4: validation runs **inline on the write path** when a
+  > layer is linked, so a server-backed layer would mean a network round-trip inside
+  > `ENCODE_FF_CODE`. Wrong shape, not merely slow.
+
+  **Research (Claude, 2026-07-30) — findings behind that decision.**
+
+  The sources are not uniform, so one policy cannot cover them:
+
+  - **LOINC** is royalty-free and *may* be redistributed, including in commercial
+    software, but any database or application using it must display the copyright
+    notice and licence acknowledgement. Download still requires accepting the terms.
+    Regenstrief also runs its own FHIR terminology service.
+  - **SNOMED CT** is the opposite. Redistributing it inside a product requires the
+    *distributor* to hold an Affiliate licence **and** to issue sublicences to every
+    downstream user and report them to SNOMED International. Free in Member countries
+    (US via NLM), chargeable elsewhere. FastFHIR must never take this on — which is
+    exactly why J0 invariant 3 exists.
+  - **NLM UTS Download API** solves the "unattended" problem *for the user*: a UTS
+    account yields a personal API key that can fetch SNOMED CT, RxNorm and UMLS
+    releases in a single command. The key and the data stay with the user; FastFHIR
+    holds neither.
+  - **Public domain**: ICD-10-CM (CMS/NCHS), NDC (FDA), CVX (CDC) can be fetched with
+    no credentials.
+  - **CPT** is AMA-licensed and paid — user-supplied file only, never downloadable.
+  - **Terminology servers are HL7's own answer.** The FHIR spec states that code system
+    *contents* are not distributed via FHIR resources; they are assumed known to the
+    server, which exposes `$validate-code`. A server-backed layer therefore needs no
+    local data and no licence on our side at all. Cost: network I/O, so it cannot sit
+    inline on the hot path.
+
+  **Recommendation:** default to **Tier A (user points at their own release file)** — it
+  is the only option that works for every source including CPT, and it matches your
+  instinct that they should point to the spec. Offer Tier B (their own UTS key) as
+  convenience for SNOMED/RxNorm, Tier C only for public-domain sources, and Tier D
+  (terminology server) as a distinct layer implementation for users who would rather
+  not hold data locally. Confirm and I will fold the choice into J2.2.
+
+  Sources: [LOINC copyright and licence](https://loinc.org/kb/license/),
+  [Getting LOINC](https://loinc.org/get-started/getting-loinc/),
+  [SNOMED CT licensing (SNOMED International)](https://docs.snomed.org/snomed-ct-practical-guides/vendor-introduction-to-snomed-ct/7-licensing),
+  [SNOMED CT Affiliate License (NLM)](https://www.nlm.nih.gov/research/umls/knowledge_sources/metathesaurus/release/license_agreement_snomed.html),
+  [UMLS UTS automating downloads](https://documentation.uts.nlm.nih.gov/automating-downloads.html),
+  [FHIR terminology service](https://hl7.org/fhir/R4/terminology-service.html),
+  [LOINC FHIR terminology service](https://loinc.org/fhir/)
+
+- **Q16 (blocks J4.2):** Policy when a code fails membership validation against a linked
+  pack — reject the ingest, warn and store, or store and flag on the block? Ingest is
+  permissive today. Silently dropping clinical data is not acceptable, so the real choice
+  is between hard failure and a logged warning.
+  > Answer: Logged warning. We aren't the adjudicators but it should be loud. There should be critical warnings that are impossible to miss. Using our FF_EXTERNAL_CODE::LOINC::SODIUM_MOLAR_whatever should make it impossible to mess up but others could if they're just hot typing in the code.
 
 ---
 
