@@ -62,6 +62,44 @@ split IFE had to be corrected back into is already the norm here; and FHIR packa
 
 ---
 
+## Phase 0 baseline (2026-08-12, macOS 15 / arm64, AppleClang 21, Python 3.14.6)
+
+First recorded end-to-end run of `configure → build_all → ctest → pytest` on a clean tree.
+Before this, no task's *Verify* command had been executed; the numbers below are what
+"green" and "red" actually mean today. **Re-measure and update this block whenever the
+figures change** — a task that claims to fix something here must move a number.
+
+| Stage | Result |
+|---|---|
+| `cmake -S . -B build …` | **fails on a clean tree** until the Python floor is set — see A19 |
+| Generator | 98 files into `generated_src/`, 39.6 s, clean |
+| `cmake --build build --target build_all -j` | exit 0 — but does **not** build the test binaries (A20) |
+| `ctest` after `build_all` | 14/32 pass; 6 "Not Run", 12 failed |
+| `ctest` after building **all** targets | **20/32 pass** — all 20 C++ green; the 12 failures are all Python (A21, A22) |
+| `pytest tests/generator -q` | **40 passed** in 4.6 s (two of them vacuous — see A15) |
+| `ruff check generator tests/generator` | **307 violations** — the documented lint command fails today (E13) |
+| `black --check generator tests/generator` | 2 files would be reformatted (E13) |
+| Wire witness vs committed golden | **identical** — 0 permanence violations, no blocks added or removed |
+
+Two results worth keeping in view:
+
+- **Upstream has not drifted.** A freshly generated tree produces a witness byte-identical
+  to `tests/generator/golden/wire_witness.json`. The risk flagged against A15.4 and E8 — that
+  packages.fhir.org re-published 4.0.1 content — has not materialised as of this date. That
+  is a measurement with a shelf life, not a guarantee; E8 is what would make it one.
+- **All 20 C++ tests pass, and 25 consecutive runs of `ff_test_bundle` passed.** The suite is
+  not flaky. A14 is real, deterministic rather than intermittent, and **root-caused**: the
+  `ff_ingest` CLI sizes its arena at 2× the input JSON length, which is too small for lean
+  inputs. It is invisible to the suite because every C++ test sizes its own arena. See A14.
+
+Environment notes for whoever runs this next: a `.venv/` exists in the tree containing only
+`pip` (no pytest, no fastfhir). `CMakeLists.txt:331` prefers `.venv/bin/python` over the
+found interpreter when it exists, so the *next* configure will select an interpreter that
+cannot run the Python tests at all. Delete it or populate it (A21 decides which). The
+Synthea zip re-downloads on every configure (B4.4).
+
+---
+
 ## Block A — Build & correctness fixes (highest priority, all independent)
 
 ### A1. Fix `ff_ingest` source-file case mismatch (build blocker)
@@ -513,9 +551,199 @@ Evidence (lldb, `EXC_BAD_ACCESS`, several runs):
   `"esource"` from `"resource"` in the payload, i.e. JSON text written over an
   unrelated heap allocation.
 
-- [ ] A14.1 Build a standalone reproducer and run it under ASan/TSan.
-- [ ] A14.2 Audit `claim_space()` failure handling on the worker path: a
-      `FF_NULL_OFFSET` return used as an offset would match the `0xffffffff` fault.
+> **Root cause identified (2026-08-12, Phase 0): the CLI sizes the arena at 2× the input
+> JSON length, with no floor and no growth path.**
+>
+> ```cpp
+> // tools/ingestor/FF_Ingest.cpp:181
+> size_t capacity_hint = json_buffer.size() * 2;
+> auto memory = Memory::create(capacity_hint);
+> ```
+>
+> FastFHIR's binary form is *larger* than the JSON for small, lean inputs — a 54-byte
+> `FF_HEADER` plus vtables and blocks easily exceeds twice a 66-byte Patient. So the arena is
+> undersized and the failure is deterministic, not intermittent. Two symptoms, one cause:
+>
+> | Input | Arena (2×) | Result |
+> |---|---|---|
+> | Single Patient, 66–152 B | 132–304 B | `FastFHIR VMA Capacity Exceeded` (`src/FF_Memory.cpp:393`), rc=1 |
+> | Single Patient, ≥ 153 B | ≥ 306 B | succeeds |
+> | 2-entry bundle, 201 B | 402 B | **`Ingestion aborted due to worker thread crash`**, rc=1 |
+> | Same bundle padded to 411 B | 822 B | succeeds |
+> | 50-entry bundle, 3 649 B | 7 298 B | worker thread crash — bundles need more per byte |
+> | 44 MB Synthea bundle | 88 MB | succeeds, 12/12 |
+>
+> Padding the JSON with one junk string inflates `json_buffer.size()`, hence the arena,
+> hence success — which is what makes the sizing the culprit rather than any property of the
+> data. Reproducer:
+>
+> ```bash
+> # 190 bytes -> 380-byte arena -> worker thread crash, 5/5 runs
+> printf '{"resourceType":"Bundle","type":"collection","entry":[{"resource":{"resourceType":"Patient","id":"p1","active":true}},{"resource":{"resourceType":"Observation","id":"o1","status":"final"}}]}' > /tmp/tiny.json
+> ./build/ff_ingest /tmp/tiny.json /tmp/tiny.ffhr   # rc=1, every time
+> ```
+>
+> Which of the two symptoms you get depends on how far under capacity you are: a 119-byte
+> 1-entry bundle raises `VMA Capacity Exceeded` before any worker starts, while 190 bytes
+> gets far enough to crash a worker. Both are the same shortfall; use the 190-byte input
+> when you want the A14 symptom specifically.
+>
+> **This is a CLI-scoped defect, which is why the suite is green** — all 20 C++ tests pass
+> and `ff_test_bundle` passed 25/25 consecutive runs, because those tests size their own
+> arenas. It also fits A14.2's original hypothesis exactly: under-capacity, `claim_space()`
+> returns `FF_NULL_OFFSET`, and a worker uses `0xffffffff` as an offset. The clean abort
+> seen today is a guard catching what used to be `EXC_BAD_ACCESS`.
+>
+> Corrects an earlier note in this file that read the single-resource size cliff (152/153 B)
+> as *the* trigger: that cliff is the same root cause seen through the single-resource path,
+> and bundles fail well above it.
+
+- [ ] A14.1 Give `capacity_hint` a floor and a growth path. A minimum arena (not a magic
+      literal — derive it from `FF_HEADER` size plus a stated minimum block budget, with a
+      comment) plus either a retry-on-capacity or a first-class grow. Decide whether 2× is
+      the right multiplier at all, or whether the estimate should come from the parsed
+      token/element count rather than raw byte length; record the reasoning next to the
+      constant so the next reader does not have to re-derive it.
+- [ ] A14.2 Audit `claim_space()` failure handling on the worker path regardless of A14.1: a
+      `FF_NULL_OFFSET` return used as an offset is the `0xffffffff` fault, and under-capacity
+      must surface as a clean diagnostic naming the shortfall, never as a crash. This is the
+      defect that outlives the sizing fix.
+- [ ] A14.3 Check every other `Memory::create` call site for the same pattern —
+      `grep -rn "Memory::create" src/ tools/ python/ tests/` — including the Python bindings,
+      which are the next most likely place a user hits it.
+- [ ] A14.4 Add the tiny-bundle reproducer as a checked-in test (pairs naturally with B7's
+      fixture work) and run it under ASan. Without it this regresses silently: no current
+      fixture is small enough to catch it.
+- Acceptance: the reproducer above exits 0; a deliberately undersized arena produces a
+  diagnostic naming the capacity shortfall, not a crash.
+- Verify: `./build/ff_ingest /tmp/tiny.json /tmp/tiny.ffhr && echo OK`
+
+---
+
+### A19. Configure fails on a clean tree — no Python version floor
+
+**Context:** `CMakeLists.txt:66` called `find_package(Python3 REQUIRED COMPONENTS Interpreter)`
+with no version requirement, so CMake takes whatever `python3` it finds first. On macOS that
+is the Xcode Command Line Tools 3.9.6, ahead of any newer interpreter on `PATH`. The
+generator then dies at import:
+
+```
+File "generator/emit/codesystems.py", line 86, in <module>
+  ) -> tuple[str | None, set[str]]:
+TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'
+CMake Error at CMakeLists.txt:75 (message): Code generator failed
+```
+
+PEP 604 (`X | None`) in an *evaluated* annotation needs 3.10+. Three modules use it without
+`from __future__ import annotations`: `emit/codesystems.py`, `emit/dictionary.py`,
+`emit/extensions_known.py`. 15 of the 25 generator modules lack that import, so any of them
+can join the list silently. `pyproject.toml` already declares the intended floor
+(`target-version = py311` for ruff and black); CMake simply never enforced it.
+
+- [x] A19.1 `find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)` at `CMakeLists.txt:66`,
+  with a comment recording why. Verified: configure then selects 3.14.6 and succeeds.
+  *(Applied during Phase 0; commit alongside the rest of this task.)*
+- [ ] A19.2 Add `from __future__ import annotations` to the 15 modules that lack it, so the
+  floor is a declared property of the code rather than an accident of which interpreter
+  CMake found. `grep -L "from __future__ import annotations" $(find generator -name '*.py')`
+  lists them. Import-only change; the wire witness must not move.
+- [ ] A19.3 State the floor once more where a human reads it: a `requires-python = ">=3.11"`
+  line in `pyproject.toml` (it has no `[project]` table yet — coordinate with H1, which
+  creates one) and one line in `CONTRIBUTING.md`'s build prerequisites.
+- Locate: `grep -n "find_package(Python3" CMakeLists.txt` (three call sites; only the first
+  needs the floor — CMake caches `Python3_EXECUTABLE` for the other two).
+- Acceptance: `rm -rf build && cmake -S . -B build …` succeeds on a machine whose default
+  `python3` is 3.9.
+- Verify: `cmake -S . -B /tmp/ff_cfg_probe -DFASTFHIR_RUN_GENERATOR=ON 2>&1 | grep "Found Python3"`
+  → reports a version ≥ 3.11.
+
+### A20. `build_all` does not build the test binaries
+
+**Context:** `_BUILD_ALL` (`CMakeLists.txt:444-452`) is `fastfhir ff_export ff_compact`, plus
+`fastfhir_ingestor ff_ingest`, `ff_test_readme` and `fastfhir_python` under their options. The
+six standalone unit-test executables created by `add_ff_cpp_test` (`:274-281`) and the
+`ff_roundtrip` harness (`:264`) are **not in the list**, but they *are* registered as ctest
+entries (`:287-289`). So the documented sequence in `CLAUDE.md` —
+`cmake --build build --target build_all -j` then `ctest` — reports six tests "Not Run"
+(`Unable to find executable: build/ff_test_primitives`) and `py_roundtrip` failing on a
+missing harness. All six pass once built: measured 20/20 C++ green after
+`cmake --build build` with no target.
+
+The comment at `:285` records the previous half of this bug ("These were built but never
+registered, so they compiled and never ran"). The registration was fixed; the build side was
+not, producing the exact inverse.
+
+- [ ] A20.1 Append the six unit-test targets and `ff_roundtrip` to `_BUILD_ALL` inside the
+  `if(FASTFHIR_BUILD_TESTS)` guard. Reuse the same target list the `foreach` at `:287` walks
+  rather than writing it twice — a third copy is how this bug recurs.
+- [ ] A20.2 Extend the comment at `:285` to say that a target must be in **both** places, and
+  that `add_ff_cpp_test` does neither for you.
+- Acceptance: from a clean build dir, `cmake --build build --target build_all -j` followed by
+  `ctest` produces zero "Not Run".
+- Verify: `rm -rf build && cmake -S . -B build -DFASTFHIR_BUILD_TESTS=ON -DFASTFHIR_BUILD_INGESTOR=ON && cmake --build build --target build_all -j && ctest --test-dir build -N | tail -1`
+  then `ctest --test-dir build -R cpp_ --output-on-failure`.
+
+### A21. The Python test suite cannot import `fastfhir`
+
+**Context:** 11 of the 12 remaining ctest failures are one error:
+
+```
+tests/python/test_readme.py:25: import fastfhir as ff
+E   ModuleNotFoundError: No module named 'fastfhir'
+E   RuntimeError: fastfhir is not importable in this environment.
+```
+
+Nothing in the build installs the package or puts it on `PYTHONPATH`. The pieces all exist
+and are built — `build/_core.cpython-314-darwin.so` (the pybind11 module),
+`python/fastfhir/__init__.py`, and 285 generated files under `generated_src/python/` — but
+they are never assembled into an importable package. So `py_getting_started` and
+`py_test_1`…`py_test_10` cannot pass from any build, on any machine.
+
+Related: `CLAUDE.md`'s repo map says "`fastfhir/fields.py` is generated at build time". It is
+not. `generator/bindings/python_fields.py:14` writes one module per resource to
+`generated_src/python/fields/<resource>.py` (+ `.pyi` stubs, 285 files). Whatever A21
+decides, that line needs correcting (E5.4).
+
+- [ ] A21.1 Decide the mechanism and write it down: (a) `pip install -e .` into a venv as a
+  configure step, (b) a ctest fixture that sets `PYTHONPATH` to the built module plus
+  `python/`, or (c) assemble a staging package dir under `build/` and point the tests at it.
+  (b) is the smallest and needs no packaging metadata (H1 owns that); (c) is closest to what
+  users will actually import. Do not pick (a) before H1 exists.
+- [ ] A21.2 Implement it so `ctest -R py_` passes from a clean build with no manual steps.
+- [ ] A21.3 Resolve the `.venv` trap: `CMakeLists.txt:331` prefers `${CMAKE_SOURCE_DIR}/.venv/bin/python`
+  when present, and the `.venv` currently in the tree contains only `pip` — no pytest. Either
+  require that venv to be populated (and fail configure loudly, naming the missing package,
+  if it is not) or drop the preference. Silently selecting an interpreter that cannot run the
+  tests is the current behaviour and the worst of the three.
+- Acceptance: `ctest --test-dir build -R py_ --output-on-failure` green from a clean build.
+- Verify: `rm -rf build && cmake -S . -B build -DFASTFHIR_BUILD_TESTS=ON -DFASTFHIR_BUILD_PYTHON_BINDINGS=ON -DFASTFHIR_BUILD_INGESTOR=ON && cmake --build build -j && ctest --test-dir build -R py_`
+
+### A22. `DiffKind` is undefined on the round-trip harness error path
+
+**Context:** `tests/python/test_roundtrip.py:33-38` imports `diff_doms`,
+`filter_allowlisted`, `format_diff_report` and `DiffEntry` from `roundtrip_diff` — but not
+`DiffKind`, which the module also defines (`roundtrip_diff.py:19`). Both exception handlers
+in `run_roundtrip_test` construct `DiffEntry(kind=DiffKind.VALUE_MISMATCH, …)`, so the
+error path raises `NameError: name 'DiffKind' is not defined` and destroys the diagnostic it
+was written to produce:
+
+```
+tests/python/test_roundtrip.py:107, in run_roundtrip_test
+    path="", kind=DiffKind.VALUE_MISMATCH,
+NameError: name 'DiffKind' is not defined
+```
+
+Observed masking a real failure: the harness was genuinely missing (A20), and instead of the
+intended "C++ harness not found: … Build with: cmake --build . --target ff_roundtrip", the
+run died with a `NameError`. Classic error-path-never-executed bug.
+
+- [ ] A22.1 Add `DiffKind` to the import list.
+- [ ] A22.2 Add a test that exercises both handlers — point the harness path at a
+  nonexistent binary, and at a command that sleeps past the timeout — asserting the intended
+  message reaches the caller. Without it the fix is unverified: neither branch has ever run.
+- Acceptance: with `FASTFHIR_ROUNDTRIP_HARNESS` set to a nonexistent path, the suite reports
+  the "harness not found" message and not a `NameError`.
+- Verify: `ctest --test-dir build -R py_roundtrip --output-on-failure`.
 
 ---
 
@@ -790,6 +1018,13 @@ alter test inputs, making regressions indistinguishable from fixture drift.
   change fails configure loudly instead of silently changing inputs.
 - [ ] B4.3 Add a comment above the download recording the date and hash provenance, and
   update `tests/python/test_roundtrip.py`'s module docstring to state the pinned hash.
+- [ ] B4.4 **The download runs on every configure.** The guard is
+  `if(FASTFHIR_DOWNLOAD_SYNTHEA AND NOT EXISTS "${_SYNTHEA_DIR}/fhir")`, but the zip extracts
+  111 `.json` files directly into `${_SYNTHEA_DIR}` — there is no `fhir/` subdirectory, so
+  the condition is always true and the archive is re-fetched and re-extracted every time
+  (measured 2026-08-12). Fix the guard to test something the extraction actually produces
+  (a stamp file written after `ARCHIVE_EXTRACT`, which also survives an upstream layout
+  change). Do together with B4.2 — the `EXPECTED_HASH` and the guard are one edit.
 - Acceptance: reconfiguring from a clean build dir succeeds; tampering one byte of a
   cached zip and reconfiguring fails with a hash mismatch.
 - Verify: `rm -rf build && cmake -S . -B build -DFASTFHIR_BUILD_TESTS=ON -DFASTFHIR_BUILD_INGESTOR=ON && ctest --test-dir build -R py_roundtrip`.
@@ -1079,6 +1314,12 @@ cached binary (`<binary_hash_hex>.wasm`). Never use one where the other is expec
         (Extensions "Condition 2") — keep until D8 lands, then update (D8's commit owns it).
   - [ ] E5.3 Run every snippet in `python/README.md` against a freshly built
         `fastfhir` package; fix or annotate any that fail.
+  - [ ] E5.4 `CLAUDE.md`'s repo map says "`fastfhir/fields.py` is generated at build time".
+        No such file is produced. `generator/bindings/python_fields.py:14` writes one module
+        per resource to `generated_src/python/fields/<resource>.py` plus `.pyi` stubs — 285
+        files, none of them named `fields.py` and none under `python/`. Correct the line
+        after A21 settles where the package is assembled from, so the map describes the
+        arrangement that ends up shipping.
 - [ ] E6. **Dictionary unification — final sweep:** the unification is essentially done
   (`FF_UCUM_Concepts.cpp` deleted; `master_codes.json` is source of truth;
   `generator/emit/dictionary.py` evolved into the master-codes producer and stays).
@@ -1163,6 +1404,30 @@ cached binary (`<binary_hash_hex>.wasm`). Never use one where the other is expec
         `throw std::runtime_error` at `:180`, which defers to runtime what the compiler can
         settle. Add `float` and a 2-byte type to `TYPE_MAP` locally to confirm both now fail
         to compile, then revert.
+- [ ] E13. **The lint gate is red: 307 ruff violations, 2 files black would reformat** —
+  measured 2026-08-12 with ruff 0.15.1 / black 26.5.1, stable across repeated runs and
+  identical whether the paths are passed as directories or as an explicit file list. So the
+  `CLAUDE.md` command `ruff check generator tests/generator && black --check generator
+  tests/generator` fails today, and E1's CI recipe would fail with it on day one. Breakdown:
+  `E501` 143, `F541` 56, `ANN001/201/202` 70, `F401` 21, `I001` 9, `B007` 4, `UP015`/`F841` 4.
+  **No `F821`** — nothing here indicates a live bug, so this is style debt against the
+  project's own declared standard (`CLAUDE.md` invariant 3), not defect triage.
+  - [ ] E13.1 `ruff check --fix` clears 88 automatically. Do those as one commit and the
+        remaining ~219 as a second, so review stays tractable. Generated output must not
+        move: re-run `pytest tests/generator -q` and confirm the wire witness is unchanged.
+  - [ ] E13.2 Land this **before** E1, or E1 ships with a step that is red from the first
+        commit and gets ignored or `continue-on-error`'d — which is how a gate dies.
+  - Verify: `ruff check generator tests/generator && black --check generator tests/generator`
+    exits 0.
+  > **Unreproduced observation, recorded and NOT actioned.** The first run of this command in
+  > the Phase 0 session printed `warning: No Python files found under the given path(s)` and
+  > `All checks passed!` (black: `No Python files are present to be formatted`), i.e. the gate
+  > appeared to pass while examining nothing. It has not reproduced since — not with a cold
+  > `.ruff_cache`, not across repeated runs, not before or after a build. No explanation was
+  > found, and the config was not modified in between. It is written down only so that if
+  > anyone sees it again there is a prior sighting to match against; do **not** rewrite the
+  > `pyproject.toml` `include` patterns on the strength of it. If it does recur, capture the
+  > full output and `ruff check --show-files` at that moment — that is the missing evidence.
 - [ ] E12. **Reconcile the endianness wording** — `include/FF_Ops.hpp:28` states the wire is
   strictly little-endian, while `include/FF_Primitives.hpp` describes several code payloads
   as "native-endian" (lines 94, 98, 106, 110, 114, 134, 142, 150). These are reconcilable —

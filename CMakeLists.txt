@@ -63,7 +63,15 @@ list(REMOVE_ITEM FASTFHIR_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/FF_Inges
 # always be True on the first configure, making the generator run even
 # when FASTFHIR_RUN_GENERATOR=OFF.
 if(FASTFHIR_RUN_GENERATOR OR NOT EXISTS "${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.hpp")
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    # 3.11 is the floor pyproject.toml already targets (ruff/black target-version
+    # = py311). Without it CMake takes whatever `python3` it finds first — on macOS
+    # that is the Xcode Command Line Tools 3.9, which cannot evaluate the PEP 604
+    # `X | None` annotations in emit/codesystems.py, emit/dictionary.py and
+    # emit/extensions_known.py (the three modules that both use PEP 604 and lack
+    # `from __future__ import annotations`; 15 of 25 modules lack the import, so
+    # any of them could join that list silently). The failure is a TypeError at
+    # import, far from its cause.
+    find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
     execute_process(
         COMMAND ${CMAKE_COMMAND} -E env
             FASTFHIR_PRODUCTION_PROFILE=${FASTFHIR_PRODUCTION_PROFILE}
