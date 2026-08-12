@@ -38,6 +38,30 @@
 
 ---
 
+## IFE audit (2026-08-12) — provenance for A15–A18, B7, E8–E12, I1.6
+
+`LessonsFromIFE.md` reports what the Iris File Extension migration cost when a wire detail
+was got wrong, and nominates two items as the highest-value work here. Auditing every
+lesson against this tree produced the tasks listed above; each carries the evidence in its
+**Context**. Two of the lessons' own nominations resolved as follows:
+
+- **"Enforce append-only mechanically"** — the machinery exists (A4) and is the right
+  shape. It is mis-aimed (A15), inverted in the one direction that matters (A16), and rests
+  on an unstated ordering invariant (A17).
+- **"Audit every packed/masked read under a sanitizer"** — the audit came back **clean**:
+  `LOAD_U8/16/32/64` (`include/FF_Ops.hpp:49-71`) `memcpy` exactly 1/2/4/8 bytes, there is
+  no `u24`/`u40` equivalent, and no load-wider-and-mask anywhere in `include/` or `src/`.
+  The bug class that cost IFE the most is absent. **Do not re-audit this.** The sanitizer
+  half remains open as G2, and the byteswap branches remain untested (E1).
+
+Also verified clean, recorded so nobody repeats the work: prefix/index composition uses no
+`|`-with-index pattern (IFE A3); `tests/generator/test_cross_language_constants.py` already
+supplies the C++/Python redundancy IFE B1 argues for; the `.hpp`/`.cpp`/`_internal.hpp`
+split IFE had to be corrected back into is already the norm here; and FHIR package
+*versions* are pinned at `generator/specs.py:20-21` (their content is not — E8).
+
+---
+
 ## Block A — Build & correctness fixes (highest priority, all independent)
 
 ### A1. Fix `ff_ingest` source-file case mismatch (build blocker)
@@ -179,6 +203,11 @@ generator fails, converting "generator broken" into "tests pass".
   Inspect the JSON before committing: it must contain non-empty `recovery_tags`,
   dictionary code entries, and vtable data. Commit ONLY the JSON (remember
   `generated_src/` is gitignored and must stay so).
+  > **This criterion was not met (found 2026-08-12).** The committed golden holds
+  > `{'codes': 0, 'tags': 0, 'vtables': 141}` — vtables only. The two empty sections are
+  > structurally unfillable by the current witness, so the JSON could not have satisfied
+  > this line. **A15 fixes it.** Leave this box checked (the vtable half is real and A4.2 /
+  > A4.4 stand); A15 owns the remainder.
 - [x] A4.2 Remove the fallback in `tests/generator/conftest.py`. Current state (lines
   ~61–64):
   ```python
@@ -490,6 +519,169 @@ Evidence (lldb, `EXC_BAD_ACCESS`, several runs):
 
 ---
 
+### A15. Re-arm the two vacuous sections of the wire gate
+
+**Context:** `tests/generator/test_wire_format.py` calls itself "the ONE hard gate", but two
+of its three sections compare an empty dict against an empty dict and pass unconditionally:
+
+```bash
+python3 -c "import json;print({k:len(v) for k,v in json.load(open('tests/generator/golden/wire_witness.json')).items()})"
+# {'codes': 0, 'tags': 0, 'vtables': 141}
+```
+
+Two independent structural reasons, both verified:
+
+1. `witness()` (`tests/generator/wire_witness.py:99`) scans only
+   `generated_dir.rglob("*.hpp")`. Tag definitions exist in exactly one file in the repo —
+   `include/FF_Recovery.hpp` — which is not under `generated_src/`
+   (`grep -rl "RECOVER_FF_[A-Z_]* *= *0x" --include='*.hpp' .` returns that file alone).
+2. The `_CODE` regex (`wire_witness.py:34`) matches `FF_[A-Z0-9]+_CODE_[A-Z0-9_]+\s*=\s*0x…`
+   and its docstring gives `FF_R5_CODE_PERCENT = 0x1CF1F3BB`, "hash-based uint32". Nothing
+   in the repo is named or valued that way any more: codes are emitted as
+   `FF_CODE_DEF PERCENT = 2;` inside `namespace FastFHIR::FF_CODE`
+   (`dictionaries/FF_Codes.hpp:13-19`) — scoped names, sequential ledger IDs. The regex
+   encodes a superseded design, and an empty match set is indistinguishable from a pass.
+
+**What is and is not covered elsewhere.** Code IDs are genuinely gated by
+`tests/generator/test_code_ids.py` against the committed ledger. Recovery tags are **not**:
+`test_recovery_tags.py` checks that emitted tag *names* resolve, that the check is wired
+into the pipeline, and that no field falls through to `FF_RECOVER_UNDEFINED` — it never
+compares a *value*. The only value pinning anywhere is four hand-written assertions at
+`tests/cpp/test_primitives.cpp:195-198` (`EXTENSION`, `PATIENT`, `OBSERVATION`, `BUNDLE`).
+`include/FF_Recovery.hpp` declares 168 enumerators. **164 permanent wire values are
+unguarded** — editing one is caught by code review alone.
+
+- [ ] A15.1 Extend `witness()` to read tag values from `include/FF_Recovery.hpp` and code
+  values from `dictionaries/FF_Codes.hpp`, in addition to the generated tree. Both are
+  committed, so the witness stops depending on a network regeneration for those sections.
+  Signature change: pass the repo root (or both explicit paths) alongside `generated_dir`;
+  update the two call sites (`test_wire_format.py`, the `__main__` block) and the module
+  docstring, which currently describes only the generated tree.
+- [ ] A15.2 Replace the `_CODE` regex with one matching the real emission —
+  `FF_CODE_DEF <NAME> = <int>;` qualified by its enclosing `namespace` so
+  `FF_CODE::UCUM::MMHG` and `FF_CODE::FHIR::…::MALE` are distinct keys. Values are decimal,
+  not hex. Fix the docstring example in the same edit.
+- [ ] A15.3 Add `test_witness_sections_are_non_empty` asserting every section of a freshly
+  built witness has entries, with a message naming the regex that stopped matching. This is
+  the check whose absence let A4.1 be marked done against an empty golden; without it, any
+  future emitter rename silently re-empties a section.
+- [ ] A15.4 Regenerate the golden and commit it with this change (per `CLAUDE.md`, a golden
+  update needs a corresponding generator or test change in the same commit — A15.1/A15.2
+  are that change). The diff must be **additions only**: `vtables` unchanged, `tags` and
+  `codes` populated from nothing.
+- [ ] A15.5 While in this file: the permanence error at `wire_witness.py:181` tells the user
+  to "use `--force` to override", but `__main__` (`:197`) takes exactly two positional
+  arguments and `grep -rn '\-\-force' generator tests` finds only that message. Either
+  implement the flag or rewrite the message to describe the real procedure (documented in
+  `CLAUDE.md` → Build & test).
+- [ ] A15.6 While in this file: `_OFFSET_FIELD` (`wire_witness.py:45`) requires a line
+  ending in `,` or end-of-line, so a vtable entry carrying a trailing `// comment` would
+  drop out of the captured field `order` and the gate would still pass on a shorter list.
+  Current output is safe — `generator/model/merge.py:301` emits no trailing comment — so
+  either tolerate comments in the regex or add a comment at that emitter line stating that
+  adding one is a wire-gate change.
+- Locate: `python3 -c "import json;print({k:len(v) for k,v in json.load(open('tests/generator/golden/wire_witness.json')).items()})"`
+  — if `tags` or `codes` is already non-zero, STOP; someone has done this.
+- Acceptance: all three sections of the golden non-empty; changing one digit of any tag
+  value in `include/FF_Recovery.hpp` fails `pytest tests/generator/test_wire_format.py`
+  (verify by doing it, per the red-green rule this task exists to restore); reverting the
+  edit makes it pass again.
+- Verify: `pytest tests/generator -q -rs` — no `SKIPPED` for `test_wire_format.py`.
+
+### A16. Assert the shipped prefix, not the current total, in the vtable gate
+
+**Context:** `test_vtable_layout_stable` (`tests/generator/test_wire_format.py:57`) asserts
+`set(current) == set(expected)`, then per block `current[block]["order"] ==
+expected[block]["order"]`. Adding a new resource block fails the first; appending a field to
+an existing block fails the second. Both are **legal, expected changes** — FastFHIR models 28
+of ~145 R4 resources, so growth is the normal case.
+
+`_check_permanence` (`tests/generator/wire_witness.py:111`) already implements the correct
+rule (changes and deletions rejected, additions allowed), and
+`test_permanence_accepts_addition` (`:93`) explicitly asserts additions are legal. The two
+halves of one file disagree about what the rule is. A gate that fires on every legitimate
+addition gets its golden regenerated reflexively — which is exactly the "golden update
+without a corresponding change" that `CLAUDE.md` calls a red flag. The gate as written
+trains the reviewer to ignore it.
+
+- [ ] A16.1 Rewrite `test_vtable_layout_stable` to assert the shipped **prefix**: every
+  golden block still present (new blocks allowed); every golden field present, in golden
+  order, at the head of `current[block]["order"]` (appended fields allowed); every golden
+  entry in `sizes` unchanged (new entries allowed); `header_sizes` unchanged for every
+  version already in the golden. Prefer delegating to `_check_permanence` over
+  re-implementing — the duplication is what let the two rules diverge.
+- [ ] A16.2 Add the negative cases as tests, each verified by making the change on a copy of
+  the witness dict: reordering two fields fails; removing a field fails; changing a
+  `size_const` fails; **appending a field passes**; **adding a block passes**.
+- Acceptance: the five cases in A16.2 behave as stated; `pytest tests/generator -q` green.
+- Verify: `pytest tests/generator/test_wire_format.py -q`.
+
+### A17. Pin the R4-prefix invariant the version contract depends on
+
+**Context:** `architecture.md:118` specifies that a reader compiled against R5 reads an R4
+stream "by clamping access to the smaller header". That is sound only if every R4 field sits
+below `HEADER_R4_SIZE` — i.e. R5-only fields are strictly appended. 43 of 141 blocks have
+differing R4/R5 header sizes:
+
+```bash
+python3 -c "import json;d=json.load(open('tests/generator/golden/wire_witness.json'))['vtables'];print(len([k for k,v in d.items() if len(set(v['header_sizes'].values()))>1]))"
+# 43
+```
+
+The property holds today **only as a side effect of iteration order**.
+`merge_fhir_versions` (`generator/model/merge.py:57`) walks `schemas_by_version` in list
+order and lays out each field on first sight (`if field_name not in blk["seen"]:`,
+`merge.py:77`). That order comes from `generator/library.py:59` iterating `versions`, which
+is `versions = ["R4", "R5"]` — a bare list literal at `generator/pipeline.py:42` with
+nothing marking it as load-bearing. Reorder it, insert R6 ahead of R5, or parallelise the
+version loop, and every R4 field offset in those 43 blocks moves. The failure is silent,
+total, and unfixable once streams exist.
+
+- [ ] A17.1 Add a comment at `generator/pipeline.py:42` stating that the order of `versions`
+  is a wire invariant, not a preference: earlier revisions must be laid out first so that
+  each revision's field set is a prefix of the next. Name the test from A17.2 in the comment.
+- [ ] A17.2 Add `tests/generator/test_version_prefix.py`: for every block where
+  `HEADER_R4_SIZE != HEADER_R5_SIZE`, assert every field at an offset below
+  `HEADER_R4_SIZE` was introduced in R4. `merge.py` already records `first_version_idx` and
+  `first_version_name` per field, so drive the test from the model rather than re-parsing
+  the emitted C++ (the witness deliberately captures no literal offsets). Assert the block
+  count is non-zero so the test cannot silently become vacuous.
+- [ ] A17.3 Red-green it: temporarily set `versions = ["R5", "R4"]`, confirm the new test
+  fails, revert. Note the result in the commit message.
+- Acceptance: A17.2 passes on the current tree, fails under the A17.3 mutation.
+- Verify: `pytest tests/generator/test_version_prefix.py -q`.
+
+### A18. Fail loudly when R4 and R5 disagree about a field
+
+**Context:** `generator/model/merge.py:77` — `if field_name not in blk["seen"]:` guards the
+entire field-entry construction, including `is_array` (`el.get("max") == "*"`), `fhir_type`,
+and the resulting `size` / `size_const` / `cpp_type`. On a repeat sighting the loop falls
+through to the running-total update at `merge.py:139`. There is no comparison against the
+stored entry and no diagnostic. So a field that is `0..1` in R4 and `0..*` in R5 is laid out
+with the R4 scalar mapping and cannot hold the R5 value; a retyped field keeps the R4
+mapping. The generator, the emitted C++, the Python bindings and the docs then all agree on
+a representation that cannot hold the data — consistently, and therefore invisibly. This
+also violates `CLAUDE.md` invariant 3 (`raise` over silent fallback).
+
+Whether such a field exists in 4.0.1 vs 5.0.0 is not currently determinable — it needs a
+generator run with network. The check answers it; that is the point of adding it.
+
+- [ ] A18.1 In `merge_fhir_versions`, on a repeat sighting of a field name, compare
+  `is_array` and the sanitized `fhir_type` against the stored entry. On divergence
+  `raise RuntimeError` naming the block path, field name, both revisions and both values.
+  Do not attempt to reconcile automatically — a real divergence needs a deliberate decision.
+- [ ] A18.2 Run `python -m generator` (needs network) and record the outcome here as a note
+  under this task: either "no divergence in 4.0.1 vs 5.0.0" or the list of offending fields.
+- [ ] A18.3 If A18.2 finds divergences, do NOT widen layouts in this task — file one Block A
+  task per divergent field with the R4 and R5 shapes, since each may need its own decision
+  (widen to the R5 shape, or an explicit `BLOCK_FIELD_OVERRIDES` entry). Widening a field
+  that has already shipped is a wire change and needs the A16 gate to review it.
+- Acceptance: the guard exists and the generator either runs clean or fails with a message
+  naming a specific field; A18.2's note is written.
+- Verify: `python -m generator --output-dir /tmp/ff_gen && pytest tests/generator -q`.
+
+---
+
 ## Block B — Test coverage
 
 All new C++ tests copy the harness pattern from `tests/cpp/test_primitives.cpp`: a
@@ -658,6 +850,40 @@ then deliberately corrupt copies of it:
   (`-DCMAKE_CXX_FLAGS=-fsanitize=address`).
 - Verify: `ctest --test-dir build -R cpp_ff_test_recovery`.
 
+### B7. Test against bytes, not against another description
+
+**Context:** every gate in this repo compares a *description* to a *description*. The wire
+witness compares generated C++ to a JSON summary of generated C++. `test_cross_language_
+constants.py` compares Python's `TYPE_MAP` to a C++ header. `test_code_ids.py` compares the
+ledger to the emitted string table. None would catch a correct-offset/wrong-load error — a
+field at the right place read at the wrong width, or an enum cast from the wrong type — and
+none proves that a stream written last year still parses today. The only check that does is
+bytes produced by a shipped encoder, read back through the current reader. (`LessonsFromIFE.md`
+C6 lists this as IFE's own standing gap, so it is a shared one; A4.3's compile smoke test is
+the nearest existing relative and is complementary, not a substitute.)
+
+- [ ] B7.1 Produce one small sealed `.ffhr` from the current builder: a Patient plus an
+  Observation, exercising at least one of each field kind that has a distinct on-wire
+  representation — inline scalar, offset block, `FF_STRING`, dictionary code, a
+  `FF_CODEABLE_CONCEPT` block with `FF_CODEABLE_CONCEPT_FLAG` set, a choice slot, an array,
+  and an extension. Keep it under a few KiB.
+- [ ] B7.2 Commit it as `tests/cpp/fixtures/wire_v1.ffhr` **plus** a sibling
+  `wire_v1.expected.json` recording the values a reader must recover. Record in a README
+  next to them: the engine version, the FHIR revision, the date, and the commit that wrote
+  the fixture. This file is a permanent artifact — it is never regenerated to make a test
+  pass. If it stops parsing, that is the finding.
+- [ ] B7.3 New `tests/cpp/test_wire_fixture.cpp`: mmap the fixture, walk it with the Node
+  API, assert every value in the expected JSON. Assert `FF_HEADER` magic, revision and
+  engine version explicitly. Register as `ff_test_wire_fixture` (hermetic — no ingestor, no
+  network, so it must run in every configuration).
+- [ ] B7.4 Add a second fixture written by the compactor (`FF_STREAM_LAYOUT_COMPACT`) and
+  assert the same values through the same walk — the compact read path had a real
+  wrong-code bug (A7) that a description-to-description gate could not have caught.
+- Acceptance: both fixtures parse and match; `git log` shows the fixture bytes have never
+  been rewritten; the test fails if `FF_Ops.hpp`'s `LOAD_U32` is mutated to `LOAD_U16`
+  (verify by doing it, then revert).
+- Verify: `ctest --test-dir build -R cpp_ff_test_wire_fixture --output-on-failure`.
+
 ---
 
 ## Block C — Archive recovery subsystem
@@ -809,6 +1035,16 @@ cached binary (`<binary_hash_hex>.wasm`). Never use one where the other is expec
   already paid for (from the deleted refactor history — MSVC rejects
   `std::vector<IncompleteType>`; cp1252 terminals crash on Unicode in print; no Perl on
   Windows runners): Windows job is the strictest and most valuable.
+  - [ ] E1.1 **Big-endian leg** (add to the matrix, don't defer to a follow-up): one
+        `s390x` job under qemu (`uraimo/run-on-arch-action` or a qemu-user container),
+        building and running `ctest` only — no packaging. Rationale: the
+        `requires_byteswap` branches at `include/FF_Ops.hpp:57`, `:63`, `:69`, `:80`, `:85`
+        and `:89` execute on no machine anyone here owns, and they are load-bearing for the
+        claim "FastFHIR is strictly Little-Endian on the wire" (`FF_Ops.hpp:28`). IFE's
+        equivalent header states the consequence exactly (`src/IFE_Bytes.hpp:148`): the
+        big-endian CI job is *the only thing testing that code*, and IFE shipped a wrong
+        big-endian branch twice before it existed. B7's fixture is what makes this leg
+        meaningful — a byte file written little-endian and read on a big-endian host.
 - [ ] E2. **`.clang-format`** — derive from `include/FF_Primitives.hpp` as the reference
   (4-space indent, ~100+ col lines tolerated, aligned trailing comments, attached braces
   in functions). Add the file + a CI step that checks ONLY files touched by the PR
@@ -859,6 +1095,82 @@ cached binary (`<binary_hash_hex>.wasm`). Never use one where the other is expec
   (deliberately excluding `FF_FieldKeys.hpp`; `FF_Memory.hpp` and `FF_Ingestor.hpp` arrive
   transitively or must be included explicitly — verify which before writing). Implement
   whichever option Q2 selects and update README examples if the include set changes.
+- [ ] E8. **Record FHIR package provenance** — `generator/specs.py:20-21` pins exact
+  tarball URLs (`hl7.fhir.r4.core-4.0.1`, `hl7.fhir.r5.core-5.0.0`), which is already better
+  than a moving ref, but nothing checksums them and nothing records them in the output
+  (`grep -n "sha256\|hashlib" generator/specs.py` → empty). "Regenerate the R4 layout" is
+  therefore reproducible only for as long as packages.fhir.org never re-publishes 4.0.1
+  content — and an errata release would change the wire format silently. Same shape as B4
+  (Synthea), same fix:
+  - [ ] E8.1 Record `sha256` of each downloaded tarball; verify on every download and fail
+        loudly on mismatch, naming both hashes.
+  - [ ] E8.2 Emit the package version **and** hash into the generated header banner
+        (`generator/emit/header.py`'s `auto_header`), plus the generator's own version. A
+        generated artifact should state what produced it; once the format is specified (I1)
+        this is what makes "regenerate the ratified layout" a reproducible operation.
+        Note: this changes every generated file's banner — confirm it does not perturb the
+        wire witness (it should not; the witness reads constants, not comments) and that
+        `test_determinism.py` still passes.
+  - [ ] E8.3 Do **not** put a clock in the banner. A rolling date or `datetime.today()`
+        makes output depend on build date, breaks byte-identical regeneration, and would
+        fail A4.4. Source any year from the package metadata.
+- [ ] E9. **State and guard the recovery-tag family ceilings** — `include/FF_Recovery.hpp:19-25`
+  declares the family convention (core `0x0000`–`0x00FF`, scalars `0x0100`–, data types
+  `0x0200`–, resources `0x0300`–, sub-elements `0x0400`–) but never says these are hard
+  ceilings, nor what crossing one costs. Current occupancy: 11, 11, 29, 29, **86** — one
+  entry per family being the family marker itself, so 28 data types, 28 resources and 85
+  sub-element blocks, which reconciles exactly with the golden's 141 vtables (28+28+85).
+  That is ~3.0 sub-element blocks per resource, so the 170 free slots in `0x04xx` admit
+  roughly 56 more resources — exhausting at ~84 total, against ~145 resources in R4.
+  **The sub-element family runs out at roughly half of FHIR coverage**, i.e. during normal
+  completion of the existing roadmap, and crossing it is a design decision because the read
+  path dispatches on the high byte (`(entry.tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK`,
+  `include/FF_Ops.hpp:188`).
+  - [ ] E9.1 Write the ceiling into the convention block: 256 per family, what the high-byte
+        dispatch requires, and that a second sub-element family is a format decision needing
+        a note in SPEC.md (I1.6) — not a routine addition.
+  - [ ] E9.2 Add a test asserting no family exceeds 240 entries, so the wall arrives as a
+        build failure with room to plan rather than as a merge conflict over the next free
+        number. Parse `include/FF_Recovery.hpp` directly; assert the parse found >100
+        enumerators so the test cannot become vacuous.
+- [ ] E10. **`FF_Ops.hpp` leaks three unqualified names onto the public include path** —
+  `include/FastFHIR.hpp:92` → `include/FF_Parser.hpp:24` → `include/FF_Ops.hpp`, which
+  defines `bswap16` / `bswap32` / `bswap64` as object-like macros (`FF_Ops.hpp:34-40`) with
+  no `#undef` anywhere in the file, plus `constexpr bool requires_byteswap` and
+  `is_ieee754` at global namespace scope (`:43-44`). `bswap32` is a common enough spelling
+  that a consumer including FastFHIR alongside another byte-order header gets a macro
+  collision with no workaround short of `#undef` after the include. Move the constants into
+  `namespace FastFHIR`; convert the macros to `constexpr` function templates (preferred —
+  `std::byteswap` is C++23, so a small `FastFHIR::detail::bswap<T>` is the C++20 stand-in),
+  or failing that prefix them `FF_` and `#undef` at end of header. Nothing outside the file
+  uses them (`grep -rn "bswap" include src tools python generator` → only `FF_Ops.hpp`).
+  Alpha and pre-consumer is exactly when this costs nothing.
+- [ ] E11. **Close two latent traps in the scalar templates** — neither is reachable today;
+  both fail silently the day they are:
+  - [ ] E11.1 `Decode::scalar<float>` (`include/FF_Ops.hpp:166`) dispatches on `sizeof(T)`,
+        so `float` takes the `sizeof(T) == 4` branch and `static_cast<float>`s an integer
+        bit pattern — a numeric conversion — never reaching `LOAD_F32` (`:142`). Not
+        reachable: `grep '"cpp":' generator/model/type_map.py` yields only `ChoiceEntry`,
+        `Offset`, `ResourceReference`, `double`, `uint32_t`, `uint64_t`, `uint8_t`.
+  - [ ] E11.2 `Encode::scalar` (`:222`) handles `bool`, `double`, `sizeof==4` and
+        `sizeof==8`; an `int16_t` matches no branch and the function returns having written
+        nothing. Not reachable: the string `Encode::scalar` appears nowhere in `include/`,
+        `src/`, `tools/`, `python/`, `generator/` or `tests/`.
+  - [ ] E11.3 Fix both with a `static_assert(false)`-style final `else` (a dependent-false
+        helper, since a bare `static_assert(false)` in a discarded branch is ill-formed
+        before C++23), converting each into a compile error the day someone adds `float` or
+        `int16_t` to `TYPE_MAP`. This also replaces the unreachable
+        `throw std::runtime_error` at `:180`, which defers to runtime what the compiler can
+        settle. Add `float` and a 2-byte type to `TYPE_MAP` locally to confirm both now fail
+        to compile, then revert.
+- [ ] E12. **Reconcile the endianness wording** — `include/FF_Ops.hpp:28` states the wire is
+  strictly little-endian, while `include/FF_Primitives.hpp` describes several code payloads
+  as "native-endian" (lines 94, 98, 106, 110, 114, 134, 142, 150). These are reconcilable —
+  the payloads are written through `STORE_U*`, which normalises — but the contradiction sits
+  in the one file a reader consults for the wire layout, and I1 will inherit the wording.
+  Wording pass only; no code change. Confirm the reconciliation is true before rewording
+  (i.e. that every one of those payloads really does go through `STORE_U*`), and if any does
+  not, that is a Block A bug, not a comment fix.
 
 ---
 
@@ -1003,6 +1315,13 @@ in FastFHIR targets.
   Seed heavily from `architecture.md` §4–§6 but write it as a spec (MUST/SHOULD), not a
   tour. This is the bus-factor mitigation: a third party must be able to read a `.ffhr`
   from this document alone.
+  - [ ] I1.6 The spec MUST state the numbering ceilings, not just the current assignments:
+        recovery-tag families are 256 values each and the read path dispatches on the high
+        byte (E9), engine MAJOR is 14 bits and MINOR 16 (`architecture.md:118`), and code
+        IDs exclude bit 31 (`FF_CODEABLE_CONCEPT_FLAG`) and `0xFFFFFFFF`. Every derived
+        numbering has a ceiling; an unstated one gets crossed by someone adding "just one
+        more". State the append-only rule and deprecation as the only retirement path in
+        the same section.
 - [ ] I2. **Spec/format licensing statement** (Q10 decided: spec text under CC-BY-4.0):
   add the CC-BY-4.0 notice to `docs/SPEC.md` plus a pointer to `TRADEMARK.md` (anyone may
   implement from the spec; only conformant implementations may claim the name). Do
@@ -1578,6 +1897,7 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
 | 1 — Build hygiene | A2 | Normalize `#include` paths (A2.1→A2.5), full rebuild (A2.6) | Starting now |
 | 1 — Build hygiene | A3 | Fix stale API examples in `FastFHIR.hpp` doc comment | After A2 |
 | 1 — Build hygiene | A4 | Implement wire-format gate (`tests/generator/test_wire_format.py`) | After A3 |
+| 1 — Wire gate | A15–A18 | Re-arm the vacuous witness sections, prefix-based vtable check, R4-prefix invariant, R4/R5 divergence guard (IFE audit 2026-08-12) | After A4 — A15 and A16 first; they protect data already on disk |
 | 2 — Round-trip | B5 | JSON round-trip fidelity triage (B5.1, B5.2) | After A4 |
 | 2 — Round-trip | B1–B4, B6 | Remaining B-block tests | After B5 |
 | 3 — Recovery | C1–C2, C6 | Recovery orchestrator + policy + CAS | After B-block |
