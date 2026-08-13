@@ -51,23 +51,18 @@ def test_dictionary_codes_stable(regenerated_dir: Path, baseline: dict) -> None:
 
 def test_vtable_layout_stable(regenerated_dir: Path, baseline: dict) -> None:
     """Field order + per-field size constant + HEADER_*_SIZE determine every
-    byte offset. A change here re-lays-out the V-Table and breaks old streams."""
+    byte offset. A change here re-lays-out the V-Table and breaks old streams.
+
+    The rule is *prefix*, not identity: the generator may add blocks and append
+    fields — that is the normal growth case — but every shipped block, field,
+    size constant and header size must be unchanged. Delegated to
+    _check_permanence so this gate and the golden-writer can never disagree
+    about the rule again (the disagreement was A16).
+    """
     current = witness(regenerated_dir)["vtables"]
     expected = baseline["vtables"]
-    assert set(current) == set(expected), (
-        "block set changed: "
-        f"added={set(current) - set(expected)} removed={set(expected) - set(current)}"
-    )
-    for block in sorted(expected):
-        assert (
-            current[block]["order"] == expected[block]["order"]
-        ), f"{block}: field ORDER drifted (offsets shift) -> {current[block]['order']}"
-        assert (
-            current[block]["sizes"] == expected[block]["sizes"]
-        ), f"{block}: field SIZE constants drifted -> {current[block]['sizes']}"
-        assert (
-            current[block]["header_sizes"] == expected[block]["header_sizes"]
-        ), f"{block}: HEADER_*_SIZE drifted -> {current[block]['header_sizes']}"
+    errors = _check_permanence(current, expected, "vtables")
+    assert not errors, "wire-format drift against shipped golden:\n" + "\n".join(errors)
 
 
 def test_permanence_rejects_modification(regenerated_dir: Path, baseline: dict) -> None:
@@ -101,6 +96,36 @@ def test_permanence_accepts_addition(regenerated_dir: Path, baseline: dict) -> N
     }
     errors = _check_permanence(current["vtables"], baseline["vtables"], "vtables")
     assert not errors, f"additions should not produce permanence errors: {errors}"
+
+
+def test_permanence_rejects_field_reorder(regenerated_dir: Path, baseline: dict) -> None:
+    """Reordering two shipped fields shifts offsets — must be rejected."""
+    current = witness(regenerated_dir)
+    order = current["vtables"]["FF_PATIENT"]["order"]
+    order[0], order[1] = order[1], order[0]
+    errors = _check_permanence(
+        current["vtables"], baseline["vtables"], "vtables"
+    )
+    assert errors, "expected permanence errors for reordered fields"
+    assert any("order" in e for e in errors), f"expected order in errors: {errors}"
+
+
+def test_permanence_rejects_field_removal(regenerated_dir: Path, baseline: dict) -> None:
+    """Removing a shipped field shifts offsets — must be rejected."""
+    current = witness(regenerated_dir)
+    current["vtables"]["FF_PATIENT"]["order"].pop(0)
+    errors = _check_permanence(current["vtables"], baseline["vtables"], "vtables")
+    assert errors, "expected permanence errors for removed field"
+    assert any("order" in e for e in errors), f"expected order in errors: {errors}"
+
+
+def test_permanence_accepts_field_append(regenerated_dir: Path, baseline: dict) -> None:
+    """Appending a NEW field (and its size constant) is legal growth."""
+    current = witness(regenerated_dir)
+    current["vtables"]["FF_PATIENT"]["order"].append("ZZ_APPENDED")
+    current["vtables"]["FF_PATIENT"]["sizes"]["ZZ_APPENDED_S"] = "TYPE_SIZE_UINT32"
+    errors = _check_permanence(current["vtables"], baseline["vtables"], "vtables")
+    assert not errors, f"appended field should pass permanence: {errors}"
 
 
 def _symmetric_diff(a: dict, b: dict) -> dict:

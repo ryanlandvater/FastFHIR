@@ -683,6 +683,16 @@ PYBIND11_MODULE(_core, m) {
             // Fallback: try to treat it as a field path by looking for a __call__ or recovery_tag
             throw py::type_error("FastFHIR: Expected ASTNode with .path attribute or field path accessor.");
         })
+        .def("__setitem__", [](PyStreamNode& self, const PythonFieldProxy& field, py::object value) {
+            // Direct field assignment (the documented API:
+            // patient_node[Patient.ACTIVE] = True). Must be registered BEFORE
+            // the generic py::object overload below or pybind11 dispatches
+            // every Field object to the ASTNode path and throws.
+            if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) throw py::index_error();
+            const auto& key = *FastFHIR::FieldKeys::Registry[field.registry_index];
+            PyMutableEntry leaf(self.builder, self.handle[key]);
+            assign_py_obj(leaf.entry, value, self.handle, key);
+        })
         .def("__setitem__", [](PyStreamNode& self, py::object ast_node, py::object value) {
             if (!py::hasattr(ast_node, "path")) throw py::type_error("Requires ASTNode.");
             py::tuple path = ast_node.attr("path").cast<py::tuple>();

@@ -130,10 +130,16 @@ def _check_permanence(current_raw: dict, existing_raw: dict, label: str) -> list
                 old_sub = old_val.get(sub, {}) if isinstance(old_val.get(sub), dict) else old_val.get(sub, [])
                 new_sub = new_val.get(sub, {}) if isinstance(new_val.get(sub), dict) else new_val.get(sub, [])
                 if isinstance(old_sub, list):
-                    if old_sub != new_sub:
+                    # Prefix rule, not equality: the shipped golden field order
+                    # must sit at the head of the current order. Appending a
+                    # field is legal growth (FastFHIR models 28 of ~145 R4
+                    # resources); reordering, inserting, or removing a shipped
+                    # field shifts offsets for existing streams.
+                    if new_sub[: len(old_sub)] != old_sub:
                         errors.append(
-                            f"  CHANGED {label}.{key}.{sub}: order changed → "
-                            f"wire offsets shift for existing streams"
+                            f"  CHANGED {label}.{key}.{sub}: shipped fields "
+                            f"reordered or removed → wire offsets shift for "
+                            f"existing streams (appending fields is legal)"
                         )
                 else:
                     for k, v in old_sub.items():

@@ -365,14 +365,11 @@ if(FASTFHIR_BUILD_TESTS)
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_FOUND)
         set(_PY_DIR "${CMAKE_SOURCE_DIR}/tests/python")
-        if(WIN32)
-            set(_PY "${CMAKE_SOURCE_DIR}/.venv/Scripts/python.exe")
-        else()
-            set(_PY "${CMAKE_SOURCE_DIR}/.venv/bin/python")
-        endif()
-        if(NOT EXISTS "${_PY}")
-            set(_PY "${Python3_EXECUTABLE}")
-        endif()
+        # A21.3: no .venv preference. The tree's .venv historically held only
+        # pip and was silently selected, breaking every py_* test. A19 floors
+        # the interpreter at 3.11; a dev who wants a venv can override
+        # Python3_EXECUTABLE explicitly.
+        set(_PY "${Python3_EXECUTABLE}")
 
         # Setup: clean artifacts
         add_test(NAME py_setup
@@ -412,6 +409,19 @@ if(FASTFHIR_BUILD_TESTS)
             DEPENDS "py_setup;ff_roundtrip"
         )
 
+        # PYTHONPATH for the py_* tests: the staged importable package
+        # (build/python, assembled by fastfhir_python's POST_BUILD step — A21)
+        # plus the tests' own directory (roundtrip_diff, fixtures).
+        if(WIN32)
+            set(_PYTHONPATH "${CMAKE_CURRENT_BINARY_DIR}/python\\;${_PY_DIR}")
+        else()
+            set(_PYTHONPATH "${CMAKE_CURRENT_BINARY_DIR}/python:${_PY_DIR}")
+        endif()
+        set_tests_properties(py_setup py_getting_started
+            py_test_1 py_test_2 py_test_3 py_test_4 py_test_5 py_test_6
+            py_test_7 py_test_8 py_test_9 py_test_10 py_roundtrip
+            PROPERTIES ENVIRONMENT "PYTHONPATH=${_PYTHONPATH}")
+
 
         set_tests_properties(py_setup py_getting_started
             py_test_1 py_test_2 py_test_3 py_test_4 py_test_5 py_test_7 py_test_8 py_test_9
@@ -447,6 +457,23 @@ if(FASTFHIR_BUILD_PYTHON_BINDINGS)
         FASTFHIR_VERSION_BUILD=${FASTFHIR_VERSION_BUILD}
     )
     target_link_libraries(fastfhir_python PRIVATE simdjson::simdjson OpenSSL::Crypto)
+
+    # ── Assemble an importable package in the build tree (A21) ───────────────
+    # fastfhir/__init__.py imports relatively (from . import _core;
+    # from .fields import *), so the extension and the generated field modules
+    # must sit inside the package directory. Mirror the install layout into
+    # build/python/fastfhir so ctest py_* tests — and users who point
+    # PYTHONPATH at it — import the same shape that gets installed.
+    set(_PY_STAGE "${CMAKE_CURRENT_BINARY_DIR}/python/fastfhir")
+    add_custom_command(TARGET fastfhir_python POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_PY_STAGE}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/python/fastfhir/__init__.py" "${_PY_STAGE}/__init__.py"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${FASTFHIR_GENERATED_DIR}/python/fields" "${_PY_STAGE}/fields"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:fastfhir_python>" "${_PY_STAGE}/$<TARGET_FILE_NAME:fastfhir_python>"
+        VERBATIM)
 
     install(FILES python/fastfhir/__init__.py
         DESTINATION ${CMAKE_INSTALL_PYTHON_LIBDIR}/fastfhir)

@@ -133,6 +133,38 @@ int main()
         }
     }
 
+    // ── Tiny-input case (TASKS.md A14 / WO-2) ─────────────────────────────────
+    // ff_ingest sized its arena at 2x the input JSON: a 66-byte Patient asked
+    // for 132 bytes and needed 245 (54-byte FF_HEADER + 191-byte Patient vtable)
+    // before a single string byte, so every tiny input failed with "VMA Capacity
+    // Exceeded". The CLI now floors the arena at 1 MiB (FF_MIN_ARENA). Mirror
+    // that floor here and pin the smallest real input through the same pipeline
+    // the CLI runs.
+    {
+        static const char* kTiny =
+            R"({"resourceType":"Patient","id":"p1","active":true,"gender":"male"})";
+
+        auto mem3 = Memory::create(1ull << 20);  // CLI's FF_MIN_ARENA floor
+        Builder builder3(mem3);
+        Ingest::Ingestor ingestor3;
+        Reflective::ObjectHandle root3;
+        size_t parsed3 = 0;
+
+        Ingest::IngestRequest req3{builder3, Ingest::SourceType::FHIR_JSON, kTiny};
+        const FF_Result r3 = ingestor3.ingest(req3, root3, parsed3);
+        CHECK(r3.code == FF_SUCCESS,
+              std::string("tiny patient ingests (") +
+                  (r3.code == FF_SUCCESS ? "ok" : r3.message) + ")");
+
+        if (r3.code == FF_SUCCESS) {
+            builder3.set_root(root3);
+            auto view3 = builder3.finalize();
+            Parser parser3(view3.data(), view3.size());
+            std::string_view id = parser3.root()[Fields::PATIENT::ID];
+            CHECK(id == "p1", "tiny patient id == p1 (got '" + std::string(id) + "')");
+        }
+    }
+
     printf("%s\n", failures ? "FAILURES" : "bundle ingest holds");
     return failures ? 1 : 0;
 }

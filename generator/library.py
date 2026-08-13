@@ -30,6 +30,7 @@ from generator.emit.traits import generate_resource_traits_header
 from generator.bindings.python_fields import (
     emit_python_fields,
     emit_python_ast,
+    emit_python_fields_init,
     emit_python_fields_stubs,
     emit_python_ast_stubs,
     emit_py_typed_marker,
@@ -145,14 +146,18 @@ def compile_fhir_library(
                 short = _st._field_key_short_name(orig)
                 ns_name = f"{owner_ns}::{c_name}"
                 owner = path.replace(".", "_").upper()
-                if owner not in python_resource_map:
-                    python_resource_map[owner] = {}
+                # The map key is the FHIR class name the docs/tests import
+                # (Patient, BundleEntry, ObservationComponent) — derived from the
+                # path's own case, not reconstructible from the uppercase owner.
+                class_key = "".join(seg[:1].upper() + seg[1:] for seg in path.split("."))
+                if class_key not in python_resource_map:
+                    python_resource_map[class_key] = {}
                 token_registry.setdefault(path, {})[orig] = (
-                    len(python_resource_map[owner]),
+                    len(python_resource_map[class_key]),
                     ns_name,
                 )
-                python_resource_map[owner][orig] = (
-                    len(python_resource_map[owner]) - 1,
+                python_resource_map[class_key][orig] = (
+                    len(python_resource_map[class_key]) - 1,
                     orig,
                     owner,
                     fld.get("fhir_type", "string"),
@@ -244,14 +249,16 @@ def compile_fhir_library(
                 short = _st._field_key_short_name(orig)
                 ns_name = f"{owner_ns}::{c_name}"
                 owner = path.replace(".", "_").upper()
-                if owner not in python_resource_map:
-                    python_resource_map[owner] = {}
+                # Same PascalCase key rule as the data-type pass above.
+                class_key = "".join(seg[:1].upper() + seg[1:] for seg in path.split("."))
+                if class_key not in python_resource_map:
+                    python_resource_map[class_key] = {}
                 token_registry.setdefault(path, {})[orig] = (
-                    len(python_resource_map[owner]),
+                    len(python_resource_map[class_key]),
                     ns_name,
                 )
-                python_resource_map[owner][orig] = (
-                    len(python_resource_map[owner]) - 1,
+                python_resource_map[class_key][orig] = (
+                    len(python_resource_map[class_key]) - 1,
                     orig,
                     owner,
                     fld.get("fhir_type", "string"),
@@ -294,6 +301,7 @@ def compile_fhir_library(
     fields_inner = ""
 
     registry_entries: list[str] = []
+    registry_index: dict[tuple[str, str], int] = {}
     seen_blocks: set[str] = set()
 
     for path, layout in sorted(block_key_defs, key=lambda item: item[0]):
@@ -323,10 +331,31 @@ def compile_fhir_library(
                 f"{child_rec}, {arr_offsets}, \"{f['cpp_name']}\"}};\n"
             )
             registry_entries.append(f"        &FastFHIR::Fields::{ns_name}::{short_name}")
+            # Record the true global Registry index (keyed by the class name the
+            # Python fields import) so emit_python_fields can emit it — the
+            # per-block indices assigned during map construction are off by one
+            # and do not index this array.
+            ck = "".join(seg[:1].upper() + seg[1:] for seg in path.split("."))
+            registry_index[(ck, f["orig_name"])] = len(registry_entries) - 1
 
         fields_inner += enclose_namespace(ns_name, block_body) + "\n"
 
     field_keys_hpp += enclose_namespace("FastFHIR::Fields", fields_inner) + "\n"
+
+    # ── Reconcile Python field indices with the C++ Registry ─────────────────
+    # The bindings resolve a Python Field by indexing the generated C++
+    # Registry (FF_FieldKeys.cpp), a global array. Rewrite the per-block map
+    # metadata with the true global index; a field the registry does not know
+    # is a generator bug and must fail loudly, not emit a wrong index.
+    for _ck, _fields in python_resource_map.items():
+        for _orig, _meta in _fields.items():
+            _idx, _orig_name, _owner, _fhir_type = _meta
+            python_resource_map[_ck][_orig] = (
+                registry_index[(_ck, _orig)],
+                _orig_name,
+                _owner,
+                _fhir_type,
+            )
 
     cpp_body_fieldkeys = (
         f"    const FF_FieldKey* const Registry[] = {{\n"
@@ -344,6 +373,7 @@ def compile_fhir_library(
     # --- Python field modules + AST path builders + stubs ---
     emit_python_fields(python_resource_map, output_dir)
     emit_python_ast(all_blocks, block_key_defs, token_registry, output_dir)
+    emit_python_fields_init(python_resource_map, output_dir)
     emit_python_fields_stubs(python_resource_map, output_dir)
     emit_python_ast_stubs(all_blocks, block_key_defs, output_dir)
     emit_py_typed_marker(output_dir)

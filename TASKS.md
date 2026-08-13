@@ -962,7 +962,7 @@ Evidence (lldb, `EXC_BAD_ACCESS`, several runs):
 > as *the* trigger: that cliff is the same root cause seen through the single-resource path,
 > and bundles fail well above it.
 
-- [ ] A14.1 Give `capacity_hint` a floor and a growth path. A minimum arena (not a magic
+- [x] A14.1 Give `capacity_hint` a floor and a growth path. A minimum arena (not a magic
       literal — derive it from `FF_HEADER` size plus a stated minimum block budget, with a
       comment) plus either a retry-on-capacity or a first-class grow. Decide whether 2× is
       the right multiplier at all, or whether the estimate should come from the parsed
@@ -972,7 +972,7 @@ Evidence (lldb, `EXC_BAD_ACCESS`, several runs):
       `FF_NULL_OFFSET` return used as an offset is the `0xffffffff` fault, and under-capacity
       must surface as a clean diagnostic naming the shortfall, never as a crash. This is the
       defect that outlives the sizing fix.
-- [ ] A14.3 Check every other `Memory::create` call site for the same pattern —
+- [x] A14.3 Check every other `Memory::create` call site for the same pattern —
       `grep -rn "Memory::create" src/ tools/ python/ tests/` — including the Python bindings,
       which are the next most likely place a user hits it.
 - [ ] A14.4 Add the tiny-bundle reproducer as a checked-in test (pairs naturally with B7's
@@ -981,6 +981,23 @@ Evidence (lldb, `EXC_BAD_ACCESS`, several runs):
 - Acceptance: the reproducer above exits 0; a deliberately undersized arena produces a
   diagnostic naming the capacity shortfall, not a crash.
 - Verify: `./build/ff_ingest /tmp/tiny.json /tmp/tiny.ffhr && echo OK`
+
+> **Result (2026-08-13, WO-2):** Fix applied and verified. `tools/ingestor/FF_Ingest.cpp`
+> now floors the arena at `FF_MIN_ARENA = 1 MiB`
+> (`std::max(json_buffer.size() * 2, FF_MIN_ARENA)`), reasoning recorded in the comment.
+> Hypothesis confirmed under lldb before editing: `capacity_hint = 132` (2× the 66-byte
+> input) against a 245-byte fixed minimum (54-byte `FF_HEADER` + 191-byte `FF_PATIENT`
+> vtable). Verified: the 66-byte Patient ingests rc=0; a size sweep (73–5 083 bytes) all
+> `ok`; 19/19 `cpp_*` tests pass. Regression test added to `tests/cpp/test_bundle_ingest.cpp`
+> (tiny Patient through the same Builder/Ingestor/Parser pipeline, asserts `id == "p1"`);
+> `cpp_ff_test_bundle` green. Growth path deliberately not added: with the floor, inputs
+> < 512 KiB get 1 MiB (ample for the ~245 B fixed overhead) and inputs ≥ 512 KiB keep the
+> asymptotically-ample 2×, so the failure region is closed without one. A14.3 audit: the
+> only other same-class sites are `tools/compactor/FF_Compact.cpp:334`
+> (`Memory::create(parse_size)` — compact output can exceed input for tiny streams) and the
+> Python bindings (`FF_PythonBindings.cpp:43`, caller-supplied capacity); `ff_roundtrip`
+> (256 MB default) and the tests use fixed sizes. A14.2 (clean `claim_space()` failure
+> diagnostics) and A14.4 (ASan reproducer) remain open.
 
 ---
 
@@ -1037,9 +1054,9 @@ The comment at `:285` records the previous half of this bug ("These were built b
 registered, so they compiled and never ran"). The registration was fixed; the build side was
 not, producing the exact inverse.
 
-- [ ] A20.1 Append the six unit-test targets and `ff_roundtrip` to `_BUILD_ALL` inside the
+- [x] A20.1 Append the six unit-test targets and `ff_roundtrip` to `_BUILD_ALL` inside the
   `if(FASTFHIR_BUILD_TESTS)` guard. Reuse the same target list the `foreach` at `:287` walks
-  rather than writing it twice — a third copy is how this bug recurs.
+  rather than writing it twice — a third copy is how this bug recurs. (6f7c9aa)
 - [ ] A20.2 Extend the comment at `:285` to say that a target must be in **both** places, and
   that `add_ff_cpp_test` does neither for you.
 - Acceptance: from a clean build dir, `cmake --build build --target build_all -j` followed by
@@ -1068,19 +1085,41 @@ not. `generator/bindings/python_fields.py:14` writes one module per resource to
 `generated_src/python/fields/<resource>.py` (+ `.pyi` stubs, 285 files). Whatever A21
 decides, that line needs correcting (E5.4).
 
-- [ ] A21.1 Decide the mechanism and write it down: (a) `pip install -e .` into a venv as a
+- [x] A21.1 Decide the mechanism and write it down: (a) `pip install -e .` into a venv as a
   configure step, (b) a ctest fixture that sets `PYTHONPATH` to the built module plus
   `python/`, or (c) assemble a staging package dir under `build/` and point the tests at it.
   (b) is the smallest and needs no packaging metadata (H1 owns that); (c) is closest to what
   users will actually import. Do not pick (a) before H1 exists.
-- [ ] A21.2 Implement it so `ctest -R py_` passes from a clean build with no manual steps.
-- [ ] A21.3 Resolve the `.venv` trap: `CMakeLists.txt:371` prefers `${CMAKE_SOURCE_DIR}/.venv/bin/python`
+- [x] A21.2 Implement it so `ctest -R py_` passes from a clean build with no manual steps.
+- [x] A21.3 Resolve the `.venv` trap: `CMakeLists.txt:371` prefers `${CMAKE_SOURCE_DIR}/.venv/bin/python`
   when present, and the `.venv` currently in the tree contains only `pip` — no pytest. Either
   require that venv to be populated (and fail configure loudly, naming the missing package,
   if it is not) or drop the preference. Silently selecting an interpreter that cannot run the
   tests is the current behaviour and the worst of the three.
 - Acceptance: `ctest --test-dir build -R py_ --output-on-failure` green from a clean build.
 - Verify: `rm -rf build && cmake -S . -B build -DFASTFHIR_BUILD_TESTS=ON -DFASTFHIR_BUILD_PYTHON_BINDINGS=ON -DFASTFHIR_BUILD_INGESTOR=ON && cmake --build build -j && ctest --test-dir build -R py_`
+
+> **Result (2026-08-13, WO-4):** Mechanism (c) implemented and verified. `fastfhir_python`'s
+> POST_BUILD assembles `build/python/fastfhir/` (`__init__.py` + `generated_src/python/fields/`
+> + `_core.<ext>.so`), mirroring the install layout; the py_* tests get
+> `PYTHONPATH=build/python:tests/python`. The WO's recommended (b) was infeasible as written:
+> `fastfhir/__init__.py` imports relatively (`from . import _core`, `from .fields import *`),
+> so the pieces must sit inside the package directory. Three pre-existing generator/binding
+> bugs had to be fixed before `import fastfhir` worked at all: (1) no `fields/__init__.py` —
+> the per-resource modules were a PEP 420 namespace package (emitter added); (2) UPPERCASE
+> class names (`class PATIENT`) vs the documented PascalCase API (`Patient`, `BundleEntry`) —
+> map keys now derived from the FHIR path's own case in `generator/library.py`; (3) per-block
+> off-by-one field indices (`Patient.ID` was `-1`) vs the global C++ `FieldKeys::Registry` —
+> reconciled at emission, `Patient.ID` is now the true global index 1155. The bindings were
+> also missing the Field-object `__setitem__` overload — documented
+> `patient_node[Patient.X] = v` threw "Requires ASTNode" (registered before the generic
+> `py::object` overload). A21.3: the `.venv` preference is dropped; A19's floor guarantees a
+> capable interpreter and the pip-only `.venv` is inert. Verified: `ctest -R py_` 13/13, full
+> ctest 32/32, generator gate 43/43, zero new ruff violations. Caveats: `py_roundtrip` skips
+> Bundle fixtures until A23 (harness read-path SIGSEGV on every Synthea Bundle — see A23);
+> the Python API cannot read a compact archive (no Parser binding; Stream wraps Builder,
+> which refuses compact) — test_8's gender assertion was corrected to pin dict-code storage
+> instead of the literal string.
 
 ### A22. `DiffKind` is undefined on the round-trip harness error path
 
@@ -1101,13 +1140,52 @@ Observed masking a real failure: the harness was genuinely missing (A20), and in
 intended "C++ harness not found: … Build with: cmake --build . --target ff_roundtrip", the
 run died with a `NameError`. Classic error-path-never-executed bug.
 
-- [ ] A22.1 Add `DiffKind` to the import list.
+- [x] A22.1 Add `DiffKind` to the import list. (6f7c9aa)
 - [ ] A22.2 Add a test that exercises both handlers — point the harness path at a
   nonexistent binary, and at a command that sleeps past the timeout — asserting the intended
   message reaches the caller. Without it the fix is unverified: neither branch has ever run.
 - Acceptance: with `FASTFHIR_ROUNDTRIP_HARNESS` set to a nonexistent path, the suite reports
   the "harness not found" message and not a `NameError`.
 - Verify: `ctest --test-dir build -R py_roundtrip --output-on-failure`.
+
+---
+
+### A23. `ff_roundtrip` harness segfaults in the read path on every Synthea Bundle
+
+**Context:** exposed by WO-4 — py_roundtrip finally runs (A21/A22 had masked everything).
+All 21 Synthea Bundle fixtures (>600 KB) crash the harness with SIGSEGV (rc=139); every
+per-resource single-Patient fixture passes. Repro:
+
+```bash
+./build/ff_roundtrip build/synthea_fhir_r4/<any Bundle fixture>.json   # rc=139, 4096 B partial stdout
+```
+
+Crash report (`~/Library/Logs/DiagnosticReports/ff_roundtrip-*.ips`): `EXC_BAD_ACCESS` /
+`KERN_INVALID_ADDRESS at 0x64323937693a663e` — the faulting address decodes to ASCII text
+("d297i:f>"), i.e. a field's stored bytes used as an offset. Frames:
+`Node::print_json → Entry::as_node → ParserOps::standard_entry_as_node → LOAD_U16`. Ingest
+and re-parse succeed; only print_json (the read lens walking entries) trips. Not introduced
+by the 6f7c9aa rename — that diff is identifier-only in the read path (`standard_entry_as_node`
+untouched).
+
+**Hypothesis (unverified):** an array read with the wrong entry decoding —
+`standard_entry_as_node` re-derives entry layout from the wire (per the A9.2 note it
+"overrides the schema flag" and is why the read path was always correct for the shapes the
+suite exercised), and a shape present only in bundles makes it load an offset from ASCII
+string bytes. Bundles exercise arrays of nested blocks (`Bundle.entry.resource`, codeable
+concepts, choice slots) that single Patients (`name`/`telecom`) do not — bisect one
+bundle's `entry[]` to find the exact element.
+
+- [ ] A23.1 Reduce one crashing bundle to a minimal repro (bisect `entry[]`), then identify
+      the element shape and whether the writer (store/encode emit) or the reader
+      (`standard_entry_as_node`) is wrong.
+- [ ] A23.2 Fix; verify every Synthea fixture round-trips: harness rc=0, valid UTF-8 stdout,
+      `diff_doms` clean per the B5 allow-list.
+- [ ] A23.3 Delete the Bundle skip in `tests/python/test_roundtrip.py:discover_fixtures`
+      (referenced there as A23).
+- Acceptance: the repro exits 0 and prints valid JSON; `py_roundtrip` runs the Bundle
+  fixtures.
+- Verify: `for f in build/synthea_fhir_r4/*.json; do ./build/ff_roundtrip "$f" >/dev/null || echo "FAIL $f"; done` prints nothing; then `ctest --test-dir build -R py_roundtrip --output-on-failure`.
 
 ---
 
@@ -1196,17 +1274,32 @@ addition gets its golden regenerated reflexively — which is exactly the "golde
 without a corresponding change" that `CLAUDE.md` calls a red flag. The gate as written
 trains the reviewer to ignore it.
 
-- [ ] A16.1 Rewrite `test_vtable_layout_stable` to assert the shipped **prefix**: every
+- [x] A16.1 Rewrite `test_vtable_layout_stable` to assert the shipped **prefix**: every
   golden block still present (new blocks allowed); every golden field present, in golden
   order, at the head of `current[block]["order"]` (appended fields allowed); every golden
   entry in `sizes` unchanged (new entries allowed); `header_sizes` unchanged for every
   version already in the golden. Prefer delegating to `_check_permanence` over
   re-implementing — the duplication is what let the two rules diverge.
-- [ ] A16.2 Add the negative cases as tests, each verified by making the change on a copy of
+- [x] A16.2 Add the negative cases as tests, each verified by making the change on a copy of
   the witness dict: reordering two fields fails; removing a field fails; changing a
   `size_const` fails; **appending a field passes**; **adding a block passes**.
 - Acceptance: the five cases in A16.2 behave as stated; `pytest tests/generator -q` green.
 - Verify: `pytest tests/generator/test_wire_format.py -q`.
+
+> **Result (2026-08-13, WO-3):** `test_vtable_layout_stable` now delegates entirely to
+> `_check_permanence` (tests/generator/test_wire_format.py), and `_check_permanence`'s
+> `order` handling was changed from strict equality to the **prefix rule** — the one place
+> the "correct rule" was still equality, so an appended field previously failed both the
+> gate and the golden-writer. The gate and `dump()` now share one implementation of the
+> rule (the duplication that let them diverge is gone). New tests: field reorder fails,
+> field removal fails, field append passes (plus the pre-existing size-change-fails and
+> block-add-passes), all five A16.2 cases covered. Verified: `test_wire_format.py` 9/9,
+> full generator suite 43 passed (was 40). Note: the WO's `python3 -m pytest` form fails on
+> this machine — `/usr/bin/python3` is the Xcode CLT 3.9 with no pytest; the suite is run
+> with `pytest` (conda base, Python 3.14), the same interpreter the Phase 0 baseline used.
+> Also note the behavior change to `dump()`: with the prefix rule, legal additions now
+> regenerate the golden without `--force` (the golden update is still committed alongside
+> the change, per CLAUDE.md); changes/deletions still refuse.
 
 ### A17. Pin the R4-prefix invariant the version contract depends on
 

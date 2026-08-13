@@ -17,6 +17,7 @@
 #include <string_view>
 #include <iterator>
 #include <filesystem>
+#include <algorithm>
 #include <openssl/evp.h>
 
 using namespace FastFHIR;
@@ -176,9 +177,15 @@ int main(int argc, char *argv[])
         // ---------------------------------------------------------
         // Core FastFHIR Ingestion Pipeline
         // ---------------------------------------------------------
-        // HEURISTIC: Clinical JSON is heavy on syntax (quotes, braces, keys).
-        // FastFHIR binary is dense. 2x input size is a safe "one-and-done" allocation.
-        size_t capacity_hint = json_buffer.size() * 2;
+        // HEURISTIC: Clinical JSON is heavy on syntax (quotes, braces, keys) and
+        // FastFHIR binary is dense, so 2x the input is ample for any real document.
+        // It is not ample at the bottom: FF_HEADER is 54 bytes and a resource vtable
+        // is up to ~250 (FF_PATIENT is 191), and neither scales with input size. A
+        // 66-byte Patient asked for 132 bytes and needed 245. The floor covers the
+        // fixed overhead; because the arena is reserved virtual memory, not committed
+        // pages, over-reserving here costs nothing.
+        static constexpr size_t FF_MIN_ARENA = 2ull << 20;  // 2 MiB
+        size_t capacity_hint = std::max(json_buffer.size() * 2, FF_MIN_ARENA);
         auto memory = Memory::create(capacity_hint);
         Builder builder(memory);
         Ingest::Ingestor ingestor;
