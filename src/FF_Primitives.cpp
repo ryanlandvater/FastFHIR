@@ -74,8 +74,8 @@ FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
     // 3. FastFHIR Engine Version / Stream Layout metadata checks
     uint32_t encoded_version = LOAD_U32(__base + VERSION);
     uint32_t engine_ver = FF_HEADER_ENGINE_VERSION(encoded_version);
-    FF_StreamLayout layout = FF_HEADER_STREAM_LAYOUT(encoded_version);
-    if (layout != FF_STREAM_LAYOUT_STANDARD && layout != FF_STREAM_LAYOUT_COMPACT) {
+    FF_StreamCompaction layout = FF_HEADER_STREAM_LAYOUT(encoded_version);
+    if (layout != FF_STREAM_COMPACTION_NONE && layout != FF_STREAM_COMPACTED) {
         return {FF_VALIDATION_FAILURE, "FF_HEADER stream layout flag is invalid."};
     }
     // if ((engine_ver >> 16) > FF_VERSION_MAJOR) return {FF_VALIDATION_FAILURE, "Unsupported engine."};
@@ -98,7 +98,7 @@ FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
 uint32_t FF_HEADER::get_engine_version(const BYTE* const __base) const {
     return FF_HEADER_ENGINE_VERSION(LOAD_U32(__base + VERSION));
 }
-FF_StreamLayout FF_HEADER::get_stream_layout(const BYTE* const __base) const {
+FF_StreamCompaction FF_HEADER::get_stream_layout(const BYTE* const __base) const {
     return FF_HEADER_STREAM_LAYOUT(LOAD_U32(__base + VERSION));
 }
 uint16_t FF_HEADER::get_fhir_rev(const BYTE* const __base) const { return LOAD_U16(__base + FHIR_REV); }
@@ -128,7 +128,7 @@ void STORE_FF_HEADER (BYTE* const __base,
                             Offset checksum_offset,
                             Offset url_dir_offset,
                             Offset module_reg_offset,
-                            FF_StreamLayout stream_layout) {
+                            FF_StreamCompaction stream_layout) {
                             
     STORE_U32(__base + FF_HEADER::MAGIC, FF_MAGIC_BYTES);
     STORE_U16(__base + FF_HEADER::RECOVERY, RECOVER_FF_HEADER); // Assumes you defined this tag

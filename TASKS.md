@@ -38,11 +38,368 @@
 
 ---
 
+# ▶ IMMEDIATE WORK ORDERS — start here
+
+Written 2026-08-12 for an agent picking this up cold. Five work orders, in order. **Do one
+per session, in the order given.** Each is self-contained: exact commands, exact edits,
+exact expected output.
+
+**Rules that override anything else in this file:**
+
+1. **Run the *Precheck* first.** If its output does not match what is written, **STOP** and
+   report what you saw instead. Do not improvise, do not "fix" the mismatch, do not
+   continue to the next step. A mismatch means the tree moved and the work order is stale.
+2. **Do not commit.** Ryan commits. Leave changes in the working tree and report.
+3. **Never edit generated files** (`generated_src/`, `dictionaries/*.cpp|hpp`). If a fix
+   seems to need one, the fix belongs in `generator/emit/` — stop and say so.
+4. **Never change a wire constant** (recovery tag values, dictionary IDs, vtable field
+   order, `FF_HEADER` layout). If a step seems to require it, STOP.
+5. Build with `cmake --preset ninja && cmake --build --preset ninja` unless told otherwise.
+   First configure needs network and takes ~60 s (it downloads FHIR packages).
+6. If a command takes more than ~15 minutes, it has hung. Stop and report.
+
+---
+
+## WO-1 — Make the test signal trustworthy (tasks A20 + A22)
+
+**Why first:** two wiring bugs make `ctest` lie. Until they are fixed you cannot tell a
+real failure from a phantom one, and WO-2 depends on being able to read the suite. Both
+edits are mechanical. Budget: 30 minutes.
+
+### Precheck
+
+```bash
+cd /Users/ryanlandvater/GitHub/FastFHIR
+sed -n '484,494p' CMakeLists.txt
+sed -n '33,38p' tests/python/test_roundtrip.py
+```
+
+Expect exactly this `_BUILD_ALL` block:
+
+```cmake
+set(_BUILD_ALL fastfhir ff_export ff_compact)
+if(FASTFHIR_BUILD_INGESTOR)
+    list(APPEND _BUILD_ALL fastfhir_ingestor ff_ingest)
+endif()
+if(FASTFHIR_BUILD_TESTS)
+    list(APPEND _BUILD_ALL ff_test_readme)
+endif()
+```
+
+and this import block:
+
+```python
+from roundtrip_diff import (
+    diff_doms,
+    filter_allowlisted,
+    format_diff_report,
+    DiffEntry,
+)
+```
+
+If either differs, STOP.
+
+### Step 1 — `build_all` must build the test binaries (A20)
+
+The six unit-test executables and `ff_roundtrip` are registered as ctest entries but are
+not in `_BUILD_ALL`, so `cmake --build --target build_all` never builds them and `ctest`
+reports six `***Not Run`. In `CMakeLists.txt`, replace:
+
+```cmake
+if(FASTFHIR_BUILD_TESTS)
+    list(APPEND _BUILD_ALL ff_test_readme)
+endif()
+```
+
+with:
+
+```cmake
+if(FASTFHIR_BUILD_TESTS)
+    # Must match the ctest registration list at the `foreach(_standalone ...)` above:
+    # a target registered as a test but absent here builds nothing and ctest reports
+    # "Not Run". add_ff_cpp_test() does neither for you.
+    list(APPEND _BUILD_ALL ff_test_readme ff_roundtrip
+         ff_test_primitives ff_test_memory ff_test_simd
+         ff_test_amend ff_test_cc ff_test_bundle)
+endif()
+```
+
+### Step 2 — `DiffKind` is used but never imported (A22)
+
+`tests/python/test_roundtrip.py` calls `DiffKind.VALUE_MISMATCH` on five error paths
+(lines 107, 115, 122, 134, 143) but never imports it, so any harness failure dies with
+`NameError` instead of reporting the real problem. Add `DiffKind` to the import list:
+
+```python
+from roundtrip_diff import (
+    diff_doms,
+    filter_allowlisted,
+    format_diff_report,
+    DiffEntry,
+    DiffKind,
+)
+```
+
+### Verify
+
+```bash
+rm -rf build && cmake --preset ninja && cmake --build build --target build_all -j
+ctest --test-dir build 2>&1 | tail -20
+```
+
+**Pass condition:** zero `Not Run`. Exactly 12 failures remain, all named `py_*`, all
+reporting `ModuleNotFoundError: No module named 'fastfhir'`. That module error is WO-4's
+job — **do not try to fix it here.**
+
+If any `cpp_*` test fails, STOP and report which.
+
+---
+
+## WO-2 — Fix the small-input ingest failure (task A14)
+
+**The bug:** `ff_ingest` fails on every input below ~152 bytes and succeeds above it, 100%
+deterministic in both directions. A 44 MB bundle works; a single Patient resource does not.
+
+**Leading hypothesis, with the arithmetic** — confirm before fixing:
+
+`tools/ingestor/FF_Ingest.cpp:181` sizes the arena as `json_buffer.size() * 2`, with a
+comment claiming 2× is "a safe one-and-done allocation". Fixed overhead does not scale
+with input: the `FF_HEADER` is **54 bytes** and the `FF_PATIENT` vtable is **191 bytes**
+(`generated_src/FF_Patient_internal.hpp`, `FF_PATIENT::HEADER_R4_SIZE`), so one empty
+Patient needs **245 bytes** before a single character of string data. At 2×, the input must
+be ≥123 bytes just to cover that, and the observed cliff at 153 bytes is that plus the `id`
+string block. The heuristic is asymptotically fine and wrong at the bottom.
+
+### Precheck
+
+```bash
+cd /Users/ryanlandvater/GitHub/FastFHIR
+sed -n '179,182p' tools/ingestor/FF_Ingest.cpp
+printf '{"resourceType":"Patient","id":"p1","active":true,"gender":"male"}' > /tmp/tiny.json
+wc -c < /tmp/tiny.json
+./build/ff_ingest /tmp/tiny.json /tmp/tiny.ffhr
+echo "exit=$?"
+```
+
+Expect the source lines to be the `HEURISTIC` comment plus
+`size_t capacity_hint = json_buffer.size() * 2;`; `wc -c` to print **66**; and the run to
+print `Fatal Ingestion Error: Standard Exception: FastFHIR VMA Capacity Exceeded` followed
+by `exit=1`. If it exits 0, the bug is already fixed — STOP and report.
+
+**Do not pipe `ff_ingest` into `tail`/`head` when checking the exit code** — `$?` would
+then be the exit code of the pipe's last command (0) and you would wrongly conclude the bug
+is fixed.
+
+### Step 1 — Confirm the hypothesis
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer lldb -b \
+  -o "breakpoint set --file FF_Ingest.cpp --line 182" \
+  -o "run /tmp/tiny.json /tmp/out.ffhr" \
+  -o "frame variable capacity_hint" \
+  -o "kill" -- ./build/ff_ingest
+```
+
+Expect `(std::size_t) capacity_hint = 132` (2 × the 66-byte file). Confirm it is **less
+than 245**. If `capacity_hint` is ≥ 245 the hypothesis is wrong — STOP and report the
+value, because the fault is then somewhere else and this work order does not cover it.
+
+### Step 2 — Confirm the arena is sparse before choosing a floor
+
+The fix is a minimum arena size. That is only cheap if the arena is reserved virtual
+memory rather than committed physical pages. Verify:
+
+```bash
+grep -n "mmap\|MAP_NORESERVE\|VirtualAlloc\|MEM_RESERVE" src/FF_Memory.cpp | head
+```
+
+Expect reservation-style allocation (see `architecture.md` §2, "reserve a sparse virtual
+arena"). If the arena commits physical memory up front, a large floor is **not** free —
+STOP and report, because the fix then needs a different shape (growth, or a computed
+minimum).
+
+### Step 3 — Apply the floor
+
+In `tools/ingestor/FF_Ingest.cpp`, replace lines 179–181 (the comment and the assignment)
+with:
+
+```cpp
+        // HEURISTIC: Clinical JSON is heavy on syntax (quotes, braces, keys) and
+        // FastFHIR binary is dense, so 2x the input is ample for any real document.
+        // It is not ample at the bottom: FF_HEADER is 54 bytes and a resource vtable
+        // is up to ~250 (FF_PATIENT is 191), and neither scales with input size. A
+        // 66-byte Patient asked for 132 bytes and needed 245. The floor covers the
+        // fixed overhead; because the arena is reserved virtual memory, not committed
+        // pages, over-reserving here costs nothing.
+        static constexpr size_t FF_MIN_ARENA = 1ull << 20;  // 1 MiB
+        size_t capacity_hint = std::max(json_buffer.size() * 2, FF_MIN_ARENA);
+```
+
+Ensure `<algorithm>` is included at the top of the file (add it if absent, keeping the
+existing include order).
+
+### Verify
+
+```bash
+cmake --build build -j
+./build/ff_ingest /tmp/tiny.json /tmp/tiny.ffhr; echo "exit=$?"      # must be 0
+python3 - <<'EOF'
+import json, subprocess, os
+base = {"resourceType":"Patient","id":"p1","active":True,"gender":"male"}
+for pad in [0, 5, 20, 60, 200, 5000]:
+    d = dict(base)
+    if pad: d["_p"] = "x"*pad
+    p = "/tmp/ff_v.json"; open(p,"w").write(json.dumps(d))
+    rc = subprocess.run(["./build/ff_ingest", p, "/tmp/ff_v.ffhr"], capture_output=True).returncode
+    print(f"{os.path.getsize(p):>6} bytes -> {'ok' if rc==0 else 'FAIL'}")
+EOF
+ctest --test-dir build -R cpp_ --output-on-failure 2>&1 | tail -3
+```
+
+**Pass condition:** every size prints `ok`, and all 19 `cpp_*` tests still pass.
+
+### Step 4 — Regression test
+
+Add the tiny-input case to `tests/cpp/test_bundle_ingest.cpp` following the existing
+`CHECK`/`TEST_GROUP` style in that file: ingest a ~65-byte single Patient through the same
+path the CLI uses, assert success, assert the parsed `id` is `"p1"`. Then re-run
+`ctest --test-dir build -R cpp_ff_test_bundle --output-on-failure`.
+
+Finally, tick A14.1 and A14.3 in Block A and write the confirmed cause under A14 as a
+`> Result (date):` note.
+
+---
+
+## WO-3 — Stop the wire gate rejecting legal changes (task A16)
+
+**Why:** `test_vtable_layout_stable` asserts the golden and the current output are
+*identical*. Adding a resource, or a field to an existing resource, therefore fails the
+gate — even though both are legal and the same file's `_check_permanence` already
+implements the correct rule and `test_permanence_accepts_addition` asserts additions are
+fine. A gate that fires on every legitimate change gets its golden regenerated
+reflexively, which is exactly the drift it exists to catch.
+
+**Read the IFE audit section below (2026-08-12) before starting.** Then follow task **A16**
+in Block A, which has the full detail. Summary of the required change:
+
+- `tests/generator/test_wire_format.py:57` — replace `set(current) == set(expected)` and
+  the `order ==` / `sizes ==` equality assertions with prefix assertions: every golden
+  block still present (new blocks allowed); every golden field present, in golden order, at
+  the **head** of `current[block]["order"]` (appended fields allowed); every golden `sizes`
+  entry unchanged (new entries allowed); `header_sizes` unchanged for versions already in
+  the golden.
+- Prefer delegating to `_check_permanence` in `tests/generator/wire_witness.py:111` rather
+  than re-implementing the rule — the duplication is what let the two halves diverge.
+- Add the five negative cases listed in A16.2, each verified by mutating a copy of the
+  witness dict.
+
+### Verify
+
+```bash
+FASTFHIR_GENERATED_DIR=generated_src python3 -m pytest tests/generator -q
+```
+
+Expect 40+ passed, 0 failed. Then confirm the gate still catches a real break: reorder two
+fields in a copy of the witness dict inside a scratch test and confirm it fails. Do **not**
+regenerate `tests/generator/golden/wire_witness.json` — this work order must not touch it.
+
+---
+
+## WO-4 — Make the Python tests runnable (task A21)
+
+**Why:** 11 of 12 remaining ctest failures are one cause — nothing assembles an importable
+`fastfhir` package. The pieces exist (`build/_core.*.so`, `python/fastfhir/__init__.py`,
+285 generated files under `generated_src/python/`) but are never put on a path together, so
+`py_*` cannot pass on any machine.
+
+**This one needs a decision, so read A21 in Block A first and pick a mechanism.**
+Recommended: option (b), a ctest fixture that sets `PYTHONPATH` — smallest change, needs no
+packaging metadata (task H1 owns that, and it does not exist yet). Do **not** pick option
+(a) `pip install -e .`; `pyproject.toml` has no `[project]` table.
+
+Also resolve A21.3 in the same session: `CMakeLists.txt:371` prefers
+`${CMAKE_SOURCE_DIR}/.venv/bin/python` when it exists, and the `.venv` currently in the tree
+contains only `pip` — no pytest. Either require it to be populated and fail configure
+loudly naming what is missing, or drop the preference. Silently selecting an interpreter
+that cannot run the tests is the current behaviour and the worst option.
+
+### Verify
+
+```bash
+rm -rf build && cmake --preset ninja && cmake --build build -j
+ctest --test-dir build --output-on-failure 2>&1 | tail -5
+```
+
+**Pass condition:** 32/32. If `py_roundtrip` still fails, check WO-1 step 2 landed.
+
+---
+
+## WO-5 — Clear the lint debt (task E13)
+
+**Why:** the documented lint command **fails today**. It examines all 36 files and reports
+**307 ruff violations plus 2 files black would reformat**. E1's CI recipe runs this exact
+command, so CI would be red from its first commit — and a step that is red on day one gets
+ignored or wrapped in `continue-on-error`, which is how a gate dies. Land this before CI.
+
+**Read task E13 in Block E first**, including the `> Unreproduced observation` note at the
+end of it. Do **not** rewrite the `pyproject.toml` `include` patterns: an earlier session
+recorded the command appearing to check zero files, that has never reproduced, and changing
+the config on the strength of it would be acting on evidence nobody can reproduce.
+
+### Precheck
+
+```bash
+cd /Users/ryanlandvater/GitHub/FastFHIR
+ruff check generator tests/generator 2>&1 | grep -E "Found [0-9]+ error|No Python files"
+black --check generator tests/generator 2>&1 | tail -1
+```
+
+Expect `Found 307 errors.` and `2 files would be reformatted, 34 files would be left
+unchanged.` If you instead see `No Python files found under the given path(s)`, **STOP** —
+that is the unreproduced condition; capture the full output plus `ruff check --show-files`
+and report it, because that evidence is what E13's note is asking for.
+
+### Steps
+
+1. `ruff check --fix generator tests/generator` — clears 88 automatically. Inspect the
+   diff before going further; `--fix` touches imports and f-strings.
+2. `black generator tests/generator` — reformats the 2 files.
+3. Re-run `FASTFHIR_GENERATED_DIR=generated_src python3 -m pytest tests/generator -q`.
+   **Must still be 40 passed.** The autofixes touch generator code; if any test breaks,
+   revert that specific fix rather than adapting the test.
+4. Fix the remaining ~219 by hand. Breakdown: `E501` (line >100 chars) 143, `F541`
+   (f-string with no placeholder) 56, `ANN001/201/202` (missing type hints) 70, `F401`
+   (unused import) 21, `I001` (import order) 9, `B007` (unused loop var) 4, `UP015`/`F841`
+   4. **No `F821`** — nothing here indicates a live bug; this is style debt against the
+   project's own declared standard, not defect triage.
+5. Keep the autofixes and the manual fixes as **two separate commits** so review stays
+   tractable.
+
+### Verify
+
+```bash
+ruff check generator tests/generator && black --check generator tests/generator
+echo "exit=$?"
+FASTFHIR_GENERATED_DIR=generated_src python3 -m pytest tests/generator -q
+```
+
+**Pass condition:** `exit=0`, and 40 generator tests still pass. Confirm the wire witness
+did not move: `git diff --stat tests/generator/golden/wire_witness.json` must be empty.
+
+---
+
+**After WO-5:** the suite is green, the gates are real, and the linter works — that is the
+point at which CI (task **E1**, unblocked, Q6 answered) is worth standing up, followed by
+the sanitizer leg (**G2**) and then Block **K**, the conformance validation layer.
+
+---
+
 ## IFE audit (2026-08-12) — provenance for A15–A18, B7, E8–E12, I1.6
 
-`LessonsFromIFE.md` reports what the Iris File Extension migration cost when a wire detail
-was got wrong, and nominates two items as the highest-value work here. Auditing every
-lesson against this tree produced the tasks listed above; each carries the evidence in its
+`LessonsFromIFE.md` (now consumed — its content lives in this audit and the tasks it
+produced) reported what the Iris File Extension migration cost when a wire detail was got
+wrong, and nominated two items as the highest-value work here. Auditing every lesson
+against this tree produced the tasks listed above; each carries the evidence in its
 **Context**. Two of the lessons' own nominations resolved as follows:
 
 - **"Enforce append-only mechanically"** — the machinery exists (A4) and is the right
@@ -74,8 +431,8 @@ figures change** — a task that claims to fix something here must move a number
 | `cmake -S . -B build …` | **fails on a clean tree** until the Python floor is set — see A19 |
 | Generator | 98 files into `generated_src/`, 39.6 s, clean |
 | `cmake --build build --target build_all -j` | exit 0 — but does **not** build the test binaries (A20) |
-| `ctest` after `build_all` | 14/32 pass; 6 "Not Run", 12 failed |
-| `ctest` after building **all** targets | **20/32 pass** — all 20 C++ green; the 12 failures are all Python (A21, A22) |
+| `ctest` after `build_all` | 20/32 pass; 0 "Not Run" (was 6), 12 failed — all `py_*` (WO-1, re-measured) |
+| `ctest` after building **all** targets | **20/32 pass** — all 19 `cpp_*` green, plus `py_setup`; the 12 failures are all Python (A21, A22) |
 | `pytest tests/generator -q` | **40 passed** in 4.6 s (two of them vacuous — see A15) |
 | `ruff check generator tests/generator` | **307 violations** — the documented lint command fails today (E13) |
 | `black --check generator tests/generator` | 2 files would be reformatted (E13) |
@@ -87,13 +444,13 @@ Two results worth keeping in view:
   to `tests/generator/golden/wire_witness.json`. The risk flagged against A15.4 and E8 — that
   packages.fhir.org re-published 4.0.1 content — has not materialised as of this date. That
   is a measurement with a shelf life, not a guarantee; E8 is what would make it one.
-- **All 20 C++ tests pass, and 25 consecutive runs of `ff_test_bundle` passed.** The suite is
+- **All 19 C++ tests pass, and 25 consecutive runs of `ff_test_bundle` passed.** The suite is
   not flaky. A14 is real, deterministic rather than intermittent, and **root-caused**: the
   `ff_ingest` CLI sizes its arena at 2× the input JSON length, which is too small for lean
   inputs. It is invisible to the suite because every C++ test sizes its own arena. See A14.
 
 Environment notes for whoever runs this next: a `.venv/` exists in the tree containing only
-`pip` (no pytest, no fastfhir). `CMakeLists.txt:331` prefers `.venv/bin/python` over the
+`pip` (no pytest, no fastfhir). `CMakeLists.txt:371` prefers `.venv/bin/python` over the
 found interpreter when it exists, so the *next* configure will select an interpreter that
 cannot run the Python tests at all. Delete it or populate it (A21 decides which). The
 Synthea zip re-downloads on every configure (B4.4).
@@ -555,10 +912,17 @@ Evidence (lldb, `EXC_BAD_ACCESS`, several runs):
 > JSON length, with no floor and no growth path.**
 >
 > ```cpp
-> // tools/ingestor/FF_Ingest.cpp:181
+> // tools/ingestor/FF_Ingest.cpp:179-182 — the comment states the assumption that fails
+> // HEURISTIC: Clinical JSON is heavy on syntax (quotes, braces, keys).
+> // FastFHIR binary is dense. 2x input size is a safe "one-and-done" allocation.
 > size_t capacity_hint = json_buffer.size() * 2;
 > auto memory = Memory::create(capacity_hint);
 > ```
+>
+> The heuristic holds asymptotically and fails at the bottom: the 54-byte `FF_HEADER` and
+> the per-block vtables are *fixed* overhead, so for a small document they dominate and 2×
+> the input is not enough. "One-and-done" is the part to revisit — there is no fallback when
+> the estimate is wrong.
 >
 > FastFHIR's binary form is *larger* than the JSON for small, lean inputs — a 54-byte
 > `FF_HEADER` plus vtables and blocks easily exceeds twice a 66-byte Patient. So the arena is
@@ -710,7 +1074,7 @@ decides, that line needs correcting (E5.4).
   (b) is the smallest and needs no packaging metadata (H1 owns that); (c) is closest to what
   users will actually import. Do not pick (a) before H1 exists.
 - [ ] A21.2 Implement it so `ctest -R py_` passes from a clean build with no manual steps.
-- [ ] A21.3 Resolve the `.venv` trap: `CMakeLists.txt:331` prefers `${CMAKE_SOURCE_DIR}/.venv/bin/python`
+- [ ] A21.3 Resolve the `.venv` trap: `CMakeLists.txt:371` prefers `${CMAKE_SOURCE_DIR}/.venv/bin/python`
   when present, and the `.venv` currently in the tree contains only `pip` — no pytest. Either
   require that venv to be populated (and fail configure loudly, naming the missing package,
   if it is not) or drop the preference. Silently selecting an interpreter that cannot run the
@@ -1093,9 +1457,9 @@ constants.py` compares Python's `TYPE_MAP` to a C++ header. `test_code_ids.py` c
 ledger to the emitted string table. None would catch a correct-offset/wrong-load error — a
 field at the right place read at the wrong width, or an enum cast from the wrong type — and
 none proves that a stream written last year still parses today. The only check that does is
-bytes produced by a shipped encoder, read back through the current reader. (`LessonsFromIFE.md`
-C6 lists this as IFE's own standing gap, so it is a shared one; A4.3's compile smoke test is
-the nearest existing relative and is complementary, not a substitute.)
+bytes produced by a shipped encoder, read back through the current reader. (IFE C6 — see the
+IFE audit above — records this as IFE's own standing gap, so it is a shared one; A4.3's
+compile smoke test is the nearest existing relative and is complementary, not a substitute.)
 
 - [ ] B7.1 Produce one small sealed `.ffhr` from the current builder: a Patient plus an
   Observation, exercising at least one of each field kind that has a distinct on-wire
@@ -1973,9 +2337,216 @@ name the field being written and not just the code.
 
 ---
 
+## Block K — Conformance validation layer (attachable, generated, not linked by default)
+
+### K0. What this is, and how it differs from Block J
+
+**Planned, unstarted.** Modelled on the Iris File Extension's validation layer
+(`Iris-File-Extension` @ `3cd0fa0`, `generated_source/IFE_Validation.{hpp,cpp}` +
+`examples/validation_layer.cpp`), which is the same architecture applied to a smaller
+format and is worth reading in full before writing any of this.
+
+**The split this rests on**, and the thing to get right before writing code:
+
+1. **Structural** validation is inline and mandatory. A block sits at its own offset,
+   carries the right `RECOVERY_TAG`, and fits inside the arena. FastFHIR already does this
+   (`Builder::_amend_prepare` bounds checks, `FF_HEADER` magic, recovery tags) and it must
+   stay unconditional. Wrong here means *unreadable bytes*.
+2. **Conformance** validation is optional and attachable. `Patient.name` cardinality,
+   required-field presence, code membership in a bound ValueSet, FHIR invariants like
+   `pat-1`. These say nothing about whether the bytes parse. Wrong here means *a valid
+   file that a FHIR server will reject*.
+
+Conformance policy is a development-time aid, not a production dependency — exactly the
+Vulkan framing. A shipped product links the layer only if it wants it; a detached
+`append_obj` costs **one null check**.
+
+**How this differs from Block J.** J1 specifies runtime-discovered dylibs with a stable C
+ABI, manifests and a `FASTFHIR_LAYER_PATH` — the full Vulkan loader mechanism, because
+terminology data is separately licensed and cannot ship in-tree. Block K is the *simpler,
+more C++* half: an ordinary struct of function pointers, generated from the
+StructureDefinitions, in a separately-linked static library. **No loader, no trampolines,
+no manifest discovery** — IFE deliberately borrowed the shape and not the machinery.
+
+The two must share one interface. If K's hooks struct is the boundary, then J1.2's
+"stable C ABI" *is* that struct, and J's discovery becomes an optional way to populate it
+rather than a parallel mechanism. **Do K first**; then re-read J1 and delete whatever K
+made redundant. Do not build two hook systems.
+
+**Never:** conformance failure must never corrupt or block a write path that structural
+validation accepted, and must never enter the wire format. A stream written with the layer
+attached and one written without it must be **byte-identical** — the layer observes, it
+does not encode. K5.4 tests exactly this.
+
+### K1. The types: `Conformance::Status` and `ValidationHooks`
+
+**Context:** IFE's `Status` (`generated_source/IFE_Blocks.hpp:69`) is a deliberate POD —
+`Check code; const char* block; const char* field; uint64_t found, expected; Offset at;`
+with `explicit operator bool()`. No allocation, `noexcept` throughout, formatting left to
+the caller. FastFHIR's existing `FF_Result` (`include/FF_Primitives.hpp:221`) carries a
+`std::string` **by value**, so constructing one allocates. That is fine at the ingest API
+boundary where it is used today; it is wrong for a check that may run per field.
+
+- [ ] K1.1 New `include/FF_Conformance.hpp`: `enum class Check : uint8_t` (`OK`,
+  `CARDINALITY`, `REQUIRED_MISSING`, `FIXED_VALUE`, `CODE_NOT_IN_VALUESET`,
+  `INVARIANT`, …) and a POD `Status` mirroring IFE's, plus the FHIR-specific citation
+  fields — the invariant key (`"pat-1"`) and the resource URL — as `const char*` pointing
+  at generated static storage. `noexcept`, no allocation, trivially copyable; assert both
+  with `static_assert(std::is_trivially_copyable_v<Status>)`.
+- [ ] K1.2 `struct ValidationHooks` with `const ValidationHooks* next` (layers chain) and
+  `std::string* diagnostic` (caller-owned sink; the layer assigns, the caller clears
+  before a write and checks non-empty after). IFE moved from a
+  `void(*)(const char*, void*)` callback + `void* user` to the plain `std::string*` in
+  `3cd0fa0` and the diff is worth reading — it removed a type-erased pointer pair from a
+  public struct for no loss of capability. Do not reintroduce the callback.
+- [ ] K1.3 **Dispatch — decide before writing the emitter, `Blocked on Q17`.** IFE names
+  one function pointer per block (18 members). FastFHIR has 141 blocks, so a named member
+  per block is a 141-line struct that changes every time a resource is added. The
+  alternative is a table indexed by `RECOVERY_TAG` with a type-erased signature, cast back
+  through `TypeTraits<T_Data>` — type erasure confined to one call site, and provably
+  correct because the tag comes from `TypeTraits<T_Data>::recovery`
+  (`generated_src/FF_Patient.hpp:104`). Recommendation: the tag-indexed table, because it
+  scales with the resource count and because `append_obj` is already templated on
+  `T_Data`. Q17 records the decision.
+- Acceptance: header compiles standalone (`c++ -std=c++20 -fsyntax-only`); `Status` is
+  trivially copyable; no `std::string` by value anywhere in it.
+
+### K2. Attachment point: the Builder, at the API boundary
+
+**Context:** IFE threads `const ValidationHooks*` through every generated
+`store(base, offset, info, hooks)`. FastFHIR should **not** copy that. Its write path is
+`Builder::append_obj(data)` (`include/FF_Builder.hpp:594`) →
+`TypeTraits<T>::store` → `STORE_FF_PATIENT` (`generated_src/FF_Patient.cpp:1205`), and the
+generated `STORE_*` functions are the hot path. Checking in `append_obj`, before `store`,
+gets the same coverage with:
+
+- no signature change to any generated `STORE_*` (smaller diff, no hot-path cost, and the
+  wire witness cannot move);
+- the check running against the typed `*Data` struct, which is where the FHIR-level rules
+  are actually expressible — IFE's own comment says the layer "validates at the API
+  boundary, as a Vulkan layer does, never against generated internals";
+- one attachment for the whole stream instead of a parameter at every call.
+
+- [ ] K2.1 `Builder::attach_layer(const ValidationHooks* hooks) noexcept` — a single
+  member, null by default. Document that the pointer is borrowed, must outlive the
+  Builder, and that the struct is copied by the caller before `diagnostic`/`next` are set
+  (IFE returns `const ValidationHooks&` from `conformance_layer()` and tells the caller to
+  copy; mirror that).
+- [ ] K2.2 In `append_obj`, before `TypeTraits<T_Data>::store`: if a layer is attached and
+  has a check for `TypeTraits<T_Data>::recovery`, run it. Detached, this is one null test.
+  Measure it: a benchmark run with and without the layer attached must show no difference
+  outside noise on the detached path (flag for the benchmark repo per execution-contract
+  rule 9).
+- [ ] K2.3 **Failure policy, two modes.** `CLAUDE.md` invariant 5 says the write path
+  throws. J5 (answered) says terminology failures are a *loud logged warning, never a
+  drop*. Both are right for their case, so make it explicit:
+  `LayerPolicy::Throw` (default — `std::runtime_error` prefixed `"FastFHIR: "`, message
+  formatted from `Status` + citation) and `LayerPolicy::Report` (fill the sink, return,
+  continue). Conformance defaults to Throw; a J terminology layer sets Report. Convert
+  `Status` → exception **only** at this boundary, so the layer itself stays `noexcept`.
+- [ ] K2.4 Decide and document whether the read path gets hooks too. Recommendation: **no,
+  not in K.** The read path returns falsy Nodes rather than throwing (invariant 5) and is
+  the zero-copy hot path; a reader-side conformance check is a separate tool (closer to a
+  linter over a finished archive) and should not be smuggled into `Node`.
+
+### K3. Generator: emit checks from what the StructureDefinitions already carry
+
+**Context:** the conformance data is already in the packages and currently unused. The
+generator reads `el.get("max")` for array-ness (`generator/model/merge.py:76`) and
+`el.get("binding")` for code systems (`generator/emit/codesystems.py:159`), and reads
+**neither `min` nor `constraint`**. FHIR StructureDefinition elements carry `min`/`max`
+(cardinality), `constraint[]` (each with `key` like `pat-1`, `severity`, `human`,
+`expression`), `binding.strength` + `valueSet`, and `fixed[x]`/`pattern[x]`. That is the
+FastFHIR analogue of IFE's hand-authored `conformance: {level, clause, requirement}`
+blocks — with the advantage that it is normative and upstream, and the disadvantage that
+`expression` is FHIRPath, a full language.
+
+**Cap the expressiveness in writing, per IFE B6 (see the IFE audit above).** The generator
+emits checks for a **closed allow-list** of shapes and nothing else:
+
+- [ ] K3.1 Allow-list, in this order of value: (a) `min >= 1` → required-field presence;
+  (b) `max` bounds on arrays; (c) `fixed[x]` / `pattern[x]` exact-value; (d)
+  `binding.strength == "required"` → membership in the bound ValueSet, which reuses the
+  dictionary and is the natural bridge to Block J.
+- [ ] K3.2 **Everything else is recorded, not skipped.** Any `constraint[]` whose
+  `expression` the emitter does not implement must be emitted as a listed, queryable
+  "unimplemented" entry naming its `key` and `human` text — IFE A5: a blank must not be
+  ambiguous between "checked and passed", "deliberately not checked", and "forgotten". A conformance report that cannot say what it did not check is worth
+  much less than one that can.
+- [ ] K3.3 No FHIRPath evaluator. If one is ever wanted it is its own project with its own
+  task; writing a partial one inside the emitter is how the schema becomes a programming
+  language. Say so in the emitter's module docstring.
+- [ ] K3.4 Every diagnostic cites its source: the invariant `key` and `human` text
+  verbatim where there is one, else the element path and the rule that produced the check,
+  plus the resource's canonical URL. IFE's diagnostics end "Per the IFE specification,
+  clause ife-layer-extents"; the FastFHIR equivalent cites FHIR, not FastFHIR — **we do
+  not invent normative requirements**, we enforce HL7's. (Once I1's SPEC.md exists it may
+  add FastFHIR-specific clauses; those are separate and must be marked as such.)
+- [ ] K3.5 New emitter `generator/emit/conformance.py` producing
+  `generated_src/FF_Conformance_Layer.{hpp,cpp}` and a `conformance_layer()` returning a
+  shared immutable `const ValidationHooks&`. Follows the `emit/` boundary rule: no
+  arithmetic on byte offsets, text only.
+- Acceptance: the emitted layer compiles; the wire witness is **unchanged** (this emits no
+  wire constants — if the witness moves, something is wrong); `pytest tests/generator` green.
+
+### K4. Build: a separate library nobody links by accident
+
+- [ ] K4.1 `fastfhir_conformance` static library, `FASTFHIR_BUILD_CONFORMANCE` default
+  **OFF**, not in `_BUILD_ALL` unless enabled. IFE keeps its layer deliberately outside
+  the main library and says so in the generated header's comment; mirror that, including
+  the comment explaining *why* it is outside.
+- [ ] K4.2 Add to the `xcode` preset (`FASTFHIR_BUILD_CONFORMANCE=ON`) so it is present
+  while debugging and absent in a default release build — the whole point of the split.
+  Give it a `Tests`/`Libraries` FOLDER per the IDE-layout block.
+- [ ] K4.3 Confirm the object-only-target trap does not apply (it has real sources), and
+  that a build with the option OFF links and runs unchanged.
+
+### K5. Tests — red-green, and one that pins the wire
+
+- [ ] K5.1 Detached: a spec-violating but structurally valid `PatientData` writes and
+  reports success. This is the first test IFE's example makes, and it is the one that
+  proves conformance is opt-in.
+- [ ] K5.2 Attached: the same input fails, the `Status` names the right field, and the
+  sink holds the citation. Assert the citation text, not just that it is non-empty.
+- [ ] K5.3 Chaining: a second hooks struct with `next` set is reached only when the first
+  passes; assert both orderings.
+- [ ] K5.4 **Byte-identity:** write the same valid resource with and without the layer,
+  `memcmp` the two arenas. Any difference means the layer is encoding something, which K0
+  forbids. Pairs naturally with B7's byte fixture.
+- [ ] K5.5 Red-green every check the emitter produces, per `LessonsFromIFE.md` C2: for
+  each allow-listed shape, construct input that violates it and confirm the layer fires.
+  A generated check that has never fired is not evidence (C1).
+
+### K6. Docs and the Block J reconciliation
+
+- [ ] K6.1 `examples/conformance_layer.cpp` — a worked example in the shape of IFE's
+  `examples/validation_layer.cpp`: detached, attached, chained, with `expect()` throwing so
+  a demo cannot silently pass. Register it as a test so it cannot rot.
+- [ ] K6.2 Re-read J1 with K1's hooks struct in hand and cut what is now redundant —
+  specifically J1.2's separate C ABI. Record the outcome under J1 rather than silently
+  editing it.
+- [ ] K6.3 `CLAUDE.md`: one line in the repo map for the layer, and the K0 split
+  (structural mandatory / conformance attachable) added near invariant 5, which currently
+  describes only the exception convention.
+- [ ] K6.4 README: state plainly that FastFHIR is a serialization library, not a FHIR
+  server — no REST, no SMART on FHIR, no OAuth (verified absent 2026-08-12). The
+  conformance layer checks *resources*, not *interactions*, and readers will otherwise
+  assume a validation layer implies server-side validation. Do together with I3.
+
+---
+
 ## Questions for Ryan
 
 Answers unblock the tasks referencing them. Write answers inline after `> Answer:`.
+
+- **Q17 (blocks K1.3):** Conformance-hook dispatch — a named function pointer per block
+  (IFE's shape: explicit, type-safe, but 141 members here and a struct that changes with
+  every new resource), or a table indexed by `RECOVERY_TAG` with one type-erased signature
+  cast back through `TypeTraits<T_Data>` (scales with resource count, type erasure confined
+  to one call site, correct by construction because the tag comes from the traits)?
+  Recommendation: the tag-indexed table. IFE could afford named members at 18 blocks;
+  FastFHIR cannot at 141.
+  > Answer:
 
 - **Q1 (blocks C1, C2):** `recover_archive` atomicity — must repairs be all-or-nothing on
   the original archive, or should recovery always operate on a copy and swap on success?
@@ -2068,7 +2639,7 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
   versions, and at which FastFHIR-benchmark commit? The README table must be
   reproducible from a stated commit of
   <https://github.com/ryanlandvater/FastFHIR-benchmark>.
-  > Answer (Ryan, 2026-07-08): **Review the benchmark repo at `../FastFHIR_Performance/`**
+  > Answer (Ryan, 2026-07-08): **Review the benchmark repo at `../FastFHIR-benchmark/`**
   > for context. Benchmarks will be published with the specification paper, not now.
 
 - **Q13 (blocks I1):** Wire-format stability statement — is the format already frozen

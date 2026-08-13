@@ -35,6 +35,7 @@ from roundtrip_diff import (
     filter_allowlisted,
     format_diff_report,
     DiffEntry,
+    DiffKind,
 )
 
 # ─── Configuration ───────────────────────────────────────────────────────────

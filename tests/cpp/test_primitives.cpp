@@ -70,7 +70,7 @@ static std::vector<uint8_t> make_header_buffer(uint16_t fhir_rev = FHIR_VERSION_
     // Override the VERSION slot with the test's engine version so tests are
     // deterministic regardless of which compile-time FASTFHIR_VERSION_* is set.
     STORE_U32(buf.data() + FF_HEADER::VERSION,
-              FF_ENCODE_HEADER_VERSION(TEST_ENGINE_VERSION, FF_STREAM_LAYOUT_STANDARD));
+              FF_ENCODE_HEADER_VERSION(TEST_ENGINE_VERSION, FF_STREAM_COMPACTION_NONE));
     return buf;
 }
 

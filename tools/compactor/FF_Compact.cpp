@@ -276,7 +276,7 @@ int main(int argc, char *argv[])
         // -----------------------------------------------------------------
         Parser source(parse_buffer, parse_size);
 
-        if (source.stream_layout() == FF_STREAM_LAYOUT_COMPACT)
+        if (source.stream_layout() == FF_STREAM_COMPACTED)
         {
             std::cerr << "[ff_compact] Error: input stream is already a compact archive.\n"
                       << "             Compact archives cannot be re-compacted.\n";

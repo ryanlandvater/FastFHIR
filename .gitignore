@@ -2,7 +2,7 @@
 .venv/
 .conda
 .vscode/
-build/
+build*/
 fhir_specs/
 fhir_packages/
 generated_src/

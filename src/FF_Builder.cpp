@@ -50,7 +50,7 @@ m_active_mutators(0)
     // Parser throws on fresh/provisional memory (header validation fails) —
     // treat that as a new writable stream.
     bool parsed_existing_stream = false;
-    FF_StreamLayout existing_layout = FF_STREAM_LAYOUT_STANDARD;
+    FF_StreamCompaction existing_layout = FF_STREAM_COMPACTION_NONE;
     try {
         Parser p(m_memory);
         parsed_existing_stream = true;
@@ -81,7 +81,7 @@ m_active_mutators(0)
         // No valid FastFHIR stream detected — this is a new stream, leave root unset.
     }
 
-    if (parsed_existing_stream && existing_layout == FF_STREAM_LAYOUT_COMPACT) {
+    if (parsed_existing_stream && existing_layout == FF_STREAM_COMPACTED) {
         throw std::runtime_error(
             "FastFHIR: Cannot open Builder on a compact archive. "
             "Decompact to a standard stream before append/mutation."

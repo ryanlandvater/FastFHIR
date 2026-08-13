@@ -56,7 +56,7 @@ class Parser {
     Size            m_size = 0;
     uint32_t        m_version = 0;         // FHIR revision extracted from FF_HEADER::FHIR_REV
     uint32_t        m_engine_version = 0;  // engine version extracted from FF_HEADER::VERSION
-    FF_StreamLayout m_stream_layout = FF_STREAM_LAYOUT_STANDARD;
+    FF_StreamCompaction m_stream_layout = FF_STREAM_COMPACTION_NONE;
     const Reflective::ParserOps* m_ops = nullptr;
     Offset          m_root_offset = FF_NULL_OFFSET;
     RECOVERY_TAG    m_root_recovery = FF_RECOVER_UNDEFINED;
@@ -104,7 +104,7 @@ public:
     * @brief Get the stream layout mode detected from header metadata.
     * @return Standard or compact stream layout mode.
      */
-    FF_StreamLayout stream_layout() const { return m_stream_layout; }
+    FF_StreamCompaction stream_layout() const { return m_stream_layout; }
 
     /**
      * @brief Returns true if the stream has a URL directory.

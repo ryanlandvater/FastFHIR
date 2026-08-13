@@ -167,10 +167,10 @@ enum FHIR_VERSION : uint16_t
 // =====================================================================
 // STREAM LAYOUT MODE (encoded in FF_HEADER::VERSION high bits)
 // =====================================================================
-enum FF_StreamLayout : uint8_t
+enum FF_StreamCompaction : uint8_t
 {
-    FF_STREAM_LAYOUT_STANDARD = 0,
-    FF_STREAM_LAYOUT_COMPACT = 1,
+    FF_STREAM_COMPACTION_NONE = 0,
+    FF_STREAM_COMPACTED = 1,
 };
 
 constexpr uint32_t FF_STREAM_LAYOUT_BITS = 2;
@@ -178,7 +178,7 @@ constexpr uint32_t FF_STREAM_LAYOUT_SHIFT = 32 - FF_STREAM_LAYOUT_BITS;
 constexpr uint32_t FF_STREAM_LAYOUT_MASK = (0x3u << FF_STREAM_LAYOUT_SHIFT);
 constexpr uint32_t FF_ENGINE_VERSION_MASK = ~FF_STREAM_LAYOUT_MASK;
 
-inline constexpr uint32_t FF_ENCODE_HEADER_VERSION(uint32_t engine_version, FF_StreamLayout layout)
+inline constexpr uint32_t FF_ENCODE_HEADER_VERSION(uint32_t engine_version, FF_StreamCompaction layout)
 {
     return (engine_version & FF_ENGINE_VERSION_MASK) |
            ((static_cast<uint32_t>(layout) << FF_STREAM_LAYOUT_SHIFT) & FF_STREAM_LAYOUT_MASK);
@@ -202,9 +202,9 @@ inline constexpr uint16_t FF_ENGINE_MINOR(uint32_t engine_version) noexcept
     return static_cast<uint16_t>(engine_version & 0xFFFFu);
 }
 
-inline constexpr FF_StreamLayout FF_HEADER_STREAM_LAYOUT(uint32_t encoded_version)
+inline constexpr FF_StreamCompaction FF_HEADER_STREAM_LAYOUT(uint32_t encoded_version)
 {
-    return static_cast<FF_StreamLayout>((encoded_version & FF_STREAM_LAYOUT_MASK) >> FF_STREAM_LAYOUT_SHIFT);
+    return static_cast<FF_StreamCompaction>((encoded_version & FF_STREAM_LAYOUT_MASK) >> FF_STREAM_LAYOUT_SHIFT);
 }
 
 // =====================================================================
@@ -641,7 +641,7 @@ struct FF_EXPORT FF_HEADER : DATA_BLOCK
 
     FF_Result validate_full(const BYTE *const __base) const noexcept;
     uint32_t get_engine_version(const BYTE *const __base) const;
-    FF_StreamLayout get_stream_layout(const BYTE *const __base) const;
+    FF_StreamCompaction get_stream_layout(const BYTE *const __base) const;
     uint16_t get_fhir_rev(const BYTE *const __base) const;
     FF_CHECKSUM get_checksum(const BYTE *const __base) const;
     Offset get_root(const BYTE *const __base) const;
@@ -654,7 +654,7 @@ void FF_EXPORT STORE_FF_HEADER(BYTE *const __base, uint16_t fhir_revision,
                                RECOVERY_TAG root_recovery, Offset checksum_offset,
                                Offset url_dir_offset = FF_NULL_OFFSET,
                                Offset module_reg_offset = FF_NULL_OFFSET,
-                               FF_StreamLayout stream_layout = FF_STREAM_LAYOUT_STANDARD);
+                               FF_StreamCompaction stream_layout = FF_STREAM_COMPACTION_NONE);
 
 // =====================================================================
 // FIXED-SIZE CHECKSUM FOOTER

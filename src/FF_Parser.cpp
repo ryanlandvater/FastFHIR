@@ -29,7 +29,7 @@ using NodeLookupIndexFn = Node (*)(const Node&, size_t);
 using EntryAsNodeFn = Node (*)(const Entry&, Size, uint32_t, RECOVERY_TAG, FF_FieldKind, const ParserOps*);
 
 struct ParserOps {
-    FF_StreamLayout layout;
+    FF_StreamCompaction layout;
     NodeSizeFn node_size;
     NodeEntriesFn node_entries;
     NodeLookupFieldFn node_lookup_field;
@@ -189,7 +189,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
 }
 
 static const ParserOps STANDARD_OPS{
-    FF_STREAM_LAYOUT_STANDARD,
+    FF_STREAM_COMPACTION_NONE,
     &ParserOps::standard_node_size,
     &ParserOps::standard_node_entries,
     &ParserOps::standard_node_lookup_field,
@@ -198,7 +198,7 @@ static const ParserOps STANDARD_OPS{
 };
 
 static const ParserOps COMPACT_OPS{
-    FF_STREAM_LAYOUT_COMPACT,
+    FF_STREAM_COMPACTED,
     &ParserOps::compact_node_size,
     &ParserOps::compact_node_entries,
     &ParserOps::compact_node_lookup_field,
@@ -214,10 +214,10 @@ static const ParserOps* compact_ops_ptr() {
     return &COMPACT_OPS;
 }
 
-static const ParserOps* select_ops(FF_StreamLayout layout) {
+static const ParserOps* select_ops(FF_StreamCompaction layout) {
     switch (layout) {
-        case FF_STREAM_LAYOUT_STANDARD: return &STANDARD_OPS;
-        case FF_STREAM_LAYOUT_COMPACT:  return &COMPACT_OPS;
+        case FF_STREAM_COMPACTION_NONE: return &STANDARD_OPS;
+        case FF_STREAM_COMPACTED:  return &COMPACT_OPS;
         default:                        return &STANDARD_OPS;
     }
 }
