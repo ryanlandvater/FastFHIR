@@ -63,13 +63,7 @@ def _build_roundtrip_tool() -> Path:
 # ─── Fixture discovery ───────────────────────────────────────────────────────
 
 def discover_fixtures(synthea_dir: str) -> list[Path]:
-    """Return sorted list of .json fixture paths under synthea_dir.
-
-    Bundle fixtures are excluded until TASKS.md A23 lands: the ff_roundtrip
-    harness segfaults in the read path on every Synthea Bundle (ASCII bytes
-    used as an offset in standard_entry_as_node → LOAD_U16; see A23 for the
-    crash report and repro). Per-resource fixtures still exercise the path.
-    """
+    """Return sorted list of .json fixture paths under synthea_dir."""
     root = Path(synthea_dir)
     if not root.is_dir():
         return []
@@ -80,14 +74,7 @@ def discover_fixtures(synthea_dir: str) -> list[Path]:
         if not search_dir.is_dir():
             continue
         for entry in sorted(search_dir.iterdir()):
-            if entry.suffix != ".json":
-                continue
-            try:
-                with open(entry, encoding="utf-8") as f:
-                    is_bundle = json.load(f).get("resourceType") == "Bundle"
-            except (json.JSONDecodeError, OSError):
-                is_bundle = False  # a malformed fixture still gets its own failure
-            if not is_bundle:
+            if entry.suffix == ".json":
                 candidates.append(entry)
     return candidates
 

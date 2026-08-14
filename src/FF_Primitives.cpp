@@ -297,8 +297,20 @@ std::string FF_STRING::read(const BYTE* const __base) const {
 // =====================================================================
 // LOCK-FREE STRING & MSB DICTIONARY EMITTERS
 // =====================================================================
+// SIZE_FF_STRING reports the size of what STORE_FF_STRING WRITES -- nothing else.
+// It must never special-case the empty string: STORE_FF_STRING writes a full
+// 14-byte FF_STRING header for a zero-length payload, so a size of 0 here means
+// the caller claims 14 bytes too few and the store runs into whatever the NEXT
+// claim_space() hands out. That is the exact mechanism of TASKS.md A23 Bug B,
+// reachable through three separate paths (string[] elements, unique_ptr-stored
+// dateTime/markdown/... fields, and TypeTraits<std::string_view>).
+//
+// "Absent" is NOT this function's job. Callers that treat an empty string as an
+// absent field guard with `!empty()` and write FF_NULL_OFFSET into the slot --
+// see generate_size_fields/generate_store_fields, which guard in lockstep. Array
+// elements cannot be skipped that way (it would change the element count), so
+// they store a real empty FF_STRING and this size must account for it.
 Size SIZE_FF_STRING(std::string_view str) {
-    if (str.empty()) return 0;
     return FF_STRING::HEADER_SIZE + str.size();
 }
 Size SIZE_FF_CODE(std::string_view code_str, uint32_t version = FHIR_VERSION_R5) {

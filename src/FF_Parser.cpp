@@ -774,13 +774,17 @@ Node ParserOps::standard_node_lookup_index(const Node& n, size_t index) {
             Offset item_off = LOAD_U64(n.m_base + ptr_off);
             if (item_off == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(n.m_base + item_off + DATA_BLOCK::RECOVERY));
-            return Node(n.m_base, n.m_size, n.m_version, item_off, actual_tag, FF_FIELD_BLOCK,
+            // Same ground-truth kind re-derivation as standard_entry_as_node (Bug C).
+            FF_FieldKind item_kind = (actual_tag == RECOVER_FF_STRING) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
+            return Node(n.m_base, n.m_size, n.m_version, item_off, actual_tag, item_kind,
                         FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
         }
         case FF_ARRAY::INLINE_BLOCK: {
             Offset item_off = static_cast<Offset>(entries_start - n.m_base) + index * step;
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(n.m_base + item_off + DATA_BLOCK::RECOVERY));
-            return Node(n.m_base, n.m_size, n.m_version, item_off, actual_tag, FF_FIELD_BLOCK,
+            // Same ground-truth kind re-derivation as standard_entry_as_node (Bug C).
+            FF_FieldKind item_kind = (actual_tag == RECOVER_FF_STRING) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
+            return Node(n.m_base, n.m_size, n.m_version, item_off, actual_tag, item_kind,
                         FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
         }
     }
@@ -839,7 +843,14 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
             Offset child_offset = LOAD_U64(e.base + slot_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + child_offset + DATA_BLOCK::RECOVERY));
-            return Node(e.base, size, version, child_offset, actual_tag, schema_kind,
+            // The schema kind can be BLOCK (e.g. dateTime fields resolved through the
+            // complex-block mapping) while the stored block is actually an FF_STRING.
+            // The recovery tag is ground truth — re-derive the kind so string nodes are
+            // walked as strings (is_empty/print_json) instead of as empty blocks, which
+            // emitted dangling keys like "start":, (Bug C, TASKS.md A23.3).
+            FF_FieldKind child_kind = schema_kind;
+            if (actual_tag == RECOVER_FF_STRING) child_kind = FF_FIELD_STRING;
+            return Node(e.base, size, version, child_offset, actual_tag, child_kind,
                         FF_RECOVER_UNDEFINED, false, ops, e.m_engine_version);
         }
     }

@@ -428,7 +428,7 @@ def compile_fhir_library(
 _DATA_TYPES_TRAITS = """template<> struct TypeTraits<std::string_view> {
     static constexpr auto recovery = RECOVER_FF_STRING;
     static Size size(std::string_view d, uint32_t = FHIR_VERSION_R5) { return SIZE_FF_STRING(d); }
-    static void store(BYTE* const base, Offset off, std::string_view d, uint32_t = FHIR_VERSION_R5) { STORE_FF_STRING(base, off, d); }
+    static Offset store(BYTE* const base, Offset off, std::string_view d, uint32_t = FHIR_VERSION_R5) { return off + STORE_FF_STRING(base, off, d); }
 };
 
 template<> struct TypeTraits<std::vector<Offset>> {
@@ -437,38 +437,42 @@ template<> struct TypeTraits<std::vector<Offset>> {
 template<> struct TypeTraits<std::vector<ResourceReference>> {
     static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_RESOURCE | RECOVER_ARRAY_BIT);
     static Size size(const std::vector<ResourceReference>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_RESOURCE); }
-    static void store(BYTE* const base, Offset off, const std::vector<ResourceReference>& d, uint32_t = FHIR_VERSION_R5) {
+    static Offset store(BYTE* const base, Offset off, const std::vector<ResourceReference>& d, uint32_t = FHIR_VERSION_R5) {
         STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_RESOURCE, static_cast<uint32_t>(d.size()), recovery);
         for (const auto& ref : d) {
             STORE_U64(base + off, ref.offset); STORE_U16(base + off + DATA_BLOCK::RECOVERY, ref.recovery); off += TYPE_SIZE_RESOURCE;
         }
+        return off;
     }
 };
 
 template<> struct TypeTraits<std::vector<uint8_t>> {
     static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_BOOL | RECOVER_ARRAY_BIT);
     static Size size(const std::vector<uint8_t>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_UINT8); }
-    static void store(BYTE* const base, Offset off, const std::vector<uint8_t>& d, uint32_t = FHIR_VERSION_R5) {
+    static Offset store(BYTE* const base, Offset off, const std::vector<uint8_t>& d, uint32_t = FHIR_VERSION_R5) {
         STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_UINT8, static_cast<uint32_t>(d.size()), recovery);
         for (const auto& v : d) { STORE_U8(base + off, v); off += TYPE_SIZE_UINT8; }
+        return off;
     }
 };
 
 template<> struct TypeTraits<std::vector<uint32_t>> {
     static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_UINT32 | RECOVER_ARRAY_BIT);
     static Size size(const std::vector<uint32_t>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_UINT32); }
-    static void store(BYTE* const base, Offset off, const std::vector<uint32_t>& d, uint32_t = FHIR_VERSION_R5) {
+    static Offset store(BYTE* const base, Offset off, const std::vector<uint32_t>& d, uint32_t = FHIR_VERSION_R5) {
         STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_UINT32, static_cast<uint32_t>(d.size()), recovery);
         for (const auto& v : d) { STORE_U32(base + off, v); off += TYPE_SIZE_UINT32; }
+        return off;
     }
 };
 
 template<> struct TypeTraits<std::vector<double>> {
     static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_FLOAT64 | RECOVER_ARRAY_BIT);
     static Size size(const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_FLOAT64); }
-    static void store(BYTE* const base, Offset off, const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) {
+    static Offset store(BYTE* const base, Offset off, const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) {
         STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_FLOAT64, static_cast<uint32_t>(d.size()), recovery);
         for (const auto& v : d) { STORE_F64(base + off, v); off += TYPE_SIZE_FLOAT64; }
+        return off;
     }
 };
 

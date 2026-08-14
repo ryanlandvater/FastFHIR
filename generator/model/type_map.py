@@ -226,6 +226,33 @@ STRING_TYPES: set[str] = {
 }
 
 # ---------------------------------------------------------------------------
+# Code-enum unset sentinel
+# ---------------------------------------------------------------------------
+
+# Every generated code enum carries this enumerator, and every code-typed POD
+# member defaults to it. Without it, enum value 0 is a real FHIR code and an
+# absent field is indistinguishable from an asserted one -- so a Patient with no
+# gender was written to the wire as "female", an AllergyIntolerance with no
+# criticality as "high", and a Quantity with no comparator as "<" (TASKS.md A24).
+#
+# It lives here, in the model layer, because both emit/codesystems.py (which
+# declares the enums) and model/merge.py (which defaults the POD members) need
+# the same spelling, and merge.py must never import from emit/.
+#
+# The value is pinned rather than appended so that adding a code to a ValueSet
+# does not move it. serialize_*() has no case for it and falls through to
+# `default: return ""`, which ENCODE_FF_CODE already maps to FF_CODE_NULL and
+# SIZE_FF_CODE already sizes as 0 -- so the sentinel needs no special handling
+# on the store path, and SIZE/STORE stay in agreement (A23.6).
+UNSET_ENUMERATOR: str = "FF_UNSET"
+
+# uint8_t underlies every generated code enum, so the sentinel occupies the top
+# value and a ValueSet may hold at most 255 codes. The largest today is
+# FF_FHIRTypes at 231. codesystems.py raises rather than silently colliding.
+UNSET_ENUM_VALUE: int = 255
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

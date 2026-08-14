@@ -30,7 +30,12 @@ def generate_size_fields(layout, block_struct_name, data_name):
             cpp += f"    std::visit([&](auto&& arg) {{\n"
             cpp += f"        using T = std::decay_t<decltype(arg)>;\n"
             cpp += f"        if constexpr (std::is_same_v<T, std::string_view>) {{\n"
-            cpp += f"            if (!arg.empty()) __total += SIZE_FF_STRING(arg);\n"
+            # No `!arg.empty()` guard: the STORE side writes STORE_FF_STRING
+            # unconditionally once the variant holds a string_view, so an empty
+            # one still costs a 14-byte FF_STRING header. Guarding here and not
+            # there is the SIZE/STORE asymmetry that produced A23 Bug B. An
+            # absent choice is std::monostate, not an empty string.
+            cpp += f"            __total += SIZE_FF_STRING(arg);\n"
             cpp += f"        }}\n"
             cpp += f"    }}, {data_name}.{f['cpp_name']}.value);\n"
         elif kind == "FF_FIELD_ARRAY":
@@ -46,9 +51,17 @@ def generate_size_fields(layout, block_struct_name, data_name):
                 cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * TYPE_SIZE_OFFSET);\n"
                 cpp += f"        for (const auto& __item : {data_name}.{f['cpp_name']}) {{\n"
                 if code_enum:
-                    cpp += f"            __total += SIZE_FF_CODE(std::string({code_enum['serialize']}(__item)), __version);\n"
+                    # The store writes these as FF_STRINGs unconditionally (OFFSET
+                    # array of strings, per the wire format) — the size MUST match,
+                    # so SIZE_FF_STRING, never the dictionary-aware SIZE_FF_CODE.
+                    # The old SIZE_FF_CODE returned 0 for dictionary hits, so every
+                    # resource with a dictionary-backed code array (e.g.
+                    # AllergyIntolerance.category = ["medication"]) was claimed
+                    # short and the NEXT resource's write overlapped its tail
+                    # (TASKS.md A23, Bug B).
+                    cpp += f"            __total += SIZE_FF_STRING(std::string({code_enum['serialize']}(__item)));\n"
                 else:
-                    cpp += f"            __total += SIZE_FF_CODE(__item, __version);\n"
+                    cpp += f"            __total += SIZE_FF_STRING(__item);\n"
                 cpp += f"        }}\n    }}\n"
             elif f["fhir_type"] == "Resource":
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"

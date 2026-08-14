@@ -58,6 +58,16 @@ exact expected output.
    First configure needs network and takes ~60 s (it downloads FHIR packages).
 6. If a command takes more than ~15 minutes, it has hung. Stop and report.
 
+**Status (2026-08-13):**
+
+| WO | Task | Status |
+|---|---|---|
+| WO-1 | A20 + A22 — trustworthy test signal | DONE — 0 "Not Run" (was 6); A20.1/A22.1 shipped in commit `6f7c9aa`; A20.2, A22.2 open |
+| WO-2 | A14 — small-input ingest | DONE — 1 MiB arena floor; A14.1/A14.3 ticked; A14.2, A14.4 open |
+| WO-3 | A16 — wire gate prefix rule | DONE — gate delegates to `_check_permanence`; A16.1/A16.2 ticked |
+| WO-4 | A21 — runnable Python tests | DONE — readme py_* 11/11; **py_roundtrip red until A23/A24/A25/A26** (was passing vacuously — see A23 finding 4) |
+| WO-5 | E13 — lint debt (307 violations) | OPEN — zero *new* violations added by the WO-2/3/4 work |
+
 ---
 
 ## WO-1 — Make the test signal trustworthy (tasks A20 + A22)
@@ -431,9 +441,9 @@ figures change** — a task that claims to fix something here must move a number
 | `cmake -S . -B build …` | **fails on a clean tree** until the Python floor is set — see A19 |
 | Generator | 98 files into `generated_src/`, 39.6 s, clean |
 | `cmake --build build --target build_all -j` | exit 0 — but does **not** build the test binaries (A20) |
-| `ctest` after `build_all` | 20/32 pass; 0 "Not Run" (was 6), 12 failed — all `py_*` (WO-1, re-measured) |
-| `ctest` after building **all** targets | **20/32 pass** — all 19 `cpp_*` green, plus `py_setup`; the 12 failures are all Python (A21, A22) |
-| `pytest tests/generator -q` | **40 passed** in 4.6 s (two of them vacuous — see A15) |
+| `ctest` after `build_all` | 32/32 pass; 0 "Not Run" (was 6), 0 failed (re-measured 2026-08-13, WO-1→WO-4) |
+| `ctest` after building **all** targets | **32/32 pass** — all 19 `cpp_*` + all 13 `py_*` green (WO-4) |
+| `pytest tests/generator -q` | **43 passed** in ~5 s (40 at Phase 0; +3 from WO-3's A16.2 cases) |
 | `ruff check generator tests/generator` | **307 violations** — the documented lint command fails today (E13) |
 | `black --check generator tests/generator` | 2 files would be reformatted (E13) |
 | Wire witness vs committed golden | **identical** — 0 permanence violations, no blocks added or removed |
@@ -444,16 +454,16 @@ Two results worth keeping in view:
   to `tests/generator/golden/wire_witness.json`. The risk flagged against A15.4 and E8 — that
   packages.fhir.org re-published 4.0.1 content — has not materialised as of this date. That
   is a measurement with a shelf life, not a guarantee; E8 is what would make it one.
-- **All 19 C++ tests pass, and 25 consecutive runs of `ff_test_bundle` passed.** The suite is
-  not flaky. A14 is real, deterministic rather than intermittent, and **root-caused**: the
-  `ff_ingest` CLI sizes its arena at 2× the input JSON length, which is too small for lean
-  inputs. It is invisible to the suite because every C++ test sizes its own arena. See A14.
+- **A14 is fixed (WO-2):** the `ff_ingest` arena is now floored at 1 MiB (`FF_MIN_ARENA`),
+  closing the deterministic small-input cliff; regression test added in
+  `test_bundle_ingest.cpp`. The suite is stable — 25/25 consecutive `ff_test_bundle` runs
+  at Phase 0, and every run since WO-1 has been deterministic.
 
-Environment notes for whoever runs this next: a `.venv/` exists in the tree containing only
-`pip` (no pytest, no fastfhir). `CMakeLists.txt:371` prefers `.venv/bin/python` over the
-found interpreter when it exists, so the *next* configure will select an interpreter that
-cannot run the Python tests at all. Delete it or populate it (A21 decides which). The
-Synthea zip re-downloads on every configure (B4.4).
+Environment notes: the `.venv` trap is resolved (A21.3, WO-4) — the interpreter preference
+is dropped, so tests use the CMake-found Python3 (A19 floor, 3.11+). The stale `.venv/`
+(pip only) is now inert and can be deleted. The Synthea zip re-downloads on every
+configure (B4.4). **All 111 Synthea fixtures are Bundles** — `py_roundtrip` is red until
+A23 lands (bundle encode corruption); see A23.
 
 ---
 
@@ -722,10 +732,21 @@ to work and to round-trip.
 
 - [ ] A8.1 Populate `external_system_map` in `generate_code_systems` by mapping
       a field's bound ValueSet/CodeSystem URL to its `FF_CodeableConceptSystem`.
-- [ ] A8.2 Verify `SIZE_FF_CODE` (`src/FF_Primitives.cpp:304`) agrees with what
-      `ENCODE_FF_CODE` writes — it currently sizes a dictionary miss as a plain
-      `FF_STRING` while the encoder writes an `FF_CODEABLE_CONCEPT` block.
-      Different layouts, same allocation.
+- [ ] A8.2 Make `SIZE_FF_CODE` (`src/FF_Primitives.cpp`) agree with `ENCODE_FF_CODE` **by
+      construction**. Verified 2026-08-14: they agree *today* only by numeric coincidence,
+      and only on the one branch currently reachable. `SIZE_FF_CODE` sizes a dictionary
+      miss as `FF_STRING::HEADER_SIZE + len` = **14 + len**; `ENCODE_FF_CODE` writes an
+      `FF_CODEABLE_CONCEPT`, consuming `FF_CODEABLE_CONCEPT::HEADER_SIZE + payload` =
+      **12 + payload**. On the `UNKNOWN` branch payload is `2 + len`, and `12 + 2 == 14`.
+      Two independently-defined constants happening to sum correctly is not an invariant.
+      **Sequencing: A8.1 must not land before this is fixed.** `external_system` is emitted
+      **zero** times in `generated_src/` today, so the divergent branches are unreachable;
+      populating `external_system_map` arms them all at once — SNOMED payload 8, RxNorm/CPT/
+      DICOM/MDC 4, CVX 2, and every variable-ASCII system (UCUM, LOINC, NDC, ICD, ISO, UNII,
+      pCLOCD) at `12 + len` against a `14 + len` claim. Note SIZE takes no `system` argument
+      while STORE does, so the two cannot agree until the signature carries it.
+      With A23.5 in place these now throw instead of corrupting — loud, but every
+      externally-coded field fails to ingest.
 - [ ] A8.3 Round-trip test per system: ingest → export → compare.
 - Verify: `ctest --test-dir build -R cpp_test_9 --output-on-failure`.
 
@@ -1114,12 +1135,13 @@ decides, that line needs correcting (E5.4).
 > also missing the Field-object `__setitem__` overload — documented
 > `patient_node[Patient.X] = v` threw "Requires ASTNode" (registered before the generic
 > `py::object` overload). A21.3: the `.venv` preference is dropped; A19's floor guarantees a
-> capable interpreter and the pip-only `.venv` is inert. Verified: `ctest -R py_` 13/13, full
-> ctest 32/32, generator gate 43/43, zero new ruff violations. Caveats: `py_roundtrip` skips
-> Bundle fixtures until A23 (harness read-path SIGSEGV on every Synthea Bundle — see A23);
-> the Python API cannot read a compact archive (no Parser binding; Stream wraps Builder,
-> which refuses compact) — test_8's gender assertion was corrected to pin dict-code storage
-> instead of the literal string.
+> capable interpreter and the pip-only `.venv` is inert. Verified: readme py_* tests
+> 12/12 (py_setup + getting_started + test_1…10), generator gate 43/43, zero new ruff
+> violations. **py_roundtrip is red until A23** — it passed vacuously at the time (a
+> temporary Bundle skip excluded all fixtures, and every Synthea fixture is a Bundle — see
+> A23 finding 4; the skip is reverted). Other caveats: the Python API cannot read a compact
+> archive (no Parser binding; Stream wraps Builder, which refuses compact) — test_8's
+> gender assertion was corrected to pin dict-code storage instead of the literal string.
 
 ### A22. `DiffKind` is undefined on the round-trip harness error path
 
@@ -1150,46 +1172,339 @@ run died with a `NameError`. Classic error-path-never-executed bug.
 
 ---
 
-### A23. `ff_roundtrip` harness segfaults in the read path on every Synthea Bundle
+### A23. Synthea Bundle streams are corrupted — reader/writer layout disagreement; crashes are the tip
 
-**Context:** exposed by WO-4 — py_roundtrip finally runs (A21/A22 had masked everything).
-All 21 Synthea Bundle fixtures (>600 KB) crash the harness with SIGSEGV (rc=139); every
-per-resource single-Patient fixture passes. Repro:
+**Context (revised 2026-08-13 by the A23.1 bisect):** every one of the 111 Synthea
+fixtures is a *Bundle* (patient-bundle exports — there are no per-resource files). The
+"21 crashing / 90 passing" split from the initial scan is a size artifact: ~21 large
+bundles (>600 KB) SIGSEGV the harness (rc=139), but the "passing" ones are corrupt too —
+`Alberto639_…json` exits 0 and emits **invalid JSON** (`"period":,` at char 3928). The
+crash is the tip of systemic corruption in the bundle encode path, not a single element
+shape.
 
-```bash
-./build/ff_roundtrip build/synthea_fhir_r4/<any Bundle fixture>.json   # rc=139, 4096 B partial stdout
+**What the bisect established:**
+
+1. **Intermittence is a race on top of a deterministic bug.** With the default multi-
+   threaded ingestor a bundle crashes ~9/10 runs and occasionally exits 0 or 1. With
+   `Ingestor(…, concurrency=1)` the corruption is **byte-for-byte deterministic**: rc=1,
+   `Error: FastFHIR: Node is not a string or code.`, 14344 B of partial JSON. The race only
+   escalates the same corruption into the segfault (the ASCII-as-offset `LOAD_U16`).
+2. **The writer stores the data; the reader cannot reach it.** The sealed stream contains
+   270 timestamp strings, including both Encounter period bounds, yet **all 44 `period`
+   blocks in the output are empty** (`"period":,`). The "truncated" reference
+   (`urn:uuid:a172af40-3e` + garbage) is the reader taking a length/offset from the wrong
+   byte position — the same disease.
+3. **The corrupted blocks are exactly the R4≠R5-divergent ones.** From the golden witness:
+   `FF_ENCOUNTER` R4=250/R5=338, `FF_ENCOUNTER_PARTICIPANT` 58/66, `FF_CARETEAM_PARTICIPANT`
+   66/76. This is the A17 class: layout depends on revision, and the R4-prefix invariant
+   "holds only as a side effect of iteration order" (A17, open). Bundles are the first
+   fixtures to push R4 JSON through the R5 model at scale — the C++ suite's hand-built
+   patients never touch these blocks.
+4. **`py_roundtrip` was passing vacuously** (2026-08-13 — agent error, corrected): a
+   temporary Bundle skip in `discover_fixtures` excluded *all* fixtures — every fixture is
+   a Bundle — so the gate ran nothing and reported PASS. The skip is reverted;
+   `py_roundtrip` is honestly red until this task lands.
+5. **`print_json` has a robustness bug of its own:** it emits `"period":,` (invalid JSON)
+   for a truthy-but-empty block node instead of `{}` or skipping — every corrupt stream
+   becomes a parse error instead of a diff.
+
+**Hypothesis (strong, not yet proven):** the generated per-version layouts for the
+R4≠R5-divergent blocks disagree between the write path (ingestor's `*_from_json` store
+emit) and the read path (vtable) — most likely the merge precedence A17 warns about
+(`merge.py` lays out fields on first sight, so revision order is load-bearing). Next step:
+walk one Encounter's `period` slot in a sealed stream against both the R4 and R5 vtables
+and name the divergent field.
+
+- [x] A23.1 Minimal repro + attribution (DONE 2026-08-13). Repro is now trivial: any
+      Synthea bundle with the 1-worker ingestor is deterministic; with N workers ~90% crash.
+      The element-level bisect (entry[] halving, leave-one-out, singles) found **no single
+      entry that crashes alone** — the corruption is not entry-local, it is the bundle
+      encode path itself.
+- [ ] A23.2 Walk one Encounter's `period` slot in a sealed stream against the R4/R5 vtables
+      (`FF_Encounter_internal.hpp`, `FF_DataTypes_internal.hpp`), name the divergent field,
+      and fix the generator (likely `generator/model/merge.py` layout precedence — A17's
+      actual fix) or the reader. Land A17.1/A17.2 in the same change:
+      `test_version_prefix.py` is the regression gate this bug class needs.
+
+> **Progress (2026-08-14):** two deterministic corruption bugs found and FIXED (details and
+> full root-cause analysis in `~/Documents/fixes/FastFHIR-bundle-encoding-root-cause.md`):
+> - **Bug A — dateTime fields dropped at ingest.** `generator/emit/ingest_mappings.py`
+>   emitted a "requires Builder context; skipping" stub for every `unique_ptr`-stored
+>   string-like field (dateTime/instant/date/time fall through TYPE_MAP to the DEFAULT
+>   complex-block mapping → `data_type="Offset"` → `unique_ptr<std::string_view>` POD
+>   member), so `Period.start/end`, `recordedDate`, and 60 more fields were never parsed.
+>   Fixed: the emitter now parses `data_type == "Offset"` via
+>   `make_unique<std::string_view>`. Stub count 63 → 28 (remaining are url_idx/extensions).
+> - **Bug B — code[] arrays undercounted (A8.2 class, proven).** The generated SIZE for
+>   `code[]` arrays used dictionary-aware `SIZE_FF_CODE` (0 for dict hits) while the STORE
+>   always wrote an `FF_STRING` (14+len) — every resource with a dictionary-backed category
+>   (`AllergyIntolerance.category = ["medication"]`) was claimed 24 bytes short, so the next
+>   resource's write overwrote the previous one's tail ("RhinoJ" = 5 real bytes + the next
+>   block's validation). Fixed in `generator/emit/store.py`: SIZE now uses `SIZE_FF_STRING`.
+> - Verified: harness rc 1 → 0; output 14,530 → 183,572 bytes on one bundle.
+> - **Fixed (A23.3, 2026-08-14):** the READER emitted `"period":{"start":,"end":}` (invalid
+>   JSON) for Period blocks whose sealed slots are full — `ParserOps::standard_entry_as_node`
+>   kept the schema kind (`FF_FIELD_BLOCK`) after the pointer hop even when the stored block
+>   is an `FF_STRING`, so `is_empty()` walked the string as a field-less block → declared
+>   empty → `print_json` emitted `"key":` with no value. Fixed at the source: the default
+>   branch now re-derives the node kind from the actual recovery tag
+>   (`RECOVER_FF_STRING` → `FF_FIELD_STRING`), the same convention `resolve_choice` and
+>   `standard_node_entries` already used — so `is_empty()`/`print_json`/`is_string()` all
+>   agree without adding recovery-dispatch branches. Same latent mismatch also fixed in
+>   `standard_node_lookup_index` (OFFSET/INLINE_BLOCK array paths, reachable from the
+>   Python bindings). The multi-threaded race (Bug D) is still open.
+
+> **Progress (2026-08-14, second session) — the contract is now enforced, and enforcing it
+> found three more defects.** Bug B was possible because the single load-bearing invariant
+> of the arena design — *`claim_space(SIZE_FF_X(pod))` then `STORE_FF_X` must consume
+> exactly that many bytes* — was never asserted. It is now (A23.5). Turning it on
+> immediately proved Bug B's fix incomplete: **the same undercount was live in three more
+> places**, because `SIZE_FF_STRING("")` returned 0 while `STORE_FF_STRING(base, off, "")`
+> writes — and returns — a full 14-byte `FF_STRING` header. Reproduced end-to-end:
+>
+> | Input | claimed | stored | verdict |
+> |---|---|---|---|
+> | `"period": {"start": "", "end": ""}` | 398 | 426 | 28-byte overrun (2 × 14) |
+> | `"given": ["", "John"]` | 370 | 384 | 14-byte overrun |
+>
+> The first was **newly armed by Bug A's own fix**: before it, the `unique_ptr` was always
+> null and the trap was unreachable; after it, `""` parses as `simdjson::SUCCESS` into a
+> *non-null pointer to an empty view*, so SIZE tested `!= nullptr` and added 0 while STORE
+> tested `!= nullptr` and wrote 14. The array case cannot be fixed by a call-site guard —
+> skipping an element would change the element count — so the fix is at the source: a size
+> function reports what the store writes, and "absent" stays the caller's `!empty()` guard.
+> No wire-format change: those 14 bytes were already being written, just not claimed.
+> **0 of the 111 Synthea fixtures contain a single empty string**, which is why the corpus
+> could never have caught this. See `~/Documents/fixes/FastFHIR-bundle-encoding-root-cause.md`
+> for the original two bugs; that doc's claim that the *scalar*-code case "actually agrees"
+> is true only by coincidence — see A8.2, now re-scoped.
+
+- [x] A23.3 Fix `print_json`'s empty-block emission (`"period":,` → skip or `{}`).
+      DONE 2026-08-14 — root-cause kind fix in `src/FF_Parser.cpp` (see above). Verified:
+      all 111 fixtures emit valid JSON (`for f in build/synthea_fhir_r4/*.json; do
+      ./build/ff_roundtrip "$f" | python3 -m json.tool >/dev/null`); Rodrigo fixture
+      183,572 → 215,274 bytes with `"period":{"start":"1994-01-17T16:25:04+00:00",...}`;
+      299 timestamps emitted. `py_roundtrip` still red on all 111 — now honestly, with
+      real structural diffs (dictionary-`code` value mismatches and choice-type
+      mismatches, write-side, tracked separately); previously the invalid-JSON emission
+      masked the comparison entirely.
+- [x] A23.5 Enforce the SIZE/STORE contract in `Builder::append_obj` (2026-08-14).
+      `TypeTraits<T>::store` now returns the absolute end offset (`generator/model/merge.py`
+      for generated blocks, `generator/library.py` for the hand-written specialisations),
+      and `include/FF_Builder.hpp` throws when `end != offset + data_size`, naming the
+      claimed bytes, the consumed bytes and the recovery tag. Same check on the
+      offset-array append path. **Keep this unconditional** — one comparison per resource
+      against silent cross-resource corruption is not a cost worth optimising away.
+      Note it is *detection*, not *containment*: it fires after the overrun bytes are
+      written, so under the multi-worker ingestor a neighbouring claim may already have
+      been issued. Containment (redzone claim + canary in a hardened build) is A23.8.
+- [x] A23.6 Fix the empty-string SIZE/STORE divergence (2026-08-14).
+      `src/FF_Primitives.cpp` — `SIZE_FF_STRING` no longer special-cases `""`.
+      `generator/emit/store.py` — the choice branch's SIZE dropped its `!arg.empty()`
+      guard, which the STORE side never had (52 regenerated sites). `SIZE_FF_CODE`,
+      `FF_Compactor::archive_string` and the ingestor's URL-segment path all short-circuit
+      on empty *before* delegating, so they are unaffected. Verified: both repro fixtures
+      `rc=0`, controls unchanged, `ctest` 31/32 (`py_roundtrip` red per A23.4).
+- [x] A23.7 Surface the worker fault cause (2026-08-14). `src/FF_Ingestor.cpp` —
+      `fatal_log_lines()` lifts the `[Fatal]` lines out of `ConcurrentLogger` into the
+      returned `FF_Result`. Workers cannot propagate an exception across the thread
+      boundary, so they log it and raise `m_engine_faulted`; nothing drained that buffer,
+      so A23.5's precise message reached every tool as "Ingestion aborted due to worker
+      thread crash. Check ingestor engine logs for error details." A fail-loud check that
+      fails into an unread buffer is a fail-silent check with extra steps.
+- [ ] A23.8 *(optional, decide before hardening further)* Contain rather than detect:
+      have `append_obj` claim `data_size + REDZONE`, canary the redzone, and verify it
+      after the store, so an overrun lands in dead space instead of the next resource.
+      Debug/ASan presets only — it changes sealed-stream byte offsets, so it must never be
+      on for a build that produces archives.
+- [ ] A23.4 Verify every Synthea fixture round-trips: harness rc=0, valid JSON stdout,
+      `diff_doms` clean per the B5 allow-list; `py_roundtrip` green with the 111 fixtures
+      as the permanent corpus. **Blocked on A24, A25, A26** — with the writer no longer
+      corrupting the arena, `py_roundtrip` runs to completion and reports 0/111, dominated
+      by three defect classes that are not bundle-encode bugs at all (data fabrication,
+      decimal loss, entry loss). Do not chase the raw diff count: `/entry` is 250 in /
+      209 out on the first fixture, and that single misalignment cascades into most of the
+      ~1.9M reported diffs.
+- [ ] A23.9 Add the adversarial fixtures the Synthea corpus cannot provide: empty string in
+      a `string[]` element, empty `dateTime`, a resource carrying only an `id`, and a
+      `Quantity` with no `comparator`. The corpus has **zero** empty strings and populates
+      nearly every code field, which is precisely why A23.6, A24 and A25 all survived it.
+- Acceptance: `py_roundtrip` passes on all 111 fixtures from a clean build.
+- Verify: `ctest --test-dir build -R py_roundtrip --output-on-failure`, then
+  `for f in build/synthea_fhir_r4/*.json; do ./build/ff_roundtrip "$f" >/dev/null || echo "FAIL $f"; done`.
+
+---
+
+### A24. Every absent `code` enum is written as a real clinical value — silent data fabrication
+
+**Severity: highest open defect in the repo.** This is a *write-path* bug: the fabricated
+code goes on the wire, so a downstream FHIR server has no way to tell it from data the
+source system actually asserted. Unlike A23's corruption, which announced itself with a
+segfault, this produces schema-valid, plausible, silently wrong FHIR.
+
+**Mechanism.** Generated code enums have no unset state, and enum value 0 is always a real
+code. The POD member defaults to it, and nothing in `*_from_json` overwrites the default
+when the field is absent from the input, so `STORE` encodes a genuine dictionary code:
+
+```cpp
+// generated_src/FF_CodeSystems.hpp
+enum class FF_AdministrativeGender : uint8_t { Female, Male, Other, Unknown };
+//                                             ^^^^^^ value 0
+// generated_src/FF_Patient.hpp:33
+FF_AdministrativeGender gender = static_cast<FF_AdministrativeGender>(0);
 ```
 
-Crash report (`~/Library/Logs/DiagnosticReports/ff_roundtrip-*.ips`): `EXC_BAD_ACCESS` /
-`KERN_INVALID_ADDRESS at 0x64323937693a663e` — the faulting address decodes to ASCII text
-("d297i:f>"), i.e. a field's stored bytes used as an offset. Frames:
-`Node::print_json → Entry::as_node → ParserOps::standard_entry_as_node → LOAD_U16`. Ingest
-and re-parse succeed; only print_json (the read lens walking entries) trips. Not introduced
-by the 6f7c9aa rename — that diff is identifier-only in the read path (`standard_entry_as_node`
-untouched).
+**Repro** — a Patient with nothing but an `id` acquires a gender:
 
-**Hypothesis (unverified):** an array read with the wrong entry decoding —
-`standard_entry_as_node` re-derives entry layout from the wire (per the A9.2 note it
-"overrides the schema flag" and is why the read path was always correct for the shapes the
-suite exercised), and a shape present only in bundles makes it load an offset from ASCII
-string bytes. Bundles exercise arrays of nested blocks (`Bundle.entry.resource`, codeable
-concepts, choice slots) that single Patients (`name`/`telecom`) do not — bisect one
-bundle's `entry[]` to find the exact element.
+```bash
+echo '{"resourceType":"Bundle","type":"transaction","entry":[{"resource":
+{"resourceType":"Patient","id":"only-an-id"}}]}' > /tmp/bare.json
+./build/ff_roundtrip /tmp/bare.json
+# {"resourceType":"Patient","id":"only-an-id","gender":"female"}
+```
 
-- [ ] A23.1 Reduce one crashing bundle to a minimal repro (bisect `entry[]`), then identify
-      the element shape and whether the writer (store/encode emit) or the reader
-      (`standard_entry_as_node`) is wrong.
-- [ ] A23.2 Fix; verify every Synthea fixture round-trips: harness rc=0, valid UTF-8 stdout,
-      `diff_doms` clean per the B5 allow-list.
-- [ ] A23.3 Delete the Bundle skip in `tests/python/test_roundtrip.py:discover_fixtures`
-      (referenced there as A23).
-- Acceptance: the repro exits 0 and prints valid JSON; `py_roundtrip` runs the Bundle
-  fixtures.
-- Verify: `for f in build/synthea_fhir_r4/*.json; do ./build/ff_roundtrip "$f" >/dev/null || echo "FAIL $f"; done` prints nothing; then `ctest --test-dir build -R py_roundtrip --output-on-failure`.
+**Blast radius: 63 POD members across 72 enums.** The specific zero-values are bad ones:
+
+| Enum | Value 0 | Consequence |
+|---|---|---|
+| `FF_QuantityComparator` | `<` | **every** unqualified measurement becomes a bounded one — 83 fabrications in one Synthea bundle |
+| `FF_AllergyIntoleranceCriticality` | `High` | an allergy with no recorded criticality reads as life-threatening |
+| `FF_HTTPVerb` | `DELETE` | a Bundle entry with no request method reads as a delete |
+| `FF_MedicationDispenseStatusCodes` | `Cancelled` | dispensed medication reads as cancelled |
+| `FF_EncounterStatus` | `Arrived` | — |
+| `FF_AdministrativeGender` | `Female` | — |
+
+> **DONE 2026-08-14.** Implemented as a pinned sentinel rather than a reordering, so no
+> existing enumerator moved. `UNSET_ENUMERATOR = "FF_UNSET"` / `UNSET_ENUM_VALUE = 255` live
+> in `generator/model/type_map.py` because both `emit/codesystems.py` (declares the enums)
+> and `model/merge.py` (defaults the POD members) need the same spelling, and merge.py must
+> never import from `emit/`. The store path needed **no** change: `serialize_*()` has no
+> case for the sentinel, so it falls through to `default: return ""`, and `ENCODE_FF_CODE`
+> already maps `""` to `FF_CODE_NULL` while `SIZE_FF_CODE` already sizes it as 0 — SIZE and
+> STORE stay in agreement (A23.6). `parse_*()`'s fallback was changed from
+> `static_cast<enum>(0)` to the sentinel, which was the read-side half of the same bug: an
+> unrecognised code silently became a real one. Verified: 72/72 enums carry the sentinel,
+> 63/63 POD members default to it, **0** `static_cast<FF_*>(0)` defaults remain; `ctest`
+> 31/32 (`py_roundtrip` per A23.4); zero new ruff violations (136 before, 136 after).
+>
+> **Corpus effect, and a second finding.** Across the 111 fixtures: `EXTRA_KEY` **479,784 →
+> 463,050 (-16,734)** and `TYPE_MISMATCH` **7,425 → 7,023 (-402)**. `comparator`
+> fabrications in one bundle: **83 → 0**. But `MISSING_KEY` rose by **725**, concentrated in
+> three paths — `identifier.use` (+319), `priority` (+402), `reaction.severity` (+4). That is
+> **unmasking, not regression**: `FF_IdentifierUse` value 0 is `Official`, which is exactly
+> what Synthea writes, so the fabricated default was *coincidentally correct* and had been
+> hiding the fact that the pipeline never stores the field at all. The `priority` count
+> moved out of `TYPE_MISMATCH` and into `MISSING_KEY` — same defect, new symptom. Fabricated
+> defaults were inflating the apparent pass rate wherever they happened to guess right.
+
+- [x] A24.1 Emit an explicit unset sentinel for every generated code enum
+      (`generator/emit/codesystems.py`), defaulting the POD member to it
+      (`generator/model/merge.py`). No existing enumerator moved: the sentinel is **pinned
+      at 255**, not appended, so adding a code to a ValueSet cannot shift it. Nothing on the
+      wire depends on the ordinal — the wire carries the *dictionary code* from
+      `ENCODE_FF_CODE` — so this is a source-level change only. `codesystems.py` now raises
+      if a ValueSet reaches 255 codes rather than silently colliding (largest today:
+      `FF_FHIRTypes` at 231).
+- [x] A24.2 *(no change required — verified, not edited.)* `generator/emit/store.py` already
+      does the right thing for the sentinel: `serialize_*()` has no case for it and returns
+      `""`, `ENCODE_FF_CODE("")` returns `FF_CODE_NULL` having consumed 0 bytes, and
+      `SIZE_FF_CODE("")` returns 0. SIZE and STORE therefore stay in lockstep (A23.6) with
+      no new branch. The read-side half *did* need a change: `parse_*()`'s fallback returned
+      `static_cast<enum>(0)` for an unrecognised code, silently promoting it to a real one.
+- [x] A24.3 Array form (`code[]`) verified to agree — a sentinel element serialises to `""`
+      and takes the same `FF_CODE_NULL` path.
+- [x] A24.4 Reader verified: `print_json` already omits the key for `FF_CODE_NULL`. No edit
+      needed — the bare-Patient repro now emits exactly its input.
+- [ ] A24.5 Chase what the fabrication was masking: `identifier.use`, `priority` and
+      `reaction.severity` are not stored at all (319 / 402 / 4 sites), and only looked
+      correct because enum value 0 happened to equal the value Synthea writes. Likely the
+      same root cause as A26.3 (`fullUrl`/`request` never stored) — check whether these
+      fields reach `*_from_json` at all before assuming a store-side gap.
+- Acceptance: the bare-Patient repro round-trips to exactly its input; `comparator` and
+  `use` no longer appear in `py_roundtrip` output as `EXTRA_KEY`.
+- Verify: `./build/ff_roundtrip /tmp/bare.json | python3 -c "import json,sys;
+  d=json.load(sys.stdin); assert d['entry'][0]['resource'] == {'resourceType':'Patient','id':'only-an-id'}, d"`
+
+---
+
+### A25. `Quantity.value` does not round-trip — every decimal reads back as the null sentinel
+
+**Context.** A decimal written into a `Quantity` comes back as `1.84467e+19` — that is
+`FF_NULL_OFFSET` (`0xFFFFFFFFFFFFFFFF`) reinterpreted as a double, so the value is not
+being stored, not being read, or being read from the wrong slot. 74 occurrences in a
+single Synthea bundle. Present on both the choice path (`valueQuantity`) and a plain
+nested one (`referenceRange.low`), so it is not choice-specific.
+
+```bash
+echo '{"resourceType":"Bundle","type":"transaction","entry":[{"resource":
+{"resourceType":"Observation","id":"o","status":"final","referenceRange":
+[{"low":{"value":3.5,"unit":"mmol/L"}}]}}]}' > /tmp/qty.json
+./build/ff_roundtrip /tmp/qty.json
+# "low": {"value": 1.84467e+19, "comparator": "<", "unit": "mmol/L"}
+#                  ^^^^^^^^^^^ FF_NULL_OFFSET as a double   ^^^ A24
+```
+
+- [ ] A25.1 Determine which side drops it — check `*_from_json` populates `QuantityData.value`
+      (decimal is a `SCALAR_PRIMITIVE_TYPE`, so it should be the inline-scalar path, not the
+      `Offset`/`unique_ptr` path that A23 Bug A had to fix), then the STORE slot arithmetic,
+      then `print_json`'s `FF_FIELD_FLOAT64` read.
+- [ ] A25.2 Fix at the source and regenerate. If it is an ingest-mapping gap it is the same
+      class as Bug A — check whether `decimal` is in `TYPE_MAP` at all, since Bug A was
+      caused by `dateTime` being absent from it (`generator/model/type_map.py`).
+- [ ] A25.3 Reader guard: a `FF_FIELD_FLOAT64` slot holding the null sentinel must emit no
+      key, never a number. Printing `FF_NULL_OFFSET` as `1.84467e+19` is the numeric twin of
+      the `"key":,` bug (A23.3).
+- Acceptance: `/tmp/qty.json` round-trips `3.5` exactly.
+
+---
+
+### A26. Bundle entries are silently dropped; `fullUrl` and `request` are never stored
+
+**Context.** First Synthea fixture: `/entry` is **250 in, 209 out** — 41 resources vanish
+with no error, `rc=0`. Separately, `entry.fullUrl` and `entry.request` are absent from
+every output entry (103,195 sites each across the corpus), so even surviving entries lose
+their identity and their transaction semantics.
+
+This is the single largest contributor to `py_roundtrip`'s diff count, and most of it is
+cascade: once entry *N* misaligns, every path below it mismatches. Fix this before reading
+the histogram again.
+
+```bash
+python3 -c "
+import json,subprocess
+f='build/synthea_fhir_r4/Alberto639_Tromp100_aa1a2074-ad05-6d4f-0063-6188c4f25a12.json'
+src=json.load(open(f)); out=json.loads(subprocess.run(['./build/ff_roundtrip',f],
+  capture_output=True,text=True).stdout)
+print(len(src['entry']), '->', len(out['entry']))
+print(list(src['entry'][0]), '->', list(out['entry'][0]))"
+# 250 -> 209
+# ['fullUrl', 'resource', 'request'] -> ['resource']
+```
+
+- [ ] A26.1 Find where the 41 entries go. Candidates, in order: an unsupported
+      `resourceType` skipped without a diagnostic in the bundle dispatch; the multi-worker
+      entry-array patching race (Bug D / A14.2 — the entry count was seen corrupted 626 vs
+      178); an entry-array claim sized from a pre-filter count. Run with
+      `Ingestor(…, concurrency=1)` first to separate the race from a deterministic drop.
+- [ ] A26.2 Whatever the cause, a dropped resource must **fail**, not vanish. Ingest that
+      silently discards clinical records is the same never-event class as A24.
+- [ ] A26.3 Store and emit `entry.fullUrl` and `entry.request`.
+- Acceptance: entry counts match for all 111 fixtures; `fullUrl`/`request` survive.
+- Verify: the snippet above prints `250 -> 250`.
 
 ---
 
 ### A15. Re-arm the two vacuous sections of the wire gate
+
+> **Why this is not cosmetic (2026-08-14).** A23, A24, A25 and A26 are all caught by
+> `py_roundtrip` on its first fixture. It is the only gate in the repo that compares an
+> input document to its output; everything else compares generated structure against
+> itself, which no amount of corruption or fabrication can disturb — a SIZE/STORE
+> disagreement regenerates byte-identically forever, so the witness stays green.
+> The two failure modes below are the same failure mode: **a check that passes when it
+> measures nothing.** `wire_witness.json` carries `{'codes': 0, 'tags': 0, 'vtables': 141}`,
+> and `tests/python/test_roundtrip.py` returns `0` when `discover_fixtures` finds nothing.
+> Both should be errors unless explicitly opted out.
 
 **Context:** `tests/generator/test_wire_format.py` calls itself "the ONE hard gate", but two
 of its three sections compare an empty dict against an empty dict and pass unconditionally:

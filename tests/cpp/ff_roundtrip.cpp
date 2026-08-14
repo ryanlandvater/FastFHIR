@@ -75,7 +75,8 @@ int main(int argc, char** argv) {
         // 2. Allocate arena
         auto mem = Memory::create(arena_size);
         Builder builder(mem, FHIR_VERSION_R5);
-        Ingest::Ingestor ingestor;
+        // A23 diagnostic: force a single worker to test the concurrency hypothesis.
+        Ingest::Ingestor ingestor(64 * 1024 * 1024, 1);
 
         // 3. Ingest
         Reflective::ObjectHandle root_handle;
@@ -94,6 +95,12 @@ int main(int argc, char** argv) {
         if (view.empty()) {
             std::cerr << "finalize returned empty view\n";
             return 1;
+        }
+        // A23 diagnostic: dump the sealed stream for byte-level inspection.
+        {
+            std::ofstream out("/tmp/sealed.ffhr", std::ios::binary);
+            out.write(reinterpret_cast<const char*>(view.data()),
+                      static_cast<std::streamsize>(view.size()));
         }
 
         // 5. Re-parse

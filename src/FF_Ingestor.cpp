@@ -934,6 +934,32 @@ namespace FastFHIR::Ingest
         return FF_SUCCESS;
     }
 
+    /// Pull the "[Fatal]" lines out of a logger buffer for an error message.
+    ///
+    /// Workers cannot propagate an exception across the thread boundary, so they
+    /// log it and raise m_engine_faulted. This lifts the cause back into the
+    /// FF_Result the caller actually reads. Only the fatal lines: the buffer also
+    /// holds [Info]/[Warning] chatter that would bury the diagnosis.
+    static std::string fatal_log_lines(const ConcurrentLogger &logger)
+    {
+        const std::string all = logger.to_string();
+        std::string out;
+        for (size_t pos = 0; pos < all.size();)
+        {
+            const size_t eol = all.find('\n', pos);
+            const size_t end = (eol == std::string::npos) ? all.size() : eol;
+            const std::string_view line(all.data() + pos, end - pos);
+            if (line.find("[Fatal]") != std::string_view::npos)
+            {
+                if (!out.empty()) out += " | ";
+                out.append(line);
+            }
+            if (eol == std::string::npos) break;
+            pos = eol + 1;
+        }
+        return out.empty() ? std::string("No [Fatal] detail was logged.") : out;
+    }
+
     FF_Result Ingestor::ingest(const IngestRequest &request, Reflective::ObjectHandle &out_root, size_t &out_parsed_count)
     {
         switch (request.source_type)
@@ -1159,10 +1185,19 @@ namespace FastFHIR::Ingest
             for (auto &worker : workers)
                 worker.join();
 
-            // Check if the engine faulted during the worker runs
+            // Check if the engine faulted during the worker runs.
+            // The worker's catch block logged the ACTUAL cause (the exception
+            // message) into m_logger. Nothing drains that buffer unless the caller
+            // asks for it, so a precise, actionable error -- e.g. the SIZE/STORE
+            // contract violation from Builder::append_obj -- used to surface to
+            // every tool as the useless "check the engine logs". Carry the fatal
+            // lines out with the result: a fail-loud check that fails into an
+            // unread buffer is a fail-silent check with extra steps.
             if (m_engine_faulted.load(std::memory_order_acquire))
             {
-                return FF_Result{FF_FAILURE, "Ingestion aborted due to worker thread crash. Check ingestor engine logs for error details."};
+                return FF_Result{FF_FAILURE,
+                                 "Ingestion aborted due to worker thread crash. " +
+                                     fatal_log_lines(m_logger)};
             }
 
             // =====================================================================

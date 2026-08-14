@@ -20,6 +20,7 @@ import re
 
 from generator.emit.header import auto_header, write_if_changed
 from generator.model.structure import load_npm_bundle, load_npm_valueset_bundle
+from generator.model.type_map import UNSET_ENUM_VALUE, UNSET_ENUMERATOR
 from generator.utilities import enclose_namespace
 
 EXCLUDED_VALUESET_FRAGMENTS: set[str] = {
@@ -253,11 +254,24 @@ def generate_code_systems(
         parse_name = f"parse_{clean}"
         serialize_name = f"serialize_{clean}"
 
+        if len(codes) >= UNSET_ENUM_VALUE:
+            raise ValueError(
+                f"{enum_name} has {len(codes)} codes, which collides with the "
+                f"{UNSET_ENUMERATOR}={UNSET_ENUM_VALUE} sentinel. Widen the enum's "
+                f"underlying type past uint8_t before adding more."
+            )
+
         ns_body += f"// --- {name or vs_url} ---\n"
         ns_body += f"enum class {enum_name} : uint8_t {{\n"
         for code in sorted(codes):
             ident = _code_to_identifier(code)
             ns_body += f"    {ident},\n"
+        # The sentinel every code-typed POD member defaults to. It is pinned to
+        # 255 rather than appended so that adding a code to the ValueSet does not
+        # move it, and it is deliberately absent from the switch below: an unset
+        # field must serialize to "", which ENCODE_FF_CODE turns into
+        # FF_CODE_NULL. See UNSET_ENUMERATOR in model/type_map.py (TASKS.md A24).
+        ns_body += f"    {UNSET_ENUMERATOR} = {UNSET_ENUM_VALUE},\n"
         ns_body += "};\n\n"
 
         # Serialize function.
@@ -277,7 +291,10 @@ def generate_code_systems(
             ident = _code_to_identifier(code)
             escaped = code.replace("\\", "\\\\").replace('"', '\\"')
             ns_body += f'    if (sv == "{escaped}") return {enum_name}::{ident};\n'
-        ns_body += f"    return static_cast<{enum_name}>(0);\n"
+        # An unrecognised code is UNSET, never enum value 0. Returning 0 here made
+        # every unparseable input silently assert a real FHIR code -- the read-side
+        # half of TASKS.md A24.
+        ns_body += f"    return {enum_name}::{UNSET_ENUMERATOR};\n"
         ns_body += "}\n\n"
 
     hpp += enclose_namespace("FastFHIR", ns_body)

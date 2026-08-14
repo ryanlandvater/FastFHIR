@@ -260,9 +260,12 @@ def generate_cxx_for_blocks(master_blocks, versions):
             elif f["fhir_type"] == "string":
                 public_hpp += f"    std::string_view {f['cpp_name']};\n"
             elif code_enum:
+                # Default to the unset sentinel, never enum value 0 -- value 0 is
+                # a real FHIR code, so defaulting to it made every absent code
+                # field write an asserted clinical value to the wire (TASKS.md A24).
                 public_hpp += (
                     f"    {code_enum['enum']} {f['cpp_name']}"
-                    f" = static_cast<{code_enum['enum']}>(0);\n"
+                    f" = {code_enum['enum']}::{_tm.UNSET_ENUMERATOR};\n"
                 )
             elif f["cpp_type"] == "Offset":
                 public_hpp += (
@@ -377,9 +380,9 @@ def generate_cxx_for_blocks(master_blocks, versions):
             f" {{ return SIZE_{s_name}(d, v); }}\n"
         )
         traits_hpp += (
-            f"    static void store(BYTE* const base, Offset off,"
+            f"    static Offset store(BYTE* const base, Offset off,"
             f" const {d_name}& d, uint32_t v = FHIR_VERSION_R5)"
-            f" {{ STORE_{s_name}(base, off, d, v); }}\n"
+            f" {{ return STORE_{s_name}(base, off, d, v); }}\n"
         )
         traits_hpp += (
             f"    static {d_name} read(const BYTE* const base, Offset off,"

@@ -211,8 +211,22 @@ namespace FastFHIR
             // Thread-safe claim of space in the arena for the new data
             Offset offset = m_memory.claim_space(data_size);
 
-            // Thread-safe write of the data into the claimed space
-            TypeTraits<T_Data>::store(m_base, offset, data, m_fhir_rev);
+            // Thread-safe write of the data into the claimed space. The generated
+            // STORE_* returns the absolute end offset; enforcing the SIZE/STORE
+            // contract here means a generator SIZE/STORE disagreement fails loudly
+            // instead of silently letting the next claim overlap this resource's
+            // tail (TASKS.md A23 / Bug B). This is what makes the arena layout
+            // strict rather than assumed.
+            const Offset end = TypeTraits<T_Data>::store(m_base, offset, data, m_fhir_rev);
+            if (end != offset + data_size) {
+                throw std::runtime_error(
+                    "FastFHIR: SIZE/STORE contract violated: claimed " +
+                    std::to_string(data_size) + " bytes but store consumed " +
+                    std::to_string(end - offset) + " (recovery tag " +
+                    std::to_string(static_cast<unsigned>(TypeTraits<T_Data>::recovery)) +
+                    "). This is a generator bug — the SIZE and STORE emitters "
+                    "disagree (TASKS.md A8.2/A23).");
+            }
 
             // Return the offset where the data was written for potential pointer patching
             return offset;
@@ -255,6 +269,12 @@ namespace FastFHIR
             {
                 STORE_U64(m_base + write_head, off);
                 write_head += 8;
+            }
+            if (write_head != offset + data_size) {
+                throw std::runtime_error(
+                    "FastFHIR: SIZE/STORE contract violated in offset-array append: claimed " +
+                    std::to_string(data_size) + " bytes but wrote " +
+                    std::to_string(write_head - offset) + ".");
             }
 
             return offset;

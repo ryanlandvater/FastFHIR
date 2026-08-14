@@ -379,6 +379,22 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         f"data.{cpp_name} = sv;\n"
                         f"            else {{ {err_log} }}\n"
                     )
+                elif f.get("data_type") == "Offset":
+                    # 0..1 string-like field (dateTime/date/instant/time/...).
+                    # dateTime is absent from TYPE_MAP, so it falls through to
+                    # the DEFAULT mapping: the POD member is
+                    # unique_ptr<std::string_view> and the wire slot is an
+                    # FF_STRING pointer. Parse the string and allocate; the
+                    # store pass writes it. Previously this branch emitted a
+                    # "requires Builder context" stub, so EVERY timestamp field
+                    # was dropped and every Period block was born empty
+                    # (TASKS.md A23).
+                    cpp += (
+                        f"            std::string_view sv;\n"
+                        f"            if (field.value().get_string().get(sv) == simdjson::SUCCESS)\n"
+                        f"                data.{cpp_name} = std::make_unique<std::string_view>(sv);\n"
+                        f"            else {{ {err_log} }}\n"
+                    )
                 else:
                     # url_idx (uint32_t) or other non-string storage — needs
                     # Builder context for the conversion; warn and skip.
