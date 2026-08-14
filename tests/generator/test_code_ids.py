@@ -17,6 +17,7 @@ See dictionaries/README.md.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -26,8 +27,12 @@ import pytest
 
 _HERE = Path(__file__).parent
 _REPO_ROOT = _HERE.parents[1]
-_LEDGER = _REPO_ROOT / "generator" / "master_codes.json"
-_STRINGS = _REPO_ROOT / "dictionaries" / "FF_Dictionary_Strings.cpp"
+_LEDGER = _REPO_ROOT / "dictionaries" / "master_codes.json"
+# The string table is generator OUTPUT (a projection of the ledger), so it lives
+# in generated_src/ with the rest. The ledger above is the committed source.
+_STRINGS = Path(os.environ.get("FASTFHIR_GENERATED_DIR", _REPO_ROOT / "generated_src")) / (
+    "FF_Dictionary_Strings.cpp"
+)
 
 # Bit 31 is FF_CODEABLE_CONCEPT_FLAG; 0xFFFFFFFF is FF_CODE_NULL.
 _CODEABLE_CONCEPT_FLAG = 0x80000000
@@ -118,7 +123,7 @@ def test_no_member_shares_its_container_name():
 
 def test_no_identifier_is_a_libc_macro():
     """The preprocessor ignores scoping, so a macro name breaks every scope."""
-    from generator.emit.codes_header import RESERVED_MACROS
+    from generator.emit.code_names import RESERVED_MACROS
 
     for scope, members in _ledger()["scopes"].items():
         bad = sorted({n for n in members.values() if n in RESERVED_MACROS})
@@ -207,7 +212,7 @@ def test_generator_refuses_non_redistributable_sources():
     failed once: an old value-set expansion pulled 13,310 LOINC/SNOMED/EDQM
     codes into the committed dictionary and nothing objected.
     """
-    from generator.emit.dictionary import _assert_redistributable
+    from generator.emit.code_ids import _assert_redistributable
 
     # HL7 and UCUM are fine.
     _assert_redistributable(

@@ -33,11 +33,11 @@ deleted; consult git history if you need them.
 
 | Path | Role |
 |---|---|
-| `include/` | Public + internal headers. `FastFHIR.hpp` is the consumer entry point. `FF_Recovery.hpp` and `FF_Primitives.hpp` define wire constants — **hand-maintained, values permanent**. |
+| `include/` | Public + internal headers. `FastFHIR.hpp` is the consumer entry point. `FF_Primitives.hpp` defines wire constants — **hand-maintained, values permanent**. `FF_Recovery.hpp` is **generated from `dictionaries/master_tags.json` and committed** — never hand-edit it; edit the ledger or the emitter. |
 | `src/` | Core library: Memory (VMA), Builder, Parser, Compactor, Ingestor, Dictionary, Extensions (WASM), Primitives. |
-| `dictionaries/` | **The permanent code ledger.** Generated but committed; every number here is a wire constant that decodes stored archives. Append-only — **read `dictionaries/README.md` before touching this or anything that assigns an ID.** Never hand-edit; regenerate via `python -m generator`. |
-| `generator/` | Python code generator — see `generator/README.md` for the module map. `pipeline.py` orchestrates; `model/` pure data, `emit/` model→str, `bindings/` Python emission. `emit/dictionary.py` owns **numbering** (permanent), `emit/codes_header.py` owns **naming** (source-level only). `master_codes.json` is the committed ID ledger. |
-| `generated_src/` | Generator output (~70 C++ files). **Gitignored** — produced at CMake configure time; requires network (HL7 / packages.fhir.org). |
+| `dictionaries/` | **The permanent wire ledgers — two JSON files and a README, nothing else.** `master_codes.json` (dictionary code IDs) and `master_tags.json` (`RECOVERY_TAG` values). Committed; every number is a wire constant that decodes stored archives. Append-only — **read `dictionaries/README.md` before touching this or anything that assigns an ID or a tag.** The C++ they project into is generator output in `generated_src/`, not committed. |
+| `generator/` | Python code generator — see `generator/README.md` for the module map. `pipeline.py` orchestrates; `model/` pure data, `emit/` model→str, `bindings/` Python emission. `emit/code_ids.py` owns **numbering** (permanent), `emit/code_names.py` owns **naming** (source-level only), `emit/recovery_tags.py` projects the tag ledger into `include/FF_Recovery.hpp`. Both committed ledgers live in `dictionaries/`, not here — a ledger is wire format, not generator machinery. |
+| `generated_src/` | Generator output (~75 C++ files), including `FF_Codes.hpp` and the dictionary tables projected from `dictionaries/*.json`. **Gitignored** — produced at CMake configure time. Most of it requires network (HL7 / packages.fhir.org); the dictionary projection does not, needing only the committed ledger. |
 | `python/` | pybind11 bindings (`FF_PythonBindings.cpp` → `_core`) + `fastfhir` package. `fastfhir/fields.py` is generated at build time. |
 | `tools/` | CLI tools: `ingestor/FF_Ingest.cpp`, `exporter/FF_Export.cpp`, `compactor/FF_Compact.cpp`. |
 | `tests/` | `cpp/` (standalone-main tests via ctest), `python/` (README/round-trip suites via ctest `py_*`), `generator/` (pytest wire-format gate). |
@@ -157,17 +157,20 @@ Windows: OpenSSL via vcpkg (see README → Windows Build Prerequisites).
 ## Hard invariants — breaking these corrupts data on the wire
 
 1. **Wire constants are permanent.** Never renumber or reorder: `RECOVERY_TAG` values
-   (`include/FF_Recovery.hpp` — hand-maintained, generator only *validates* names against
-   it), dictionary code IDs (`generator/master_codes.json` — the committed ledger;
+   (`dictionaries/master_tags.json` — the committed tag ledger; `include/FF_Recovery.hpp` is
+   generated from it and committed. Append-only, same rule as the code ledger: a new FHIR
+   release takes the next free value in its band and nothing assigned ever moves. It covers
+   the whole spec, so the header is byte-identical for every build profile), dictionary code IDs (`dictionaries/master_codes.json` — the committed ledger;
    **existing IDs are never reassigned and retired IDs are never reused; new codes append
    at `_next_id`** — this rule has been broken once, in `118d6ad`, silently invalidating
    every stored archive; see `dictionaries/README.md`), vtable offset arithmetic
    (symbolic sums in headers — never introduce literal offsets), `FF_HEADER` layout,
    `FF_CODEABLE_CONCEPT_FLAG`, `FF_CODE_NULL`, `FF_NULL_OFFSET`.
-2. **Never hand-edit generated files** (`generated_src/`, `dictionaries/*.cpp`,
-   `dictionaries/FF_Codes.hpp`, `python/fastfhir/fields.py`). Fix the emitter in
-   `generator/emit/` and regenerate. If a generated file and its emitter disagree, the
-   emitter wins.
+2. **Never hand-edit generated files** (`generated_src/` — which now includes `FF_Codes.hpp`
+   and the dictionary tables — plus `include/FF_Recovery.hpp` and `python/fastfhir/fields.py`).
+   Fix the emitter in `generator/emit/` and regenerate. If a generated file and its emitter
+   disagree, the emitter wins. Note `dictionaries/*` and `FF_Recovery.hpp` are generated
+   **and committed** — they are permanent wire artifacts, reviewed in diffs.
 3. **Two style regimes.** Python in `generator/` + `tests/generator/`: ruff/black enforced
    (pyproject.toml), full type hints, fail-loud (`raise` over silent fallback). C++ (and
    generated C++): match surrounding hand-tuned style; not subject to the Python tooling.

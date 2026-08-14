@@ -2,7 +2,7 @@
 # FastFHIR Dictionary Generator -- the permanent code-ID ledger.
 #
 # Scans NPM FHIR packages (CodeSystem-*.json + ValueSet-ucum-*.json) for
-# FHIR-native codes, then reconciles them against generator/master_codes.json.
+# FHIR-native codes, then reconciles them against dictionaries/master_codes.json.
 #
 # THE ONE RULE
 # ------------
@@ -26,7 +26,9 @@ from generator.emit.header import write_if_changed
 
 # The committed ledger. This file is the source of truth for every code ID;
 # the generator only ever appends to it.
-_LEDGER_PATH = os.path.join(os.path.dirname(__file__), "..", "master_codes.json")
+_LEDGER_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "dictionaries", "master_codes.json"
+)
 
 # =====================================================================
 # WHAT FASTFHIR IS ALLOWED TO REDISTRIBUTE
@@ -215,7 +217,7 @@ def assign_ids(ledger: dict, discovered: dict[str, dict]) -> int:
     grows -- a code that leaves an HL7 package keeps its ID, its string, and
     its C++ name, because stored archives still cite it.
     """
-    from generator.emit.codes_header import assign_identifier, struct_name
+    from generator.emit.code_names import assign_identifier, struct_name
 
     ids = ledger["ids"]
     next_id = ledger["_next_id"]
@@ -364,10 +366,13 @@ def generate_master_codes(package_dirs: dict[str, str]) -> tuple[dict, dict, set
 # actually enforce for us.
 # =====================================================================
 
-_DICT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "dictionaries")
+# DERIVED artifacts: the runtime lookup tables are a pure projection of
+# master_codes.json, so they live with the generator output. The ledger stays
+# in dictionaries/ -- source there, derived here.
+_DICT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "generated_src")
 
 _BANNER = (
-    "// Auto-generated from generator/master_codes.json. DO NOT EDIT.\n"
+    "// Auto-generated from dictionaries/master_codes.json. DO NOT EDIT.\n"
     "//\n"
     "// The index/id in this table is a PERMANENT wire constant: it is what a\n"
     "// stored .ffhr archive contains. Entries are only ever appended.\n"
@@ -401,7 +406,7 @@ def _qualified_names(ledger: dict) -> dict[int, str]:
     CodeSystems). They all alias the same ID, so any one qualification is
     correct; pick deterministically so the emitted table is stable.
     """
-    from generator.emit.codes_header import struct_name
+    from generator.emit.code_names import struct_name
 
     out: dict[int, str] = {}
     for scope in sorted(ledger["scopes"]):

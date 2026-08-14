@@ -48,20 +48,30 @@ option(FASTFHIR_RUN_GENERATOR      "Run code generator at configure time" ON)
 option(FASTFHIR_GENERATE_ON_BUILD  "Regenerate sources on every build" OFF)
 option(FASTFHIR_ENABLE_EXTENSIONS  "Enable WASM extension codec" OFF)
 
-set(FASTFHIR_PRODUCTION_PROFILE "us" CACHE STRING "Generator: us|uk|all")
-set_property(CACHE FASTFHIR_PRODUCTION_PROFILE PROPERTY STRINGS us uk all)
+# Comma-separated LIST of resource groupings; the generator compiles their union.
+# Real deployments compose -- a payer needs US Core *and* claims. Accepted names
+# live in RESOURCE_GROUPINGS (generator/model/type_map.py); "us"/"uk" are legacy
+# aliases. NOTE: commas, not semicolons -- CMake treats ';' as its list separator.
+# Adding a grouping requires its RECOVERY_TAGs in include/FF_Recovery.hpp first
+# (permanent wire constants); the generator fails loudly and names the missing
+# ones. See TASKS.md A27.
+set(FASTFHIR_PRODUCTION_PROFILE "us-core" CACHE STRING
+    "Generator resource groupings, comma-separated: us-core,uk-core,billing (or 'all')")
+set_property(CACHE FASTFHIR_PRODUCTION_PROFILE PROPERTY STRINGS
+    us-core uk-core billing us-core,billing us-core,uk-core all)
 
 # ── OpenSSL (system or ExternalProject) ──────────────────────
 include(cmake/openssl.cmake)
 
 # ── Paths ──────────────────────────────────────────────────────
 set(FASTFHIR_INCLUDE_DIR   "${CMAKE_CURRENT_SOURCE_DIR}/include")
-set(FASTFHIR_DICT_DIR      "${CMAKE_CURRENT_SOURCE_DIR}/dictionaries")
+# dictionaries/ now holds ONLY the JSON ledgers + README. The C++ they project
+# into is generator output and lives in generated_src/, already on every include
+# path, so no separate dictionary include dir is needed.
 set(FASTFHIR_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated_src")
 
 # ── Source files ────────────────────────────────────────────────
 file(GLOB FASTFHIR_CORE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
-file(GLOB FASTFHIR_DICT_SOURCES CONFIGURE_DEPENDS dictionaries/*.cpp)
 file(GLOB FASTFHIR_CORE_HEADERS CONFIGURE_DEPENDS include/*.hpp)
 list(REMOVE_ITEM FASTFHIR_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/FF_Ingestor.cpp")
 
@@ -74,7 +84,7 @@ if(FASTFHIR_RUN_GENERATOR OR NOT EXISTS "${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.
     # 3.11 is the floor pyproject.toml already targets (ruff/black target-version
     # = py311). Without it CMake takes whatever `python3` it finds first — on macOS
     # that is the Xcode Command Line Tools 3.9, which cannot evaluate the PEP 604
-    # `X | None` annotations in emit/codesystems.py, emit/dictionary.py and
+    # `X | None` annotations in emit/codesystems.py, emit/code_ids.py and
     # emit/extensions_known.py (the three modules that both use PEP 604 and lack
     # `from __future__ import annotations`; 15 of 25 modules lack the import, so
     # any of them could join that list silently). The failure is a TypeError at
@@ -111,14 +121,12 @@ endif()
 # ── Core object library ─────────────────────────────────────────
 add_library(fastfhir_obj OBJECT
     ${FASTFHIR_CORE_SOURCES}
-    ${FASTFHIR_DICT_SOURCES}
     ${FASTFHIR_GENERATED_SOURCES}
     ${FASTFHIR_CORE_HEADERS}
     ${FASTFHIR_GENERATED_HEADERS}
 )
 target_include_directories(fastfhir_obj PUBLIC
     $<BUILD_INTERFACE:${FASTFHIR_INCLUDE_DIR}>
-    $<BUILD_INTERFACE:${FASTFHIR_DICT_DIR}>
     $<BUILD_INTERFACE:${FASTFHIR_GENERATED_DIR}>
 )
 target_compile_features(fastfhir_obj PUBLIC cxx_std_20)
@@ -150,7 +158,6 @@ function(_ff_configure_core_library target_name)
     target_compile_features(${target_name} PUBLIC cxx_std_20)
     target_include_directories(${target_name} PUBLIC
         $<BUILD_INTERFACE:${FASTFHIR_INCLUDE_DIR}>
-        $<BUILD_INTERFACE:${FASTFHIR_DICT_DIR}>
         $<BUILD_INTERFACE:${FASTFHIR_GENERATED_DIR}>
         $<INSTALL_INTERFACE:include>
     )
@@ -210,7 +217,7 @@ if(FASTFHIR_BUILD_INGESTOR)
         ${FASTFHIR_GENERATED_DIR}/FF_IngestMappings.cpp
     )
     target_include_directories(fastfhir_ingest_obj PUBLIC
-        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR}
+        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
     )
     target_link_libraries(fastfhir_ingest_obj PUBLIC fastfhir_obj simdjson::simdjson)
 
@@ -225,17 +232,17 @@ if(FASTFHIR_BUILD_INGESTOR)
     add_library(FastFHIR::ingestor ALIAS fastfhir_ingestor)
 
     add_executable(ff_ingest tools/ingestor/FF_Ingest.cpp)
-    target_include_directories(ff_ingest PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR})
+    target_include_directories(ff_ingest PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
     target_link_libraries(ff_ingest PRIVATE fastfhir_ingestor OpenSSL::Crypto)
 endif()
 
 # ── CLI tools ───────────────────────────────────────────────────
 add_executable(ff_export tools/exporter/FF_Export.cpp)
-target_include_directories(ff_export PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR})
+target_include_directories(ff_export PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
 target_link_libraries(ff_export PRIVATE $<TARGET_OBJECTS:fastfhir_obj>)
 
 add_executable(ff_compact tools/compactor/FF_Compact.cpp)
-target_include_directories(ff_compact PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR})
+target_include_directories(ff_compact PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
 target_link_libraries(ff_compact PRIVATE $<TARGET_OBJECTS:fastfhir_obj> OpenSSL::Crypto)
 target_compile_definitions(ff_compact PRIVATE FASTFHIR_HAS_OPENSSL)
 
@@ -250,7 +257,7 @@ if(FASTFHIR_BUILD_TESTS)
     function(add_ff_cpp_test NAME SOURCE)
         add_executable(${NAME} ${SOURCE})
         target_include_directories(${NAME} PRIVATE
-            ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR}
+            ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
         )
         target_compile_definitions(${NAME} PRIVATE
             FF_TEST_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/tests/cpp"
@@ -288,7 +295,7 @@ if(FASTFHIR_BUILD_TESTS)
     # ── test_readme (full examples suite) ──────────────────────────
     add_executable(ff_test_readme tests/cpp/test_readme.cpp)
     target_include_directories(ff_test_readme PRIVATE
-        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR} ${ASIO_INCLUDE_DIR}
+        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR} ${ASIO_INCLUDE_DIR}
     )
     target_compile_definitions(ff_test_readme PRIVATE
         ASIO_STANDALONE
@@ -302,7 +309,7 @@ if(FASTFHIR_BUILD_TESTS)
     # ── Round-trip harness (invoked by Python DOM parity tests) ──
     add_executable(ff_roundtrip tests/cpp/ff_roundtrip.cpp)
     target_include_directories(ff_roundtrip PRIVATE
-        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR}
+        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
     )
     target_link_libraries(ff_roundtrip PRIVATE fastfhir_ingestor OpenSSL::Crypto)
 
@@ -449,7 +456,7 @@ if(FASTFHIR_BUILD_PYTHON_BINDINGS)
     )
     set_property(TARGET fastfhir_python PROPERTY OUTPUT_NAME _core)
     target_include_directories(fastfhir_python PRIVATE
-        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_DICT_DIR} ${FASTFHIR_GENERATED_DIR}
+        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
     )
     target_compile_definitions(fastfhir_python PRIVATE
         FASTFHIR_VERSION_MAJOR=${FASTFHIR_VERSION_MAJOR}
@@ -546,7 +553,6 @@ file(GLOB FASTFHIR_TEST_SOURCES CONFIGURE_DEPENDS tests/cpp/*.cpp tests/cpp/*.hp
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "" FILES
     ${FASTFHIR_CORE_SOURCES}
     ${FASTFHIR_CORE_HEADERS}
-    ${FASTFHIR_DICT_SOURCES}
     ${FASTFHIR_GENERATED_SOURCES}
     ${FASTFHIR_GENERATED_HEADERS}
     ${FASTFHIR_TOOL_SOURCES}

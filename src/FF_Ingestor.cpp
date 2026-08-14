@@ -20,6 +20,7 @@
 #include <cctype>
 #include <cstdio>
 #include <deque>
+#include <map>  // skipped_summary: ordered so the report is deterministic
 #include <thread>
 #include <vector>
 #include <algorithm>
@@ -934,6 +935,54 @@ namespace FastFHIR::Ingest
         return FF_SUCCESS;
     }
 
+    /// Count and summarise "[Skipped]" lines — entries the ingest discarded.
+    ///
+    /// `dispatch_resource` returns a null handle for a resource type outside the
+    /// compiled profile, and the bundle patcher then just leaves the slot unset.
+    /// That is real clinical data loss, so it must not stay buried in a logger
+    /// nobody drains: one Synthea bundle silently lost 41 of 250 records (all of
+    /// Claim, ExplanationOfBenefit, SupplyDelivery, ImagingStudy and
+    /// MedicationAdministration) and still returned FF_SUCCESS (TASKS.md A26).
+    static std::string skipped_summary(const ConcurrentLogger &logger)
+    {
+        const std::string all = logger.to_string();
+        std::map<std::string, size_t> by_type;
+        size_t total = 0;
+        for (size_t pos = 0; pos < all.size();)
+        {
+            const size_t eol = all.find('\n', pos);
+            const size_t end = (eol == std::string::npos) ? all.size() : eol;
+            const std::string_view line(all.data() + pos, end - pos);
+            if (line.find("[Skipped]") != std::string_view::npos)
+            {
+                ++total;
+                // The emitter quotes the type: ...resource type 'Claim' is not...
+                const size_t a = line.find('\'');
+                const size_t b = (a == std::string_view::npos)
+                                     ? std::string_view::npos
+                                     : line.find('\'', a + 1);
+                by_type[b == std::string_view::npos
+                            ? std::string("<unnamed>")
+                            : std::string(line.substr(a + 1, b - a - 1))] += 1;
+            }
+            if (eol == std::string::npos) break;
+            pos = eol + 1;
+        }
+        if (total == 0) return "";
+
+        std::string out = "FastFHIR: " + std::to_string(total) +
+                          " bundle entr" + (total == 1 ? "y was" : "ies were") +
+                          " DISCARDED — resource type not in this build's profile: ";
+        bool first = true;
+        for (const auto &[type, n] : by_type)
+        {
+            if (!first) out += ", ";
+            out += type + " x" + std::to_string(n);
+            first = false;
+        }
+        return out;
+    }
+
     /// Pull the "[Fatal]" lines out of a logger buffer for an error message.
     ///
     /// Workers cannot propagate an exception across the thread boundary, so they
@@ -1204,6 +1253,15 @@ namespace FastFHIR::Ingest
             // 6. Return Root
             // =====================================================================
             out_root = root_handle;
+
+            // Entries whose resource type is outside the compiled profile were
+            // discarded by dispatch_resource. The stream is well-formed, so this
+            // is not FF_FAILURE, but the caller must never learn about lost
+            // clinical records by diffing documents. Whether an out-of-profile
+            // type should instead be a hard failure is TASKS.md A26.2.
+            if (std::string skipped = skipped_summary(m_logger); !skipped.empty())
+                return FF_Result{FF_SUCCESS, std::move(skipped)};
+
             return FF_SUCCESS;
         }
         catch (const simdjson::simdjson_error &e)

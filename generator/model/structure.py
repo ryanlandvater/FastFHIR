@@ -20,12 +20,12 @@ import os
 import re
 
 from generator.model.type_map import (
+    GROUPING_ALIASES,
     PRODUCTION_PROFILE_ENV,
+    RESOURCE_GROUPINGS,
     SCALAR_PRIMITIVE_TYPES,
     STRING_TYPES,
     TYPE_MAP,
-    UK_CORE_RESOURCES,
-    US_CORE_RESOURCES,
     _scalar_recovery_tag,
     _version_sort_key,
 )
@@ -352,30 +352,63 @@ def resolve_production_resources(
     versions: list[str] | None = None,
     profile: str | None = None,
 ) -> list[str]:
-    """Resolve the active production resource set for the configured profile.
+    """Resolve the active production resource set as the UNION of named groupings.
 
-    profile values:
-      - us (default): curated US Core resource list
-      - uk: curated UK Core resource list
-      - all: discover all concrete FHIR resources from profiles-resources.json
-    Defaults to env FASTFHIR_PRODUCTION_PROFILE, then 'us'.
+    `profile` is a comma-separated LIST of grouping names, because real
+    deployments compose: a payer needs US Core *and* claims, and a cross-realm
+    deployment may want both US and UK Core. Whitespace around names is ignored
+    and names are case-insensitive.
+
+        us-core                 the default -- US Core alone
+        us-core,billing         US Core plus payer/claims (adds EOB, Claim, ...)
+        us-core,uk-core         both realms
+        all                     every concrete resource in the packages
+
+    Accepted names come from RESOURCE_GROUPINGS, plus "all" (discovered from the
+    packages rather than listed) and the legacy aliases "us"/"uk".
+
+    Order is first-seen, not sorted: groupings are walked in the order given and
+    each grouping keeps its own list order, so a profile of "us-core" alone
+    yields exactly the sequence it did when this was a single-valued setting.
+    That keeps generator output byte-identical for the default profile -- the
+    generator is deterministic and any diff between runs is meant to be a real
+    change, so resource order must not shift for unrelated reasons.
+
+    Defaults to env FASTFHIR_PRODUCTION_PROFILE, then "us-core".
     """
-    selected = (profile or os.getenv(PRODUCTION_PROFILE_ENV, "us")).strip().lower()
-    if selected == "us":
-        resources = list(US_CORE_RESOURCES)
-    elif selected == "uk":
-        resources = list(UK_CORE_RESOURCES)
-    elif selected == "all":
+    raw = profile if profile is not None else os.getenv(PRODUCTION_PROFILE_ENV, "")
+    names = [part.strip().lower() for part in (raw or "").split(",")]
+    names = [n for n in names if n]
+    if not names:
+        names = ["us-core"]
+
+    # "all" absorbs everything -- no point unioning a subset into it.
+    if "all" in names:
         resources = _discover_resource_names(
             specs_dir=specs_dir, versions=versions, include_abstract=False
         )
         if not resources:
             raise RuntimeError(
-                "FASTFHIR_PRODUCTION_PROFILE=all: no resources discovered. "
-                "Ensure fhir_packages/<version>/package/ exists with StructureDefinition-*.json files."
+                f"{PRODUCTION_PROFILE_ENV} includes 'all': no resources discovered. "
+                "Ensure fhir_packages/<version>/package/ exists with "
+                "StructureDefinition-*.json files."
             )
-    else:
+        return resources
+
+    valid = sorted(set(RESOURCE_GROUPINGS) | set(GROUPING_ALIASES) | {"all"})
+    unknown = [n for n in names if n not in RESOURCE_GROUPINGS and n not in GROUPING_ALIASES]
+    if unknown:
         raise RuntimeError(
-            f"Unknown production profile: '{selected}'. " "Expected one of: us, uk, all."
+            f"Unknown resource grouping(s) in {PRODUCTION_PROFILE_ENV}: "
+            f"{', '.join(sorted(set(unknown)))}. "
+            f"Expected a comma-separated list of: {', '.join(valid)}."
         )
+
+    resources: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        for res in RESOURCE_GROUPINGS[GROUPING_ALIASES.get(name, name)]:
+            if res not in seen:
+                seen.add(res)
+                resources.append(res)
     return resources

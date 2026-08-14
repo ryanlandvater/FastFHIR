@@ -443,9 +443,16 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         cpp += f'    {prefix} (resource_type == "{res}") '
         cpp += f"return builder.append_obj({res}_from_json(obj, logger, nullptr, &builder));\n"
         dispatch_is_first = False
+    # Out-of-profile resource types land here. The old message named neither the
+    # type nor the reason, and went to a logger nothing drained -- so a bundle
+    # could lose 41 of 250 clinical records and still exit 0 (TASKS.md A26).
+    # "[Skipped]" is the tag Ingestor::ingest_fhir_json greps for to fold the
+    # count into the returned FF_Result; keep the two in sync.
     cpp += (
-        '    if (logger) logger->log("[Warning] FastFHIR Ingestion: '
-        'Unknown root resource type encountered.");\n'
+        '    if (logger) logger->log(std::string("[Skipped] FastFHIR Ingestion: '
+        "resource type '\") + std::string(resource_type) + \"' is not compiled into "
+        "this build's resource profile (see FASTFHIR_PRODUCTION_PROFILE); the entry "
+        'was discarded.");\n'
         "    return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
         "}\n\n"
     )

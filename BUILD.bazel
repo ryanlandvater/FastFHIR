@@ -13,16 +13,16 @@ _COPTS = ["-std=c++20"] + select({
 cc_library(
     name = "fastfhir",
     srcs = glob(
-        ["src/*.cpp", "dictionaries/*.cpp", "generated_src/*.cpp"],
+        ["src/*.cpp", "generated_src/*.cpp"],
         exclude = [
             "src/FF_Ingestor.cpp",
             "src/FF_Extensions.cpp",
             "generated_src/FF_IngestMappings.cpp",
         ],
     ),
-    hdrs = glob(["include/*.hpp", "dictionaries/*.hpp", "generated_src/*.hpp"]),
+    hdrs = glob(["include/*.hpp", "generated_src/*.hpp"]),
     copts = _COPTS,
-    includes = ["dictionaries", "generated_src", "include"],
+    includes = ["generated_src", "include"],
 )
 
 # ── Ingestor ───────────────────────────────────────────────────────

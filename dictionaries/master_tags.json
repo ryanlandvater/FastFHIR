@@ -1,0 +1,3958 @@
+{
+  "_format": 1,
+  "_rule": "PERMANENT WIRE LEDGER. A tag is written into bytes 8-9 of every DATA_BLOCK and decodes .ffhr streams forever. Never change an existing value. Never reuse a retired one. New tags append at the _next_id of their band. Removing a type from FHIR does NOT free its tag.",
+  "_scope": "Covers the WHOLE FHIR spec (R4 union R5), never just the compiled profile. The emitted FF_Recovery.hpp is therefore identical for every FASTFHIR_PRODUCTION_PROFILE -- a permanent wire artifact must not depend on build configuration. Primitive and scalar tags are FastFHIR's own concepts, hand-seeded here, not discovered from StructureDefinitions.",
+  "_provenance": "Seeded 2026-08-14 from the hand-maintained include/FF_Recovery.hpp, preserving all 166 values as they stood after the band re-cut (TASKS.md A27.5c). Every tag after that was appended by discovery.",
+  "_bands": {
+    "primitive": {
+      "first": "0x0000",
+      "last": "0x00FF"
+    },
+    "scalar": {
+      "first": "0x0100",
+      "last": "0x01FF"
+    },
+    "datatype": {
+      "first": "0x0200",
+      "last": "0x0FFF"
+    },
+    "resource": {
+      "first": "0x1000",
+      "last": "0x1FFF"
+    },
+    "backbone": {
+      "first": "0x2000",
+      "last": "0x7FFF"
+    }
+  },
+  "_next_id": {
+    "primitive": "0x000B",
+    "scalar": "0x010B",
+    "datatype": "0x023D",
+    "resource": "0x10B3",
+    "backbone": "0x22CC"
+  },
+  "tags": {
+    "FF_RECOVER_UNDEFINED": {
+      "value": "0x0000",
+      "band": "primitive"
+    },
+    "RECOVER_FF_HEADER": {
+      "value": "0x0001",
+      "band": "primitive"
+    },
+    "RECOVER_FF_STRING": {
+      "value": "0x0002",
+      "band": "primitive"
+    },
+    "RECOVER_FF_CODE": {
+      "value": "0x0003",
+      "band": "primitive"
+    },
+    "RECOVER_FF_RESOURCE": {
+      "value": "0x0004",
+      "band": "primitive"
+    },
+    "RECOVER_FF_CHECKSUM": {
+      "value": "0x0005",
+      "band": "primitive"
+    },
+    "RECOVER_FF_URL_DIRECTORY": {
+      "value": "0x0006",
+      "band": "primitive",
+      "note": "Stream-level URL intern table"
+    },
+    "RECOVER_FF_MODULE_REGISTRY": {
+      "value": "0x0007",
+      "band": "primitive",
+      "note": "WASM extension module registry"
+    },
+    "RECOVER_FF_OPAQUE_JSON": {
+      "value": "0x0008",
+      "band": "primitive",
+      "note": "Path B passive raw-JSON extension blob"
+    },
+    "RECOVER_FF_WASM_PAYLOAD": {
+      "value": "0x0009",
+      "band": "primitive",
+      "note": "Path A WASM-encoded extension payload"
+    },
+    "RECOVER_FF_CODEABLE_CONCEPT": {
+      "value": "0x000A",
+      "band": "primitive",
+      "note": "External codeable concept (UCUM, SNOMED CT, ...)"
+    },
+    "RECOVER_FF_SCALAR_BLOCK": {
+      "value": "0x0100",
+      "band": "scalar"
+    },
+    "RECOVER_FF_BOOL": {
+      "value": "0x0101",
+      "band": "scalar"
+    },
+    "RECOVER_FF_INT32": {
+      "value": "0x0102",
+      "band": "scalar"
+    },
+    "RECOVER_FF_UINT32": {
+      "value": "0x0103",
+      "band": "scalar"
+    },
+    "RECOVER_FF_INT64": {
+      "value": "0x0104",
+      "band": "scalar"
+    },
+    "RECOVER_FF_UINT64": {
+      "value": "0x0105",
+      "band": "scalar"
+    },
+    "RECOVER_FF_FLOAT64": {
+      "value": "0x0106",
+      "band": "scalar"
+    },
+    "RECOVER_FF_DATE": {
+      "value": "0x0107",
+      "band": "scalar",
+      "note": "Reserved for bit-packing"
+    },
+    "RECOVER_FF_DATETIME": {
+      "value": "0x0108",
+      "band": "scalar",
+      "note": "Reserved for bit-packing"
+    },
+    "RECOVER_FF_TIME": {
+      "value": "0x0109",
+      "band": "scalar",
+      "note": "Reserved for bit-packing"
+    },
+    "RECOVER_FF_INSTANT": {
+      "value": "0x010A",
+      "band": "scalar",
+      "note": "Reserved for bit-packing"
+    },
+    "RECOVER_FF_DATA_TYPE_BLOCK": {
+      "value": "0x0200",
+      "band": "datatype"
+    },
+    "RECOVER_FF_EXTENSION": {
+      "value": "0x0201",
+      "band": "datatype"
+    },
+    "RECOVER_FF_CODING": {
+      "value": "0x0202",
+      "band": "datatype"
+    },
+    "RECOVER_FF_CODEABLECONCEPT": {
+      "value": "0x0203",
+      "band": "datatype"
+    },
+    "RECOVER_FF_QUANTITY": {
+      "value": "0x0204",
+      "band": "datatype"
+    },
+    "RECOVER_FF_IDENTIFIER": {
+      "value": "0x0205",
+      "band": "datatype"
+    },
+    "RECOVER_FF_AGE": {
+      "value": "0x0206",
+      "band": "datatype"
+    },
+    "RECOVER_FF_COUNT": {
+      "value": "0x0207",
+      "band": "datatype"
+    },
+    "RECOVER_FF_DISTANCE": {
+      "value": "0x0208",
+      "band": "datatype"
+    },
+    "RECOVER_FF_RANGE": {
+      "value": "0x0209",
+      "band": "datatype"
+    },
+    "RECOVER_FF_PERIOD": {
+      "value": "0x020A",
+      "band": "datatype"
+    },
+    "RECOVER_FF_REFERENCE": {
+      "value": "0x020B",
+      "band": "datatype"
+    },
+    "RECOVER_FF_META": {
+      "value": "0x020C",
+      "band": "datatype"
+    },
+    "RECOVER_FF_NARRATIVE": {
+      "value": "0x020D",
+      "band": "datatype"
+    },
+    "RECOVER_FF_ANNOTATION": {
+      "value": "0x020E",
+      "band": "datatype"
+    },
+    "RECOVER_FF_HUMANNAME": {
+      "value": "0x020F",
+      "band": "datatype"
+    },
+    "RECOVER_FF_ADDRESS": {
+      "value": "0x0210",
+      "band": "datatype"
+    },
+    "RECOVER_FF_CONTACTPOINT": {
+      "value": "0x0211",
+      "band": "datatype"
+    },
+    "RECOVER_FF_ATTACHMENT": {
+      "value": "0x0212",
+      "band": "datatype"
+    },
+    "RECOVER_FF_RATIO": {
+      "value": "0x0213",
+      "band": "datatype"
+    },
+    "RECOVER_FF_SAMPLEDDATA": {
+      "value": "0x0214",
+      "band": "datatype"
+    },
+    "RECOVER_FF_DURATION": {
+      "value": "0x0215",
+      "band": "datatype"
+    },
+    "RECOVER_FF_AVAILABILITY": {
+      "value": "0x0216",
+      "band": "datatype"
+    },
+    "RECOVER_FF_EXTENDEDCONTACTDETAIL": {
+      "value": "0x0217",
+      "band": "datatype"
+    },
+    "RECOVER_FF_TIMING": {
+      "value": "0x0218",
+      "band": "datatype"
+    },
+    "RECOVER_FF_DOSAGE": {
+      "value": "0x0219",
+      "band": "datatype"
+    },
+    "RECOVER_FF_SIGNATURE": {
+      "value": "0x021A",
+      "band": "datatype"
+    },
+    "RECOVER_FF_CODEABLEREFERENCE": {
+      "value": "0x021B",
+      "band": "datatype"
+    },
+    "RECOVER_FF_VIRTUALSERVICEDETAIL": {
+      "value": "0x021C",
+      "band": "datatype"
+    },
+    "RECOVER_FF_RESOURCE_BLOCK": {
+      "value": "0x1000",
+      "band": "resource"
+    },
+    "RECOVER_FF_ALLERGYINTOLERANCE": {
+      "value": "0x1001",
+      "band": "resource"
+    },
+    "RECOVER_FF_BUNDLE": {
+      "value": "0x1002",
+      "band": "resource"
+    },
+    "RECOVER_FF_CAREPLAN": {
+      "value": "0x1003",
+      "band": "resource"
+    },
+    "RECOVER_FF_CARETEAM": {
+      "value": "0x1004",
+      "band": "resource"
+    },
+    "RECOVER_FF_CONDITION": {
+      "value": "0x1005",
+      "band": "resource"
+    },
+    "RECOVER_FF_COVERAGE": {
+      "value": "0x1006",
+      "band": "resource"
+    },
+    "RECOVER_FF_DEVICE": {
+      "value": "0x1007",
+      "band": "resource"
+    },
+    "RECOVER_FF_DIAGNOSTICREPORT": {
+      "value": "0x1008",
+      "band": "resource"
+    },
+    "RECOVER_FF_DOCUMENTREFERENCE": {
+      "value": "0x1009",
+      "band": "resource"
+    },
+    "RECOVER_FF_ENCOUNTER": {
+      "value": "0x100A",
+      "band": "resource"
+    },
+    "RECOVER_FF_GOAL": {
+      "value": "0x100B",
+      "band": "resource"
+    },
+    "RECOVER_FF_IMMUNIZATION": {
+      "value": "0x100C",
+      "band": "resource"
+    },
+    "RECOVER_FF_LOCATION": {
+      "value": "0x100D",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICATION": {
+      "value": "0x100E",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICATIONDISPENSE": {
+      "value": "0x100F",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICATIONREQUEST": {
+      "value": "0x1010",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICATIONSTATEMENT": {
+      "value": "0x1011",
+      "band": "resource"
+    },
+    "RECOVER_FF_OBSERVATION": {
+      "value": "0x1012",
+      "band": "resource"
+    },
+    "RECOVER_FF_ORGANIZATION": {
+      "value": "0x1013",
+      "band": "resource"
+    },
+    "RECOVER_FF_PATIENT": {
+      "value": "0x1014",
+      "band": "resource"
+    },
+    "RECOVER_FF_PRACTITIONER": {
+      "value": "0x1015",
+      "band": "resource"
+    },
+    "RECOVER_FF_PRACTITIONERROLE": {
+      "value": "0x1016",
+      "band": "resource"
+    },
+    "RECOVER_FF_PROCEDURE": {
+      "value": "0x1017",
+      "band": "resource"
+    },
+    "RECOVER_FF_PROVENANCE": {
+      "value": "0x1018",
+      "band": "resource"
+    },
+    "RECOVER_FF_QUESTIONNAIRERESPONSE": {
+      "value": "0x1019",
+      "band": "resource"
+    },
+    "RECOVER_FF_RELATEDPERSON": {
+      "value": "0x101A",
+      "band": "resource"
+    },
+    "RECOVER_FF_SERVICEREQUEST": {
+      "value": "0x101B",
+      "band": "resource"
+    },
+    "RECOVER_FF_SPECIMEN": {
+      "value": "0x101C",
+      "band": "resource"
+    },
+    "RECOVER_FF_BACKBONE_BLOCK": {
+      "value": "0x2000",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ALLERGYINTOLERANCE_PARTICIPANT": {
+      "value": "0x2001",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ALLERGYINTOLERANCE_REACTION": {
+      "value": "0x2002",
+      "band": "backbone"
+    },
+    "RECOVER_FF_AVAILABILITY_AVAILABLETIME": {
+      "value": "0x2003",
+      "band": "backbone"
+    },
+    "RECOVER_FF_AVAILABILITY_NOTAVAILABLETIME": {
+      "value": "0x2004",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BUNDLE_ENTRY": {
+      "value": "0x2005",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BUNDLE_ENTRY_REQUEST": {
+      "value": "0x2006",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BUNDLE_ENTRY_RESPONSE": {
+      "value": "0x2007",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BUNDLE_ENTRY_SEARCH": {
+      "value": "0x2008",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BUNDLE_LINK": {
+      "value": "0x2009",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAREPLAN_ACTIVITY": {
+      "value": "0x200A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAREPLAN_ACTIVITY_DETAIL": {
+      "value": "0x200B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CARETEAM_PARTICIPANT": {
+      "value": "0x200C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONDITION_EVIDENCE": {
+      "value": "0x200D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONDITION_PARTICIPANT": {
+      "value": "0x200E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONDITION_STAGE": {
+      "value": "0x200F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGE_CLASS": {
+      "value": "0x2010",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGE_COSTTOBENEFICIARY": {
+      "value": "0x2011",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGE_COSTTOBENEFICIARY_EXCEPTION": {
+      "value": "0x2012",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGE_PAYMENTBY": {
+      "value": "0x2013",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICE_CONFORMSTO": {
+      "value": "0x2014",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICE_DEVICENAME": {
+      "value": "0x2015",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICE_NAME": {
+      "value": "0x2016",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICE_PROPERTY": {
+      "value": "0x2017",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICE_SPECIALIZATION": {
+      "value": "0x2018",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICE_UDICARRIER": {
+      "value": "0x2019",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICE_VERSION": {
+      "value": "0x201A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DIAGNOSTICREPORT_MEDIA": {
+      "value": "0x201B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DIAGNOSTICREPORT_SUPPORTINGINFO": {
+      "value": "0x201C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DOCUMENTREFERENCE_ATTESTER": {
+      "value": "0x201D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DOCUMENTREFERENCE_CONTENT": {
+      "value": "0x201E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DOCUMENTREFERENCE_CONTENT_PROFILE": {
+      "value": "0x201F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DOCUMENTREFERENCE_CONTEXT": {
+      "value": "0x2020",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DOCUMENTREFERENCE_RELATESTO": {
+      "value": "0x2021",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DOSAGE_DOSEANDRATE": {
+      "value": "0x2022",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ENCOUNTER_ADMISSION": {
+      "value": "0x2023",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ENCOUNTER_CLASSHISTORY": {
+      "value": "0x2024",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ENCOUNTER_DIAGNOSIS": {
+      "value": "0x2025",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ENCOUNTER_HOSPITALIZATION": {
+      "value": "0x2026",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ENCOUNTER_LOCATION": {
+      "value": "0x2027",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ENCOUNTER_PARTICIPANT": {
+      "value": "0x2028",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ENCOUNTER_REASON": {
+      "value": "0x2029",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ENCOUNTER_STATUSHISTORY": {
+      "value": "0x202A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GOAL_TARGET": {
+      "value": "0x202B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMMUNIZATION_EDUCATION": {
+      "value": "0x202C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMMUNIZATION_PERFORMER": {
+      "value": "0x202D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMMUNIZATION_PROGRAMELIGIBILITY": {
+      "value": "0x202E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMMUNIZATION_PROTOCOLAPPLIED": {
+      "value": "0x202F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMMUNIZATION_REACTION": {
+      "value": "0x2030",
+      "band": "backbone"
+    },
+    "RECOVER_FF_LOCATION_HOURSOFOPERATION": {
+      "value": "0x2031",
+      "band": "backbone"
+    },
+    "RECOVER_FF_LOCATION_POSITION": {
+      "value": "0x2032",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATION_BATCH": {
+      "value": "0x2033",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATION_INGREDIENT": {
+      "value": "0x2034",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONDISPENSE_PERFORMER": {
+      "value": "0x2035",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONDISPENSE_SUBSTITUTION": {
+      "value": "0x2036",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONREQUEST_DISPENSEREQUEST": {
+      "value": "0x2037",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONREQUEST_DISPENSEREQUEST_INITIALFILL": {
+      "value": "0x2038",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONREQUEST_SUBSTITUTION": {
+      "value": "0x2039",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONSTATEMENT_ADHERENCE": {
+      "value": "0x203A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OBSERVATION_COMPONENT": {
+      "value": "0x203B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OBSERVATION_REFERENCERANGE": {
+      "value": "0x203C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OBSERVATION_TRIGGEREDBY": {
+      "value": "0x203D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ORGANIZATION_CONTACT": {
+      "value": "0x203E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ORGANIZATION_QUALIFICATION": {
+      "value": "0x203F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PATIENT_COMMUNICATION": {
+      "value": "0x2040",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PATIENT_CONTACT": {
+      "value": "0x2041",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PATIENT_LINK": {
+      "value": "0x2042",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PRACTITIONER_COMMUNICATION": {
+      "value": "0x2043",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PRACTITIONER_QUALIFICATION": {
+      "value": "0x2044",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PRACTITIONERROLE_AVAILABLETIME": {
+      "value": "0x2045",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PRACTITIONERROLE_NOTAVAILABLE": {
+      "value": "0x2046",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PROCEDURE_FOCALDEVICE": {
+      "value": "0x2047",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PROCEDURE_PERFORMER": {
+      "value": "0x2048",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PROVENANCE_AGENT": {
+      "value": "0x2049",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PROVENANCE_ENTITY": {
+      "value": "0x204A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_QUESTIONNAIRERESPONSE_ITEM": {
+      "value": "0x204B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_QUESTIONNAIRERESPONSE_ITEM_ANSWER": {
+      "value": "0x204C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RELATEDPERSON_COMMUNICATION": {
+      "value": "0x204D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SERVICEREQUEST_ORDERDETAIL": {
+      "value": "0x204E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SERVICEREQUEST_ORDERDETAIL_PARAMETER": {
+      "value": "0x204F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SERVICEREQUEST_PATIENTINSTRUCTION": {
+      "value": "0x2050",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SPECIMEN_COLLECTION": {
+      "value": "0x2051",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SPECIMEN_CONTAINER": {
+      "value": "0x2052",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SPECIMEN_FEATURE": {
+      "value": "0x2053",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SPECIMEN_PROCESSING": {
+      "value": "0x2054",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TIMING_REPEAT": {
+      "value": "0x2055",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BASE64BINARY": {
+      "value": "0x021D",
+      "band": "datatype"
+    },
+    "RECOVER_FF_BOOLEAN": {
+      "value": "0x021E",
+      "band": "datatype"
+    },
+    "RECOVER_FF_CANONICAL": {
+      "value": "0x021F",
+      "band": "datatype"
+    },
+    "RECOVER_FF_CONTACTDETAIL": {
+      "value": "0x0220",
+      "band": "datatype"
+    },
+    "RECOVER_FF_CONTRIBUTOR": {
+      "value": "0x0221",
+      "band": "datatype"
+    },
+    "RECOVER_FF_DATAREQUIREMENT": {
+      "value": "0x0222",
+      "band": "datatype"
+    },
+    "RECOVER_FF_DECIMAL": {
+      "value": "0x0223",
+      "band": "datatype"
+    },
+    "RECOVER_FF_ELEMENTDEFINITION": {
+      "value": "0x0224",
+      "band": "datatype"
+    },
+    "RECOVER_FF_EXPRESSION": {
+      "value": "0x0225",
+      "band": "datatype"
+    },
+    "RECOVER_FF_ID": {
+      "value": "0x0226",
+      "band": "datatype"
+    },
+    "RECOVER_FF_INTEGER": {
+      "value": "0x0227",
+      "band": "datatype"
+    },
+    "RECOVER_FF_INTEGER64": {
+      "value": "0x0228",
+      "band": "datatype"
+    },
+    "RECOVER_FF_MARKDOWN": {
+      "value": "0x0229",
+      "band": "datatype"
+    },
+    "RECOVER_FF_MARKETINGSTATUS": {
+      "value": "0x022A",
+      "band": "datatype"
+    },
+    "RECOVER_FF_MONETARYCOMPONENT": {
+      "value": "0x022B",
+      "band": "datatype"
+    },
+    "RECOVER_FF_MONEY": {
+      "value": "0x022C",
+      "band": "datatype"
+    },
+    "RECOVER_FF_OID": {
+      "value": "0x022D",
+      "band": "datatype"
+    },
+    "RECOVER_FF_PARAMETERDEFINITION": {
+      "value": "0x022E",
+      "band": "datatype"
+    },
+    "RECOVER_FF_POPULATION": {
+      "value": "0x022F",
+      "band": "datatype"
+    },
+    "RECOVER_FF_POSITIVEINT": {
+      "value": "0x0230",
+      "band": "datatype"
+    },
+    "RECOVER_FF_PRODCHARACTERISTIC": {
+      "value": "0x0231",
+      "band": "datatype"
+    },
+    "RECOVER_FF_PRODUCTSHELFLIFE": {
+      "value": "0x0232",
+      "band": "datatype"
+    },
+    "RECOVER_FF_RATIORANGE": {
+      "value": "0x0233",
+      "band": "datatype"
+    },
+    "RECOVER_FF_RELATEDARTIFACT": {
+      "value": "0x0234",
+      "band": "datatype"
+    },
+    "RECOVER_FF_SUBSTANCEAMOUNT": {
+      "value": "0x0235",
+      "band": "datatype"
+    },
+    "RECOVER_FF_TRIGGERDEFINITION": {
+      "value": "0x0236",
+      "band": "datatype"
+    },
+    "RECOVER_FF_UNSIGNEDINT": {
+      "value": "0x0237",
+      "band": "datatype"
+    },
+    "RECOVER_FF_URI": {
+      "value": "0x0238",
+      "band": "datatype"
+    },
+    "RECOVER_FF_URL": {
+      "value": "0x0239",
+      "band": "datatype"
+    },
+    "RECOVER_FF_USAGECONTEXT": {
+      "value": "0x023A",
+      "band": "datatype"
+    },
+    "RECOVER_FF_UUID": {
+      "value": "0x023B",
+      "band": "datatype"
+    },
+    "RECOVER_FF_XHTML": {
+      "value": "0x023C",
+      "band": "datatype"
+    },
+    "RECOVER_FF_ACCOUNT": {
+      "value": "0x101D",
+      "band": "resource"
+    },
+    "RECOVER_FF_ACTIVITYDEFINITION": {
+      "value": "0x101E",
+      "band": "resource"
+    },
+    "RECOVER_FF_ACTORDEFINITION": {
+      "value": "0x101F",
+      "band": "resource"
+    },
+    "RECOVER_FF_ADMINISTRABLEPRODUCTDEFINITION": {
+      "value": "0x1020",
+      "band": "resource"
+    },
+    "RECOVER_FF_ADVERSEEVENT": {
+      "value": "0x1021",
+      "band": "resource"
+    },
+    "RECOVER_FF_APPOINTMENT": {
+      "value": "0x1022",
+      "band": "resource"
+    },
+    "RECOVER_FF_APPOINTMENTRESPONSE": {
+      "value": "0x1023",
+      "band": "resource"
+    },
+    "RECOVER_FF_ARTIFACTASSESSMENT": {
+      "value": "0x1024",
+      "band": "resource"
+    },
+    "RECOVER_FF_AUDITEVENT": {
+      "value": "0x1025",
+      "band": "resource"
+    },
+    "RECOVER_FF_BASIC": {
+      "value": "0x1026",
+      "band": "resource"
+    },
+    "RECOVER_FF_BINARY": {
+      "value": "0x1027",
+      "band": "resource"
+    },
+    "RECOVER_FF_BIOLOGICALLYDERIVEDPRODUCT": {
+      "value": "0x1028",
+      "band": "resource"
+    },
+    "RECOVER_FF_BIOLOGICALLYDERIVEDPRODUCTDISPENSE": {
+      "value": "0x1029",
+      "band": "resource"
+    },
+    "RECOVER_FF_BODYSTRUCTURE": {
+      "value": "0x102A",
+      "band": "resource"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT": {
+      "value": "0x102B",
+      "band": "resource"
+    },
+    "RECOVER_FF_CATALOGENTRY": {
+      "value": "0x102C",
+      "band": "resource"
+    },
+    "RECOVER_FF_CHARGEITEM": {
+      "value": "0x102D",
+      "band": "resource"
+    },
+    "RECOVER_FF_CHARGEITEMDEFINITION": {
+      "value": "0x102E",
+      "band": "resource"
+    },
+    "RECOVER_FF_CITATION": {
+      "value": "0x102F",
+      "band": "resource"
+    },
+    "RECOVER_FF_CLAIM": {
+      "value": "0x1030",
+      "band": "resource"
+    },
+    "RECOVER_FF_CLAIMRESPONSE": {
+      "value": "0x1031",
+      "band": "resource"
+    },
+    "RECOVER_FF_CLINICALIMPRESSION": {
+      "value": "0x1032",
+      "band": "resource"
+    },
+    "RECOVER_FF_CLINICALUSEDEFINITION": {
+      "value": "0x1033",
+      "band": "resource"
+    },
+    "RECOVER_FF_CODESYSTEM": {
+      "value": "0x1034",
+      "band": "resource"
+    },
+    "RECOVER_FF_COMMUNICATION": {
+      "value": "0x1035",
+      "band": "resource"
+    },
+    "RECOVER_FF_COMMUNICATIONREQUEST": {
+      "value": "0x1036",
+      "band": "resource"
+    },
+    "RECOVER_FF_COMPARTMENTDEFINITION": {
+      "value": "0x1037",
+      "band": "resource"
+    },
+    "RECOVER_FF_COMPOSITION": {
+      "value": "0x1038",
+      "band": "resource"
+    },
+    "RECOVER_FF_CONCEPTMAP": {
+      "value": "0x1039",
+      "band": "resource"
+    },
+    "RECOVER_FF_CONDITIONDEFINITION": {
+      "value": "0x103A",
+      "band": "resource"
+    },
+    "RECOVER_FF_CONSENT": {
+      "value": "0x103B",
+      "band": "resource"
+    },
+    "RECOVER_FF_CONTRACT": {
+      "value": "0x103C",
+      "band": "resource"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYREQUEST": {
+      "value": "0x103D",
+      "band": "resource"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYRESPONSE": {
+      "value": "0x103E",
+      "band": "resource"
+    },
+    "RECOVER_FF_DETECTEDISSUE": {
+      "value": "0x103F",
+      "band": "resource"
+    },
+    "RECOVER_FF_DEVICEASSOCIATION": {
+      "value": "0x1040",
+      "band": "resource"
+    },
+    "RECOVER_FF_DEVICEDEFINITION": {
+      "value": "0x1041",
+      "band": "resource"
+    },
+    "RECOVER_FF_DEVICEDISPENSE": {
+      "value": "0x1042",
+      "band": "resource"
+    },
+    "RECOVER_FF_DEVICEMETRIC": {
+      "value": "0x1043",
+      "band": "resource"
+    },
+    "RECOVER_FF_DEVICEREQUEST": {
+      "value": "0x1044",
+      "band": "resource"
+    },
+    "RECOVER_FF_DEVICEUSAGE": {
+      "value": "0x1045",
+      "band": "resource"
+    },
+    "RECOVER_FF_DEVICEUSESTATEMENT": {
+      "value": "0x1046",
+      "band": "resource"
+    },
+    "RECOVER_FF_DOCUMENTMANIFEST": {
+      "value": "0x1047",
+      "band": "resource"
+    },
+    "RECOVER_FF_EFFECTEVIDENCESYNTHESIS": {
+      "value": "0x1048",
+      "band": "resource"
+    },
+    "RECOVER_FF_ENCOUNTERHISTORY": {
+      "value": "0x1049",
+      "band": "resource"
+    },
+    "RECOVER_FF_ENDPOINT": {
+      "value": "0x104A",
+      "band": "resource"
+    },
+    "RECOVER_FF_ENROLLMENTREQUEST": {
+      "value": "0x104B",
+      "band": "resource"
+    },
+    "RECOVER_FF_ENROLLMENTRESPONSE": {
+      "value": "0x104C",
+      "band": "resource"
+    },
+    "RECOVER_FF_EPISODEOFCARE": {
+      "value": "0x104D",
+      "band": "resource"
+    },
+    "RECOVER_FF_EVENTDEFINITION": {
+      "value": "0x104E",
+      "band": "resource"
+    },
+    "RECOVER_FF_EVIDENCE": {
+      "value": "0x104F",
+      "band": "resource"
+    },
+    "RECOVER_FF_EVIDENCEREPORT": {
+      "value": "0x1050",
+      "band": "resource"
+    },
+    "RECOVER_FF_EVIDENCEVARIABLE": {
+      "value": "0x1051",
+      "band": "resource"
+    },
+    "RECOVER_FF_EXAMPLESCENARIO": {
+      "value": "0x1052",
+      "band": "resource"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT": {
+      "value": "0x1053",
+      "band": "resource"
+    },
+    "RECOVER_FF_FAMILYMEMBERHISTORY": {
+      "value": "0x1054",
+      "band": "resource"
+    },
+    "RECOVER_FF_FLAG": {
+      "value": "0x1055",
+      "band": "resource"
+    },
+    "RECOVER_FF_FORMULARYITEM": {
+      "value": "0x1056",
+      "band": "resource"
+    },
+    "RECOVER_FF_GENOMICSTUDY": {
+      "value": "0x1057",
+      "band": "resource"
+    },
+    "RECOVER_FF_GRAPHDEFINITION": {
+      "value": "0x1058",
+      "band": "resource"
+    },
+    "RECOVER_FF_GROUP": {
+      "value": "0x1059",
+      "band": "resource"
+    },
+    "RECOVER_FF_GUIDANCERESPONSE": {
+      "value": "0x105A",
+      "band": "resource"
+    },
+    "RECOVER_FF_HEALTHCARESERVICE": {
+      "value": "0x105B",
+      "band": "resource"
+    },
+    "RECOVER_FF_IMAGINGSELECTION": {
+      "value": "0x105C",
+      "band": "resource"
+    },
+    "RECOVER_FF_IMAGINGSTUDY": {
+      "value": "0x105D",
+      "band": "resource"
+    },
+    "RECOVER_FF_IMMUNIZATIONEVALUATION": {
+      "value": "0x105E",
+      "band": "resource"
+    },
+    "RECOVER_FF_IMMUNIZATIONRECOMMENDATION": {
+      "value": "0x105F",
+      "band": "resource"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE": {
+      "value": "0x1060",
+      "band": "resource"
+    },
+    "RECOVER_FF_INGREDIENT": {
+      "value": "0x1061",
+      "band": "resource"
+    },
+    "RECOVER_FF_INSURANCEPLAN": {
+      "value": "0x1062",
+      "band": "resource"
+    },
+    "RECOVER_FF_INVENTORYITEM": {
+      "value": "0x1063",
+      "band": "resource"
+    },
+    "RECOVER_FF_INVENTORYREPORT": {
+      "value": "0x1064",
+      "band": "resource"
+    },
+    "RECOVER_FF_INVOICE": {
+      "value": "0x1065",
+      "band": "resource"
+    },
+    "RECOVER_FF_LIBRARY": {
+      "value": "0x1066",
+      "band": "resource"
+    },
+    "RECOVER_FF_LINKAGE": {
+      "value": "0x1067",
+      "band": "resource"
+    },
+    "RECOVER_FF_LIST": {
+      "value": "0x1068",
+      "band": "resource"
+    },
+    "RECOVER_FF_MANUFACTUREDITEMDEFINITION": {
+      "value": "0x1069",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEASURE": {
+      "value": "0x106A",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEASUREREPORT": {
+      "value": "0x106B",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDIA": {
+      "value": "0x106C",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICATIONADMINISTRATION": {
+      "value": "0x106D",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE": {
+      "value": "0x106E",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICINALPRODUCT": {
+      "value": "0x106F",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTAUTHORIZATION": {
+      "value": "0x1070",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTCONTRAINDICATION": {
+      "value": "0x1071",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTDEFINITION": {
+      "value": "0x1072",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTINDICATION": {
+      "value": "0x1073",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTINGREDIENT": {
+      "value": "0x1074",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTINTERACTION": {
+      "value": "0x1075",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTMANUFACTURED": {
+      "value": "0x1076",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTPACKAGED": {
+      "value": "0x1077",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTPHARMACEUTICAL": {
+      "value": "0x1078",
+      "band": "resource"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTUNDESIRABLEEFFECT": {
+      "value": "0x1079",
+      "band": "resource"
+    },
+    "RECOVER_FF_MESSAGEDEFINITION": {
+      "value": "0x107A",
+      "band": "resource"
+    },
+    "RECOVER_FF_MESSAGEHEADER": {
+      "value": "0x107B",
+      "band": "resource"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE": {
+      "value": "0x107C",
+      "band": "resource"
+    },
+    "RECOVER_FF_NAMINGSYSTEM": {
+      "value": "0x107D",
+      "band": "resource"
+    },
+    "RECOVER_FF_NUTRITIONINTAKE": {
+      "value": "0x107E",
+      "band": "resource"
+    },
+    "RECOVER_FF_NUTRITIONORDER": {
+      "value": "0x107F",
+      "band": "resource"
+    },
+    "RECOVER_FF_NUTRITIONPRODUCT": {
+      "value": "0x1080",
+      "band": "resource"
+    },
+    "RECOVER_FF_OBSERVATIONDEFINITION": {
+      "value": "0x1081",
+      "band": "resource"
+    },
+    "RECOVER_FF_OPERATIONDEFINITION": {
+      "value": "0x1082",
+      "band": "resource"
+    },
+    "RECOVER_FF_OPERATIONOUTCOME": {
+      "value": "0x1083",
+      "band": "resource"
+    },
+    "RECOVER_FF_ORGANIZATIONAFFILIATION": {
+      "value": "0x1084",
+      "band": "resource"
+    },
+    "RECOVER_FF_PACKAGEDPRODUCTDEFINITION": {
+      "value": "0x1085",
+      "band": "resource"
+    },
+    "RECOVER_FF_PARAMETERS": {
+      "value": "0x1086",
+      "band": "resource"
+    },
+    "RECOVER_FF_PAYMENTNOTICE": {
+      "value": "0x1087",
+      "band": "resource"
+    },
+    "RECOVER_FF_PAYMENTRECONCILIATION": {
+      "value": "0x1088",
+      "band": "resource"
+    },
+    "RECOVER_FF_PERMISSION": {
+      "value": "0x1089",
+      "band": "resource"
+    },
+    "RECOVER_FF_PERSON": {
+      "value": "0x108A",
+      "band": "resource"
+    },
+    "RECOVER_FF_PLANDEFINITION": {
+      "value": "0x108B",
+      "band": "resource"
+    },
+    "RECOVER_FF_QUESTIONNAIRE": {
+      "value": "0x108C",
+      "band": "resource"
+    },
+    "RECOVER_FF_REGULATEDAUTHORIZATION": {
+      "value": "0x108D",
+      "band": "resource"
+    },
+    "RECOVER_FF_REQUESTGROUP": {
+      "value": "0x108E",
+      "band": "resource"
+    },
+    "RECOVER_FF_REQUESTORCHESTRATION": {
+      "value": "0x108F",
+      "band": "resource"
+    },
+    "RECOVER_FF_REQUIREMENTS": {
+      "value": "0x1090",
+      "band": "resource"
+    },
+    "RECOVER_FF_RESEARCHDEFINITION": {
+      "value": "0x1091",
+      "band": "resource"
+    },
+    "RECOVER_FF_RESEARCHELEMENTDEFINITION": {
+      "value": "0x1092",
+      "band": "resource"
+    },
+    "RECOVER_FF_RESEARCHSTUDY": {
+      "value": "0x1093",
+      "band": "resource"
+    },
+    "RECOVER_FF_RESEARCHSUBJECT": {
+      "value": "0x1094",
+      "band": "resource"
+    },
+    "RECOVER_FF_RISKASSESSMENT": {
+      "value": "0x1095",
+      "band": "resource"
+    },
+    "RECOVER_FF_RISKEVIDENCESYNTHESIS": {
+      "value": "0x1096",
+      "band": "resource"
+    },
+    "RECOVER_FF_SCHEDULE": {
+      "value": "0x1097",
+      "band": "resource"
+    },
+    "RECOVER_FF_SEARCHPARAMETER": {
+      "value": "0x1098",
+      "band": "resource"
+    },
+    "RECOVER_FF_SLOT": {
+      "value": "0x1099",
+      "band": "resource"
+    },
+    "RECOVER_FF_SPECIMENDEFINITION": {
+      "value": "0x109A",
+      "band": "resource"
+    },
+    "RECOVER_FF_STRUCTUREDEFINITION": {
+      "value": "0x109B",
+      "band": "resource"
+    },
+    "RECOVER_FF_STRUCTUREMAP": {
+      "value": "0x109C",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUBSCRIPTION": {
+      "value": "0x109D",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUBSCRIPTIONSTATUS": {
+      "value": "0x109E",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUBSCRIPTIONTOPIC": {
+      "value": "0x109F",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUBSTANCE": {
+      "value": "0x10A0",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION": {
+      "value": "0x10A1",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUBSTANCENUCLEICACID": {
+      "value": "0x10A2",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUBSTANCEPOLYMER": {
+      "value": "0x10A3",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUBSTANCEPROTEIN": {
+      "value": "0x10A4",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUBSTANCEREFERENCEINFORMATION": {
+      "value": "0x10A5",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUBSTANCESOURCEMATERIAL": {
+      "value": "0x10A6",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUBSTANCESPECIFICATION": {
+      "value": "0x10A7",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUPPLYDELIVERY": {
+      "value": "0x10A8",
+      "band": "resource"
+    },
+    "RECOVER_FF_SUPPLYREQUEST": {
+      "value": "0x10A9",
+      "band": "resource"
+    },
+    "RECOVER_FF_TASK": {
+      "value": "0x10AA",
+      "band": "resource"
+    },
+    "RECOVER_FF_TERMINOLOGYCAPABILITIES": {
+      "value": "0x10AB",
+      "band": "resource"
+    },
+    "RECOVER_FF_TESTPLAN": {
+      "value": "0x10AC",
+      "band": "resource"
+    },
+    "RECOVER_FF_TESTREPORT": {
+      "value": "0x10AD",
+      "band": "resource"
+    },
+    "RECOVER_FF_TESTSCRIPT": {
+      "value": "0x10AE",
+      "band": "resource"
+    },
+    "RECOVER_FF_TRANSPORT": {
+      "value": "0x10AF",
+      "band": "resource"
+    },
+    "RECOVER_FF_VALUESET": {
+      "value": "0x10B0",
+      "band": "resource"
+    },
+    "RECOVER_FF_VERIFICATIONRESULT": {
+      "value": "0x10B1",
+      "band": "resource"
+    },
+    "RECOVER_FF_VISIONPRESCRIPTION": {
+      "value": "0x10B2",
+      "band": "resource"
+    },
+    "RECOVER_FF_ACCOUNT_BALANCE": {
+      "value": "0x2056",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ACCOUNT_COVERAGE": {
+      "value": "0x2057",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ACCOUNT_DIAGNOSIS": {
+      "value": "0x2058",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ACCOUNT_GUARANTOR": {
+      "value": "0x2059",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ACCOUNT_PROCEDURE": {
+      "value": "0x205A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ACCOUNT_RELATEDACCOUNT": {
+      "value": "0x205B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ACTIVITYDEFINITION_DYNAMICVALUE": {
+      "value": "0x205C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ACTIVITYDEFINITION_PARTICIPANT": {
+      "value": "0x205D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ADMINISTRABLEPRODUCTDEFINITION_PROPERTY": {
+      "value": "0x205E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ADMINISTRABLEPRODUCTDEFINITION_ROUTEOFADMINISTRATION": {
+      "value": "0x205F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ADMINISTRABLEPRODUCTDEFINITION_ROUTEOFADMINISTRATION_TARGETSPECIES": {
+      "value": "0x2060",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ADMINISTRABLEPRODUCTDEFINITION_ROUTEOFADMINISTRATION_TARGETSPECIES_WITHDRAWALPERIOD": {
+      "value": "0x2061",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ADVERSEEVENT_CONTRIBUTINGFACTOR": {
+      "value": "0x2062",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ADVERSEEVENT_MITIGATINGACTION": {
+      "value": "0x2063",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ADVERSEEVENT_PARTICIPANT": {
+      "value": "0x2064",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ADVERSEEVENT_PREVENTIVEACTION": {
+      "value": "0x2065",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ADVERSEEVENT_SUPPORTINGINFO": {
+      "value": "0x2066",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ADVERSEEVENT_SUSPECTENTITY": {
+      "value": "0x2067",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ADVERSEEVENT_SUSPECTENTITY_CAUSALITY": {
+      "value": "0x2068",
+      "band": "backbone"
+    },
+    "RECOVER_FF_APPOINTMENT_PARTICIPANT": {
+      "value": "0x2069",
+      "band": "backbone"
+    },
+    "RECOVER_FF_APPOINTMENT_RECURRENCETEMPLATE": {
+      "value": "0x206A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_APPOINTMENT_RECURRENCETEMPLATE_MONTHLYTEMPLATE": {
+      "value": "0x206B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_APPOINTMENT_RECURRENCETEMPLATE_WEEKLYTEMPLATE": {
+      "value": "0x206C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_APPOINTMENT_RECURRENCETEMPLATE_YEARLYTEMPLATE": {
+      "value": "0x206D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ARTIFACTASSESSMENT_CONTENT": {
+      "value": "0x206E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_AUDITEVENT_AGENT": {
+      "value": "0x206F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_AUDITEVENT_AGENT_NETWORK": {
+      "value": "0x2070",
+      "band": "backbone"
+    },
+    "RECOVER_FF_AUDITEVENT_ENTITY": {
+      "value": "0x2071",
+      "band": "backbone"
+    },
+    "RECOVER_FF_AUDITEVENT_ENTITY_DETAIL": {
+      "value": "0x2072",
+      "band": "backbone"
+    },
+    "RECOVER_FF_AUDITEVENT_OUTCOME": {
+      "value": "0x2073",
+      "band": "backbone"
+    },
+    "RECOVER_FF_AUDITEVENT_SOURCE": {
+      "value": "0x2074",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BIOLOGICALLYDERIVEDPRODUCTDISPENSE_PERFORMER": {
+      "value": "0x2075",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BIOLOGICALLYDERIVEDPRODUCT_COLLECTION": {
+      "value": "0x2076",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BIOLOGICALLYDERIVEDPRODUCT_MANIPULATION": {
+      "value": "0x2077",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BIOLOGICALLYDERIVEDPRODUCT_PROCESSING": {
+      "value": "0x2078",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BIOLOGICALLYDERIVEDPRODUCT_PROPERTY": {
+      "value": "0x2079",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BIOLOGICALLYDERIVEDPRODUCT_STORAGE": {
+      "value": "0x207A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BODYSTRUCTURE_INCLUDEDSTRUCTURE": {
+      "value": "0x207B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BODYSTRUCTURE_INCLUDEDSTRUCTURE_BODYLANDMARKORIENTATION": {
+      "value": "0x207C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_BODYSTRUCTURE_INCLUDEDSTRUCTURE_BODYLANDMARKORIENTATION_DISTANCEFROMLANDMARK": {
+      "value": "0x207D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_DOCUMENT": {
+      "value": "0x207E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_IMPLEMENTATION": {
+      "value": "0x207F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_MESSAGING": {
+      "value": "0x2080",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_MESSAGING_ENDPOINT": {
+      "value": "0x2081",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_MESSAGING_SUPPORTEDMESSAGE": {
+      "value": "0x2082",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_REST": {
+      "value": "0x2083",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_REST_INTERACTION": {
+      "value": "0x2084",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_REST_RESOURCE": {
+      "value": "0x2085",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_REST_RESOURCE_INTERACTION": {
+      "value": "0x2086",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_REST_RESOURCE_OPERATION": {
+      "value": "0x2087",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_REST_RESOURCE_SEARCHPARAM": {
+      "value": "0x2088",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_REST_SECURITY": {
+      "value": "0x2089",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CAPABILITYSTATEMENT_SOFTWARE": {
+      "value": "0x208A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CATALOGENTRY_RELATEDENTRY": {
+      "value": "0x208B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CHARGEITEMDEFINITION_APPLICABILITY": {
+      "value": "0x208C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CHARGEITEMDEFINITION_PROPERTYGROUP": {
+      "value": "0x208D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CHARGEITEMDEFINITION_PROPERTYGROUP_PRICECOMPONENT": {
+      "value": "0x208E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CHARGEITEM_PERFORMER": {
+      "value": "0x208F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT": {
+      "value": "0x2090",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_ABSTRACT": {
+      "value": "0x2091",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_CLASSIFICATION": {
+      "value": "0x2092",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_CONTRIBUTORSHIP": {
+      "value": "0x2093",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_CONTRIBUTORSHIP_ENTRY": {
+      "value": "0x2094",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_CONTRIBUTORSHIP_ENTRY_CONTRIBUTIONINSTANCE": {
+      "value": "0x2095",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_CONTRIBUTORSHIP_SUMMARY": {
+      "value": "0x2096",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_PART": {
+      "value": "0x2097",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_PUBLICATIONFORM": {
+      "value": "0x2098",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_PUBLICATIONFORM_PUBLISHEDIN": {
+      "value": "0x2099",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_RELATESTO": {
+      "value": "0x209A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_STATUSDATE": {
+      "value": "0x209B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_TITLE": {
+      "value": "0x209C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_VERSION": {
+      "value": "0x209D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CITEDARTIFACT_WEBLOCATION": {
+      "value": "0x209E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_CLASSIFICATION": {
+      "value": "0x209F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_STATUSDATE": {
+      "value": "0x20A0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CITATION_SUMMARY": {
+      "value": "0x20A1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_ADDITEM": {
+      "value": "0x20A2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_ADDITEM_BODYSITE": {
+      "value": "0x20A3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_ADDITEM_DETAIL": {
+      "value": "0x20A4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_ADDITEM_DETAIL_SUBDETAIL": {
+      "value": "0x20A5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_ERROR": {
+      "value": "0x20A6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_EVENT": {
+      "value": "0x20A7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_INSURANCE": {
+      "value": "0x20A8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_ITEM": {
+      "value": "0x20A9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_ITEM_ADJUDICATION": {
+      "value": "0x20AA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_ITEM_DETAIL": {
+      "value": "0x20AB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_ITEM_DETAIL_SUBDETAIL": {
+      "value": "0x20AC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_ITEM_REVIEWOUTCOME": {
+      "value": "0x20AD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_PAYMENT": {
+      "value": "0x20AE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_PROCESSNOTE": {
+      "value": "0x20AF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIMRESPONSE_TOTAL": {
+      "value": "0x20B0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_ACCIDENT": {
+      "value": "0x20B1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_CARETEAM": {
+      "value": "0x20B2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_DIAGNOSIS": {
+      "value": "0x20B3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_EVENT": {
+      "value": "0x20B4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_INSURANCE": {
+      "value": "0x20B5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_ITEM": {
+      "value": "0x20B6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_ITEM_BODYSITE": {
+      "value": "0x20B7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_ITEM_DETAIL": {
+      "value": "0x20B8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_ITEM_DETAIL_SUBDETAIL": {
+      "value": "0x20B9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_PAYEE": {
+      "value": "0x20BA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_PROCEDURE": {
+      "value": "0x20BB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_RELATED": {
+      "value": "0x20BC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLAIM_SUPPORTINGINFO": {
+      "value": "0x20BD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLINICALIMPRESSION_FINDING": {
+      "value": "0x20BE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLINICALIMPRESSION_INVESTIGATION": {
+      "value": "0x20BF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLINICALUSEDEFINITION_CONTRAINDICATION": {
+      "value": "0x20C0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLINICALUSEDEFINITION_CONTRAINDICATION_OTHERTHERAPY": {
+      "value": "0x20C1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLINICALUSEDEFINITION_INDICATION": {
+      "value": "0x20C2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLINICALUSEDEFINITION_INTERACTION": {
+      "value": "0x20C3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLINICALUSEDEFINITION_INTERACTION_INTERACTANT": {
+      "value": "0x20C4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLINICALUSEDEFINITION_UNDESIRABLEEFFECT": {
+      "value": "0x20C5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CLINICALUSEDEFINITION_WARNING": {
+      "value": "0x20C6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CODESYSTEM_CONCEPT": {
+      "value": "0x20C7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CODESYSTEM_CONCEPT_DESIGNATION": {
+      "value": "0x20C8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CODESYSTEM_CONCEPT_PROPERTY": {
+      "value": "0x20C9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CODESYSTEM_FILTER": {
+      "value": "0x20CA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CODESYSTEM_PROPERTY": {
+      "value": "0x20CB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COMMUNICATIONREQUEST_PAYLOAD": {
+      "value": "0x20CC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COMMUNICATION_PAYLOAD": {
+      "value": "0x20CD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COMPARTMENTDEFINITION_RESOURCE": {
+      "value": "0x20CE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COMPOSITION_ATTESTER": {
+      "value": "0x20CF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COMPOSITION_EVENT": {
+      "value": "0x20D0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COMPOSITION_RELATESTO": {
+      "value": "0x20D1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COMPOSITION_SECTION": {
+      "value": "0x20D2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONCEPTMAP_ADDITIONALATTRIBUTE": {
+      "value": "0x20D3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONCEPTMAP_GROUP": {
+      "value": "0x20D4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONCEPTMAP_GROUP_ELEMENT": {
+      "value": "0x20D5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONCEPTMAP_GROUP_ELEMENT_TARGET": {
+      "value": "0x20D6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONCEPTMAP_GROUP_ELEMENT_TARGET_DEPENDSON": {
+      "value": "0x20D7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONCEPTMAP_GROUP_ELEMENT_TARGET_PROPERTY": {
+      "value": "0x20D8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONCEPTMAP_GROUP_UNMAPPED": {
+      "value": "0x20D9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONCEPTMAP_PROPERTY": {
+      "value": "0x20DA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONDITIONDEFINITION_MEDICATION": {
+      "value": "0x20DB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONDITIONDEFINITION_OBSERVATION": {
+      "value": "0x20DC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONDITIONDEFINITION_PLAN": {
+      "value": "0x20DD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONDITIONDEFINITION_PRECONDITION": {
+      "value": "0x20DE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONDITIONDEFINITION_QUESTIONNAIRE": {
+      "value": "0x20DF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONSENT_POLICY": {
+      "value": "0x20E0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONSENT_POLICYBASIS": {
+      "value": "0x20E1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONSENT_PROVISION": {
+      "value": "0x20E2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONSENT_PROVISION_ACTOR": {
+      "value": "0x20E3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONSENT_PROVISION_DATA": {
+      "value": "0x20E4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONSENT_VERIFICATION": {
+      "value": "0x20E5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_CONTENTDEFINITION": {
+      "value": "0x20E6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_FRIENDLY": {
+      "value": "0x20E7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_LEGAL": {
+      "value": "0x20E8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_RULE": {
+      "value": "0x20E9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_SIGNER": {
+      "value": "0x20EA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_TERM": {
+      "value": "0x20EB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_TERM_ACTION": {
+      "value": "0x20EC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_TERM_ACTION_SUBJECT": {
+      "value": "0x20ED",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_TERM_ASSET": {
+      "value": "0x20EE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_TERM_ASSET_CONTEXT": {
+      "value": "0x20EF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_TERM_ASSET_VALUEDITEM": {
+      "value": "0x20F0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_TERM_OFFER": {
+      "value": "0x20F1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_TERM_OFFER_ANSWER": {
+      "value": "0x20F2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_TERM_OFFER_PARTY": {
+      "value": "0x20F3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_CONTRACT_TERM_SECURITYLABEL": {
+      "value": "0x20F4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYREQUEST_EVENT": {
+      "value": "0x20F5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYREQUEST_INSURANCE": {
+      "value": "0x20F6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYREQUEST_ITEM": {
+      "value": "0x20F7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYREQUEST_ITEM_DIAGNOSIS": {
+      "value": "0x20F8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYREQUEST_SUPPORTINGINFO": {
+      "value": "0x20F9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYRESPONSE_ERROR": {
+      "value": "0x20FA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYRESPONSE_EVENT": {
+      "value": "0x20FB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYRESPONSE_INSURANCE": {
+      "value": "0x20FC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYRESPONSE_INSURANCE_ITEM": {
+      "value": "0x20FD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_COVERAGEELIGIBILITYRESPONSE_INSURANCE_ITEM_BENEFIT": {
+      "value": "0x20FE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DETECTEDISSUE_EVIDENCE": {
+      "value": "0x20FF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DETECTEDISSUE_MITIGATION": {
+      "value": "0x2100",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEASSOCIATION_OPERATION": {
+      "value": "0x2101",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_CAPABILITY": {
+      "value": "0x2102",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_CHARGEITEM": {
+      "value": "0x2103",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_CLASSIFICATION": {
+      "value": "0x2104",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_CONFORMSTO": {
+      "value": "0x2105",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_CORRECTIVEACTION": {
+      "value": "0x2106",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_DEVICENAME": {
+      "value": "0x2107",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_GUIDELINE": {
+      "value": "0x2108",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_HASPART": {
+      "value": "0x2109",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_LINK": {
+      "value": "0x210A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_MATERIAL": {
+      "value": "0x210B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_PACKAGING": {
+      "value": "0x210C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_PACKAGING_DISTRIBUTOR": {
+      "value": "0x210D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_PROPERTY": {
+      "value": "0x210E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_REGULATORYIDENTIFIER": {
+      "value": "0x210F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_SPECIALIZATION": {
+      "value": "0x2110",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_UDIDEVICEIDENTIFIER": {
+      "value": "0x2111",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_UDIDEVICEIDENTIFIER_MARKETDISTRIBUTION": {
+      "value": "0x2112",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDEFINITION_VERSION": {
+      "value": "0x2113",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEDISPENSE_PERFORMER": {
+      "value": "0x2114",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEMETRIC_CALIBRATION": {
+      "value": "0x2115",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEREQUEST_PARAMETER": {
+      "value": "0x2116",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DEVICEUSAGE_ADHERENCE": {
+      "value": "0x2117",
+      "band": "backbone"
+    },
+    "RECOVER_FF_DOCUMENTMANIFEST_RELATED": {
+      "value": "0x2118",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EFFECTEVIDENCESYNTHESIS_CERTAINTY": {
+      "value": "0x2119",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EFFECTEVIDENCESYNTHESIS_CERTAINTY_CERTAINTYSUBCOMPONENT": {
+      "value": "0x211A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EFFECTEVIDENCESYNTHESIS_EFFECTESTIMATE": {
+      "value": "0x211B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EFFECTEVIDENCESYNTHESIS_EFFECTESTIMATE_PRECISIONESTIMATE": {
+      "value": "0x211C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EFFECTEVIDENCESYNTHESIS_RESULTSBYEXPOSURE": {
+      "value": "0x211D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EFFECTEVIDENCESYNTHESIS_SAMPLESIZE": {
+      "value": "0x211E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ENCOUNTERHISTORY_LOCATION": {
+      "value": "0x211F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_ENDPOINT_PAYLOAD": {
+      "value": "0x2120",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EPISODEOFCARE_DIAGNOSIS": {
+      "value": "0x2121",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EPISODEOFCARE_REASON": {
+      "value": "0x2122",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EPISODEOFCARE_STATUSHISTORY": {
+      "value": "0x2123",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCEREPORT_RELATESTO": {
+      "value": "0x2124",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCEREPORT_RELATESTO_TARGET": {
+      "value": "0x2125",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCEREPORT_SECTION": {
+      "value": "0x2126",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCEREPORT_SUBJECT": {
+      "value": "0x2127",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCEREPORT_SUBJECT_CHARACTERISTIC": {
+      "value": "0x2128",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCEVARIABLE_CATEGORY": {
+      "value": "0x2129",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCEVARIABLE_CHARACTERISTIC": {
+      "value": "0x212A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCEVARIABLE_CHARACTERISTIC_DEFINITIONBYCOMBINATION": {
+      "value": "0x212B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCEVARIABLE_CHARACTERISTIC_DEFINITIONBYTYPEANDVALUE": {
+      "value": "0x212C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCEVARIABLE_CHARACTERISTIC_TIMEFROMEVENT": {
+      "value": "0x212D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCE_CERTAINTY": {
+      "value": "0x212E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCE_STATISTIC": {
+      "value": "0x212F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCE_STATISTIC_ATTRIBUTEESTIMATE": {
+      "value": "0x2130",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCE_STATISTIC_MODELCHARACTERISTIC": {
+      "value": "0x2131",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCE_STATISTIC_MODELCHARACTERISTIC_VARIABLE": {
+      "value": "0x2132",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCE_STATISTIC_SAMPLESIZE": {
+      "value": "0x2133",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EVIDENCE_VARIABLEDEFINITION": {
+      "value": "0x2134",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXAMPLESCENARIO_ACTOR": {
+      "value": "0x2135",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXAMPLESCENARIO_INSTANCE": {
+      "value": "0x2136",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXAMPLESCENARIO_INSTANCE_CONTAINEDINSTANCE": {
+      "value": "0x2137",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXAMPLESCENARIO_INSTANCE_VERSION": {
+      "value": "0x2138",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXAMPLESCENARIO_PROCESS": {
+      "value": "0x2139",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXAMPLESCENARIO_PROCESS_STEP": {
+      "value": "0x213A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXAMPLESCENARIO_PROCESS_STEP_ALTERNATIVE": {
+      "value": "0x213B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXAMPLESCENARIO_PROCESS_STEP_OPERATION": {
+      "value": "0x213C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_ACCIDENT": {
+      "value": "0x213D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_ADDITEM": {
+      "value": "0x213E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_ADDITEM_BODYSITE": {
+      "value": "0x213F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_ADDITEM_DETAIL": {
+      "value": "0x2140",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_ADDITEM_DETAIL_SUBDETAIL": {
+      "value": "0x2141",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_BENEFITBALANCE": {
+      "value": "0x2142",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_BENEFITBALANCE_FINANCIAL": {
+      "value": "0x2143",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_CARETEAM": {
+      "value": "0x2144",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_DIAGNOSIS": {
+      "value": "0x2145",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_EVENT": {
+      "value": "0x2146",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_INSURANCE": {
+      "value": "0x2147",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_ITEM": {
+      "value": "0x2148",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_ITEM_ADJUDICATION": {
+      "value": "0x2149",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_ITEM_BODYSITE": {
+      "value": "0x214A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_ITEM_DETAIL": {
+      "value": "0x214B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_ITEM_DETAIL_SUBDETAIL": {
+      "value": "0x214C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_ITEM_REVIEWOUTCOME": {
+      "value": "0x214D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_PAYEE": {
+      "value": "0x214E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_PAYMENT": {
+      "value": "0x214F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_PROCEDURE": {
+      "value": "0x2150",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_PROCESSNOTE": {
+      "value": "0x2151",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_RELATED": {
+      "value": "0x2152",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_SUPPORTINGINFO": {
+      "value": "0x2153",
+      "band": "backbone"
+    },
+    "RECOVER_FF_EXPLANATIONOFBENEFIT_TOTAL": {
+      "value": "0x2154",
+      "band": "backbone"
+    },
+    "RECOVER_FF_FAMILYMEMBERHISTORY_CONDITION": {
+      "value": "0x2155",
+      "band": "backbone"
+    },
+    "RECOVER_FF_FAMILYMEMBERHISTORY_PARTICIPANT": {
+      "value": "0x2156",
+      "band": "backbone"
+    },
+    "RECOVER_FF_FAMILYMEMBERHISTORY_PROCEDURE": {
+      "value": "0x2157",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GENOMICSTUDY_ANALYSIS": {
+      "value": "0x2158",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GENOMICSTUDY_ANALYSIS_DEVICE": {
+      "value": "0x2159",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GENOMICSTUDY_ANALYSIS_INPUT": {
+      "value": "0x215A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GENOMICSTUDY_ANALYSIS_OUTPUT": {
+      "value": "0x215B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GENOMICSTUDY_ANALYSIS_PERFORMER": {
+      "value": "0x215C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GRAPHDEFINITION_LINK": {
+      "value": "0x215D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GRAPHDEFINITION_LINK_COMPARTMENT": {
+      "value": "0x215E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GRAPHDEFINITION_LINK_TARGET": {
+      "value": "0x215F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GRAPHDEFINITION_LINK_TARGET_COMPARTMENT": {
+      "value": "0x2160",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GRAPHDEFINITION_NODE": {
+      "value": "0x2161",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GROUP_CHARACTERISTIC": {
+      "value": "0x2162",
+      "band": "backbone"
+    },
+    "RECOVER_FF_GROUP_MEMBER": {
+      "value": "0x2163",
+      "band": "backbone"
+    },
+    "RECOVER_FF_HEALTHCARESERVICE_AVAILABLETIME": {
+      "value": "0x2164",
+      "band": "backbone"
+    },
+    "RECOVER_FF_HEALTHCARESERVICE_ELIGIBILITY": {
+      "value": "0x2165",
+      "band": "backbone"
+    },
+    "RECOVER_FF_HEALTHCARESERVICE_NOTAVAILABLE": {
+      "value": "0x2166",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMAGINGSELECTION_INSTANCE": {
+      "value": "0x2167",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMAGINGSELECTION_INSTANCE_IMAGEREGION2D": {
+      "value": "0x2168",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMAGINGSELECTION_INSTANCE_IMAGEREGION3D": {
+      "value": "0x2169",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMAGINGSELECTION_PERFORMER": {
+      "value": "0x216A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMAGINGSTUDY_SERIES": {
+      "value": "0x216B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMAGINGSTUDY_SERIES_INSTANCE": {
+      "value": "0x216C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMAGINGSTUDY_SERIES_PERFORMER": {
+      "value": "0x216D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMMUNIZATIONRECOMMENDATION_RECOMMENDATION": {
+      "value": "0x216E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMMUNIZATIONRECOMMENDATION_RECOMMENDATION_DATECRITERION": {
+      "value": "0x216F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE_DEFINITION": {
+      "value": "0x2170",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE_DEFINITION_GROUPING": {
+      "value": "0x2171",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE_DEFINITION_PAGE": {
+      "value": "0x2172",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE_DEFINITION_PARAMETER": {
+      "value": "0x2173",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE_DEFINITION_RESOURCE": {
+      "value": "0x2174",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE_DEFINITION_TEMPLATE": {
+      "value": "0x2175",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE_DEPENDSON": {
+      "value": "0x2176",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE_GLOBAL": {
+      "value": "0x2177",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE_MANIFEST": {
+      "value": "0x2178",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE_MANIFEST_PAGE": {
+      "value": "0x2179",
+      "band": "backbone"
+    },
+    "RECOVER_FF_IMPLEMENTATIONGUIDE_MANIFEST_RESOURCE": {
+      "value": "0x217A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INGREDIENT_MANUFACTURER": {
+      "value": "0x217B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INGREDIENT_SUBSTANCE": {
+      "value": "0x217C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INGREDIENT_SUBSTANCE_STRENGTH": {
+      "value": "0x217D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INGREDIENT_SUBSTANCE_STRENGTH_REFERENCESTRENGTH": {
+      "value": "0x217E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INSURANCEPLAN_CONTACT": {
+      "value": "0x217F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INSURANCEPLAN_COVERAGE": {
+      "value": "0x2180",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INSURANCEPLAN_COVERAGE_BENEFIT": {
+      "value": "0x2181",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INSURANCEPLAN_COVERAGE_BENEFIT_LIMIT": {
+      "value": "0x2182",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INSURANCEPLAN_PLAN": {
+      "value": "0x2183",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INSURANCEPLAN_PLAN_GENERALCOST": {
+      "value": "0x2184",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INSURANCEPLAN_PLAN_SPECIFICCOST": {
+      "value": "0x2185",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INSURANCEPLAN_PLAN_SPECIFICCOST_BENEFIT": {
+      "value": "0x2186",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INSURANCEPLAN_PLAN_SPECIFICCOST_BENEFIT_COST": {
+      "value": "0x2187",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INVENTORYITEM_ASSOCIATION": {
+      "value": "0x2188",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INVENTORYITEM_CHARACTERISTIC": {
+      "value": "0x2189",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INVENTORYITEM_DESCRIPTION": {
+      "value": "0x218A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INVENTORYITEM_INSTANCE": {
+      "value": "0x218B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INVENTORYITEM_NAME": {
+      "value": "0x218C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INVENTORYITEM_RESPONSIBLEORGANIZATION": {
+      "value": "0x218D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INVENTORYREPORT_INVENTORYLISTING": {
+      "value": "0x218E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INVENTORYREPORT_INVENTORYLISTING_ITEM": {
+      "value": "0x218F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INVOICE_LINEITEM": {
+      "value": "0x2190",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INVOICE_LINEITEM_PRICECOMPONENT": {
+      "value": "0x2191",
+      "band": "backbone"
+    },
+    "RECOVER_FF_INVOICE_PARTICIPANT": {
+      "value": "0x2192",
+      "band": "backbone"
+    },
+    "RECOVER_FF_LINKAGE_ITEM": {
+      "value": "0x2193",
+      "band": "backbone"
+    },
+    "RECOVER_FF_LIST_ENTRY": {
+      "value": "0x2194",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MANUFACTUREDITEMDEFINITION_COMPONENT": {
+      "value": "0x2195",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MANUFACTUREDITEMDEFINITION_COMPONENT_CONSTITUENT": {
+      "value": "0x2196",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MANUFACTUREDITEMDEFINITION_PROPERTY": {
+      "value": "0x2197",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASUREREPORT_GROUP": {
+      "value": "0x2198",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASUREREPORT_GROUP_POPULATION": {
+      "value": "0x2199",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASUREREPORT_GROUP_STRATIFIER": {
+      "value": "0x219A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASUREREPORT_GROUP_STRATIFIER_STRATUM": {
+      "value": "0x219B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASUREREPORT_GROUP_STRATIFIER_STRATUM_COMPONENT": {
+      "value": "0x219C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASUREREPORT_GROUP_STRATIFIER_STRATUM_POPULATION": {
+      "value": "0x219D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASURE_GROUP": {
+      "value": "0x219E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASURE_GROUP_POPULATION": {
+      "value": "0x219F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASURE_GROUP_STRATIFIER": {
+      "value": "0x21A0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASURE_GROUP_STRATIFIER_COMPONENT": {
+      "value": "0x21A1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASURE_SUPPLEMENTALDATA": {
+      "value": "0x21A2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEASURE_TERM": {
+      "value": "0x21A3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONADMINISTRATION_DOSAGE": {
+      "value": "0x21A4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONADMINISTRATION_PERFORMER": {
+      "value": "0x21A5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_ADMINISTRATIONGUIDELINES": {
+      "value": "0x21A6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_ADMINISTRATIONGUIDELINES_DOSAGE": {
+      "value": "0x21A7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_ADMINISTRATIONGUIDELINES_PATIENTCHARACTERISTICS": {
+      "value": "0x21A8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_COST": {
+      "value": "0x21A9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_DEFINITIONAL": {
+      "value": "0x21AA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_DEFINITIONAL_DRUGCHARACTERISTIC": {
+      "value": "0x21AB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_DEFINITIONAL_INGREDIENT": {
+      "value": "0x21AC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_DRUGCHARACTERISTIC": {
+      "value": "0x21AD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_INDICATIONGUIDELINE": {
+      "value": "0x21AE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_INDICATIONGUIDELINE_DOSINGGUIDELINE": {
+      "value": "0x21AF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_INDICATIONGUIDELINE_DOSINGGUIDELINE_DOSAGE": {
+      "value": "0x21B0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_INDICATIONGUIDELINE_DOSINGGUIDELINE_PATIENTCHARACTERISTIC": {
+      "value": "0x21B1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_INGREDIENT": {
+      "value": "0x21B2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_KINETICS": {
+      "value": "0x21B3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_MEDICINECLASSIFICATION": {
+      "value": "0x21B4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_MONITORINGPROGRAM": {
+      "value": "0x21B5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_MONOGRAPH": {
+      "value": "0x21B6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_PACKAGING": {
+      "value": "0x21B7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_REGULATORY": {
+      "value": "0x21B8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_REGULATORY_MAXDISPENSE": {
+      "value": "0x21B9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_REGULATORY_SCHEDULE": {
+      "value": "0x21BA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_REGULATORY_SUBSTITUTION": {
+      "value": "0x21BB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_RELATEDMEDICATIONKNOWLEDGE": {
+      "value": "0x21BC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_STORAGEGUIDELINE": {
+      "value": "0x21BD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICATIONKNOWLEDGE_STORAGEGUIDELINE_ENVIRONMENTALSETTING": {
+      "value": "0x21BE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTAUTHORIZATION_JURISDICTIONALAUTHORIZATION": {
+      "value": "0x21BF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTAUTHORIZATION_PROCEDURE": {
+      "value": "0x21C0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTCONTRAINDICATION_OTHERTHERAPY": {
+      "value": "0x21C1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTDEFINITION_CHARACTERISTIC": {
+      "value": "0x21C2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTDEFINITION_CONTACT": {
+      "value": "0x21C3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTDEFINITION_CROSSREFERENCE": {
+      "value": "0x21C4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTDEFINITION_NAME": {
+      "value": "0x21C5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTDEFINITION_NAME_PART": {
+      "value": "0x21C6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTDEFINITION_NAME_USAGE": {
+      "value": "0x21C7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTDEFINITION_OPERATION": {
+      "value": "0x21C8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTINDICATION_OTHERTHERAPY": {
+      "value": "0x21C9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTINGREDIENT_SPECIFIEDSUBSTANCE": {
+      "value": "0x21CA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTINGREDIENT_SPECIFIEDSUBSTANCE_STRENGTH": {
+      "value": "0x21CB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTINGREDIENT_SPECIFIEDSUBSTANCE_STRENGTH_REFERENCESTRENGTH": {
+      "value": "0x21CC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTINGREDIENT_SUBSTANCE": {
+      "value": "0x21CD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTINTERACTION_INTERACTANT": {
+      "value": "0x21CE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTPACKAGED_BATCHIDENTIFIER": {
+      "value": "0x21CF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTPACKAGED_PACKAGEITEM": {
+      "value": "0x21D0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTPHARMACEUTICAL_CHARACTERISTICS": {
+      "value": "0x21D1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTPHARMACEUTICAL_ROUTEOFADMINISTRATION": {
+      "value": "0x21D2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTPHARMACEUTICAL_ROUTEOFADMINISTRATION_TARGETSPECIES": {
+      "value": "0x21D3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCTPHARMACEUTICAL_ROUTEOFADMINISTRATION_TARGETSPECIES_WITHDRAWALPERIOD": {
+      "value": "0x21D4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCT_MANUFACTURINGBUSINESSOPERATION": {
+      "value": "0x21D5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCT_NAME": {
+      "value": "0x21D6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCT_NAME_COUNTRYLANGUAGE": {
+      "value": "0x21D7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCT_NAME_NAMEPART": {
+      "value": "0x21D8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MEDICINALPRODUCT_SPECIALDESIGNATION": {
+      "value": "0x21D9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MESSAGEDEFINITION_ALLOWEDRESPONSE": {
+      "value": "0x21DA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MESSAGEDEFINITION_FOCUS": {
+      "value": "0x21DB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MESSAGEHEADER_DESTINATION": {
+      "value": "0x21DC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MESSAGEHEADER_RESPONSE": {
+      "value": "0x21DD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MESSAGEHEADER_SOURCE": {
+      "value": "0x21DE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE_QUALITY": {
+      "value": "0x21DF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE_QUALITY_ROC": {
+      "value": "0x21E0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE_REFERENCESEQ": {
+      "value": "0x21E1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE_RELATIVE": {
+      "value": "0x21E2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE_RELATIVE_EDIT": {
+      "value": "0x21E3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE_RELATIVE_STARTINGSEQUENCE": {
+      "value": "0x21E4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE_REPOSITORY": {
+      "value": "0x21E5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE_STRUCTUREVARIANT": {
+      "value": "0x21E6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE_STRUCTUREVARIANT_INNER": {
+      "value": "0x21E7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE_STRUCTUREVARIANT_OUTER": {
+      "value": "0x21E8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_MOLECULARSEQUENCE_VARIANT": {
+      "value": "0x21E9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NAMINGSYSTEM_UNIQUEID": {
+      "value": "0x21EA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONINTAKE_CONSUMEDITEM": {
+      "value": "0x21EB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONINTAKE_INGREDIENTLABEL": {
+      "value": "0x21EC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONINTAKE_PERFORMER": {
+      "value": "0x21ED",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONORDER_ENTERALFORMULA": {
+      "value": "0x21EE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONORDER_ENTERALFORMULA_ADDITIVE": {
+      "value": "0x21EF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONORDER_ENTERALFORMULA_ADMINISTRATION": {
+      "value": "0x21F0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONORDER_ENTERALFORMULA_ADMINISTRATION_SCHEDULE": {
+      "value": "0x21F1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONORDER_ORALDIET": {
+      "value": "0x21F2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONORDER_ORALDIET_NUTRIENT": {
+      "value": "0x21F3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONORDER_ORALDIET_SCHEDULE": {
+      "value": "0x21F4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONORDER_ORALDIET_TEXTURE": {
+      "value": "0x21F5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONORDER_SUPPLEMENT": {
+      "value": "0x21F6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONORDER_SUPPLEMENT_SCHEDULE": {
+      "value": "0x21F7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONPRODUCT_CHARACTERISTIC": {
+      "value": "0x21F8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONPRODUCT_INGREDIENT": {
+      "value": "0x21F9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONPRODUCT_INSTANCE": {
+      "value": "0x21FA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_NUTRITIONPRODUCT_NUTRIENT": {
+      "value": "0x21FB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OBSERVATIONDEFINITION_COMPONENT": {
+      "value": "0x21FC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OBSERVATIONDEFINITION_QUALIFIEDINTERVAL": {
+      "value": "0x21FD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OBSERVATIONDEFINITION_QUALIFIEDVALUE": {
+      "value": "0x21FE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OBSERVATIONDEFINITION_QUANTITATIVEDETAILS": {
+      "value": "0x21FF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OPERATIONDEFINITION_OVERLOAD": {
+      "value": "0x2200",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OPERATIONDEFINITION_PARAMETER": {
+      "value": "0x2201",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OPERATIONDEFINITION_PARAMETER_BINDING": {
+      "value": "0x2202",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OPERATIONDEFINITION_PARAMETER_REFERENCEDFROM": {
+      "value": "0x2203",
+      "band": "backbone"
+    },
+    "RECOVER_FF_OPERATIONOUTCOME_ISSUE": {
+      "value": "0x2204",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PACKAGEDPRODUCTDEFINITION_LEGALSTATUSOFSUPPLY": {
+      "value": "0x2205",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PACKAGEDPRODUCTDEFINITION_PACKAGING": {
+      "value": "0x2206",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PACKAGEDPRODUCTDEFINITION_PACKAGING_CONTAINEDITEM": {
+      "value": "0x2207",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PACKAGEDPRODUCTDEFINITION_PACKAGING_PROPERTY": {
+      "value": "0x2208",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PARAMETERS_PARAMETER": {
+      "value": "0x2209",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PAYMENTRECONCILIATION_ALLOCATION": {
+      "value": "0x220A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PAYMENTRECONCILIATION_DETAIL": {
+      "value": "0x220B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PAYMENTRECONCILIATION_PROCESSNOTE": {
+      "value": "0x220C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PERMISSION_JUSTIFICATION": {
+      "value": "0x220D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PERMISSION_RULE": {
+      "value": "0x220E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PERMISSION_RULE_ACTIVITY": {
+      "value": "0x220F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PERMISSION_RULE_DATA": {
+      "value": "0x2210",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PERMISSION_RULE_DATA_RESOURCE": {
+      "value": "0x2211",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PERSON_COMMUNICATION": {
+      "value": "0x2212",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PERSON_LINK": {
+      "value": "0x2213",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PLANDEFINITION_ACTION": {
+      "value": "0x2214",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PLANDEFINITION_ACTION_CONDITION": {
+      "value": "0x2215",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PLANDEFINITION_ACTION_DYNAMICVALUE": {
+      "value": "0x2216",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PLANDEFINITION_ACTION_INPUT": {
+      "value": "0x2217",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PLANDEFINITION_ACTION_OUTPUT": {
+      "value": "0x2218",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PLANDEFINITION_ACTION_PARTICIPANT": {
+      "value": "0x2219",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PLANDEFINITION_ACTION_RELATEDACTION": {
+      "value": "0x221A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PLANDEFINITION_ACTOR": {
+      "value": "0x221B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PLANDEFINITION_ACTOR_OPTION": {
+      "value": "0x221C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PLANDEFINITION_GOAL": {
+      "value": "0x221D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_PLANDEFINITION_GOAL_TARGET": {
+      "value": "0x221E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_QUESTIONNAIRE_ITEM": {
+      "value": "0x221F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_QUESTIONNAIRE_ITEM_ANSWEROPTION": {
+      "value": "0x2220",
+      "band": "backbone"
+    },
+    "RECOVER_FF_QUESTIONNAIRE_ITEM_ENABLEWHEN": {
+      "value": "0x2221",
+      "band": "backbone"
+    },
+    "RECOVER_FF_QUESTIONNAIRE_ITEM_INITIAL": {
+      "value": "0x2222",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REGULATEDAUTHORIZATION_CASE": {
+      "value": "0x2223",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REQUESTGROUP_ACTION": {
+      "value": "0x2224",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REQUESTGROUP_ACTION_CONDITION": {
+      "value": "0x2225",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REQUESTGROUP_ACTION_RELATEDACTION": {
+      "value": "0x2226",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REQUESTORCHESTRATION_ACTION": {
+      "value": "0x2227",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REQUESTORCHESTRATION_ACTION_CONDITION": {
+      "value": "0x2228",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REQUESTORCHESTRATION_ACTION_DYNAMICVALUE": {
+      "value": "0x2229",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REQUESTORCHESTRATION_ACTION_INPUT": {
+      "value": "0x222A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REQUESTORCHESTRATION_ACTION_OUTPUT": {
+      "value": "0x222B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REQUESTORCHESTRATION_ACTION_PARTICIPANT": {
+      "value": "0x222C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REQUESTORCHESTRATION_ACTION_RELATEDACTION": {
+      "value": "0x222D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_REQUIREMENTS_STATEMENT": {
+      "value": "0x222E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RESEARCHELEMENTDEFINITION_CHARACTERISTIC": {
+      "value": "0x222F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RESEARCHSTUDY_ARM": {
+      "value": "0x2230",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RESEARCHSTUDY_ASSOCIATEDPARTY": {
+      "value": "0x2231",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RESEARCHSTUDY_COMPARISONGROUP": {
+      "value": "0x2232",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RESEARCHSTUDY_LABEL": {
+      "value": "0x2233",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RESEARCHSTUDY_OBJECTIVE": {
+      "value": "0x2234",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RESEARCHSTUDY_OUTCOMEMEASURE": {
+      "value": "0x2235",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RESEARCHSTUDY_PROGRESSSTATUS": {
+      "value": "0x2236",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RESEARCHSTUDY_RECRUITMENT": {
+      "value": "0x2237",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RESEARCHSUBJECT_PROGRESS": {
+      "value": "0x2238",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RISKASSESSMENT_PREDICTION": {
+      "value": "0x2239",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RISKEVIDENCESYNTHESIS_CERTAINTY": {
+      "value": "0x223A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RISKEVIDENCESYNTHESIS_CERTAINTY_CERTAINTYSUBCOMPONENT": {
+      "value": "0x223B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RISKEVIDENCESYNTHESIS_RISKESTIMATE": {
+      "value": "0x223C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RISKEVIDENCESYNTHESIS_RISKESTIMATE_PRECISIONESTIMATE": {
+      "value": "0x223D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_RISKEVIDENCESYNTHESIS_SAMPLESIZE": {
+      "value": "0x223E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SEARCHPARAMETER_COMPONENT": {
+      "value": "0x223F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SPECIMENDEFINITION_TYPETESTED": {
+      "value": "0x2240",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SPECIMENDEFINITION_TYPETESTED_CONTAINER": {
+      "value": "0x2241",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SPECIMENDEFINITION_TYPETESTED_CONTAINER_ADDITIVE": {
+      "value": "0x2242",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SPECIMENDEFINITION_TYPETESTED_HANDLING": {
+      "value": "0x2243",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREDEFINITION_CONTEXT": {
+      "value": "0x2244",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREDEFINITION_DIFFERENTIAL": {
+      "value": "0x2245",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREDEFINITION_MAPPING": {
+      "value": "0x2246",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREDEFINITION_SNAPSHOT": {
+      "value": "0x2247",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREMAP_CONST": {
+      "value": "0x2248",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREMAP_GROUP": {
+      "value": "0x2249",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREMAP_GROUP_INPUT": {
+      "value": "0x224A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREMAP_GROUP_RULE": {
+      "value": "0x224B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREMAP_GROUP_RULE_DEPENDENT": {
+      "value": "0x224C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREMAP_GROUP_RULE_SOURCE": {
+      "value": "0x224D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREMAP_GROUP_RULE_TARGET": {
+      "value": "0x224E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREMAP_GROUP_RULE_TARGET_PARAMETER": {
+      "value": "0x224F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_STRUCTUREMAP_STRUCTURE": {
+      "value": "0x2250",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSCRIPTIONSTATUS_NOTIFICATIONEVENT": {
+      "value": "0x2251",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSCRIPTIONTOPIC_CANFILTERBY": {
+      "value": "0x2252",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSCRIPTIONTOPIC_EVENTTRIGGER": {
+      "value": "0x2253",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSCRIPTIONTOPIC_NOTIFICATIONSHAPE": {
+      "value": "0x2254",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSCRIPTIONTOPIC_RESOURCETRIGGER": {
+      "value": "0x2255",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSCRIPTIONTOPIC_RESOURCETRIGGER_QUERYCRITERIA": {
+      "value": "0x2256",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSCRIPTION_CHANNEL": {
+      "value": "0x2257",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSCRIPTION_FILTERBY": {
+      "value": "0x2258",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSCRIPTION_PARAMETER": {
+      "value": "0x2259",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION_CHARACTERIZATION": {
+      "value": "0x225A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION_CODE": {
+      "value": "0x225B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION_MOIETY": {
+      "value": "0x225C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION_MOLECULARWEIGHT": {
+      "value": "0x225D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION_NAME": {
+      "value": "0x225E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION_NAME_OFFICIAL": {
+      "value": "0x225F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION_PROPERTY": {
+      "value": "0x2260",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION_RELATIONSHIP": {
+      "value": "0x2261",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION_SOURCEMATERIAL": {
+      "value": "0x2262",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION_STRUCTURE": {
+      "value": "0x2263",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEDEFINITION_STRUCTURE_REPRESENTATION": {
+      "value": "0x2264",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCENUCLEICACID_SUBUNIT": {
+      "value": "0x2265",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCENUCLEICACID_SUBUNIT_LINKAGE": {
+      "value": "0x2266",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCENUCLEICACID_SUBUNIT_SUGAR": {
+      "value": "0x2267",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEPOLYMER_MONOMERSET": {
+      "value": "0x2268",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEPOLYMER_MONOMERSET_STARTINGMATERIAL": {
+      "value": "0x2269",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEPOLYMER_REPEAT": {
+      "value": "0x226A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEPOLYMER_REPEAT_REPEATUNIT": {
+      "value": "0x226B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEPOLYMER_REPEAT_REPEATUNIT_DEGREEOFPOLYMERISATION": {
+      "value": "0x226C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEPOLYMER_REPEAT_REPEATUNIT_STRUCTURALREPRESENTATION": {
+      "value": "0x226D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEPROTEIN_SUBUNIT": {
+      "value": "0x226E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEREFERENCEINFORMATION_CLASSIFICATION": {
+      "value": "0x226F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEREFERENCEINFORMATION_GENE": {
+      "value": "0x2270",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEREFERENCEINFORMATION_GENEELEMENT": {
+      "value": "0x2271",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCEREFERENCEINFORMATION_TARGET": {
+      "value": "0x2272",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESOURCEMATERIAL_FRACTIONDESCRIPTION": {
+      "value": "0x2273",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESOURCEMATERIAL_ORGANISM": {
+      "value": "0x2274",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESOURCEMATERIAL_ORGANISM_AUTHOR": {
+      "value": "0x2275",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESOURCEMATERIAL_ORGANISM_HYBRID": {
+      "value": "0x2276",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESOURCEMATERIAL_ORGANISM_ORGANISMGENERAL": {
+      "value": "0x2277",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESOURCEMATERIAL_PARTDESCRIPTION": {
+      "value": "0x2278",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESPECIFICATION_CODE": {
+      "value": "0x2279",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESPECIFICATION_MOIETY": {
+      "value": "0x227A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESPECIFICATION_NAME": {
+      "value": "0x227B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESPECIFICATION_NAME_OFFICIAL": {
+      "value": "0x227C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESPECIFICATION_PROPERTY": {
+      "value": "0x227D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESPECIFICATION_RELATIONSHIP": {
+      "value": "0x227E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESPECIFICATION_STRUCTURE": {
+      "value": "0x227F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESPECIFICATION_STRUCTURE_ISOTOPE": {
+      "value": "0x2280",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESPECIFICATION_STRUCTURE_ISOTOPE_MOLECULARWEIGHT": {
+      "value": "0x2281",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCESPECIFICATION_STRUCTURE_REPRESENTATION": {
+      "value": "0x2282",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCE_INGREDIENT": {
+      "value": "0x2283",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUBSTANCE_INSTANCE": {
+      "value": "0x2284",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUPPLYDELIVERY_SUPPLIEDITEM": {
+      "value": "0x2285",
+      "band": "backbone"
+    },
+    "RECOVER_FF_SUPPLYREQUEST_PARAMETER": {
+      "value": "0x2286",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TASK_INPUT": {
+      "value": "0x2287",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TASK_OUTPUT": {
+      "value": "0x2288",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TASK_PERFORMER": {
+      "value": "0x2289",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TASK_RESTRICTION": {
+      "value": "0x228A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TERMINOLOGYCAPABILITIES_CLOSURE": {
+      "value": "0x228B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TERMINOLOGYCAPABILITIES_CODESYSTEM": {
+      "value": "0x228C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TERMINOLOGYCAPABILITIES_CODESYSTEM_VERSION": {
+      "value": "0x228D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TERMINOLOGYCAPABILITIES_CODESYSTEM_VERSION_FILTER": {
+      "value": "0x228E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TERMINOLOGYCAPABILITIES_EXPANSION": {
+      "value": "0x228F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TERMINOLOGYCAPABILITIES_EXPANSION_PARAMETER": {
+      "value": "0x2290",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TERMINOLOGYCAPABILITIES_IMPLEMENTATION": {
+      "value": "0x2291",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TERMINOLOGYCAPABILITIES_SOFTWARE": {
+      "value": "0x2292",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TERMINOLOGYCAPABILITIES_TRANSLATION": {
+      "value": "0x2293",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TERMINOLOGYCAPABILITIES_VALIDATECODE": {
+      "value": "0x2294",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTPLAN_DEPENDENCY": {
+      "value": "0x2295",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTPLAN_TESTCASE": {
+      "value": "0x2296",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTPLAN_TESTCASE_ASSERTION": {
+      "value": "0x2297",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTPLAN_TESTCASE_DEPENDENCY": {
+      "value": "0x2298",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTPLAN_TESTCASE_TESTDATA": {
+      "value": "0x2299",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTPLAN_TESTCASE_TESTRUN": {
+      "value": "0x229A",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTPLAN_TESTCASE_TESTRUN_SCRIPT": {
+      "value": "0x229B",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTREPORT_PARTICIPANT": {
+      "value": "0x229C",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTREPORT_SETUP": {
+      "value": "0x229D",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTREPORT_SETUP_ACTION": {
+      "value": "0x229E",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTREPORT_SETUP_ACTION_ASSERT": {
+      "value": "0x229F",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTREPORT_SETUP_ACTION_ASSERT_REQUIREMENT": {
+      "value": "0x22A0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTREPORT_SETUP_ACTION_OPERATION": {
+      "value": "0x22A1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTREPORT_TEARDOWN": {
+      "value": "0x22A2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTREPORT_TEARDOWN_ACTION": {
+      "value": "0x22A3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTREPORT_TEST": {
+      "value": "0x22A4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTREPORT_TEST_ACTION": {
+      "value": "0x22A5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_DESTINATION": {
+      "value": "0x22A6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_FIXTURE": {
+      "value": "0x22A7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_METADATA": {
+      "value": "0x22A8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_METADATA_CAPABILITY": {
+      "value": "0x22A9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_METADATA_LINK": {
+      "value": "0x22AA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_ORIGIN": {
+      "value": "0x22AB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_SCOPE": {
+      "value": "0x22AC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_SETUP": {
+      "value": "0x22AD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_SETUP_ACTION": {
+      "value": "0x22AE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_SETUP_ACTION_ASSERT": {
+      "value": "0x22AF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_SETUP_ACTION_ASSERT_REQUIREMENT": {
+      "value": "0x22B0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_SETUP_ACTION_OPERATION": {
+      "value": "0x22B1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_SETUP_ACTION_OPERATION_REQUESTHEADER": {
+      "value": "0x22B2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_TEARDOWN": {
+      "value": "0x22B3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_TEARDOWN_ACTION": {
+      "value": "0x22B4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_TEST": {
+      "value": "0x22B5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_TEST_ACTION": {
+      "value": "0x22B6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TESTSCRIPT_VARIABLE": {
+      "value": "0x22B7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TRANSPORT_INPUT": {
+      "value": "0x22B8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TRANSPORT_OUTPUT": {
+      "value": "0x22B9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_TRANSPORT_RESTRICTION": {
+      "value": "0x22BA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_COMPOSE": {
+      "value": "0x22BB",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_COMPOSE_INCLUDE": {
+      "value": "0x22BC",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_COMPOSE_INCLUDE_CONCEPT": {
+      "value": "0x22BD",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_COMPOSE_INCLUDE_CONCEPT_DESIGNATION": {
+      "value": "0x22BE",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_COMPOSE_INCLUDE_FILTER": {
+      "value": "0x22BF",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_EXPANSION": {
+      "value": "0x22C0",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_EXPANSION_CONTAINS": {
+      "value": "0x22C1",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_EXPANSION_CONTAINS_PROPERTY": {
+      "value": "0x22C2",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_EXPANSION_CONTAINS_PROPERTY_SUBPROPERTY": {
+      "value": "0x22C3",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_EXPANSION_PARAMETER": {
+      "value": "0x22C4",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_EXPANSION_PROPERTY": {
+      "value": "0x22C5",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VALUESET_SCOPE": {
+      "value": "0x22C6",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VERIFICATIONRESULT_ATTESTATION": {
+      "value": "0x22C7",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VERIFICATIONRESULT_PRIMARYSOURCE": {
+      "value": "0x22C8",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VERIFICATIONRESULT_VALIDATOR": {
+      "value": "0x22C9",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VISIONPRESCRIPTION_LENSSPECIFICATION": {
+      "value": "0x22CA",
+      "band": "backbone"
+    },
+    "RECOVER_FF_VISIONPRESCRIPTION_LENSSPECIFICATION_PRISM": {
+      "value": "0x22CB",
+      "band": "backbone"
+    }
+  }
+}

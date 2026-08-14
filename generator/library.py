@@ -35,7 +35,11 @@ from generator.bindings.python_fields import (
     emit_python_ast_stubs,
     emit_py_typed_marker,
 )
-from generator.utilities import enclose_namespace, validate_recovery_tags
+from generator.utilities import (
+    enclose_namespace,
+    validate_recovery_bands,
+    validate_recovery_tags,
+)
 
 
 def compile_fhir_library(
@@ -415,6 +419,13 @@ def compile_fhir_library(
     # as a wall of C++ "undeclared identifier" errors.
     n_tags = validate_recovery_tags(output_dir, "include/FF_Recovery.hpp")
     print(f"-- Validated {n_tags} RECOVERY_TAG references against include/FF_Recovery.hpp")
+
+    # --- Validate the header's own band discipline ---
+    # Independent of what was emitted: every tag must sit inside a band, and no
+    # two tags may share a value. Bands drive runtime classification
+    # (FF_IsResourceTag), so a misplaced tag is silent, not a compile error.
+    validate_recovery_bands("include/FF_Recovery.hpp")
+    print("-- Validated RECOVERY_TAG band membership and uniqueness")
 
     # --- Ingest mappings ---
     from generator.emit.ingest_mappings import generate_ingest_mappings

@@ -1,4 +1,4 @@
-"""Emit dictionaries/FF_Codes.hpp -- the named C++ constants for every code ID.
+"""Emit generated_src/FF_Codes.hpp -- the named C++ constants for every code ID.
 
 Two jobs, and it is worth keeping them straight:
 
@@ -6,7 +6,7 @@ Two jobs, and it is worth keeping them straight:
     source-level only. Renaming one breaks a recompile; it does not touch a
     single byte on the wire, and it never moves an ID.
 
-  * NUMBERING (generator/emit/dictionary.py) decides what a code *is* on the
+  * NUMBERING (generator/emit/code_ids.py) decides what a code *is* on the
     wire. That is permanent. See dictionaries/README.md.
 
 Identifiers for codes already in the ledger are read straight out of it, so the
@@ -20,8 +20,12 @@ import json
 import os
 import re
 
-LEDGER = os.path.join(os.path.dirname(__file__), "..", "master_codes.json")
-OUTPUT = os.path.join(os.path.dirname(__file__), "..", "..", "dictionaries", "FF_Codes.hpp")
+LEDGER = os.path.join(os.path.dirname(__file__), "..", "..", "dictionaries", "master_codes.json")
+# DERIVED artifact, not a ledger: a pure projection of master_codes.json, so it
+# lives with the rest of the generator output rather than beside the ledger it
+# comes from. dictionaries/ holds the SOURCE (the JSON); generated_src/ holds
+# what is derived from it.
+OUTPUT = os.path.join(os.path.dirname(__file__), "..", "..", "generated_src", "FF_Codes.hpp")
 
 
 # Identifiers that are macros in the C/C++ standard library or on Windows. The
@@ -195,7 +199,7 @@ def struct_name(system: str) -> str:
 
 
 def generate() -> None:
-    """Project the committed ledger into dictionaries/FF_Codes.hpp.
+    """Project the committed ledger into generated_src/FF_Codes.hpp.
 
     Scoping is by terminology SOURCE, then by CodeSystem within FHIR:
 
@@ -226,7 +230,7 @@ def generate() -> None:
         return out
 
     lines = [
-        "// Auto-generated from generator/master_codes.json. DO NOT EDIT.",
+        "// Auto-generated from dictionaries/master_codes.json. DO NOT EDIT.",
         "//",
         "// Values are PERMANENT wire constants -- they decode every .ffhr archive",
         "// ever written. Regenerating this file may add constants and may rename",

@@ -16,9 +16,9 @@ FastFHIR's contribution is the **numbering** — the permanent, reproducible ass
 
 Codes from terminologies FastFHIR does not redistribute are still fully supported at runtime. They travel as `FF_CODEABLE_CONCEPT` blocks carrying the literal code **you** supplied, under **your** license with that terminology's publisher. FastFHIR encodes them; it does not distribute them. The per-system encodings are listed in `dictionaries/README.md`.
 
-This boundary is enforced by `_assert_redistributable()` in `generator/emit/dictionary.py`: a code arriving from a system outside the allowlist stops the build. Tests `test_generator_refuses_non_redistributable_sources` and `test_committed_codes_carry_no_foreign_terminology` keep it that way.
+This boundary is enforced by `_assert_redistributable()` in `generator/emit/code_ids.py`: a code arriving from a system outside the allowlist stops the build. Tests `test_generator_refuses_non_redistributable_sources` and `test_committed_codes_carry_no_foreign_terminology` keep it that way.
 
-**No display names, descriptions, or definitions from any terminology are committed.** `dictionaries/FF_Dictionary_Strings.cpp` holds code strings only, and every C++ identifier in `FF_Codes.hpp` is derived mechanically from the code string — never from publisher display text.
+**No display names, descriptions, or definitions from any terminology are committed.** `generated_src/FF_Dictionary_Strings.cpp` (projected from `dictionaries/master_codes.json`) holds code strings only, and every C++ identifier in `FF_Codes.hpp` is derived mechanically from the code string — never from publisher display text.
 
 ---
 
@@ -40,7 +40,7 @@ One code retained here, `100000155699` in
 `http://hl7.org/fhir/regulated-authorization-case-type`, originates with EDQM
 and is republished by HL7 within their own CodeSystem. It is included because
 HL7 publishes it at an HL7 URL; if EDQM's terms require otherwise, add that
-CodeSystem to `_EXPLICIT_BLOCK` in `generator/emit/dictionary.py` and
+CodeSystem to `_EXPLICIT_BLOCK` in `generator/emit/code_ids.py` and
 regenerate.
 
 ## UCUM

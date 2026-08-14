@@ -22,10 +22,11 @@
 4. **Acceptance criteria are mandatory.** A task is done only when every listed criterion
    is true and the *Verify* command exits 0.
 5. **Never renumber wire constants** (RECOVERY_TAG values, dictionary code IDs in
-   `generator/master_codes.json`, vtable offsets, `FF_HEADER` layout). If a task seems to
+   `dictionaries/master_codes.json`, vtable offsets, `FF_HEADER` layout). If a task seems to
    require it, the task is wrong — stop and flag it.
-6. **Never hand-edit generated files** (`generated_src/`, `dictionaries/*.cpp`,
-   `dictionaries/FF_Codes.hpp`). Fix the emitter in `generator/emit/` instead.
+6. **Never hand-edit generated files** (`generated_src/` — including `FF_Codes.hpp` and
+   the dictionary tables — and `include/FF_Recovery.hpp`). Fix the emitter in
+   `generator/emit/` instead. `dictionaries/` now holds only the JSON ledgers.
 7. One task = one commit. Commit message: `TASKS <ID>: <one-line summary>`. Check the box
    in TASKS.md in the same commit and append the short hash: `- [x] ... (abc1234)`.
 8. Build prerequisites: first `cmake -S . -B build ...` configure needs network access
@@ -50,7 +51,7 @@ exact expected output.
    report what you saw instead. Do not improvise, do not "fix" the mismatch, do not
    continue to the next step. A mismatch means the tree moved and the work order is stale.
 2. **Do not commit.** Ryan commits. Leave changes in the working tree and report.
-3. **Never edit generated files** (`generated_src/`, `dictionaries/*.cpp|hpp`). If a fix
+3. **Never edit generated files** (`generated_src/`, `include/FF_Recovery.hpp`). If a fix
    seems to need one, the fix belongs in `generator/emit/` — stop and say so.
 4. **Never change a wire constant** (recovery tag values, dictionary IDs, vtable field
    order, `FF_HEADER` layout). If a step seems to require it, STOP.
@@ -538,7 +539,7 @@ keep the order of includes, keep any trailing comment on the line.
   `src/FF_Dictionary.cpp` lines 16–17 (`"../include/FF_Dictionary.hpp"`,
   `"../include/FF_Primitives.hpp"` — keep its trailing comment) → bare names.
 - [x] A2.5 Generator emitters must also emit bare includes, or the problem returns on
-  regeneration. Known instance — `generator/emit/master_dictionary.py` line 103:
+  regeneration. Known instance — `generator/emit/code_ids.py` line 103:
   ```python
   cpp = '#include "../include/FF_Dictionary.hpp"\n\nstatic const FF_CodeEntry k{}Table[] = {{\n'.format(v_name)
   ```
@@ -655,26 +656,26 @@ code string S, N must mean S forever.
 
 **This was not merely unproven — it was already broken.** Commit `118d6ad` renumbered the
 ledger from 1, dropped 16,436 codes, and added none; every ID changed meaning (`"!="` went
-1 → 3294). The restore rebuilt `generator/master_codes.json` from `b1d8b36`, cross-verified
-byte-for-byte against `dictionaries/FF_Dictionary_Strings.cpp` (whose array index *is* the
+1 → 3294). The restore rebuilt `dictionaries/master_codes.json` from `b1d8b36`, cross-verified
+byte-for-byte against `generated_src/FF_Dictionary_Strings.cpp` (whose array index *is* the
 ID), and made `assign_ids()` append-only. See `dictionaries/README.md`.
 
 - [x] A5.1 **Uniqueness:** confirm two distinct code strings can never receive the same ID.
-  Read `generator/emit/dictionary.py` (`generate_master_codes`) and
-  `generator/emit/master_dictionary.py`; if any path can assign a duplicate ID, add a
+  Read `generator/emit/code_ids.py` (`generate_master_codes`) and
+  `generator/emit/code_ids.py`; if any path can assign a duplicate ID, add a
   fail-loud guard: build a `dict` of id→label during emission and
   `raise RuntimeError(f"code ID collision: {id} maps to {a!r} and {b!r}")` on clash.
 - [x] A5.2 **Stability:** confirm regeneration never reassigns an ID already committed in
-  `generator/master_codes.json` (i.e. existing entries are loaded and preserved; only new
+  `dictionaries/master_codes.json` (i.e. existing entries are loaded and preserved; only new
   labels get new IDs). If not enforced, add the guard and a clear error message.
 - [x] A5.3 **Reserved values:** confirm no assignable ID can equal `0xFFFFFFFF`
   (`FF_CODE_NULL`) or have bit 31 set (`FF_CODEABLE_CONCEPT_FLAG = 0x80000000` marks
   custom-string references — see README "Code Assignment Semantics"). The max-ID guard at
-  `dictionary.py:137` may already cover this; verify the constant it checks is
+  `code_ids.py:137` may already cover this; verify the constant it checks is
   `< 0x80000000`, and add a comment stating WHY (bit 31 is the CodeableConcept flag).
 - [x] A5.4 Add `tests/generator/test_code_ids.py` with three tests: duplicate-label input
   handling, committed-ID stability across two runs, and reserved-bit exclusion. Document
-  the three guarantees in the `dictionary.py` module docstring.
+  the three guarantees in the `code_ids.py` module docstring.
 - Acceptance: all three properties either demonstrated by existing code (cite line in the
   test's docstring) or newly guarded; pytest passes.
 - Verify: `pytest tests/generator/test_code_ids.py -q`.
@@ -1037,7 +1038,7 @@ CMake Error at CMakeLists.txt:75 (message): Code generator failed
 ```
 
 PEP 604 (`X | None`) in an *evaluated* annotation needs 3.10+. Three modules use it without
-`from __future__ import annotations`: `emit/codesystems.py`, `emit/dictionary.py`,
+`from __future__ import annotations`: `emit/codesystems.py`, `emit/code_ids.py`,
 `emit/extensions_known.py`. 15 of the 25 generator modules lack that import, so any of them
 can join the list silently. `pyproject.toml` already declares the intended floor
 (`target-version = py311` for ruff and black); CMake simply never enforced it.
@@ -1415,6 +1416,14 @@ echo '{"resourceType":"Bundle","type":"transaction","entry":[{"resource":
       and takes the same `FF_CODE_NULL` path.
 - [x] A24.4 Reader verified: `print_json` already omits the key for `FF_CODE_NULL`. No edit
       needed — the bare-Patient repro now emits exactly its input.
+- [x] A24.6 Make the enum's underlying type adaptive (2026-08-14, found *by* A24.1's guard).
+      `enum_underlying_type()` in `generator/model/type_map.py` picks `uint8_t` below 255
+      codes and `uint16_t` above; `codesystems.py` uses it for both the declaration and the
+      sentinel value. This was a **pre-existing latent corruption**, not sentinel fallout:
+      `FF_SPDXLicense` carries **346** codes, so under `profile=all` a `uint8_t` enum would
+      wrap values 256..345 onto 0..89 and silently alias distinct licences. The A24.1 guard
+      turned it into a build-time `ValueError` naming the enum and the count. No effect on
+      the default profile — all 72 enums remain `uint8_t`, `ctest` 31/32.
 - [ ] A24.5 Chase what the fabrication was masking: `identifier.use`, `priority` and
       `reaction.severity` are not stored at all (319 / 402 / 4 sites), and only looked
       correct because enum value 0 happened to equal the value Synthea writes. Likely the
@@ -1481,20 +1490,370 @@ print(list(src['entry'][0]), '->', list(out['entry'][0]))"
 # ['fullUrl', 'resource', 'request'] -> ['resource']
 ```
 
-- [ ] A26.1 Find where the 41 entries go. Candidates, in order: an unsupported
-      `resourceType` skipped without a diagnostic in the bundle dispatch; the multi-worker
-      entry-array patching race (Bug D / A14.2 — the entry count was seen corrupted 626 vs
-      178); an entry-array claim sized from a pre-filter count. Run with
-      `Ingestor(…, concurrency=1)` first to separate the race from a deterministic drop.
-- [ ] A26.2 Whatever the cause, a dropped resource must **fail**, not vanish. Ingest that
-      silently discards clinical records is the same never-event class as A24.
-- [ ] A26.3 Store and emit `entry.fullUrl` and `entry.request`.
-- Acceptance: entry counts match for all 111 fixtures; `fullUrl`/`request` survive.
-- Verify: the snippet above prints `250 -> 250`.
+- [x] A26.1 **Root cause found 2026-08-14 — it is neither the race nor a sizing bug.** The
+      drop is deterministic (the harness already runs `concurrency=1`) and falls on whole
+      *resource types*, not on individual entries: Claim 16, ExplanationOfBenefit 16,
+      SupplyDelivery 6, ImagingStudy 2, MedicationAdministration 1 — **100% of each**. None
+      of the five is in `US_CORE_RESOURCES` (28 entries,
+      `generator/model/structure.py:resolve_production_resources`), which is the default
+      `FASTFHIR_PRODUCTION_PROFILE=us` set, so the generator never emits a `_from_json` for
+      them. `dispatch_resource` falls through its `else if` chain, logs a warning that named
+      *neither the type nor the reason*, and returns `FF_NULL_OFFSET`;
+      `patch_Bundle_entry_from_json` then simply skips `wrapper[…RESOURCE] = child` and the
+      ingest returns `FF_SUCCESS`. The warning went to `ConcurrentLogger`, which nothing
+      drains — the A23.7 failure mode again, one layer down.
+      *(The earlier hypothesis list here — race, pre-filter count — was wrong; kept in git
+      history. The tell was that the losses were exactly type-aligned.)*
+- [x] A26.2 Make the loss loud (2026-08-14) — **partially: it now reports, it does not yet
+      refuse.** `generator/emit/ingest_mappings.py` tags the line `[Skipped]` and names the
+      type and the reason; `src/FF_Ingestor.cpp:skipped_summary()` aggregates by type and
+      returns it in the `FF_Result` message on the success path; `tests/cpp/ff_roundtrip.cpp`
+      prints a non-empty message to stderr. Verified — stdout still carries only the
+      document, and a bundle with no out-of-profile types produces **zero** stderr bytes:
+      ```
+      FastFHIR: 41 bundle entries were DISCARDED — resource type not in this build's
+      profile: Claim x16, ExplanationOfBenefit x16, ImagingStudy x2,
+      MedicationAdministration x1, SupplyDelivery x6
+      ```
+- [x] A26.2b **Policy decided by Ryan, 2026-08-14: preserve unknown resources verbatim.**
+      "We can't silently drop clinical data. That's a never event." The intended end state
+      is a lookup — consult a module registry for a generated handler for the type, and
+      **fall back to verbatim JSON when there is none** — which is the same shape as the
+      existing `EXT_REF` routing in `FF_Extensions` (registered WASM codec / retained URL /
+      suppression) and the Vulkan-style discovery planned in Block J. Planned in **A27**.
+      Ryan also wants the default profile moved to `all`; see A27's cost note — that is a
+      separate and much larger action, and it does *not* remove the never-event.
+- [ ] A26.3 Store and emit `entry.fullUrl` and `entry.request`. **Root cause found:** this
+      is not a store-side gap — those fields are never parsed. The bundle-entry patcher is a
+      hardcoded string in `generator/emit/ingest_mappings.py` (~line 495) whose loop body is
+      a single `if (key == "resource")`; `fullUrl`, `request`, `search`, `response` and
+      `link` have no branch at all. Fix by delegating the non-resource fields to the
+      generated `Bundle_entry_from_json` rather than by growing the hardcoded string — the
+      patcher exists only because the entry array is pre-allocated and patched
+      concurrently, and that is orthogonal to which fields get parsed.
+- Acceptance: entry counts match for all 111 fixtures **or** the discard is reported and
+  declared (A26.2b); `fullUrl`/`request` survive.
+- Verify: the snippet above prints `250 -> 250`, or the run prints the DISCARDED summary
+  accounting for exactly the difference.
 
 ---
 
-### A15. Re-arm the two vacuous sections of the wire gate
+### A27. Verbatim passthrough for out-of-profile resources — PLAN (unstarted)
+
+**Decision (Ryan, 2026-08-14):** a resource FastFHIR has no generated type for must be
+**preserved verbatim**, never discarded. Intended architecture: look the type up in a
+module registry (does not exist yet); if no module provides it, store the original JSON
+byte-for-byte. Read A26 first — it establishes that the loss is deterministic, type-aligned,
+and currently only *reported* (A26.2), not prevented.
+
+**Why passthrough comes before `FASTFHIR_PRODUCTION_PROFILE=all`, measured not assumed:**
+
+| | `profile=all` | verbatim passthrough |
+|---|---|---|
+| Permanent wire constants to append | **884 recovery tags** (measured — see below) | **1** |
+| Resources generated | 275 (from 28) | unchanged |
+| Removes the never-event? | **No** — any type outside the compiled set still falls off the same `else` | **Yes**, for every type, forever |
+
+The 884 is real, not an estimate: a trial run reached full emission (921 Python field
+modules) and failed only at the tag gate.
+
+```bash
+FASTFHIR_PRODUCTION_PROFILE=all python -m generator --output-dir /tmp/gen_all
+# RuntimeError: 884 RECOVERY_TAG(s) were emitted that include/FF_Recovery.hpp does not
+# declare:  RECOVER_FF_ACCOUNT (first seen in FF_Account.hpp) ...
+```
+
+Those are permanent wire constants in a hand-maintained header — appending 884 of them is a
+deliberate ledger action needing maintainer sign-off, not a side effect of flipping a
+default. `all` remains worth doing (it is what makes Claim/EOB *first-class* rather than
+merely preserved), but it is A27.5, after the safety net exists.
+
+**On the US Core question (Ryan: "I think those are supposed to be in the US production??"):**
+the 28-entry `US_CORE_RESOURCES` list looks defensible. Claim and ExplanationOfBenefit are
+**not** US Core profiles — they belong to the CARIN Blue Button IG, which is why a Synthea
+bundle (a full synthetic record including financials) exceeds US Core. SupplyDelivery,
+ImagingStudy and MedicationAdministration are likewise not US Core profiles in the recent
+versions. Worth confirming against the exact US Core version FastFHIR targets before
+treating the list as final — that target version is not currently written down anywhere,
+which is itself worth fixing.
+
+- [ ] A27.1 Reserve **one** new recovery tag for the passthrough block (e.g.
+      `RECOVER_FF_OPAQUE_RESOURCE`) in `include/FF_Recovery.hpp`. Append only — never
+      renumber. This is a permanent wire constant: get sign-off, and record the decision in
+      `dictionaries/README.md` alongside the other ledger rules.
+- [ ] A27.2 Define the block: validation offset + recovery tag + `resourceType` string +
+      raw JSON payload with its length. Keep it a *dumb byte container* — no parsing, no
+      field extraction, no dictionary interaction. It must never enter the permanent code
+      ledger (same rule Block J states for external code systems).
+- [ ] A27.3 Route to it in `generator/emit/ingest_mappings.py`: `dispatch_resource`'s final
+      `else` stops returning `FF_NULL_OFFSET` and instead stores the raw object. Note the
+      ingestor parses with simdjson **on demand**, so capturing the original bytes needs the
+      source span for the entry — `entry_chunks[idx]` in `FF_Ingestor.cpp` already holds
+      exactly that, which is the natural seam.
+- [ ] A27.4 Read path: `print_json` re-emits the stored bytes verbatim, so a bundle
+      round-trips to its input. This is what finally makes A23.4 / A26 acceptance reachable
+      (`250 -> 250`).
+- [x] A27.5 **Composable resource groupings, not `profile=all`** (2026-08-14). Ryan:
+      "let's make the IG field an array … we can have a number of accepted groupings."
+      `FASTFHIR_PRODUCTION_PROFILE` now takes a comma-separated list and the generator
+      compiles the **union** — real deployments compose (a payer needs US Core *and*
+      claims), which the old mutually-exclusive `us|uk|all` could not express.
+      `RESOURCE_GROUPINGS` in `generator/model/type_map.py` is the single place a grouping
+      is defined; `us`/`uk` stay as aliases. Groupings: `us-core` (28), `uk-core` (23),
+      `billing` (5 — EOB, Claim, ClaimResponse, PaymentNotice, PaymentReconciliation),
+      `all` (275, absorbs everything). CMake option and README updated.
+      Verified: `us-core` alone emits **byte-identical C++** to the old `us` (only
+      `FF_IngestMappings.cpp` differs, by exactly the 1 line A26.2 intended); union
+      deduplicates; names are case- and whitespace-insensitive; an unknown name fails
+      naming the valid set. Order is first-seen rather than sorted precisely so the default
+      profile's output cannot shift — the generator is deterministic and a diff between
+      runs must mean a real change.
+      **Why not `all`:** measured, `billing` costs **61** new recovery tags against 884 for
+      `all`, and `all` does not remove the never-event — any type outside whatever is
+      compiled still hits the same `else`. A27.1–A27.4 remain the actual fix.
+- [x] A27.5c **Band map re-cut for the whole FHIR spec — DONE 2026-08-14.**
+      Ryan: *"we need bound checks for the resource vs scalar tags to make sure we're not
+      overflowing into each other by accident… NO ONE USES FFHR YET. Now is the time."*
+
+      | band | range | slots | used | headroom |
+      |---|---|---|---|---|
+      | Core Primitives | `0x0000–0x00FF` | 256 | 10 | 26× |
+      | Inline Scalars | `0x0100–0x01FF` | 256 | 10 | 26× |
+      | Data Types | `0x0200–0x0FFF` | 3,584 | 66 | 54× |
+      | Resources | `0x1000–0x1FFF` | 4,096 | 178 | 23× |
+      | Sub-elements | `0x2000–0x7FFF` | 24,576 | 711 | 35× |
+
+      "used" is the whole spec (R4 ∪ R5), not the compiled profile. Note the corrected
+      counts: **178** concrete resource types and 711 BackboneElement paths, not the 275
+      reported earlier — `_discover_resource_names` counts 98 profiles/constraints
+      (`derivation == "constraint"`: `ActualGroup`, `CDSHooksGuidanceResponse`,
+      `CQF-Questionnaire`…) as if they were resource types. That over-count is its own bug,
+      filed as A29.1.
+
+      Resources moved `0x0300 → 0x1000` (30 tags), Sub-elements `0x0400 → 0x2000` (87).
+      Primitives and Inline Scalars did **not** move, so the four open-coded
+      `(x & 0xFF00) == RECOVER_FF_SCALAR_BLOCK` tests stayed valid. `FF_IsResourceTag`
+      became a range check — as a high-byte test it would have returned false for every
+      resource above `0x03FF`, i.e. all but 29 of them. Added `FF_IsBackboneTag`.
+
+      **Bound checks, both layers:**
+      - C++ `static_assert`s in `FF_Recovery.hpp`: bands partition `0x0000–0x7FFF` with no
+        gap or overlap; each block base sits in its own band; each band is ≥ what the spec
+        already needs (178 / 711 / 66). These fired for real during the work — a blanket
+        regex rewrote the boundary constants and left `RESOURCE_FIRST=0x1000` with
+        `RESOURCE_LAST=0x0FFF`; the ordering assert caught it.
+      - `generator/utilities.py:validate_recovery_bands()`, wired into `library.py` and run
+        every generate: every tag inside a band, and **no duplicate values** — a C++ enum
+        accepts two enumerators with the same value silently, which would make two block
+        types indistinguishable on the wire. Verified against injected faults: an
+        out-of-band tag and a duplicate value are both caught; the real header passes.
+
+      Verified: `ctest` 31/32, `pytest tests/generator` 46 passed, generator clean.
+      `cpp_ff_test_primitives` pinned the old values and was updated
+      (`RECOVER_FF_PATIENT` `0x0314 → 0x1014`), plus a new
+      `test_recovery_band_classification` covering band edges and the array-bit path.
+- [x] A27.5d **`FF_Recovery.hpp` is now generated from a committed tag ledger — DONE
+      2026-08-14.** Ryan's spec: *"FF_Recovery is generated when a new release of FHIR (like
+      R6) drops. It checks to make sure no drift occurred that causes corruption but yes it
+      stays IN THE REPO. It should keep it all."*
+
+      `dictionaries/master_tags.json` is the ledger — the same model `master_codes.json`
+      already uses for the 5,796 dictionary IDs, which recovery tags had no equivalent of.
+      `generator/emit/recovery_tags.py` reconciles it against the FHIR packages and emits the
+      header; `pipeline.py` runs it before anything that references a tag.
+
+      - **Keeps it all: 166 → 978 tags**, the whole spec (R4 ∪ R5), not the compiled
+        profile — 66 datatypes, 178 resources, 711 backbone paths, plus FastFHIR's own
+        primitives/scalars which are hand-seeded (nothing in a StructureDefinition implies
+        `FF_HEADER` or `FF_CHECKSUM`).
+      - **Stays in the repo**, committed and diff-reviewed, like `dictionaries/`.
+      - **Profile-independent**: byte-identical md5 under `us-core`, `us-core,billing` and
+        `all`. This closes the asymmetry found in A15 — dictionaries were already
+        profile-independent while tags were not. A permanent wire artifact must not depend
+        on build configuration.
+      - **Drift = corruption, and it is checked**: `assert_no_drift()` compares each run
+        against the committed ledger. Verified against injected faults — a renumbered tag
+        (`RECOVER_FF_PATIENT 0x1014 → 0x1099`) and a deleted tag are both caught; an
+        *append* correctly passes. `reconcile_tag_ledger()` refuses rather than spilling
+        past a band boundary, which would silently mis-classify every tag beyond it.
+      - **Deterministic**: two runs produce an identical header; re-running appends 0.
+      - Values are stored as hex strings keyed by enumerator, per Ryan's
+        `"Coding": 202` — `RECOVER_FF_CODING` is `0x0202`, unchanged.
+
+      All 166 pre-existing values are unchanged (verified name-by-name), so this was a pure
+      addition: the wire golden went 166 → 978 tags and updated **without** `--force`,
+      which is the append-only story proving itself. `ctest` 31/32, `pytest tests/generator`
+      46 passed. CLAUDE.md updated — the header is no longer hand-maintained, and is listed
+      under "never hand-edit generated files".
+- [ ] A27.5e Profile-filtered emission is deliberately NOT implemented. Ryan offered it
+      ("if that makes compilation more palatable"), but a 978-entry enum costs a compiler
+      nothing, and a header whose contents varied with the profile would reintroduce exactly
+      the build-configuration dependency this task removed. Revisit only if the enum ever
+      becomes a measurable compile cost — and if so, filter the generated *C++ structs*,
+      which is already what the profile does, not the tag registry.
+- [ ] A27.5f Everything above is *capacity and identity*. The tags for the other 150 resources and ~625
+      backbone paths still have to exist before `all` can be selected. At ~900 hand-written
+      entries this is no longer a hand-maintenance job — decide whether
+      `include/FF_Recovery.hpp` stays hand-maintained (CLAUDE.md's current rule, with the
+      generator only validating) or becomes generated with the *values* pinned by a
+      committed ledger like `master_codes.json`. The ledger model already solved exactly
+      this problem for 5,796 dictionary codes; recovery tags have no equivalent.
+- [ ] A27.5c-old **superseded — kept for the reasoning.** Original note: settle the band
+      layout before appending ANY tag. Tags are permanent, so a band cannot be re-cut later; appending billing tags at
+      `0x03xx` now and discovering the band is too small afterwards is unrecoverable.
+
+      **`include/FF_Recovery.hpp` covers 28 of the 275 concrete R4/R5 resources — exactly
+      `US_CORE_RESOURCES`, nothing more.** 165 tags total: 71 top-level (28 resources + the
+      datatypes/primitives) and 94 backbone. It tracks the compiled profile, not the spec.
+      Unlike `master_codes.json`, which is profile-*independent* (built from the packages,
+      complete at 4,634 IDs regardless of profile), the tag header is profile-*dependent*.
+
+      **And the documented banding cannot hold all of R4/R5:**
+
+      | band | capacity | used | free | needed for `all` | |
+      |---|---|---|---|---|---|
+      | Resources `0x0300–0x03FF` | 256 | 29 | 227 | **235** | overflows |
+      | Sub-elements `0x0400–0x04FF` | 256 | 86 | 170 | **649** | overflows badly |
+
+      The tag *width* is not the problem: `RECOVER_TYPE_MASK = 0x7FFF` leaves 32,767 type
+      values and all of R4/R5 needs ~1,049. It is purely the 256-slot band layout.
+
+      **The bands are not merely documentation — three of them are load-bearing high-byte
+      predicates**, so widening a band silently changes behaviour rather than failing to
+      compile:
+      - `FF_IsResourceTag()` — `include/FF_Utilities.hpp:64` — `(tag & 0xFF00) == 0x0300`
+      - `FF_IsScalarBlockTag()` — `include/FF_Utilities.hpp:75` — `(tag & 0xFF00) == 0x0100`
+      - the same scalar test open-coded at `include/FF_Primitives.hpp:403`,
+        `include/FF_Ops.hpp:188`, `src/FF_Parser.cpp:538`
+
+      Decide and document: keep 8-bit bands and accept that `all` is unreachable; or re-cut
+      the map (e.g. resources `0x0300–0x0FFF`, sub-elements `0x1000–0x7FFF`) and replace the
+      `& 0xFF00` predicates with range checks in the five sites above. The scalar band must
+      keep its identity either way. Nothing dispatches on the sub-element band, so it is the
+      cheapest to widen. Whatever is chosen, write it into the header's Convention comment —
+      that comment is currently the only specification of the layout.
+- [ ] A27.5b Append the 61 `billing` recovery tags to `include/FF_Recovery.hpp` so
+      `us-core,billing` can be selected. Permanent wire constants — **append, never
+      renumber**, and get sign-off first. Until then the grouping is defined but
+      unselectable: the generator's tag gate refuses it and names all 61
+      (`FASTFHIR_PRODUCTION_PROFILE=us-core,billing python -m generator` to list them).
+      Note Synthea's other three dropped types (SupplyDelivery, ImagingStudy,
+      MedicationAdministration) belong to no grouping — they are exactly the case A27.1–4
+      exists for, which is why the passthrough is the fix and the grouping is a convenience.
+- [ ] A27.7 Derive the groupings from the published IG packages instead of transcribing
+      them. `US_CORE_RESOURCES`/`UK_CORE_RESOURCES` are hand-maintained lists carrying no IG
+      **version**, so drift against a republished IG is undetectable, and the version
+      FastFHIR targets is written down nowhere. HL7 ships these as NPM packages on
+      packages.fhir.org — the same registry the generator already pulls
+      `hl7.fhir.r4.core`/`hl7.fhir.r5.core` from — so `hl7.fhir.us.core` and
+      `hl7.fhir.us.carin-bb` can be fetched by the existing mechanism.
+- [ ] A27.6 Registry hook (the part Ryan described): before falling back to verbatim, ask a
+      module registry whether a handler for this `resourceType` is available. Design it as
+      the **same discovery mechanism as Block K's hooks struct and Block J's layers** — a
+      missing registry means the check does not run and the verbatim path takes over. Do not
+      invent a second mechanism; read K0 first.
+- Acceptance: no bundle can lose a resource. `250 -> 250` on the A26 snippet with the
+  discard summary empty, for every fixture.
+- Verify: `for f in build/synthea_fhir_r4/*.json; do ./build/ff_roundtrip "$f" 2>&1 >/dev/null; done`
+  prints nothing.
+
+---
+
+### A28. A standalone generator run does not reproduce `generated_src/python/fields/`
+
+**Found 2026-08-14 while verifying A27.5's determinism claim; pre-existing — reproduced with
+the code stashed, so it is not A27 fallout.** The C++ tree reproduces byte-for-byte. The
+Python field modules do not: **85 of 228 files differ** between a fresh
+`python -m generator --output-dir <tmp>` and what the CMake configure path leaves in
+`generated_src/python/fields/`.
+
+```bash
+python -m generator --output-dir /tmp/gen && diff -rq /tmp/gen/python generated_src/python | wc -l
+# 85
+wc -c /tmp/gen/python/fields/bundle_entry.py generated_src/python/fields/bundle_entry.py
+#   834   (ASTNode class only)
+# 16511   (Field constants AND the ASTNode class)
+```
+
+`emit_python_fields` and `emit_python_ast` (`generator/bindings/python_fields.py`) write the
+**same filename** in the same directory. In a standalone run the second overwrites the
+first; the committed tree somehow carries both. Whatever reconciles them is not in the
+generator, which means the generator alone cannot reproduce its own output — the property
+`tests/generator/test_determinism.py` exists to protect. Related to `755f97a`
+("Fix Python staging…"); confirm that commit did not paper over this.
+
+- [ ] A28.1 Determine which emitter is authoritative for `python/fields/<name>.py` and give
+      them distinct filenames or an explicit merge, so one run produces the final content.
+- [ ] A28.2 Extend `test_determinism.py` to cover `python/`, not just the C++ tree — it
+      would have caught this.
+- Verify: `diff -rq /tmp/gen/python generated_src/python` prints nothing after a configure.
+
+---
+
+### A29. Orphaned, broken test file: `tests/test_ff_dictionary.py`
+
+**Found 2026-08-14 while renaming the emit modules; pre-existing.** The file imports
+`generate_master_dictionary`, which **does not exist** and did not exist at `HEAD` either
+(`git show HEAD:generator/emit/dictionary.py | grep -c generate_master_dictionary` → 0).
+The real name is `generate_master_codes`.
+
+Nobody noticed because nothing runs it: it sits in `tests/` rather than `tests/generator/`,
+so `pytest tests/generator` never collects it, and it is registered in neither
+`CMakeLists.txt` nor CI. Run directly it is 2 failed / 1 passed.
+
+```bash
+python -m pytest tests/test_ff_dictionary.py -q     # 2 failed, 1 passed
+```
+
+This is the A15/A20 failure class once more — a check that is never executed is
+indistinguishable from one that passes. The rename to `emit/code_ids.py` updated its import
+path, so it is no *more* broken than before, but it is still dead.
+
+- [ ] A29.1 Decide: fix it against the real API and register it with ctest/pytest, or delete
+      it. Do not leave a third state. If it is fixed, it belongs in `tests/generator/` with
+      the other ledger gates, where `test_code_ids.py` already covers ID stability — check
+      for overlap before reviving it.
+- [ ] A29.2 Add a collection guard so an unreferenced test file cannot sit unrun again:
+      either fold `tests/*.py` into the pytest paths or assert in CI that every `test_*.py`
+      is reachable from some harness.
+- Verify: `python -m pytest tests/test_ff_dictionary.py -q` exits 0, or the file is gone.
+
+---
+
+### A15. Re-arm the two vacuous sections of the wire gate — FIXED 2026-08-14
+
+> **DONE. A15.1/A15.2 below had already named both causes correctly** — this note records
+> the fix and the measured result, not a re-diagnosis. The two sections were empty because
+> **`witness()` scanned only `generated_src/`, and neither constant family lives there:**
+> recovery tags are *defined* in `include/FF_Recovery.hpp` (165 of them — generated_src only
+> ever *references* them, without a `= value`, so the regex could not match), and the
+> dictionary IDs live in `dictionaries/FF_Codes.hpp` (5,796), which is a committed tree
+> outside `generated_src/` entirely. The `codes` regex was additionally written against
+> `FF_R5_CODE_PERCENT = 0x1CF1F3BB` — a flat, hash-based, revision-prefixed naming scheme
+> that no longer exists; names are now scoped by terminology source then CodeSystem
+> (`UCUM::PERCENT`, `FHIR::FDI_SURFACE::B`) with sequential ledger IDs. So the section was
+> doubly dead and would have stayed empty even pointed at the right file.
+>
+> **Consequence, stated plainly:** the 5,796 dictionary IDs that decode every `.ffhr`
+> archive ever written had *zero* regression protection — including at the moment `118d6ad`
+> renumbered them and silently invalidated every stored archive. The gate that exists to
+> catch exactly that was comparing `{}` to `{}`.
+>
+> Fixed in `tests/generator/wire_witness.py`: `witness()` now reads all three trees and
+> `_dictionary_codes()` parses the namespaced form (brace-depth tracked, since scopes are a
+> mix of `namespace` and `struct`) — 5,796 parsed, 0 name collisions. Golden regenerated:
+> `{'codes': 0, 'tags': 0, 'vtables': 141}` → **`{'codes': 5796, 'tags': 166, 'vtables': 141}`**.
+> `test_recovery_tags_stable` / `test_dictionary_codes_stable` switched from
+> `_symmetric_diff` to `_check_permanence` — with the sections populated, equality would
+> have rejected a legal append (a new HL7 code, or A27.5b's 61 billing tags); permanence
+> accepts additions and rejects mutation and deletion, matching the ledger's own `_rule`.
+> `_symmetric_diff` is now unused and removed. Three tests added: one asserting the sections
+> are non-empty so they can never silently go vacuous again, one proving a renumber is
+> rejected, one proving an append passes. `pytest tests/generator` 43 → **46 passed**.
+>
+> **The golden diff in this commit is a baseline being established, not a wire change** —
+> no constant moved. CLAUDE.md's "a golden update without a corresponding change is a red
+> flag" is exactly right and this is the documented exception.
 
 > **Why this is not cosmetic (2026-08-14).** A23, A24, A25 and A26 are all caught by
 > `py_roundtrip` on its first fixture. It is the only gate in the repo that compares an
@@ -1536,25 +1895,29 @@ compares a *value*. The only value pinning anywhere is four hand-written asserti
 `include/FF_Recovery.hpp` declares 168 enumerators. **164 permanent wire values are
 unguarded** — editing one is caught by code review alone.
 
-- [ ] A15.1 Extend `witness()` to read tag values from `include/FF_Recovery.hpp` and code
+- [x] A15.1 Extend `witness()` to read tag values from `include/FF_Recovery.hpp` and code
   values from `dictionaries/FF_Codes.hpp`, in addition to the generated tree. Both are
   committed, so the witness stops depending on a network regeneration for those sections.
   Signature change: pass the repo root (or both explicit paths) alongside `generated_dir`;
   update the two call sites (`test_wire_format.py`, the `__main__` block) and the module
   docstring, which currently describes only the generated tree.
-- [ ] A15.2 Replace the `_CODE` regex with one matching the real emission —
+- [x] A15.2 Replace the `_CODE` regex with one matching the real emission —
   `FF_CODE_DEF <NAME> = <int>;` qualified by its enclosing `namespace` so
   `FF_CODE::UCUM::MMHG` and `FF_CODE::FHIR::…::MALE` are distinct keys. Values are decimal,
   not hex. Fix the docstring example in the same edit.
-- [ ] A15.3 Add `test_witness_sections_are_non_empty` asserting every section of a freshly
+- [x] A15.3 Add `test_witness_sections_are_non_empty` asserting every section of a freshly
   built witness has entries, with a message naming the regex that stopped matching. This is
   the check whose absence let A4.1 be marked done against an empty golden; without it, any
   future emitter rename silently re-empties a section.
-- [ ] A15.4 Regenerate the golden and commit it with this change (per `CLAUDE.md`, a golden
+- [x] A15.4 Regenerate the golden and commit it with this change (per `CLAUDE.md`, a golden
   update needs a corresponding generator or test change in the same commit — A15.1/A15.2
   are that change). The diff must be **additions only**: `vtables` unchanged, `tags` and
   `codes` populated from nothing.
-- [ ] A15.5 While in this file: the permanence error at `wire_witness.py:181` tells the user
+- [x] A15.5 DONE 2026-08-14 — `--force` implemented, and needed immediately: the
+      A27.5c band re-cut is a legitimate pre-release wire change and the tool had no way to
+      record one. Without it, refuses and lists every violation; with it, prints
+      `!! --force: OVERRIDING 115 permanence violation(s) !!` plus each one and a warning
+      that prior archives are now undecodable. Original note: the permanence error tells the user
   to "use `--force` to override", but `__main__` (`:197`) takes exactly two positional
   arguments and `grep -rn '\-\-force' generator tests` finds only that message. Either
   implement the flag or rewrite the message to describe the real procedure (documented in
@@ -2094,7 +2457,7 @@ cached binary (`<binary_hash_hex>.wasm`). Never use one where the other is expec
         arrangement that ends up shipping.
 - [ ] E6. **Dictionary unification — final sweep:** the unification is essentially done
   (`FF_UCUM_Concepts.cpp` deleted; `master_codes.json` is source of truth;
-  `generator/emit/dictionary.py` evolved into the master-codes producer and stays).
+  `generator/emit/code_ids.py` evolved into the master-codes producer and stays).
   Remaining checks:
   - [ ] E6.1 `grep -rn 'FF_UCUM_STRINGS\|kUCUMTable\|FF_UCUM_CODES' src/ include/ dictionaries/ generator/`
         — delete any dead remnants found (expect: possibly none).
@@ -2102,7 +2465,7 @@ cached binary (`<binary_hash_hex>.wasm`). Never use one where the other is expec
         string-table size consistency in `dictionaries/FF_Dictionary_Strings.cpp`, and
         last-entry-code < string-table-size in `FF_R4_Dictionary.cpp` /
         `FF_R5_Dictionary.cpp`. If absent, add them to the emitters
-        (`generator/emit/master_dictionary.py`), regenerate, commit both.
+        (`generator/emit/code_ids.py`), regenerate, commit both.
 - [ ] E7. **Umbrella header decision** `Blocked on Q2` — `include/FastFHIR.hpp` currently
   includes only `FF_Version.hpp`, `FF_Parser.hpp`, `FF_Builder.hpp`, `FF_Compactor.hpp`
   (deliberately excluding `FF_FieldKeys.hpp`; `FF_Memory.hpp` and `FF_Ingestor.hpp` arrive
@@ -2429,7 +2792,7 @@ Both halves are built on the user's machine from a release **they** are licensed
 
 **FastFHIR natively does not adjudicate these codes and never ships their values.** Both
 halves are a convenience over data the user already has rights to. This is the same
-boundary `generator/master_codes.json` already enforces via `_assert_redistributable`.
+boundary `dictionaries/master_codes.json` already enforces via `_assert_redistributable`.
 
 **Coverage commitment: every CodeableConcept system FastFHIR supports gets external code
 validation.** Not a favoured subset. `FF_CodeableConceptSystem`
@@ -2468,7 +2831,7 @@ Three properties make this safe, and an implementer must preserve all three:
    ASCII. Those codes are *self-encoding*; they need no FastFHIR-assigned ID. Headers and
    layers therefore allocate nothing on the wire. A stream written with a layer loaded
    must be byte-identical to one written without it (J7.3).
-2. **Nothing here touches the permanent ledger.** `generator/master_codes.json` and
+2. **Nothing here touches the permanent ledger.** `dictionaries/master_codes.json` and
    `dictionaries/` stay HL7 FHIR + UCUM only. No entry, no `_next_id` consumption, not
    produced by `python -m generator`. Output is a build artifact like `generated_src/`,
    gitignored, never committed. (Execution contract rule 5 and `dictionaries/README.md`
@@ -2578,7 +2941,7 @@ This is the half Q16 calls "impossible to mess up". It works with no layer loade
       the wire uses** for that system so no re-parse is needed: SNOMED `uint64_t`, RxNorm
       `uint32_t`, LOINC ASCII. Derive that from `FF_CC_CODECS` — never re-derive
       per-system widths in a second place. That exact duplication caused A7 and A9.
-- [ ] J3.3 Reuse `emit/codes_header.py`'s `assign_identifier` ladder and `RESERVED_MACROS`
+- [ ] J3.3 Reuse `emit/code_names.py`'s `assign_identifier` ladder and `RESERVED_MACROS`
       guard rather than writing a second identifier sanitiser.
 - [ ] J3.4 State in every generated header that constant *names* are source-level only and
       may change between releases, while *values* belong to the terminology. Neither is a
@@ -2640,7 +3003,7 @@ cost is paid to catch hand-typed codes, which is exactly where the risk is (Q16)
          semantically void (`{cells}`).
       2. **Atom membership** for every atom the parse yields, plus the prefix rule: **only
          metric atoms may take a prefix** — `kW` is legal, kilo-feet is not. Case matters
-         (`Ms` megasecond vs `ms` millisecond); `emit/codes_header.py:146` already records
+         (`Ms` megasecond vs `ms` millisecond); `emit/code_names.py:146` already records
          this for naming.
 - [ ] J4.8 **The data for J4.7 is not in the repo yet.** The 1,384 UCUM constants in
       `dictionaries/FF_Codes.hpp` (namespace `UCUM`, lines 18–1403) are *whole expressions*
@@ -2706,7 +3069,7 @@ name the field being written and not just the code.
       `FF_CodeableConceptSystem` value) so the whole mechanism — header generation, layer
       discovery, load, absence — is testable in CI with no licensed data at all.
 - [ ] J8.2 Assert the ledger invariant directly: enabling any external code system must
-      leave `generator/master_codes.json` byte-identical. This is the guard that stops a
+      leave `dictionaries/master_codes.json` byte-identical. This is the guard that stops a
       future change from quietly routing external codes into the permanent ledger.
 - [ ] J8.3 Assert a stream written with a layer loaded is byte-identical to one written
       without it, for the same input. Layers validate and look up; they never encode.

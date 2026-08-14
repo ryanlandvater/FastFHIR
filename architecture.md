@@ -1041,12 +1041,12 @@ The stages:
 1. **`specs.fetch_fhir_specs()`** — download the HL7 `r4.core` / `r5.core` NPM
    packages into `fhir_packages/<version>/package/`. Cached; network is needed
    only on the first run.
-2. **`emit.dictionary.generate_master_codes(...)`** — scan the packages for
+2. **`emit.code_ids.generate_master_codes(...)`** — scan the packages for
    FHIR-native codes and reconcile them against the committed ID ledger
-   (`generator/master_codes.json`). **Append-only**: an existing code keeps its
+   (`dictionaries/master_codes.json`). **Append-only**: an existing code keeps its
    ID forever, a new code is appended at `_next_id`, and a code HL7 retires
    keeps its ID because stored archives still cite it.
-3. **`emit.codes_header.generate()` + `emit.dictionary.generate_dictionary_tables(...)`**
+3. **`emit.code_names.generate()` + `emit.code_ids.generate_dictionary_tables(...)`**
    — project the ledger into `dictionaries/`: `FF_Codes.hpp` (named constants,
    scoped by terminology source then CodeSystem), `FF_Dictionary_Strings.cpp`
    (the ID → string table, where the array index *is* the ID), and the three

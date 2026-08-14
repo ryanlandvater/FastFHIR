@@ -18,10 +18,11 @@ from __future__ import annotations
 import os
 
 from generator import specs as fetch_specs
-from generator.emit.codes_header import generate as generate_codes_header
+from generator.emit.code_names import generate as generate_code_names
 from generator.emit.codesystems import generate_code_systems
-from generator.emit.dictionary import generate_dictionary_tables, generate_master_codes
+from generator.emit.code_ids import generate_dictionary_tables, generate_master_codes
 from generator.emit.extensions_known import generate_known_extensions
+from generator.emit.recovery_tags import generate_recovery_tags
 from generator.library import compile_fhir_library
 from generator.model.structure import resolve_production_resources
 from generator.model.type_map import PRODUCTION_TYPES
@@ -45,6 +46,14 @@ def run(output_dir: str = "generated_src", *, keep_specs: bool = False) -> None:
     # 1. Fetch the FHIR specs as NPM packages.
     fetch_specs.fetch_fhir_specs()
 
+    # 1b. Reconcile the permanent RECOVERY_TAG ledger and emit FF_Recovery.hpp.
+    #     Runs before anything that references a tag. Append-only: a new FHIR
+    #     release takes the next free value in its band and nothing already
+    #     assigned moves. Covers the whole spec, so the header does NOT vary
+    #     with FASTFHIR_PRODUCTION_PROFILE.
+    n_tags, n_new = generate_recovery_tags(specs_dir=_PKG_ROOT)
+    print(f"  Recovery tags: {n_tags} in ledger, {n_new} appended")
+
     # 2. Reconcile the HL7 code sets against the permanent ID ledger.
     #    APPEND-ONLY: existing IDs are never reassigned. Stage 3 then projects
     #    the ledger into dictionaries/.
@@ -56,7 +65,7 @@ def run(output_dir: str = "generated_src", *, keep_specs: bool = False) -> None:
     )
 
     # 3. Emit dictionaries/ from the ledger (FF_Codes.hpp + runtime tables).
-    generate_codes_header()
+    generate_code_names()
     generate_dictionary_tables(ledger)
 
     # 4. Resolve resource types and build code-system enums.

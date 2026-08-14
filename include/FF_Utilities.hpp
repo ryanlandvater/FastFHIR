@@ -62,7 +62,21 @@ inline bool FF_IsChoicePresent(uint64_t choice_offset)
  * This is used for validation and to apply resource-specific logic during parsing and building.
  */
 inline constexpr bool FF_IsResourceTag(RECOVERY_TAG tag) {
-    return (tag & 0xFF00) == RECOVER_FF_RESOURCE_BLOCK; // 0x0300
+    // RANGE check, not a high-byte test. The resource band is 0x0300-0x0FFF --
+    // it spans 13 high-byte values, because 256 slots could not hold FHIR's 178
+    // concrete resource types with any headroom. The old `(tag & 0xFF00) ==
+    // 0x0300` silently returned false for every resource above 0x03FF.
+    // Strip the array bit first so an array-of-resource still classifies.
+    const uint16_t base = static_cast<uint16_t>(GetTypeFromTag(tag));
+    return base >= RECOVER_BAND_RESOURCE_FIRST && base <= RECOVER_BAND_RESOURCE_LAST;
+}
+
+/**
+ * @brief Utility to determine if a given RECOVERY_TAG corresponds to a BackboneElement.
+ */
+inline constexpr bool FF_IsBackboneTag(RECOVERY_TAG tag) {
+    const uint16_t base = static_cast<uint16_t>(GetTypeFromTag(tag));
+    return base >= RECOVER_BAND_BACKBONE_FIRST && base <= RECOVER_BAND_BACKBONE_LAST;
 }
 
 /**
@@ -73,7 +87,14 @@ inline constexpr bool FF_IsResourceTag(RECOVERY_TAG tag) {
  * @return true if the tag corresponds to an inline scalar block.
  */
 inline constexpr bool FF_IsScalarBlockTag(RECOVERY_TAG tag) {
-    return (tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK; // 0x0100
+    // The scalar band is exactly one high byte wide, so `& 0xFF00` is still
+    // correct here -- but it is written as a range check so every classifier
+    // reads the same way and a future band re-cut only touches the boundary
+    // constants. The open-coded `(x & 0xFF00) == RECOVER_FF_SCALAR_BLOCK` in
+    // FF_Primitives.hpp, FF_Ops.hpp and FF_Parser.cpp stays valid for the same
+    // reason; if the scalar band is ever widened, those three must move here.
+    const uint16_t base = static_cast<uint16_t>(GetTypeFromTag(tag));
+    return base >= RECOVER_BAND_SCALAR_FIRST && base <= RECOVER_BAND_SCALAR_LAST;
 }
 
 /**

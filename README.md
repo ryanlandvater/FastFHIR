@@ -118,7 +118,7 @@ The `build_all` target builds every enabled component: the core library (`libfas
 
 | Option | Default | Description |
 |---|---|---|
-| `FASTFHIR_PRODUCTION_PROFILE` | `us` | Resource profile for code generation: `us` (US Core IG, 27 resources) or `uk` (UK Core IG, 22 resources) |
+| `FASTFHIR_PRODUCTION_PROFILE` | `us-core` | Comma-separated resource groupings to compile; the generator builds their **union**. See [Resource groupings](#resource-groupings) below. |
 | `FASTFHIR_BUILD_SHARED` | `ON` | Build `libfastfhir` as a shared library; set `OFF` for a static archive |
 | `FASTFHIR_BUILD_INGESTOR` | `OFF` | Build the JSON→binary ingest library and `ff_ingest` CLI (requires simdjson) |
 | `FASTFHIR_BUILD_PYTHON_BINDINGS` | `OFF` | Build the pybind11 `_core` extension module |
@@ -130,12 +130,42 @@ Example — UK Core profile with ingestor, tests, and Python bindings:
 
 ```bash
 cmake -S . -B build \
-  -DFASTFHIR_PRODUCTION_PROFILE=uk \
+  -DFASTFHIR_PRODUCTION_PROFILE=uk-core \
   -DFASTFHIR_BUILD_INGESTOR=ON \
   -DFASTFHIR_BUILD_TESTS=ON \
   -DFASTFHIR_BUILD_PYTHON_BINDINGS=ON
 cmake --build build --target build_all -j
 ```
+
+#### Resource groupings
+
+`FASTFHIR_PRODUCTION_PROFILE` takes a **comma-separated list**, because real
+deployments compose — a payer needs US Core *and* claims:
+
+| Grouping | Resources | Covers |
+|---|---|---|
+| `us-core` *(default)* | 28 | [US Core](https://hl7.org/fhir/us/core/) — provider/EHR clinical data; realizes USCDI (defined by ONC/ASTP) |
+| `uk-core` | 23 | [UK Core](https://simplifier.net/hl7fhirukcorer4) |
+| `billing` | 5 | Payer/claims: `ExplanationOfBenefit`, `Claim`, `ClaimResponse`, `PaymentNotice`, `PaymentReconciliation` — the [CARIN Blue Button](https://hl7.org/fhir/us/carin-bb/) / Da Vinci PAS core |
+| `all` | 275 | Every concrete resource in the FHIR packages; absorbs any other name |
+
+```bash
+-DFASTFHIR_PRODUCTION_PROFILE=us-core,billing    # US Core + claims
+-DFASTFHIR_PRODUCTION_PROFILE=us-core,uk-core    # both realms
+```
+
+`us` and `uk` remain accepted as aliases for `us-core` / `uk-core`.
+
+**`ExplanationOfBenefit` is deliberately not in `us-core`.** US Core is
+clinical/EHR scope; EOB is a payer artifact profiled by CARIN Blue Button. If you
+are building payer-side, you want `us-core,billing`.
+
+> **Adding a grouping is a wire-ledger action.** Every resource needs a permanent
+> `RECOVERY_TAG` — plus one per nested BackboneElement — in the hand-maintained
+> `include/FF_Recovery.hpp`. `billing` needs 59; `all` needs 884. The generator
+> refuses to emit a tag the header does not declare and names every missing one,
+> so a grouping whose tags are not yet appended fails at configure time rather
+> than producing a broken build. See TASKS.md A27.
 
 See [Generator Architecture](#generator-architecture) for details on profiles and the generation pipeline.
 
@@ -1199,8 +1229,8 @@ rules — read that one before touching anything that assigns an ID.
 | `generator/emit/deserialize.py` | Eager deserializer generation |
 | `generator/emit/store.py` | SIZE and STORE function generation |
 | `generator/emit/views.py` | Lazy view structs, reflection dispatch |
-| `generator/emit/dictionary.py` | **The permanent code-ID ledger** + `dictionaries/*.cpp` emission |
-| `generator/emit/codes_header.py` | `dictionaries/FF_Codes.hpp` — named code constants |
+| `generator/emit/code_ids.py` | **The permanent code-ID ledger** (`dictionaries/master_codes.json`) + `generated_src/*Dictionary*.cpp` emission |
+| `generator/emit/code_names.py` | `generated_src/FF_Codes.hpp` — named code constants |
 | `generator/emit/codesystems.py` | FF_CodeSystems.hpp enum generation |
 | `generator/emit/traits.py` | Resource traits header |
 | `generator/emit/ingest_mappings.py` | Ingest mapping generation |

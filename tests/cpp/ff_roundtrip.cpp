@@ -88,6 +88,12 @@ int main(int argc, char** argv) {
             std::cerr << "Ingest failed: " << result.message << "\n";
             return 1;
         }
+        // A successful ingest can still have discarded entries (out-of-profile
+        // resource types). stdout is the round-trip document, so this goes to
+        // stderr — but it must go somewhere, or the loss is silent again.
+        if (!result.message.empty()) {
+            std::cerr << result.message << "\n";
+        }
 
         // 4. Seal
         builder.set_root(root_handle);

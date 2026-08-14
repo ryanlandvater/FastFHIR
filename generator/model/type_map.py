@@ -53,6 +53,37 @@ PRODUCTION_TYPES: list[str] = [
     "VirtualServiceDetail",
 ]
 
+# ---------------------------------------------------------------------------
+# Resource groupings
+# ---------------------------------------------------------------------------
+# FASTFHIR_PRODUCTION_PROFILE takes a COMMA-SEPARATED LIST of the names in
+# RESOURCE_GROUPINGS below, and the generator compiles their union -- real
+# deployments compose (a payer needs US Core *and* claims), so these are not
+# mutually exclusive. See resolve_production_resources() in model/structure.py.
+#
+# "The US profile" is not one document. HL7 publishes several US-realm IGs for
+# different actors, which is why ExplanationOfBenefit is absent from US Core and
+# its absence is not an oversight:
+#
+#   US Core          -- HL7, US Realm Steering Committee. Provider/EHR clinical
+#                       data; realizes USCDI (defined by ONC/ASTP, not HL7).
+#                       https://hl7.org/fhir/us/core/
+#   CARIN Blue Button-- HL7 + CARIN Alliance. Payer claims; EOB is the
+#                       centerpiece. https://hl7.org/fhir/us/carin-bb/
+#   UK Core          -- HL7 UK. https://simplifier.net/hl7fhirukcorer4
+#
+# TODO(A27): these lists are hand-maintained and carry no IG *version*, so drift
+# against a republished IG is undetectable. HL7 ships them machine-readably as
+# NPM packages on packages.fhir.org -- the same registry the generator already
+# pulls hl7.fhir.r4.core / hl7.fhir.r5.core from -- so these should eventually be
+# derived from `hl7.fhir.us.core` etc. rather than transcribed.
+#
+# COST WARNING: every resource added here needs its own RECOVERY_TAG plus one per
+# nested BackboneElement, and those are permanent hand-maintained wire constants
+# (include/FF_Recovery.hpp). Selecting a grouping whose tags have not been
+# appended fails loudly at the generator's tag gate, naming each missing tag.
+# Measured: BILLING_RESOURCES = 59 new tags; profile "all" = 884.
+
 US_CORE_RESOURCES: list[str] = [
     "AllergyIntolerance",
     "Bundle",
@@ -109,6 +140,36 @@ UK_CORE_RESOURCES: list[str] = [
     "ServiceRequest",
     "Specimen",
 ]
+
+# Payer / claims resources. Coverage is deliberately absent -- it is already in
+# US Core, and the groupings are unioned, so listing it here would only obscure
+# which grouping introduced it. Scoped to the CARIN Blue Button and Da Vinci PAS
+# core rather than every financial resource: Account, Invoice, ChargeItem and
+# Contract would add a further 29 tags for resources no claims flow requires.
+BILLING_RESOURCES: list[str] = [
+    "Claim",
+    "ClaimResponse",
+    "ExplanationOfBenefit",
+    "PaymentNotice",
+    "PaymentReconciliation",
+]
+
+# The accepted grouping names. Add a grouping by adding one entry here; nothing
+# else in the generator needs to change. "all" is handled separately in
+# resolve_production_resources() because it is discovered from the packages
+# rather than listed.
+RESOURCE_GROUPINGS: dict[str, list[str]] = {
+    "us-core": US_CORE_RESOURCES,
+    "uk-core": UK_CORE_RESOURCES,
+    "billing": BILLING_RESOURCES,
+}
+
+# Back-compat spellings for the pre-array profile values. "us"/"uk" were the
+# only accepted values when the setting was a single string.
+GROUPING_ALIASES: dict[str, str] = {
+    "us": "us-core",
+    "uk": "uk-core",
+}
 
 PRODUCTION_PROFILE_ENV: str = "FASTFHIR_PRODUCTION_PROFILE"
 
@@ -246,10 +307,27 @@ STRING_TYPES: set[str] = {
 # on the store path, and SIZE/STORE stay in agreement (A23.6).
 UNSET_ENUMERATOR: str = "FF_UNSET"
 
-# uint8_t underlies every generated code enum, so the sentinel occupies the top
-# value and a ValueSet may hold at most 255 codes. The largest today is
-# FF_FHIRTypes at 231. codesystems.py raises rather than silently colliding.
-UNSET_ENUM_VALUE: int = 255
+
+def enum_underlying_type(code_count: int) -> tuple[str, int]:
+    """Return the (C++ underlying type, sentinel value) for a code enum.
+
+    The enum ordinal is **not** a wire value -- the wire carries the dictionary
+    code produced by ENCODE_FF_CODE -- so widening the underlying type is a
+    source-level change and costs only POD bytes.
+
+    Widening is not optional at profile=all: FF_SPDXLicense carries 346 codes,
+    and in a uint8_t enum values 256..345 wrap onto 0..89, silently aliasing
+    distinct licences onto each other. That landmine predates the UNSET sentinel;
+    the sentinel merely made it fail loudly instead of at runtime (TASKS.md A26).
+    """
+    if code_count < 255:
+        return "uint8_t", 255
+    if code_count < 65535:
+        return "uint16_t", 65535
+    raise ValueError(
+        f"a code enum with {code_count} codes exceeds uint16_t; widen "
+        "enum_underlying_type() before adding a ValueSet this large."
+    )
 
 
 # ---------------------------------------------------------------------------

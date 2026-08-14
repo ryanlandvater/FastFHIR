@@ -61,7 +61,7 @@ def test_dictionary_regeneration_no_modifications():
     """
     # ── Regenerate ─────────────────────────────────────────────────
     sys.path.insert(0, str(REPO_ROOT))
-    from generator.emit.dictionary import generate_master_dictionary
+    from generator.emit.code_ids import generate_master_dictionary
 
     code_system_urls = generate_master_dictionary(
         [("R4", "fhir_specs/R4"), ("R5", "fhir_specs/R5")]
