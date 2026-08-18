@@ -8,7 +8,9 @@
 #include "FF_SIMD.hpp"
 
 #include "FF_Reflection.hpp"
+#include <algorithm>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 namespace FastFHIR {
@@ -28,6 +30,12 @@ struct PendingWrite {
     Reflective::Entry entry;
     Offset slot_offset = FF_NULL_OFFSET;
     Offset parent_anchor = FF_NULL_OFFSET;
+    // Depth of `node` in the stored object graph (root = 0). Threaded through
+    // the pending queue because the traversal is queue-based: archive_node's
+    // frame ends when the queue pop that spawned it returns, so a shared
+    // ancestry vector is empty again by the time a child is processed -- only
+    // an explicit depth can survive the hop and feed the depth bound.
+    std::size_t depth = 0;
 };
 
 using PendingQueue = FIFO::Queue<PendingWrite, 1024>;
@@ -38,6 +46,32 @@ struct ArchiveContext {
     PendingQueue::Injector injector;
     PendingQueue::Consumer consumer;
 
+    // Node identity access. Node::offset() is not public API; ArchiveContext is
+    // the friendship grant that lets the traversal key `path`/`done` on it.
+    Offset node_offset(const Reflective::Node& node) const { return node.offset(); }
+
+    // XP-1.1: bound the stored-graph traversal and detect cycles. `path` is
+    // the ancestry of the node being archived (source-arena offsets); `done`
+    // maps every fully archived source offset to the offset it was archived
+    // at, so a shared subtree is visited exactly once and any later reference
+    // to it returns the recorded offset. Recorded on completion, never on
+    // entry: marking on entry would let a structure that reaches itself find
+    // its own entry and report success instead of the cycle the path exists
+    // to catch (the ordering IFE learned in validate_nested_attributes).
+    //
+    // MAX_NODE_DEPTH is a security cap, not a conformance one. The deepest
+    // acyclic chain in the generated R4/R5 model is 8 object blocks
+    // (FF_ALLERGYINTOLERANCE, measured from the FIELDS tables), ~16 nodes
+    // with the array block each container level interleaves. The FHIR data
+    // model's only unbounded nesting axes are the recursive types
+    // (Extension.extension, QuestionnaireResponse.item.item,
+    // PlanDefinition.action.action), which the spec leaves uncapped; 64 nodes
+    // = 32 item/action recursion levels, an order of magnitude past any
+    // legitimate document while still bounding a crafted file's traversal.
+    static constexpr std::size_t MAX_NODE_DEPTH = 64;
+    std::vector<Offset> path;
+    std::unordered_map<Offset, Offset> done;
+
     explicit ArchiveContext(Memory& dst)
         : destination(dst), queue(), injector(queue.get_injector()), consumer(queue.get_consumer()) {}
 };
@@ -46,9 +80,9 @@ struct ArchiveContext {
 // function the generated COMPACT_SLOT_SIZES tables are emitted from, so the
 // writer here and the compact reader cannot disagree.
 
-static Offset archive_node(const Reflective::Node& node, ArchiveContext& context);
-static Offset archive_array(const Reflective::Node& node, ArchiveContext& context);
-static Offset archive_object(const Reflective::Node& node, ArchiveContext& context);
+static Offset archive_node(const Reflective::Node& node, ArchiveContext& context, std::size_t depth);
+static Offset archive_array(const Reflective::Node& node, ArchiveContext& context, std::size_t depth);
+static Offset archive_object(const Reflective::Node& node, ArchiveContext& context, std::size_t depth);
 
 static inline void enqueue_pending_write(ArchiveContext& context, const PendingWrite& pending) {
     context.injector.push(pending);
@@ -92,7 +126,7 @@ static void write_compact_code_slot(const Reflective::Entry& entry, Memory& dest
 }
 
 static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& context,
-                              Offset compact_parent_off, Offset dense_off) {
+                              Offset compact_parent_off, Offset dense_off, std::size_t depth) {
     BYTE* base = context.destination.base();
     const Offset src_slot = entry.absolute_offset();
     const RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(entry.base + src_slot + DATA_BLOCK::RECOVERY));
@@ -133,10 +167,11 @@ static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& co
         entry,
         dense_off,
         compact_parent_off,
+        depth + 1,
     });
 }
 
-static Offset archive_array(const Reflective::Node& node, ArchiveContext& context) {
+static Offset archive_array(const Reflective::Node& node, ArchiveContext& context, std::size_t depth) {
     const auto elements = node.entries();
     const Size array_size = FF_ARRAY::HEADER_SIZE + static_cast<Size>(elements.size()) * TYPE_SIZE_OFFSET;
     Offset array_off = context.destination.claim_space(array_size);
@@ -153,6 +188,7 @@ static Offset archive_array(const Reflective::Node& node, ArchiveContext& contex
                 {},
                 write_head,
                 FF_NULL_OFFSET,
+                depth + 1,
             });
         }
         write_head += TYPE_SIZE_OFFSET;
@@ -161,7 +197,7 @@ static Offset archive_array(const Reflective::Node& node, ArchiveContext& contex
     return array_off;
 }
 
-static Offset archive_object(const Reflective::Node& node, ArchiveContext& context) {
+static Offset archive_object(const Reflective::Node& node, ArchiveContext& context, std::size_t depth) {
     struct PresentField {
         size_t index;
         FF_FieldInfo info;
@@ -259,6 +295,7 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                     {},
                     dense_off,
                     object_off,
+                    depth + 1,
                 });
                 break;
             }
@@ -271,11 +308,12 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                     {},
                     dense_off,
                     object_off,
+                    depth + 1,
                 });
                 break;
             }
             case FF_FIELD_CHOICE:
-                write_choice_slot(entry, context, object_off, dense_off);
+                write_choice_slot(entry, context, object_off, dense_off, depth);
                 break;
             default: {
                 STORE_U64(base + dense_off, FF_NULL_OFFSET);
@@ -285,6 +323,7 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                     {},
                     dense_off,
                     object_off,
+                    depth + 1,
                 });
                 break;
             }
@@ -296,18 +335,57 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
     return object_off;
 }
 
-static Offset archive_node(const Reflective::Node& node, ArchiveContext& context) {
+static Offset archive_node(const Reflective::Node& node, ArchiveContext& context, std::size_t depth) {
     if (!node) return FF_NULL_OFFSET;
 
+    // XP-1.1: every recursive entry into the stored graph funnels through this
+    // guard. Order matters, exactly as IFE learned it in
+    // validate_nested_attributes: depth over the bound first, then ancestry,
+    // then the done-set, and `done` is recorded on completion -- never on
+    // entry -- because a node that reaches itself must find its ancestor on
+    // `path`, not its own done entry reporting success.
+    if (depth > ArchiveContext::MAX_NODE_DEPTH) {
+        throw std::runtime_error(
+            "FastFHIR Compactor Error: node nesting exceeds the maximum depth of " +
+            std::to_string(ArchiveContext::MAX_NODE_DEPTH) +
+            " (refusing a crafted or malformed stored graph)");
+    }
+
+    const Offset node_off = context.node_offset(node);
+    if (std::find(context.path.begin(), context.path.end(), node_off) != context.path.end()) {
+        throw std::runtime_error(
+            "FastFHIR Compactor Error: cycle in the stored graph at node offset " +
+            std::to_string(node_off) + " (an ancestor references it)");
+    }
+
+    // Already archived: a shared subtree (or a cycle landing on a completed
+    // node) resolves to the recorded offset instead of archiving it again.
+    if (const auto done = context.done.find(node_off); done != context.done.end()) {
+        return done->second;
+    }
+
+    context.path.push_back(node_off);
+    // Popped on every exit, not only the successful one: a stale ancestor
+    // would make an unrelated sibling report a cycle it does not have.
+    struct PathScope {
+        std::vector<Offset>& path;
+        ~PathScope() { path.pop_back(); }
+    } scope{context.path};
+
+    Offset result;
     switch (node.kind()) {
-        case FF_FIELD_BLOCK:  return archive_object(node, context);
-        case FF_FIELD_ARRAY:  return archive_array(node, context);
-        case FF_FIELD_STRING: return archive_string(node.as<std::string_view>(), context.destination);
+        case FF_FIELD_BLOCK:  result = archive_object(node, context, depth); break;
+        case FF_FIELD_ARRAY:  result = archive_array(node, context, depth); break;
+        case FF_FIELD_STRING: result = archive_string(node.as<std::string_view>(), context.destination); break;
         default:
             throw std::runtime_error(
                 std::string("FastFHIR Compactor Error: unsupported node kind in archive_node(): ") +
                 std::to_string(static_cast<int>(node.kind())));
     }
+    // Recorded only once the node is fully archived -- the whole correctness
+    // argument for the done-set (see ArchiveContext).
+    context.done.emplace(node_off, result);
+    return result;
 }
 
 static void process_pending_write(ArchiveContext& context, const PendingWrite& pending) {
@@ -320,17 +398,17 @@ static void process_pending_write(ArchiveContext& context, const PendingWrite& p
             break;
         }
         case PendingWriteKind::ArrayPointer: {
-            const Offset child_off = archive_array(pending.node, context);
+            const Offset child_off = archive_array(pending.node, context, pending.depth);
             STORE_U64(base + pending.slot_offset, child_off);
             break;
         }
         case PendingWriteKind::NodePointer: {
-            const Offset child_off = archive_node(pending.node, context);
+            const Offset child_off = archive_node(pending.node, context, pending.depth);
             STORE_U64(base + pending.slot_offset, child_off);
             break;
         }
         case PendingWriteKind::ResourcePointer: {
-            const Offset child_off = archive_node(pending.node, context);
+            const Offset child_off = archive_node(pending.node, context, pending.depth);
             STORE_U64(base + pending.slot_offset, child_off);
             STORE_U16(base + pending.slot_offset + DATA_BLOCK::RECOVERY, pending.node.recovery());
             break;
@@ -340,7 +418,7 @@ static void process_pending_write(ArchiveContext& context, const PendingWrite& p
             break;
         case PendingWriteKind::ChoiceNode: {
             const Reflective::Node child = pending.entry.as_node();
-            const Offset child_off = archive_node(child, context);
+            const Offset child_off = archive_node(child, context, pending.depth);
             STORE_U64(base + pending.slot_offset, child_off);
             break;
         }
@@ -371,7 +449,7 @@ Memory::View Compactor::archive(const Parser& source, const Memory& destination,
         throw std::runtime_error("FastFHIR Compactor Error: source root must be a valid object node.");
     }
 
-    const Offset compact_root_off = archive_object(root, context);
+    const Offset compact_root_off = archive_node(root, context, 0);
 
     PendingWrite pending;
     while (true) {
@@ -382,29 +460,12 @@ Memory::View Compactor::archive(const Parser& source, const Memory& destination,
         if (context.consumer.at_end()) break;
     }
 
-    BYTE* base = dst.base();
-    const Offset checksum_off = dst.claim_space(FF_CHECKSUM::HEADER_SIZE);
-    STORE_FF_HEADER(
-        base,
-        static_cast<uint16_t>(source.version()),
-        dst.size(),
-        compact_root_off,
-        static_cast<RECOVERY_TAG>(source.root_type()),
-        checksum_off,
-        FF_NULL_OFFSET, // url_dir_offset — not preserved across compaction
-        FF_NULL_OFFSET, // module_reg_offset — not preserved across compaction
-        FF_STREAM_COMPACTED
-    );
-    BYTE* hash_dst = STORE_FF_CHECKSUM_METADATA(base, checksum_off, algo);
-
-    if (hasher != nullptr && algo != FF_CHECKSUM_NONE) {
-        Size bytes_to_hash = checksum_off + FF_CHECKSUM::HASH_DATA;
-        std::vector<BYTE> hash_value = hasher(base, bytes_to_hash);
-        size_t copy_len = std::min(hash_value.size(), static_cast<size_t>(FF_MAX_HASH_BYTES));
-        std::memcpy(hash_dst, hash_value.data(), copy_len);
-    }
-
-    return dst.view();
+    // Shared sealing (header + checksum + hash) with Builder::finalize. The
+    // URL/module directory offsets are not preserved across compaction.
+    return seal_stream(dst, static_cast<uint16_t>(source.version()),
+                       compact_root_off,
+                       static_cast<RECOVERY_TAG>(source.root_type()), algo,
+                       hasher, FF_STREAM_COMPACTED, FF_NULL_OFFSET, FF_NULL_OFFSET);
 }
 
 } // namespace FastFHIR

@@ -32,7 +32,6 @@ namespace FastFHIR {
 Builder::Builder(const Memory& memory, FHIR_VERSION fhir_revision)
 : m_memory(memory),
 m_base(memory.base()),
-m_checksum_offset(FF_NULL_OFFSET),
 m_root_offset(FF_NULL_OFFSET),
 m_root_recovery(FF_RECOVER_UNDEFINED),
 m_fhir_rev(fhir_revision),
@@ -264,46 +263,20 @@ Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &h
     else if (m_root_recovery == FF_RECOVER_UNDEFINED)
         throw std::runtime_error("FastFHIR: Cannot finalize stream. Root recovery tag is UNDEFINED. Calling application must set root explicitly.");
 
-    // Reserve space for the checksum at the end of the stream and write the header metadata
-    m_checksum_offset = m_memory.claim_space(FF_CHECKSUM::HEADER_SIZE);
-
     // If no hasher or algorithm is provided, default to FF_CHECKSUM_NONE and emit a warning. 
     // The stream will still be valid but with a zeroed checksum.
     if (hasher == nullptr || algo == FF_CHECKSUM_NONE) {
         std::cerr << "[FastFHIR] Warning: No hash function provided; file will be emitted with zeroed checksum.\n";
         algo = FF_CHECKSUM_NONE;
     }
-    
-    // Write the FF_HEADER with the root resource info and checksum location.
-    // FF_HEADER lives at offset 0. URL_DIR_OFFSET is populated by
-    // FF_PredigestExtensionURLs via set_url_dir_offset(); MODULE_REG_OFFSET is
-    // reserved for Phase 7 (WASM module binding) and defaults to FF_NULL_OFFSET.
-    STORE_FF_HEADER(
-        m_base,
-        m_fhir_rev,
-        m_memory.size(),
-        m_root_offset,
-        m_root_recovery,
-        m_checksum_offset,
-        m_url_dir_offset,
-        m_module_reg_offset
-    );
 
-    // Writes the 12 bytes of metadata, returns a pointer to byte 12 (the 32-byte slot)
-    BYTE *hash_dst = STORE_FF_CHECKSUM_METADATA(m_base, m_checksum_offset, algo);
-
-    // Seal the stream with the hash algorithm
-    if (hasher != nullptr && algo != FF_CHECKSUM_NONE) {
-        // Hash the payload + the 12 bytes of metadata, stopping exactly where the hash slot begins.
-        Size bytes_to_hash = m_checksum_offset + FF_CHECKSUM::HASH_DATA;
-        std::vector<BYTE> hash_value = hasher(m_base, bytes_to_hash);
-
-        size_t copy_len = std::min(hash_value.size(), static_cast<size_t>(FF_MAX_HASH_BYTES));
-        std::memcpy(hash_dst, hash_value.data(), copy_len);
-    }
-
-    // Return the lifetime-safe view to the memory
-    auto view = m_memory.view();
+    // Shared sealing (header + checksum + hash) with Compactor::archive. The
+    // URL/module directory offsets are builder state; the stream stays standard
+    // layout. The backing file is truncated to the sealed size afterwards.
+    const Memory::View view = seal_stream(m_memory, m_fhir_rev, m_root_offset,
+                                          m_root_recovery, algo, hasher,
+                                          FF_STREAM_COMPACTION_NONE,
+                                          m_url_dir_offset, m_module_reg_offset);
     m_memory.truncate_file(view.size());
     return view;
 }

@@ -41,18 +41,25 @@ defect reachable from any untrusted `.ffh`; do it first.
 
 ## Priority summary
 
-| ID | Priority | Task | Why |
-|---|---|---|---|
-| XP-1 | **P0** | Bound and cycle-check the stored-graph traversal | Unbounded recursion over attacker-controlled offsets — stack overflow, not slowness |
-| XP-2 | **P0** | Deep-validate the offset graph on open; fix the Parser's overclaim | `Parser` validates the header only, while its docstring says "file structure" |
-| XP-3 | P1 | Add `--check` and `--validate` to the generator | No drift or consistency gate exists |
-| XP-4 | P1 | Port IFE's `portability_lint.py` | Six mechanical checks, each bought with a CI round-trip there |
-| XP-5 | P1 | Add CI workflows | `.github/` has templates and no workflows; nothing is gated |
-| XP-6 | P2 | Explicit `<cstring>`; range-check narrowing casts | Two classes IFE hit and fixed this week |
+| ID | Priority | Task | Why | Status |
+|---|---|---|---|---|
+| XP-1 | **P0** | Bound and cycle-check the stored-graph traversal | Unbounded recursion over attacker-controlled offsets — stack overflow, not slowness | XP-1.1 DONE (working tree, 2026-08-18); XP-1.2/1.3 open |
+| XP-2 | **P0** | Deep-validate the offset graph on open; fix the Parser's overclaim | `Parser` validates the header only, while its docstring says "file structure" | open |
+| XP-3 | P1 | Add `--check` and `--validate` to the generator | No drift or consistency gate exists | open |
+| XP-4 | P1 | Port IFE's `portability_lint.py` | Six mechanical checks, each bought with a CI round-trip there | open |
+| XP-5 | P1 | Add CI workflows | `.github/` has templates and no workflows; nothing is gated | open |
+| XP-6 | P2 | Explicit `<cstring>`; range-check narrowing casts | Two classes IFE hit and fixed this week | open |
 
 ---
 
 ## XP-1 — Bound and cycle-check the stored-graph traversal (P0)
+
+> STATUS (2026-08-18): **XP-1.1 implemented in the working tree (uncommitted —
+> Ryan commits).** The "no depth bound and no visited set" text below describes
+> the pre-fix state; `ArchiveContext` now carries `path` + `done` +
+> `MAX_NODE_DEPTH` and every recursive entry funnels through the guarded
+> `archive_node`. XP-1.2 and XP-1.3 remain open.
+
 
 **Why first.** `archive_node` → `archive_object` / `archive_array` → back
 through `process_pending_write` is mutual recursion over offsets read from the
@@ -87,6 +94,18 @@ grep -rn "MAX_DEPTH\|max_depth\|visited\|VisitPath" src/ include/ | head
 second grep **empty**.
 
 ### XP-1.1 — A path and a visited set
+
+- [x] **XP-1.1 DONE (2026-08-18, working tree, uncommitted).** `ArchiveContext` gained `std::vector<Offset> path`, `std::unordered_map<Offset, Offset> done`
+  (map, not set — step 3 must "return the recorded offset", a set cannot hold it), and
+  `MAX_NODE_DEPTH = 64` (comment cites the measured 8-block deepest chain in the generated
+  model and the uncapped recursive types: Extension.extension, QuestionnaireResponse.item.item,
+  PlanDefinition.action.action). `archive_node` applies the four checks in order; `done` is
+  recorded on completion, never on entry. Node identity (`Node::offset()`) is protected,
+  friend-granted to `ArchiveContext`; the shared-subtree test `tests/cpp/test_compactor.cpp`
+  asserts via slot bytes and output size. Also shipped this session (untracked elsewhere):
+  sealing tail consolidated into `seal_stream()` in `include/FF_Memory.hpp`, used by
+  `Builder::finalize` and `Compactor::archive` — byte-identical output verified.
+
 
 Add to `src/FF_Compactor.cpp`'s `ArchiveContext` (or beside it):
 

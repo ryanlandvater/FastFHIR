@@ -47,7 +47,6 @@ namespace FastFHIR
 
         Memory m_memory;
         BYTE *const m_base;
-        Offset m_checksum_offset;
         Offset m_url_dir_offset = FF_NULL_OFFSET;
         Offset m_module_reg_offset = FF_NULL_OFFSET;
         Offset m_root_offset;

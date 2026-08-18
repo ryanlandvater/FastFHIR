@@ -19,6 +19,12 @@ public:
     // copies the remaining stream payload unchanged.
     // Optionally seals the compacted stream with a checksum via the same callback
     // contract as Builder::finalize().
+    //
+    // The stored-graph traversal is depth-bounded and cycle-checked (TASKS.md
+    // XP-1.1): ArchiveContext tracks ancestry (`path`) and archived-once (`done`)
+    // sets with MAX_NODE_DEPTH, and every recursive entry into the graph funnels
+    // through the guarded archive_node. Sealing (header + checksum + hash) is
+    // shared with Builder::finalize via seal_stream() in FF_Memory.hpp.
     static Memory::View archive(const Parser& source, const Memory& destination,
                                 FF_Checksum_Algorithm algo = FF_CHECKSUM_NONE,
                                 const HashCallback& hasher = nullptr);

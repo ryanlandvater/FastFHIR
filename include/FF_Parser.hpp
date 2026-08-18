@@ -28,6 +28,7 @@
 
 namespace FastFHIR {
 class Builder;
+struct ArchiveContext;
 template<typename T> struct TypeTraits;
 
 /// Concept: true for any T that has a FastFHIR::TypeTraits<T> specialization with a read() method.
@@ -283,6 +284,11 @@ struct Entry {
 class Node {
 protected:
     friend struct ParserOps;
+    // Sole production consumer of the per-node identity below: the compactor's
+    // archive traversal keys its ancestry/archived-once sets on it. Friendship
+    // is granted to ArchiveContext (the traversal state), not the file-static
+    // free functions that walk the graph.
+    friend struct FastFHIR::ArchiveContext;
     const BYTE* m_base = nullptr;
     Offset m_node_offset = FF_NULL_OFFSET;
     Size m_size = 0;
@@ -293,6 +299,17 @@ protected:
     FF_FieldKind m_kind = FF_FIELD_UNKNOWN;
     bool m_array_entries_are_offsets = false;
     const ParserOps* m_ops = nullptr;
+
+    /**
+     * @brief Opaque per-node identity within one parsed stream.
+     * @return Offset of the block backing this node; `FF_NULL_OFFSET` for an empty node.
+     *         Unique per node within a stream, so it identifies a node for graph
+     *         bookkeeping (the compactor's ancestry and archived-once sets).
+     *         Internal coordinate: stable for the lifetime of one parse, but not
+     *         a versioned wire coordinate, and not for arithmetic. Not public API;
+     *         access is granted to the compactor via friendship above.
+     */
+    Offset offset() const { return m_node_offset; }
 public:
     /** @brief Construct an empty/invalid node handle. */
     Node() = default;

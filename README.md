@@ -73,7 +73,7 @@ FastFHIR provides **strongly validated, type-safe FHIR encoding** with guarantee
 * **Primitive Extensions Preserved Correctly:** FastFHIR supports FHIR's underscore-prefixed primitive extension model, allowing extensions on scalar primitives to survive ingest, validation, traversal, and re-export. This is a critical compatibility requirement that standard Protobuf JSON serializers do not implement.
 
 ### 3. Memory Safety & Integrity
-**In healthcare, safety is non-negotiable.** FastFHIR gives deterministic memory management and structural integrity at the OS level.
+**Memory safety is a first-class feature**. FastFHIR gives deterministic memory management and structural integrity at the OS level.
 * **OS-Protected Memory:** By utilizing Virtual Memory Arenas (via POSIX `mmap` or Win32 `VirtualAlloc`), FastFHIR ensures pointers remain perfectly stable and memory access is protected by the OS kernel. Legacy formats like JSON expose systems to heap fragmentation and injection attacks; FastFHIR eliminates these vectors entirely.
 * **Strict Polymorphic Type Checking:** The embedded `RECOVERY_TAG` metadata catches type confusion and mis-typed reads at runtime, so a field is never silently reinterpreted as the wrong type. This guards against *malformed* data; the parser has not yet been fuzzed against *hostile* data (TASKS.md G1).
 * **Integrity Footers:** Built-in checksum footers (CRC32/MD5/SHA-256) detect corruption and accidental modification. Note this is *integrity*, not *authenticity* — an attacker who can rewrite payload bytes can recompute the footer. Signed archives are tracked in TASKS.md G4.

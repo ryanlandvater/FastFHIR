@@ -326,11 +326,12 @@ if(FASTFHIR_BUILD_TESTS)
     # Unlike the other standalone suites this one drives the JSON ingestor.
     target_link_libraries(ff_test_bundle PRIVATE fastfhir_ingestor simdjson::simdjson)
     add_ff_cpp_test(ff_test_simd       tests/cpp/test_simd.cpp)
+    add_ff_cpp_test(ff_test_compactor  tests/cpp/test_compactor.cpp)
 
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle)
+    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor)
         add_test(NAME "cpp_${_standalone}" COMMAND ${_standalone})
     endforeach()
 
@@ -525,7 +526,7 @@ if(FASTFHIR_BUILD_TESTS)
     # "Not Run". add_ff_cpp_test() does neither for you.
     list(APPEND _BUILD_ALL ff_test_readme ff_roundtrip
          ff_test_primitives ff_test_memory ff_test_simd
-         ff_test_amend ff_test_cc ff_test_bundle)
+         ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor)
 endif()
 if(FASTFHIR_BUILD_PYTHON_BINDINGS)
     list(APPEND _BUILD_ALL fastfhir_python)
@@ -589,7 +590,8 @@ if(FASTFHIR_BUILD_PYTHON_BINDINGS AND TARGET fastfhir_python)
 endif()
 if(FASTFHIR_BUILD_TESTS)
     foreach(_t ff_test_readme ff_roundtrip ff_test_primitives ff_test_memory
-               ff_test_simd ff_test_amend ff_test_cc ff_test_bundle)
+               ff_test_simd ff_test_amend ff_test_cc ff_test_bundle
+               ff_test_compactor)
         if(TARGET ${_t})
             set_target_properties(${_t} PROPERTIES FOLDER "Tests")
         endif()
@@ -632,7 +634,7 @@ endif()
 # ON in CMakePresets.json to get a scheme for every target.
 foreach(_t build_all fastfhir fastfhir_ingestor ff_ingest ff_export ff_compact ff_roundtrip ff_test_readme
            ff_test_primitives ff_test_memory ff_test_simd ff_test_amend
-           ff_test_cc ff_test_bundle)
+           ff_test_cc ff_test_bundle ff_test_compactor)
     if(TARGET ${_t})
         set_target_properties(${_t} PROPERTIES XCODE_GENERATE_SCHEME ON)
     endif()
