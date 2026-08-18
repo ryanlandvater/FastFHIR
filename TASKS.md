@@ -9,6 +9,274 @@
 >
 > Read `CLAUDE.md` first — it defines the invariants you must not break.
 
+---
+
+# ▶ CROSS-POLLINATION WORK ORDERS — start here
+
+Written 2026-08-18 after a joint review of this repository and the Iris File
+Extension (`../Iris-File-Extension`), which share an architecture —
+offset-addressed blocks in a mapped arena, recovery tags, a Python generator
+emitting a gitignored C++ layer, append-only wire ledgers — and have solved
+overlapping problems in different orders. **These are the items IFE already
+has and this repository does not.** The reciprocal list (what this repository
+has and IFE lacks — chiefly the wire witness) is at the top of
+`../Iris-File-Extension/MIGRATION.md`.
+
+**These precede the IMMEDIATE WORK ORDERS below.** XP-1 is a memory-safety
+defect reachable from any untrusted `.ffh`; do it first.
+
+## Rules (override anything else in this file)
+
+1. **One task ID per session** (e.g. `XP-1.2`). Do not batch.
+2. **Run the *Locate* block first.** If its output does not match *Expect*,
+   **STOP** and report what you saw instead. Do not improvise.
+3. **Do not commit.** Ryan commits. Leave changes in the working tree.
+4. **Never edit generated files** (`generated_src/`, `include/FF_Recovery.hpp`).
+   Fix `generator/emit/` instead.
+5. **Never change a wire constant.** None of these tasks needs to; a step that
+   seems to is a step written wrong — STOP.
+6. Build with `cmake --preset ninja && cmake --build --preset ninja`.
+7. ⚠ marks a decision a flash model must not make alone. Produce the analysis
+   and STOP.
+
+## Priority summary
+
+| ID | Priority | Task | Why |
+|---|---|---|---|
+| XP-1 | **P0** | Bound and cycle-check the stored-graph traversal | Unbounded recursion over attacker-controlled offsets — stack overflow, not slowness |
+| XP-2 | **P0** | Deep-validate the offset graph on open; fix the Parser's overclaim | `Parser` validates the header only, while its docstring says "file structure" |
+| XP-3 | P1 | Add `--check` and `--validate` to the generator | No drift or consistency gate exists |
+| XP-4 | P1 | Port IFE's `portability_lint.py` | Six mechanical checks, each bought with a CI round-trip there |
+| XP-5 | P1 | Add CI workflows | `.github/` has templates and no workflows; nothing is gated |
+| XP-6 | P2 | Explicit `<cstring>`; range-check narrowing casts | Two classes IFE hit and fixed this week |
+
+---
+
+## XP-1 — Bound and cycle-check the stored-graph traversal (P0)
+
+**Why first.** `archive_node` → `archive_object` / `archive_array` → back
+through `process_pending_write` is mutual recursion over offsets read from the
+stored arena, and **there is no depth bound and no visited set anywhere in this
+repository** — `grep -rn "MAX_DEPTH\|max_depth\|visited\|cycle" src/ include/`
+returns nothing. A `.ffh` whose offset graph contains a cycle recurses until
+the stack is gone.
+
+IFE hit the same shape this week in a milder form: it *had* a depth bound, so a
+crafted file made validation run forever rather than crash. A 4,921-byte file
+of 13 levels each naming 40 offsets into the next took 40^13 visits; the fix
+was a visited set recorded on completion, and it brought that file to 0.04 ms.
+Here there is no bound at all, so the same file is a segfault.
+
+**Read first**
+- `../Iris-File-Extension/src/IFE_Runtime.cpp` — `VisitedBlocks`,
+  `validate_nested_attributes`, `note_attributes`, `lift_attributes`. Note the
+  comment on why the set is recorded on *completion* and never on entry.
+- `../Iris-File-Extension/generated_source/IFE_Blocks.hpp` — `VisitPath`, and
+  why ancestry rather than a global set.
+- `src/FF_Compactor.cpp:299` and the three functions it recurses through.
+
+### Locate
+
+```bash
+cd /Users/ryanlandvater/GitHub/FastFHIR
+grep -n "archive_node\|archive_object\|archive_array" src/FF_Compactor.cpp | head
+grep -rn "MAX_DEPTH\|max_depth\|visited\|VisitPath" src/ include/ | head
+```
+
+**Expect:** `archive_node` at ~299 with a `switch` on `node.kind()`, and the
+second grep **empty**.
+
+### XP-1.1 — A path and a visited set
+
+Add to `src/FF_Compactor.cpp`'s `ArchiveContext` (or beside it):
+
+- `std::vector<Offset> path` — the ancestry of the node being archived.
+- `std::unordered_set<Offset> done` — nodes fully archived.
+- `static constexpr std::size_t MAX_NODE_DEPTH` — pick from the FHIR data
+  model, not from a round number, and say in the comment which resource
+  justifies it.
+
+Order inside `archive_node`, exactly as IFE learned it:
+
+1. depth over the bound → distinct error
+2. offset already on `path` → cycle error
+3. offset in `done` → return the recorded offset immediately
+4. push, archive, pop, **then** insert into `done`
+
+Step 4's order is the whole correctness argument: marking on entry would let a
+node that reaches itself find its own entry and report success.
+
+**Done when:** archiving a document with a shared subtree visits each node
+once (assert with a counter in a test), and `ctest --preset ninja` is green.
+
+### XP-1.2 — Distinct errors, not one code
+
+IFE merged "too deep" and "cycle" into one code and paid for it twice: a
+too-deep file reported a cycle that did not exist, and a test could not tell
+which guard had fired — it passed with **both** guards disabled. Give the two
+conditions distinct errors here from the start.
+
+**Done when:** the two failures produce different messages, and each
+red-greens **independently** — disable one guard, only its own test fails.
+
+### XP-1.3 — The regression test
+
+Add `tests/cpp/ff_test_graph_bounds.cpp`:
+
+- a cycle → rejected, message names the cycle
+- a chain past `MAX_NODE_DEPTH` → rejected, message names the depth
+- a legal DAG with heavy sharing → **accepted**, and fast
+
+Register it in `CMakeLists.txt` **and in `_BUILD_ALL`** — WO-1 in this file
+exists because tests registered but not built report "Not Run".
+
+Set a ctest `TIMEOUT`. Without the visited set the sharing case does not fail,
+it hangs; the timeout is what turns that into a reported failure.
+
+**Done when:** all three pass, and with the visited set removed the sharing
+case times out rather than passing.
+
+---
+
+## XP-2 — Deep-validate the graph on open (P0)
+
+**Why.** `Parser::Parser` calls `header.validate_full()`, which checks magic,
+FHIR revision, layout flag and the checksum footer — and nothing else. It does
+not bounds-check `ROOT_OFFSET` before storing it, and never walks the graph.
+`FF_Parser.hpp:49` nonetheless tells the reader "`Parser` validates file
+structure at creation time," which is the sentence that stops anyone asking.
+
+IFE's `validate_file_structure` is the model: walk every offset edge, confirm
+each block's self-offset and recovery tag, bound the depth, detect cycles.
+
+### Locate
+
+```bash
+sed -n '45,55p' include/FF_Parser.hpp
+sed -n '233,250p' src/FF_Parser.cpp
+grep -rn "validate_deep\|validate_graph" src/ include/ | head
+```
+
+**Expect:** the docstring claim at ~49, `m_root_offset = header.get_root(...)`
+with no bounds check, third grep **empty**.
+
+### XP-2.1 — Bounds-check the root
+Reject a root offset that is not within `[HEADER_SIZE, m_size)` before storing
+it. One comparison; it is the entry point to every traversal.
+
+### XP-2.2 — Correct the docstring first
+Change `FF_Parser.hpp:49` to say what the code does today — header and
+checksum — before adding anything. A comment that overstates coverage is worse
+than no comment, and this one already cost a reviewer a wrong assumption.
+
+### XP-2.3 — `Parser::validate_deep()`
+Walk the graph from the root: bounds, self-offset, recovery tag per block,
+reusing XP-1's path and visited set. Not in the constructor — an explicit call
+a caller makes on untrusted input, matching IFE's split between construction
+and `validate_file_structure`.
+
+⚠ **XP-2.4 — is validation opt-in or mandatory?** IFE made structural
+validation unconditional and left conformance to an attachable layer. Whether
+`Parser`'s constructor should call `validate_deep()` for everyone, or callers
+opt in, is a policy call with a real cost on large arenas. Produce the analysis
+— cost measured on the largest fixture, and what a server accepting untrusted
+`.ffh` would need — and STOP.
+
+**Done when:** a hand-corrupted fixture with an out-of-bounds child offset is
+rejected with a message naming the block and the offset.
+
+---
+
+## XP-3 — `--check` and `--validate` for the generator (P1)
+
+`generator/__main__.py` takes only `--output-dir` and `--keep-specs`. There is
+no way to ask "is `generated_src/` current?" or "is the ledger self-consistent?"
+IFE runs both on every build and in CI.
+
+- **XP-3.1** `--validate`: ledger self-consistency — unique tag values, unique
+  code IDs, every referenced tag defined, no gaps that would renumber.
+- **XP-3.2** `--check`: regenerate in memory, compare against
+  `generated_src/`, exit non-zero on drift. Reuse `tests/generator/wire_witness.py`
+  for the comparison rather than a text diff — this repository already learned
+  that the gate is wire stability, not source text.
+
+**Done when:** both exit 0 on a clean tree; `--check` goes red after touching
+an emitter and green after regenerating; `--validate` goes red on a duplicated
+tag value.
+
+---
+
+## XP-4 — Port `portability_lint.py` (P1)
+
+Copy `../Iris-File-Extension/tools/portability_lint.py` and retarget it. Each
+of its six checks was bought with a CI round-trip there:
+
+| Check | What it catches |
+|---|---|
+| platform macros | `windows.h` macros (`IN`, `OUT`, `ERROR`, `PLANES`) used as identifiers |
+| SAL annotations | `__in`/`__out` as parameter names — `<yvals.h>` defines them in **every** MSVC TU |
+| paths in string literals | a filesystem path through a C string literal, where `\a` is a bell |
+| ctest without `-C` | multi-config generators find no executables |
+| Bazel-declared headers | a public header the sandbox hides because no filegroup names it |
+| workflow include paths | hand-compiled CI jobs on a stale `-I` layout |
+
+Two apply immediately: this repository has `windows.h` under `_WIN32` in
+`src/FF_Builder.cpp`, and a `BUILD.bazel` with filegroups that can drift the
+same way.
+
+**Do not** copy the `generated_source` special case blindly — port the
+*lesson*: IFE's SAL check treated a missing generated directory as clean,
+so on a fresh clone it reported the generated layer clean without reading it.
+Make an absent `generated_src/` a finding here, not a pass.
+
+**Done when:** `python3 tools/portability_lint.py` exits 0 on the tree, and
+red-greens on a deliberately introduced `__out` parameter name.
+
+---
+
+## XP-5 — CI (P1)
+
+`.github/` holds issue templates and a PR template. There are **no workflows**.
+Nothing gates a push: not the build, not `ctest`, not the wire gate that
+already exists in `tests/generator/`.
+
+Port the shape of `../Iris-File-Extension/.github/workflows/ci.yml`:
+
+- **XP-5.1** build + `ctest --preset ninja` on Linux and macOS
+- **XP-5.2** the existing `tests/generator/` pytest wire gate — it is the best
+  thing in this repository and nothing runs it automatically
+- **XP-5.3** sanitizers: `cmake --preset xcode-asan`, or an ASan/UBSan Linux leg
+- **XP-5.4** `tools/portability_lint.py` once XP-4 lands
+- **XP-5.5** a big-endian leg (s390x under qemu). IFE added one after two
+  independent hand-written big-endian packed-width implementations proved
+  wrong, neither reachable by any test on any developer machine. This
+  repository has `LOAD_U*`/`STORE_U*` primitives with the same exposure.
+
+⚠ **XP-5.6 — network in CI.** First configure downloads FHIR packages, so a CI
+job needs either network or a cached bundle. Decide which, and say what happens
+when `packages.fhir.org` is down. Produce the analysis and STOP.
+
+---
+
+## XP-6 — Includes and narrowing (P2)
+
+- **XP-6.1** `src/FF_Builder.cpp`, `src/FF_Ingestor.cpp` and
+  `src/FF_Primitives.cpp` use `memcpy`/`memset` and get `<cstring>` only
+  through `FF_Memory.hpp`/`FF_Ops.hpp`. Include it directly. IFE shipped the
+  same defect this week in a test writer.
+- **XP-6.2** Range-check narrowing before it reaches the wire.
+  `static_cast<uint32_t>(x.size())` appears at six sites in
+  `src/FF_Compactor.cpp` and `src/FF_Extensions.cpp`. IFE's parallel case: a
+  key over 65535 bytes wrote a truncated length beside untruncated bytes and
+  `store()` reported success — every later read then sliced from the wrong
+  boundary. Reject at the writer, where the payload is in hand.
+
+**Done when:** the includes are explicit, and an oversized input is rejected
+with a message rather than silently truncated. Red-green the truncation case.
+
+---
+
+
 ## Execution contract (read before claiming anything)
 
 1. **Claim exactly one task ID (e.g. A2.3) per session.** Do not batch tasks unless a task
@@ -2722,6 +2990,115 @@ in FastFHIR targets.
         numbering has a ceiling; an unstated one gets crossed by someone adding "just one
         more". State the append-only rule and deprecation as the only retirement path in
         the same section.
+  - **Amendment (2026-08-18): generate the document, do not hand-write it.**
+    Added after reviewing the Iris File Extension's spec pipeline
+    (`../Iris-File-Extension/spec/`), which renders a normative PDF and HTML
+    from a machine-readable source with zero hand-written layout tables. Most
+    of what I1 lists is already machine-readable here — `master_tags.json`,
+    `master_codes.json`, and the vtable enums — so a hand-written SPEC.md would
+    *transcribe* those numbers, and a transcribed number is one that can
+    disagree with the format. I1.6's own warning ("an unstated ceiling gets
+    crossed by someone adding just one more") applies equally to a stated
+    number that quietly goes stale.
+    Three scoping decisions govern I1.7–I1.12, and they are not negotiable
+    without re-opening this amendment:
+    1. **Scope is the container format, never the FHIR payload.** HL7 owns the
+       resource schemas (see Q11's answer); FastFHIR owns `FF_HEADER`,
+       `DATA_BLOCK`, vtable rules, array kinds, `FF_STRING`, choice slots, code
+       encoding, compaction, the checksum footer, tags and ceilings. Do not
+       emit tables for FHIR resources — that is regenerating HL7's
+       specification per version, and it is unbounded.
+    2. **C++ stays the source of truth.** IFE's JSON *drives* its C++, which is
+       why its whole document generates from the schema. Here
+       `FF_Primitives.hpp` is hand-maintained with permanent values (CLAUDE.md),
+       and inverting that is a refactor of frozen wire constants for no gain.
+       The document is generated *from* the C++ and the committed ledgers, not
+       the other way round.
+    3. **Offsets come from the compiler, never from Python.** See I1.7 — this
+       is the decision the rest depends on.
+  - [ ] I1.7 **Emit resolved offsets from C++.** The vtable offsets are
+        symbolic sums (`RECOVERY = MAGIC + MAGIC_S`) and the literal byte
+        ranges exist only in hand-maintained comments
+        (`// 2 bytes (6-7)`). Anything that recomputes those sums in Python is a
+        *second* derivation that can disagree with the compiler, silently,
+        forever. Instead add `tools/wire_offsets/FF_WireOffsets.cpp`: a tiny
+        program that includes `FF_Primitives.hpp` and prints every block's
+        `type`, `recovery`, and each field's name / size / **resolved offset**
+        as JSON on stdout. The compiler computes; the tool reports.
+        *Locate:*
+        ```bash
+        cd /Users/ryanlandvater/GitHub/FastFHIR
+        sed -n '/enum vtable_offsets/,/};/p' include/FF_Primitives.hpp | head -14
+        ```
+        *Expect:* offsets written as sums, byte ranges only in `//` comments.
+        *Done when:* the program builds under both presets and its JSON gives
+        `FF_HEADER.FHIR_REV.offset == 6`, matching the comment on that line —
+        and a deliberate reorder of two `vtable_sizes` entries changes the JSON
+        without anyone editing a comment.
+  - [ ] I1.8 **Feed the witness with it.** `tests/generator/wire_witness.py`
+        states in its own docstring that it captures field order and size
+        constants rather than offsets, because it cannot resolve the sums.
+        I1.7 removes that limit: have the witness consume I1.7's JSON so the
+        append-only gate compares **real offsets**. Do this before I1.9 — the
+        document should render the same numbers the gate enforces, from one
+        source, or the two can drift and the drift is invisible.
+        *Done when:* `tests/generator/test_wire_format.py` fails when a field's
+        offset moves while its order and width are unchanged — a case the
+        current witness cannot see. Red-green it.
+  - [ ] I1.9 **Convert the narrative to AsciiDoc with generated includes.**
+        `architecture.md` §4–§6 is the spec basis and stays hand-written; it
+        becomes `docs/spec/ff_spec.adoc`, and every layout table, tag table and
+        code table becomes an Asciidoctor `include::` of a file generated from
+        I1.7's JSON and the two ledgers. Use AsciiDoc's native `include::` —
+        **no preprocessor, no `{{...}}` marker syntax of our own**; that is the
+        mechanism Khronos uses for Vulkan and IFE adopted after rejecting a
+        homegrown templating layer. Emit **one file per table**, not one per
+        section, so moving a section never drags unrelated tables with it.
+        Convert the prose as a format change only — rewriting normative text is
+        a content change and belongs in its own commit.
+        *Done when:* `docs/spec/` contains no hand-written offset, tag value or
+        code ID, and `grep -rn "0x55\|offset [0-9]" docs/spec/ff_spec.adoc`
+        returns only prose references, never a table.
+  - [ ] I1.10 **One command, both outputs.** Add `docs/spec/build_document.sh`
+        rendering HTML and PDF from the one source (`asciidoctor` and
+        `asciidoctor-pdf`). Two traps IFE has already paid for, both of which
+        this script must handle:
+        - **Asciidoctor exits 0 on a missing include**, writing "Unresolved
+          directive" into the output instead. The exit code is therefore not
+          the gate — the script must grep the rendered output for it and fail.
+        - **An orphaned generated table stays included silently.** A renamed
+          block leaves its old `.adoc` on disk, the narrative keeps including
+          it, and the document publishes a table with no source. Regeneration
+          must delete orphans and the check must fail on them.
+        Stamp provenance into the document: the engine version and the tool
+        version that produced the build. A ratified document that cannot be
+        reproduced later is not reproducible in any useful sense.
+        *Done when:* one invocation produces both files, the output contains
+        zero occurrences of "Unresolved directive", and pointing an include at
+        a renamed block fails the script. Red-green both.
+  - [ ] I1.11 **CI job.** Render the document on every push so a wire change
+        that breaks it fails before publication, and upload the PDF as an
+        artifact. Depends on XP-5 (this repository currently has no workflows
+        at all). Watermark the PDF as draft until Q13 answers the freeze
+        wording.
+        *Done when:* the job renders both outputs and fails when I1.10's
+        unresolved-include check trips.
+  - ⚠ **I1.12 Toolchain dependency — decide before starting I1.9.**
+        The pipeline needs Ruby ≥ 3.2 with `asciidoctor` and `asciidoctor-pdf`.
+        IFE evaluated pandoc and rejected it on a measured fact: pandoc has no
+        AsciiDoc *reader* — `asciidoc` appears only among its output formats —
+        so adopting it means reverting the source to Markdown and writing the
+        preprocessor this design exists to avoid, plus a LaTeX engine.
+        `asciidoctor -b docbook | pandoc` works and is the documented fallback
+        for anyone on an older Ruby. Confirm the dependency is acceptable for
+        contributors and CI, or say which fallback ships. Produce the analysis
+        and STOP.
+  - **Note on ordering.** I1.7 → I1.8 → I1.9 → I1.10 → I1.11 is a hard
+    sequence: each consumes the previous one's output. I1.12 gates I1.9. None
+    of them unblocks Q13 — a specification that cannot state its own stability
+    guarantee is not finished no matter how it is produced — so I1 stays
+    `Blocked on Q13` for its *content* while I1.7–I1.8 can proceed now, since
+    both are wire-gate work that stands on its own.
 - [ ] I2. **Spec/format licensing statement** (Q10 decided: spec text under CC-BY-4.0):
   add the CC-BY-4.0 notice to `docs/SPEC.md` plus a pointer to `TRADEMARK.md` (anyone may
   implement from the spec; only conformant implementations may claim the name). Do

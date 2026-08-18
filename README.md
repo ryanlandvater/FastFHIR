@@ -65,8 +65,6 @@ FastFHIR turns data traversal into pure pointer arithmetic, outpacing text forma
   <img alt="Project Logo" src="light-image.png">
 </picture>
 
-
-
 ### 2. Type Safety & Validated FHIR Format
 FastFHIR provides **strongly validated, type-safe FHIR encoding** with guaranteed format correctness and comprehensive extension handling.
 * **Strict Schema Validation:** The binary layout embeds explicit `RECOVERY_TAG` metadata for every object. This provides guaranteed safe polymorphic resolution and strict C++ type checking at runtime, preventing incorrect information context, garbage reads, and buffer overflows. Every resource is validated against official FHIR Structure Definitions at generation time.
