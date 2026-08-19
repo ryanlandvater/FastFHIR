@@ -122,7 +122,9 @@ pytest tests/generator -q
 ruff check generator tests/generator && black --check generator tests/generator
 ```
 
-Key CMake options: `FASTFHIR_PRODUCTION_PROFILE` (`us`|`uk`), `FASTFHIR_BUILD_INGESTOR`
+Key CMake options: `FASTFHIR_PRODUCTION_PROFILE` (comma-separated union of
+`us-core` (default) | `uk-core` | `billing` | `all`; `us`/`uk` are accepted aliases),
+`FASTFHIR_BUILD_INGESTOR`
 (needs simdjson; also gates `ff_ingest` and OpenSSL), `FASTFHIR_BUILD_TESTS`,
 `FASTFHIR_BUILD_PYTHON_BINDINGS`, `FASTFHIR_RUN_GENERATOR` (default ON, at configure time).
 Bazel targets mirror the CMake ones (`MODULE.bazel`/`BUILD.bazel`) but CMake is primary.

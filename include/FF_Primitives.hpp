@@ -66,6 +66,38 @@ constexpr uint32_t FF_CODE_NULL = FF_NULL_UINT32;
 constexpr float FF_NULL_F32 = FF_NULL_UINT32;
 constexpr double FF_NULL_F64 = FF_NULL_UINT64;
 constexpr Offset FF_NULL_OFFSET = FF_NULL_UINT64;
+// ── Reserved In-Flight Sentinels ──────────────────────────────────────
+// PERMANENT AND RESERVED. These differ from the FF_NULL_* family above in
+// kind, not just in value: a null sentinel is a legal on-wire value meaning
+// "this field is absent", whereas a PENDING sentinel must NEVER appear in a
+// sealed stream. It marks a slot a writer has reserved but not yet resolved.
+//
+// Why they cannot simply reuse the null sentinels: a null reads as "absent",
+// so a placeholder that survived to disk would present as a cleanly dropped
+// field instead of an incomplete write. Distinct values let a writer verify,
+// before sealing, that every deferred slot was actually resolved -- and turn
+// what would be silent data loss into a loud failure.
+//
+// They are declared here rather than kept private to a writer so the values
+// are RESERVED: no future dictionary ID, offset, or flag may be assigned
+// these bit patterns. Reserving them is what keeps them off the wire.
+//
+//   FF_PENDING_OFFSET  one below FF_NULL_OFFSET. Unreachable as a real arena
+//                      offset (it would require an 16 EiB arena) and never
+//                      confusable with "absent".
+//   FF_PENDING_CODE    dictionary ID 0, which is permanently reserved as the
+//                      null slot and never assigned to any code (see
+//                      dictionaries/README.md, "Reserved values"). Distinct
+//                      from FF_CODE_NULL (0xFFFFFFFF, "no code present").
+//                      A resolved code slot always has bit 31 set or is a
+//                      dictionary ID >= 1, so 0 is unambiguous.
+//
+// Current consumer: the Compactor's deferred-write machinery
+// (src/FF_Compactor.cpp), which pre-fills every deferred slot with the
+// matching sentinel and refuses to seal while one survives.
+constexpr Offset FF_PENDING_OFFSET = FF_NULL_OFFSET - 1;
+constexpr uint32_t FF_PENDING_CODE = 0x00000000;
+
 // ── Unified Dynamic Code Block Flag ───────────────────────────────────
 // Bit 31 (MSB) distinguishes dictionary codes from dynamic fallback blocks.
 //   MSB = 0  → 31-bit dictionary index (FF_ResolveCode)

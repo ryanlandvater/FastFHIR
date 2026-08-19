@@ -118,6 +118,77 @@ int main() {
     std::string_view id = root[FastFHIR::Fields::PATIENT::ID];
     CHECK(id == "p1", "patient id round-trips through the archive");
 
+    // ── Assertion 4: deferred CODE slots resolve ────────────────────────────
+    // A code outside the permanent dictionary is stored as an FF_CODEABLE_
+    // CONCEPT block with FF_CODEABLE_CONCEPT_FLAG set, which is the ONLY case
+    // that makes the compactor defer a 4-byte code slot (Code32). That path
+    // had no coverage at all: the whole suite never once reached it, so the
+    // block-copy in write_compact_code_slot and the FF_PENDING_CODE guard that
+    // protects it were both untested.
+    //
+    // The guard matters because the placeholder for a deferred code slot must
+    // not be FF_CODE_NULL -- that is the reader's "no code present", so an
+    // unresolved slot would read as a cleanly dropped clinical code rather
+    // than as a failure. Pre-filling with FF_PENDING_CODE (dictionary ID 0,
+    // permanently reserved and never assigned) makes the residual scan in
+    // Compactor::archive able to tell "absent" from "never written".
+    {
+        Memory cmem = Memory::create(1ull << 22);
+        Builder cb(cmem);
+
+        CodingData coding;
+        coding.system = "http://example.org/local-codes";
+        coding.code   = "org-local-code-91827";   // deliberately not in the dictionary
+
+        CodeableConceptData ccc;
+        ccc.coding.push_back(coding);
+        auto hccc = cb.append_obj(ccc);
+
+        IdentifierData cid;
+        auto hcid = cb.append_obj(cid);
+        cb.amend_pointer(hcid.offset(), FF_IDENTIFIER::TYPE, hccc.offset());
+
+        auto carr = cb.append_obj(std::vector<Offset>{hcid.offset()}, RECOVER_FF_IDENTIFIER);
+        PatientData cp; cp.id = "p3";
+        auto hcp = cb.append_obj(cp);
+        cb.amend_pointer(hcp.offset(), FF_PATIENT::IDENTIFIER, carr.offset());
+        cb.set_root(hcp);
+        auto cview = cb.finalize();
+
+        Parser csource(cview.data(), cview.size());
+        const Reflective::Entry src_code =
+            csource.root()[FastFHIR::Fields::PATIENT::IDENTIFIER].as_node()
+                .entries()[0][FastFHIR::Fields::IDENTIFIER::TYPE].as_node()
+                [FastFHIR::Fields::CODEABLECONCEPT::CODING].as_node()
+                .entries()[0][FastFHIR::Fields::CODING::CODE];
+        CHECK((bool)src_code, "source code slot is present");
+        const uint32_t src_slot = LOAD_U32(csource.data() + src_code.absolute_offset());
+        CHECK((src_slot & FF_CODEABLE_CONCEPT_FLAG) != 0,
+              "source code slot is CodeableConcept-flagged (deferred path reached)");
+
+        Memory cdst = Memory::create(1ull << 22);
+        auto compact_cview = Compactor::archive(csource, cdst);
+        CHECK(!compact_cview.empty(), "archive resolves the deferred code slot");
+
+        Parser ccompact(compact_cview.data(), compact_cview.size());
+        const Reflective::Entry out_code =
+            ccompact.root()[FastFHIR::Fields::PATIENT::IDENTIFIER].as_node()
+                .entries()[0][FastFHIR::Fields::IDENTIFIER::TYPE].as_node()
+                [FastFHIR::Fields::CODEABLECONCEPT::CODING].as_node()
+                .entries()[0][FastFHIR::Fields::CODING::CODE];
+        CHECK((bool)out_code, "compact code slot is present");
+
+        // The decisive assertion: neither sentinel survived. FF_PENDING_CODE
+        // would mean the deferred write never landed; FF_CODE_NULL would mean
+        // it landed as "absent" -- the silent-loss shape the sentinel exists
+        // to make impossible.
+        const uint32_t out_slot = LOAD_U32(ccompact.data() + out_code.absolute_offset());
+        CHECK(out_slot != FF_PENDING_CODE, "no residual FF_PENDING_CODE in the sealed stream");
+        CHECK(out_slot != FF_CODE_NULL, "deferred code did not degrade to 'absent'");
+        CHECK(static_cast<std::string_view>(out_code) == "org-local-code-91827",
+              "out-of-dictionary code round-trips through the archive");
+    }
+
     printf("%s\n", failures ? "FAILURES" : "all compactor graph checks pass");
     return failures ? 1 : 0;
 }

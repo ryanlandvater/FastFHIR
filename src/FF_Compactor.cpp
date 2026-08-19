@@ -22,6 +22,7 @@ enum class PendingWriteKind {
     ResourcePointer,
     Code32,
     ChoiceNode,
+    ResolvedOffset,
 };
 
 struct PendingWrite {
@@ -36,6 +37,19 @@ struct PendingWrite {
     // ancestry vector is empty again by the time a child is processed -- only
     // an explicit depth can survive the hop and feed the depth bound.
     std::size_t depth = 0;
+    // Full ancestry of `node` (all ancestor block offsets, root first),
+    // snapshotted at enqueue time. Cycle detection needs it: the queue-based
+    // traversal pops an ancestor's frame before its children process, so the
+    // live path is empty at process time -- the ancestry must ride the write
+    // and be restored, or a node that reaches an ancestor reports the ancestor
+    // as merely "already archived" and the cycle is accepted (XP-1.3).
+    std::vector<Offset> ancestry;
+    // For PendingWriteKind::ResolvedOffset: the recorded archive offset of an
+    // already-completed child, stored straight into the slot at process time.
+    // Defaults to the invalid sentinel, not FF_NULL_OFFSET: an unset value
+    // must read as "not a resolved offset", never as a valid-looking absent
+    // one -- the same reason slot standins use FF_PENDING_OFFSET.
+    Offset resolved_offset = FF_PENDING_OFFSET;
 };
 
 using PendingQueue = FIFO::Queue<PendingWrite, 1024>;
@@ -58,6 +72,9 @@ struct ArchiveContext {
     // entry: marking on entry would let a structure that reaches itself find
     // its own entry and report success instead of the cycle the path exists
     // to catch (the ordering IFE learned in validate_nested_attributes).
+    // `path` is live only within one archive_node frame; it is restored from
+    // each pending write's ancestry snapshot before the node processes, so
+    // the cycle check sees the true ancestors of a queue-popped node.
     //
     // MAX_NODE_DEPTH is a security cap, not a conformance one. The deepest
     // acyclic chain in the generated R4/R5 model is 8 object blocks
@@ -72,6 +89,18 @@ struct ArchiveContext {
     std::vector<Offset> path;
     std::unordered_map<Offset, Offset> done;
 
+    // Deferred-write balance: every enqueue_pending_write increments, every
+    // process_pending_write decrements. A nonzero balance when the drain loop
+    // ends means a pending write was dropped and the sealed stream would
+    // silently lose fields -- Compactor::archive turns that into a throw.
+    std::size_t pending_balance = 0;
+
+    // Every slot that received a pending sentinel, so the seal step can verify
+    // each was resolved. Split by width because the sentinels differ: 8-byte
+    // pointer slots hold FF_PENDING_OFFSET, 4-byte code slots FF_PENDING_CODE.
+    std::vector<Offset> deferred_slots;
+    std::vector<Offset> deferred_code_slots;
+
     explicit ArchiveContext(Memory& dst)
         : destination(dst), queue(), injector(queue.get_injector()), consumer(queue.get_consumer()) {}
 };
@@ -80,11 +109,68 @@ struct ArchiveContext {
 // function the generated COMPACT_SLOT_SIZES tables are emitted from, so the
 // writer here and the compact reader cannot disagree.
 
+// Deferred slots are pre-filled with FF_PENDING_OFFSET / FF_PENDING_CODE,
+// the reserved in-flight sentinels declared in FF_Primitives.hpp. Neither
+// FF_NULL_OFFSET nor FF_CODE_NULL may be used here: they are the reader's
+// canonical "field absent" values, so a standin that survived would read as a
+// silently dropped field instead of an incomplete write.
+//
+// Two checks, and neither subsumes the other. The pending-balance counter
+// proves every enqueued write was processed. The residual scan proves every
+// pre-filled sentinel was overwritten -- which the counter cannot see, because
+// a pre-fill that never enqueued was never counted. That divergence is exactly
+// what the paired helpers below exist to prevent, so always use them rather
+// than writing a sentinel and tracking it by hand.
+//
+// Absent values are written directly (a null array entry stores
+// FF_NULL_OFFSET, never a sentinel) and are deliberately not tracked.
+
+// Write the pending offset sentinel into a deferred 8-byte slot and remember
+// it so the seal step can verify it was resolved.
+static inline void write_pending_slot(ArchiveContext& context, BYTE* base, Offset slot) {
+    STORE_U64(base + slot, FF_PENDING_OFFSET);
+    context.deferred_slots.push_back(slot);
+}
+
+// The 4-byte code-slot counterpart. FF_PENDING_CODE (dictionary ID 0) is
+// never a legal resolved value here: this slot is only deferred when the
+// source code carries FF_CODEABLE_CONCEPT_FLAG, and write_compact_code_slot
+// always resolves it to another bit-31-set value, so 0 is unambiguous.
+static inline void write_pending_code_slot(ArchiveContext& context, BYTE* base, Offset slot) {
+    STORE_U32(base + slot, FF_PENDING_CODE);
+    context.deferred_code_slots.push_back(slot);
+}
+
 static Offset archive_node(const Reflective::Node& node, ArchiveContext& context, std::size_t depth);
 static Offset archive_array(const Reflective::Node& node, ArchiveContext& context, std::size_t depth);
 static Offset archive_object(const Reflective::Node& node, ArchiveContext& context, std::size_t depth);
 
 static inline void enqueue_pending_write(ArchiveContext& context, const PendingWrite& pending) {
+    // Every deferred write passes through here; the drain loop asserts the
+    // enqueue/process balance returns to zero before the stream is sealed.
+    ++context.pending_balance;
+    // Cycle guard and archived-once memo, both at enqueue time. The enqueuing
+    // node's full ancestry is live in context.path right now, so a child that
+    // is its own ancestor closes a loop; a child already fully archived
+    // resolves to its recorded offset instead of being archived again. Neither
+    // check can live in archive_node: a node already in `done` would memo-
+    // return at entry before its own children were enqueued, silently
+    // absorbing a cycle that runs through it (XP-1.3).
+    if (pending.node) {
+        const Offset child_off = context.node_offset(pending.node);
+        if (std::find(context.path.begin(), context.path.end(), child_off) != context.path.end()) {
+            throw std::runtime_error(
+                "FastFHIR Compactor Error: cycle in the stored graph at node offset " +
+                std::to_string(child_off) + " (an ancestor references it)");
+        }
+        if (const auto done = context.done.find(child_off); done != context.done.end()) {
+            context.injector.push(PendingWrite{
+                PendingWriteKind::ResolvedOffset, {}, {}, pending.slot_offset,
+                FF_NULL_OFFSET, 0, {}, done->second,
+            });
+            return;
+        }
+    }
     context.injector.push(pending);
 }
 
@@ -160,14 +246,21 @@ static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& co
         return;
     }
 
-    STORE_U64(base + dense_off, FF_NULL_OFFSET);
+    // Through the paired helper, not a hand-rolled store + push_back: keeping
+    // the pre-fill and the tracking inseparable is the whole point of it. The
+    // RECOVERY tag was already written at +8 above; this covers bytes 0..7.
+    write_pending_slot(context, base, dense_off);
+    // Resolve the choice child here so the enqueue-time cycle guard sees it
+    // (the pending write carries the resolved node; the process side reuses it).
+    const Reflective::Node choice_child = entry.as_node();
     enqueue_pending_write(context, PendingWrite{
         PendingWriteKind::ChoiceNode,
-        {},
+        choice_child,
         entry,
         dense_off,
         compact_parent_off,
         depth + 1,
+        context.path,
     });
 }
 
@@ -180,8 +273,8 @@ static Offset archive_array(const Reflective::Node& node, ArchiveContext& contex
                           static_cast<uint32_t>(elements.size()), node.recovery());
 
     for (const auto& element : elements) {
-        STORE_U64(context.destination.base() + write_head, FF_NULL_OFFSET);
         if (element) {
+            write_pending_slot(context, context.destination.base(), write_head);
             enqueue_pending_write(context, PendingWrite{
                 PendingWriteKind::NodePointer,
                 element,
@@ -189,7 +282,13 @@ static Offset archive_array(const Reflective::Node& node, ArchiveContext& contex
                 write_head,
                 FF_NULL_OFFSET,
                 depth + 1,
+                context.path,
             });
+        } else {
+            // Null entry: the reader's "absent" value, never the pending
+            // sentinel -- a sentinel here would read as a present entry with
+            // an out-of-bounds offset.
+            STORE_U64(context.destination.base() + write_head, FF_NULL_OFFSET);
         }
         write_head += TYPE_SIZE_OFFSET;
     }
@@ -266,7 +365,10 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                     raw_code == FF_CODE_NULL || (raw_code & FF_CODEABLE_CONCEPT_FLAG) == 0) {
                     STORE_U32(base + dense_off, raw_code);
                 } else {
-                    STORE_U32(base + dense_off, FF_CODE_NULL);
+                    // FF_PENDING_CODE, never FF_CODE_NULL: the latter is the
+                    // reader's "no code present", so an unresolved slot would
+                    // read as a dropped clinical code rather than a failure.
+                    write_pending_code_slot(context, base, dense_off);
                     enqueue_pending_write(context, PendingWrite{
                         PendingWriteKind::Code32,
                         {},
@@ -277,7 +379,7 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                 }
                 break;
             case FF_FIELD_STRING: {
-                STORE_U64(base + dense_off, FF_NULL_OFFSET);
+                write_pending_slot(context, base, dense_off);
                 enqueue_pending_write(context, PendingWrite{
                     PendingWriteKind::StringPointer,
                     {},
@@ -288,7 +390,7 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                 break;
             }
             case FF_FIELD_ARRAY: {
-                STORE_U64(base + dense_off, FF_NULL_OFFSET);
+                write_pending_slot(context, base, dense_off);
                 enqueue_pending_write(context, PendingWrite{
                     PendingWriteKind::ArrayPointer,
                     entry.as_node(),
@@ -296,11 +398,12 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                     dense_off,
                     object_off,
                     depth + 1,
+                    context.path,
                 });
                 break;
             }
             case FF_FIELD_RESOURCE: {
-                STORE_U64(base + dense_off, FF_NULL_OFFSET);
+                write_pending_slot(context, base, dense_off);
                 STORE_U16(base + dense_off + DATA_BLOCK::RECOVERY, FF_RECOVER_UNDEFINED);
                 enqueue_pending_write(context, PendingWrite{
                     PendingWriteKind::ResourcePointer,
@@ -309,6 +412,7 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                     dense_off,
                     object_off,
                     depth + 1,
+                    context.path,
                 });
                 break;
             }
@@ -316,7 +420,7 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                 write_choice_slot(entry, context, object_off, dense_off, depth);
                 break;
             default: {
-                STORE_U64(base + dense_off, FF_NULL_OFFSET);
+                write_pending_slot(context, base, dense_off);
                 enqueue_pending_write(context, PendingWrite{
                     PendingWriteKind::NodePointer,
                     entry.as_node(),
@@ -324,6 +428,7 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                     dense_off,
                     object_off,
                     depth + 1,
+                    context.path,
                 });
                 break;
             }
@@ -333,6 +438,42 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
     }
 
     return object_off;
+}
+
+// Read-only: does any direct child of `node` sit on the restored ancestry
+// path? Only consulted for re-processings of already-completed nodes, where an
+// unconditional memo-return would hide a cycle that a re-walk would newly
+// detect (the graph is static, so the only thing a re-walk can newly do is
+// enqueue the same children against a *different* ancestry -- and if one of
+// those children is on the path, the enqueue-time guard will throw).
+static bool child_touches_path(const Reflective::Node& node, ArchiveContext& context) {
+    const auto on_path = [&context](const Reflective::Node& child) {
+        return child && std::find(context.path.begin(), context.path.end(),
+                                  context.node_offset(child)) != context.path.end();
+    };
+    switch (node.kind()) {
+        case FF_FIELD_BLOCK:
+        case FF_FIELD_RESOURCE: {
+            for (const auto& field : node.fields()) {
+                if (field.kind != FF_FIELD_ARRAY && field.kind != FF_FIELD_BLOCK &&
+                    field.kind != FF_FIELD_RESOURCE && field.kind != FF_FIELD_CHOICE)
+                    continue;
+                const Reflective::Entry entry = node[FF_FieldKey::from_cstr(
+                    node.recovery(), field.kind, field.field_offset,
+                    field.child_recovery, field.array_entries_are_offsets, field.name)];
+                if (!entry) continue;
+                if (on_path(entry.as_node())) return true;
+            }
+            return false;
+        }
+        case FF_FIELD_ARRAY: {
+            for (const auto& child : node.entries())
+                if (on_path(child)) return true;
+            return false;
+        }
+        default:
+            return false;
+    }
 }
 
 static Offset archive_node(const Reflective::Node& node, ArchiveContext& context, std::size_t depth) {
@@ -358,10 +499,18 @@ static Offset archive_node(const Reflective::Node& node, ArchiveContext& context
             std::to_string(node_off) + " (an ancestor references it)");
     }
 
-    // Already archived: a shared subtree (or a cycle landing on a completed
-    // node) resolves to the recorded offset instead of archiving it again.
+    // Already archived: a shared subtree (or a duplicate enqueued while its
+    // twin was still in the queue) resolves to the recorded offset instead of
+    // being archived again -- UNLESS a re-walk could newly close a cycle (a
+    // direct child on the restored path), in which case we must process so the
+    // enqueue-time guard throws. An unconditional memo here would hide the
+    // cycle: a node referenced back by one of its own descendants is already
+    // in `done`, and the early return would skip the very enqueue that closes
+    // the loop (XP-1.3).
     if (const auto done = context.done.find(node_off); done != context.done.end()) {
-        return done->second;
+        if (!child_touches_path(node, context)) {
+            return done->second;
+        }
     }
 
     context.path.push_back(node_off);
@@ -391,6 +540,12 @@ static Offset archive_node(const Reflective::Node& node, ArchiveContext& context
 static void process_pending_write(ArchiveContext& context, const PendingWrite& pending) {
     BYTE* base = context.destination.base();
 
+    // Restore the ancestry the enqueuing node snapshotted (PendingWrite::
+    // ancestry). The queue popped this pending long after the parent's frame
+    // exited; without the restore the cycle check below would see an empty
+    // path and accept a node that reaches its own ancestor (XP-1.3).
+    context.path = pending.ancestry;
+
     switch (pending.kind) {
         case PendingWriteKind::StringPointer: {
             const Offset string_off = archive_string(static_cast<std::string_view>(pending.entry), context.destination);
@@ -398,7 +553,10 @@ static void process_pending_write(ArchiveContext& context, const PendingWrite& p
             break;
         }
         case PendingWriteKind::ArrayPointer: {
-            const Offset child_off = archive_array(pending.node, context, pending.depth);
+            // Through archive_node, not archive_array directly: the array node
+            // itself must pass the depth/cycle/done guards -- a cycle can run
+            // through an array block.
+            const Offset child_off = archive_node(pending.node, context, pending.depth);
             STORE_U64(base + pending.slot_offset, child_off);
             break;
         }
@@ -416,13 +574,19 @@ static void process_pending_write(ArchiveContext& context, const PendingWrite& p
         case PendingWriteKind::Code32:
             write_compact_code_slot(pending.entry, context.destination, pending.parent_anchor, pending.slot_offset);
             break;
+        case PendingWriteKind::ResolvedOffset: {
+            STORE_U64(base + pending.slot_offset, pending.resolved_offset);
+            break;
+        }
         case PendingWriteKind::ChoiceNode: {
-            const Reflective::Node child = pending.entry.as_node();
+            const Reflective::Node child = pending.node ? pending.node : pending.entry.as_node();
             const Offset child_off = archive_node(child, context, pending.depth);
             STORE_U64(base + pending.slot_offset, child_off);
             break;
         }
     }
+    // Mirrors the enqueue-side increment: one fewer outstanding deferred write.
+    --context.pending_balance;
 }
 
 Memory::View Compactor::archive(const Parser& source, const Memory& destination,
@@ -458,6 +622,37 @@ Memory::View Compactor::archive(const Parser& source, const Memory& destination,
             continue;
         }
         if (context.consumer.at_end()) break;
+    }
+
+    // Every deferred slot must be resolved before the header is stamped: a
+    // nonzero balance here means a pending write was dropped and the sealed
+    // stream would silently lose fields.
+    if (context.pending_balance != 0) {
+        throw std::runtime_error(
+            "FastFHIR Compactor Error: " + std::to_string(context.pending_balance) +
+            " deferred write(s) never resolved; the compact stream would silently lose fields.");
+    }
+
+    // Defense-in-depth: every tracked deferred slot must hold a resolved
+    // offset by now. The balance proves every pending was processed; this
+    // proves every sentinel was overwritten -- a sentinel left behind (e.g. by
+    // a gated pre-fill that never enqueued) would read as a present field with
+    // an out-of-bounds offset. Scans only tracked slots, never raw payload:
+    // string bytes can legitimately equal the sentinel value.
+    BYTE* base = dst.base();
+    for (const Offset slot : context.deferred_slots) {
+        if (LOAD_U64(base + slot) == FF_PENDING_OFFSET) {
+            throw std::runtime_error(
+                "FastFHIR Compactor Error: residual pending offset at slot " +
+                std::to_string(slot) + "; a deferred write was never resolved.");
+        }
+    }
+    for (const Offset slot : context.deferred_code_slots) {
+        if (LOAD_U32(base + slot) == FF_PENDING_CODE) {
+            throw std::runtime_error(
+                "FastFHIR Compactor Error: residual pending code at slot " +
+                std::to_string(slot) + "; a deferred code write was never resolved.");
+        }
     }
 
     // Shared sealing (header + checksum + hash) with Builder::finalize. The

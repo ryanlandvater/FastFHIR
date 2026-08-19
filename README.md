@@ -158,12 +158,16 @@ deployments compose — a payer needs US Core *and* claims:
 clinical/EHR scope; EOB is a payer artifact profiled by CARIN Blue Button. If you
 are building payer-side, you want `us-core,billing`.
 
-> **Adding a grouping is a wire-ledger action.** Every resource needs a permanent
-> `RECOVERY_TAG` — plus one per nested BackboneElement — in the hand-maintained
-> `include/FF_Recovery.hpp`. `billing` needs 59; `all` needs 884. The generator
-> refuses to emit a tag the header does not declare and names every missing one,
-> so a grouping whose tags are not yet appended fails at configure time rather
-> than producing a broken build. See TASKS.md A27.
+> **The profile does not change the tag header.** Every resource needs a permanent
+> `RECOVERY_TAG` — plus one per nested BackboneElement — but tag discovery is
+> deliberately profile-independent: the ledger `dictionaries/master_tags.json`
+> covers the whole R4 ∪ R5 spec, so `include/FF_Recovery.hpp` is byte-identical
+> whichever groupings you compile. A permanent wire artifact whose contents
+> depend on build configuration is not a permanent wire artifact. Switching
+> profile therefore changes only which resources get C++ emitted. If a newer FHIR
+> package introduces types the ledger has never seen, the generator appends them
+> at the next free value in their band and rewrites the ledger — an append-only
+> change to a committed wire file, so review that diff. See TASKS.md A27.
 
 See [Generator Architecture](#generator-architecture) for details on profiles and the generation pipeline.
 

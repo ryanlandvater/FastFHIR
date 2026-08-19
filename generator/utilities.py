@@ -66,7 +66,7 @@ def validate_recovery_bands(recovery_path: str = "include/FF_Recovery.hpp") -> N
     written into the wrong band is silently mis-classified at runtime rather than
     failing to compile. The C++ static_asserts catch a bad *boundary*; this
     catches a bad *tag*, which is the accident that actually happens when someone
-    appends by hand to a 900-entry enum.
+    appends by hand to a 900-entry ledger.
 
     Also rejects duplicate values. A C++ enum happily accepts two enumerators
     with the same value, so two block types sharing a recovery tag -- which makes
@@ -122,11 +122,13 @@ def validate_recovery_bands(recovery_path: str = "include/FF_Recovery.hpp") -> N
 def validate_recovery_tags(output_dir: str, recovery_path: str = "include/FF_Recovery.hpp") -> int:
     """Fail loudly if the generator emitted a RECOVERY_TAG the header lacks.
 
-    `include/FF_Recovery.hpp` is hand-maintained and its values are permanent
-    wire constants -- the generator only ever *references* them. But the
-    reference is built by string concatenation
-    (``f"RECOVER_{child_struct}"`` in model/structure.py), so a rename or a new
-    FHIR type can produce a name that does not exist.
+    `include/FF_Recovery.hpp` is emitted by emit/recovery_tags.py from the
+    committed ledger `dictionaries/master_tags.json`, at stage 1b -- before
+    anything that references a tag. Its values are permanent wire constants.
+    Every tag the spec needs is therefore already declared by the time the
+    emitters run, but the reference is built by string concatenation
+    (``f"RECOVER_{child_struct}"`` in model/structure.py), so a rename or a
+    name discovery never produced can still ask for a tag that does not exist.
 
     That failure currently surfaces as a wall of C++ "undeclared identifier"
     errors across dozens of generated files. Catching it here names the exact
@@ -152,9 +154,12 @@ def validate_recovery_tags(output_dir: str, recovery_path: str = "include/FF_Rec
         raise RuntimeError(
             f"{len(unknown)} RECOVERY_TAG(s) were emitted that {recovery_path} does not "
             f"declare:\n{listed}\n\n"
-            "RECOVERY_TAG values are permanent wire constants and the header is "
-            "hand-maintained -- the generator may only reference existing tags. Either "
-            "add the tag to the header deliberately (it is a wire constant: append, "
-            "never renumber) or fix the name the emitter is building."
+            "RECOVERY_TAG values are permanent wire constants. The header is "
+            "GENERATED from dictionaries/master_tags.json -- never hand-edit it. "
+            "Tag discovery covers the whole spec and appends before the emitters "
+            "run, so a name missing here is almost always a name the emitter built "
+            "wrong: fix the emitter. If the tag is genuinely a new FHIR type, make "
+            "discovery in emit/recovery_tags.py see it and re-run; it will append "
+            "at the next free value in its band."
         )
     return len(referenced)

@@ -11,6 +11,247 @@
 
 ---
 
+# ▶ WIRE WORK ORDER — DT: pack date/time; RT: stop the diff cascade
+
+Written 2026-08-19. Two related orders. **RT-1 first** — it is the measuring
+instrument for everything else and has no wire impact. **DT-* is a breaking
+wire change** and is deliberate: Q13 says the format is NOT frozen, and this is
+the class of change that is free during alpha and impossible after the freeze.
+
+**Sequencing against the P0s below.** XP-1.2 and XP-2 remain P0 and are not
+displaced by this block. RT-1 is independent of both and can be taken at any
+time. DT-* should not start until XP-2 lands, because DT changes how a slot is
+interpreted and XP-2 is what bounds-checks the graph a bad slot would reach.
+
+**Rules: the same ones as the cross-pollination orders below** — one task ID per
+session, run *Locate* first and STOP on a mismatch, do not commit, never
+hand-edit `generated_src/` or `include/FF_Recovery.hpp`, and ⚠ marks a decision
+a flash model must not take alone.
+
+## Priority summary
+
+| ID | Priority | Task | Why | Status |
+|---|---|---|---|---|
+| RT-1 | P1 | Align round-trip entries by identity before diffing | 79% of reported diffs are cascade from one dropped resource | open |
+| DT-1 | P1 | `FF_DateTime` packed representation + primitives | 4 tags sit reserved and unused; dateTime is a string today | open |
+| DT-2 | P1 | Generator: route date/dateTime/instant/time off STRING_TYPES | 306 elements across 120 types | open |
+| DT-3 | P1 | Ingest + export paths | where the encode/decode actually happens | open |
+| DT-4 | P1 | Tests, then re-baseline the wire witness | the gate must move deliberately, in the same commit | open |
+
+---
+
+## RT-1 — Align round-trip entries by identity (P1)
+
+**Why.** `tests/python/test_roundtrip.py` compares Bundle entries **positionally**.
+Out-of-profile resources are dropped at ingest, so the entry list shifts and every
+comparison past the first drop is between two unrelated resources.
+
+Measured 2026-08-19 over 12 Synthea fixtures: **28,002 positional diffs → 5,890
+when entries are paired by identity. 79% is cascade.** On one fixture: 47 entries
+in, 43 out; the four missing are exactly `Claim`×2 and `ExplanationOfBenefit`×2,
+and the first divergence is at index 28 where the first `Claim` sat.
+
+The harness is right to fail — resources really are dropped. The *attribution* is
+wrong, and it buries A27's real signal under millions of lines.
+
+### Locate
+
+```bash
+cd /Users/ryanlandvater/GitHub/FastFHIR
+grep -n "def diff_doms" -A 12 tests/python/roundtrip_diff.py
+grep -n "class DiffKind" -A 8 tests/python/roundtrip_diff.py
+```
+
+**Expect:** `diff_doms` recursing arrays by index, and a `DiffKind` enum with no
+member for a dropped or added resource.
+
+### RT-1.1 — Pair entries before diffing
+In `roundtrip_diff.py`, special-case `Bundle.entry`: build an index of output
+entries keyed by `fullUrl` when present, else `(resourceType, id)`, and diff each
+input entry against its matched counterpart rather than against the same index.
+
+### RT-1.2 — Two new diff kinds
+Add `DROPPED_RESOURCE` and `ADDED_RESOURCE`. An input entry with no counterpart
+is one finding naming the type and id — **not** a subtree walk. Same in reverse.
+
+### RT-1.3 — Report the drop summary first
+`format_diff_report` leads with the dropped/added counts by resourceType, then
+the field diffs. The current report makes a 4-resource drop look like 20,000
+field defects.
+
+**Done when:** the 12-fixture sample reports ~5,890 field diffs plus an explicit
+`DROPPED_RESOURCE` line per missing resource, and deleting one entry from a
+fixture's output produces exactly one new `DROPPED_RESOURCE`, not a cascade.
+
+---
+
+## DT-1 — `FF_DateTime`: the packed representation (P1)
+
+**Why.** `date`, `dateTime`, `instant` and `time` are in `STRING_TYPES`
+(`generator/model/type_map.py:276`), so each is an 8-byte slot pointing at an
+`FF_STRING` block: 8 + 14 + ~25 = **47 bytes and a pointer chase** per value.
+Measured on one 2.7 MB Synthea bundle: 2,467 date/time values, 118 KB, of which
+**~93 KB (79%) is recoverable**. Comparison also becomes an integer compare
+instead of a string compare.
+
+`include/FF_Recovery.hpp:81-84` already reserves `RECOVER_FF_DATE = 0x0107`,
+`RECOVER_FF_DATETIME = 0x0108`, `RECOVER_FF_TIME = 0x0109`,
+`RECOVER_FF_INSTANT = 0x010A` in the scalar band, annotated **"Reserved for
+bit-packing"**, referenced by nothing. The numbering is already done and
+permanent; this order spends it.
+
+### A time_point is the wrong model — do not use one
+
+From the R4 StructureDefinitions, all four constraints are load-bearing:
+
+| Constraint | Consequence |
+|---|---|
+| `dateTime` is a union of gYear, gYearMonth, date, dateTime | `"2024"` ≠ `"2024-01-01T00:00:00Z"`. Precision must round-trip. "Born in 1970" is not "born 1 Jan 1970". |
+| `date` has no timezone, ever | It is a civil date. Encoding as epoch-UTC invents an offset. |
+| `time` has no date | Duration since midnight; there is no instant to hold. |
+| seconds may be `60` | Leap seconds are legal FHIR. `chrono` normalises to the next second — a silent value change. |
+
+So: **packed civil time + precision + offset**, not an instant.
+
+### The layout — 8 bytes, keeping `TYPE_SIZE_OFFSET`
+
+Staying at 8 bytes is the point: **no vtable offset arithmetic changes**, so the
+R4/R5 field-offset stability property of architecture.md §4.2 is untouched and
+the diff is confined to a field's *kind* and *interpretation*.
+
+```
+bit  63      discriminator  0 = packed inline, 1 = offset to FF_STRING fallback
+bits 62..41  civil days from 0001-01-01, UNSIGNED (22) — spans years 0001..9999
+bits 40..36  hour   (5)
+bits 35..30  minute (6)
+bits 29..24  second (6)   — 60 is representable, so leap seconds survive
+bits 23..14  millisecond (10)
+bits 13..3   UTC offset, signed minutes (11)
+bits  2..0   precision (3)
+```
+
+Exactly 64 bits. Days-from-epoch rather than separate y/m/d is what buys the
+discriminator bit back (22 bits vs 23 for y/m/d).
+
+**The epoch is 0001-01-01 and the field is unsigned — this is not a free choice.**
+A signed count from the usual 1970 epoch does not fit: 1970→9999 is 2,932,896
+days and signed 22 bits reach only 2,097,151, so the representable ceiling would
+be year 7711 while FHIR permits 9999. Measured from 0001-01-01 the full span is
+3,652,058 days against an unsigned 22-bit capacity of 4,194,303. Anything
+outside 0001..9999 is not legal FHIR and takes the fallback.
+
+**Byte-exact round-trip is achievable in this budget.** Two results that make it
+fit, both worth stating because they are not obvious:
+
+1. **`Z` vs `+00:00`.** The offset field needs 1,681 distinct values (−840..+840)
+   and 11 bits give 2,048 — so 367 codes are spare. One spare code means
+   "offset 0, written as `Z`". No extra bit.
+2. **Fractional digits.** `.5`, `.500` and `.500000` are one instant and three
+   texts. The precision enum does **not** need to encode which FHIR type this is
+   — the recovery tag already does — so it only expresses within-type variation:
+   `YEAR, YEAR_MONTH, DATE, SECOND, FRAC1, FRAC2, FRAC3` = 7 values, 3 bits.
+   FHIR's own regex makes seconds mandatory when `T` is present, so there is no
+   MINUTE precision to store.
+
+Anything that still does not fit — more than 3 fractional digits, a year outside
+0001..9999 — sets bit 63 and stores the original text in an `FF_STRING` block.
+**This mirrors the code-field pattern exactly** (dictionary ID inline, else an
+offset to a block with the flag set), so it is an existing idiom rather than a
+new mechanism, and it makes byte-exact round-trip total rather than best-effort.
+
+### DT-1.1 — Constants and helpers in `FF_Primitives.hpp`
+Field widths/shifts as symbolic sums (never literal offsets), a `precision` enum,
+the `Z` sentinel code, `FF_PACK_DATETIME` / `FF_UNPACK_DATETIME`, and the
+discriminator predicate. Civil-days conversion is the standard days-from-civil
+algorithm; keep it branch-free and `constexpr`.
+
+### DT-1.2 — `FF_FieldKind`
+⚠ Adding `FF_FIELD_DATETIME` extends a permanent enum. It appends, so it is
+additive, but confirm the value with Ryan before writing it.
+
+### DT-1.3 — Round-trip unit tests before any generator change
+`tests/cpp/test_datetime.cpp`: every precision level; `Z` vs `+00:00`; a leap
+second; a negative (pre-1970) date; year 0001 and 9999; 1–3 fractional digits;
+a 6-digit fraction taking the fallback. Assert **text in == text out**.
+
+**Done when:** the pack/unpack pair is byte-exact for every case above, and the
+fallback triggers only for the cases listed.
+
+---
+
+## DT-2 — Generator: stop treating them as strings (P1)
+
+### Locate
+```bash
+grep -n "STRING_TYPES" -A 14 generator/model/type_map.py
+grep -rn "STRING_TYPES" generator/ | grep -v "def \|^generator/model/type_map.py:276"
+```
+**Expect:** `date`, `dateTime`, `instant`, `time` inside `STRING_TYPES`, and
+every consumer testing membership rather than `== "string"`.
+
+- **DT-2.1** Remove the four from `STRING_TYPES`; map them to the new kind and
+  their reserved tags. **Read CLAUDE.md's portability note first**: string-like
+  types must be tested via `fhir_type in STRING_TYPES`, never `== "string"` —
+  the same rule now applies in reverse, so audit every membership test rather
+  than assuming the set is only read in one place.
+- **DT-2.2** `emit/store.py`, `emit/deserialize.py`, `emit/views.py`: inline
+  scalar slot, no `FF_STRING` child, no offset.
+- **DT-2.3** Field keys and reflection carry the new kind so `Node::as<>` and the
+  JSON exporter dispatch on it.
+
+**Done when:** `python -m generator` is deterministic across two runs and no
+generated file mentions `FF_STRING` for a date/time field.
+
+---
+
+## DT-3 — Ingest and export (P1)
+
+- **DT-3.1** Ingest: parse the FHIR text to the packed form; on any parse failure
+  take the fallback rather than dropping the field. Never fabricate a value.
+- **DT-3.2** Export: unpack to canonical FHIR text. This is also where
+  **`effectiveDateTime` stops being `effectiveString`** — that bug exists only
+  because dateTime collapses onto `FF_STRING`, so the exporter reads
+  `RECOVER_FF_STRING` and names the choice suffix "String". This is **2,808 of
+  the 5,890** real diffs measured on 2026-08-19 — 1,404 affected fields, each
+  reported twice (a missing key plus an extra key) — across `effective` (1,120),
+  `occurrence` (198) and `performed` (86). Nearly half the remaining real diffs
+  fall out of DT-2 as a side effect. It does **not** fix `valueQuantity → value`,
+  which is the block-with-no-name half and needs its own task.
+
+**Done when:** a fixture containing all four types round-trips byte-identically
+through `ff_ingest | ff_export`.
+
+---
+
+## DT-4 — Tests and the wire baseline (P1)
+
+- **DT-4.1** Extend `tests/cpp/test_compactor.cpp`: a packed date/time survives
+  compaction inline, with no deferred slot and no `FF_STRING` block emitted.
+- **DT-4.2** Re-run the 12-fixture round-trip; the `effective*`/`occurrence*`/
+  `performed*` families should be **gone**, not merely reduced. Record the new
+  count here.
+- **DT-4.3** Refresh the wire witness **in the same commit** as the generator
+  change:
+  ```bash
+  python -m tests.generator.wire_witness generated_src \
+      tests/generator/golden/wire_witness.json
+  ```
+  A golden update without a corresponding source change is a red flag; this one
+  has the change, so state it in the commit message.
+
+⚠ **DT-4.4 — the compatibility statement.** Every archive written before DT-2
+becomes unreadable. Q13 keeps the format unfrozen, so this is permitted, but the
+alpha caveat in README/SPEC should say plainly that date/time representation
+changed and when. Produce the wording and STOP.
+
+**Verify (whole block):**
+```bash
+cmake --build --preset ninja && ctest --preset ninja
+FASTFHIR_GENERATED_DIR=generated_src python3 -m pytest tests/generator -q
+```
+
+---
+
 # ▶ CROSS-POLLINATION WORK ORDERS — start here
 
 Written 2026-08-18 after a joint review of this repository and the Iris File
@@ -43,7 +284,7 @@ defect reachable from any untrusted `.ffh`; do it first.
 
 | ID | Priority | Task | Why | Status |
 |---|---|---|---|---|
-| XP-1 | **P0** | Bound and cycle-check the stored-graph traversal | Unbounded recursion over attacker-controlled offsets — stack overflow, not slowness | XP-1.1 DONE (working tree, 2026-08-18); XP-1.2/1.3 open |
+| XP-1 | **P0** | Bound and cycle-check the stored-graph traversal | Unbounded recursion over attacker-controlled offsets — stack overflow, not slowness | XP-1.1 + XP-1.3 DONE (2026-08-18); XP-1.2
 | XP-2 | **P0** | Deep-validate the offset graph on open; fix the Parser's overclaim | `Parser` validates the header only, while its docstring says "file structure" | open |
 | XP-3 | P1 | Add `--check` and `--validate` to the generator | No drift or consistency gate exists | open |
 | XP-4 | P1 | Port IFE's `portability_lint.py` | Six mechanical checks, each bought with a CI round-trip there | open |
@@ -151,6 +392,27 @@ exists because tests registered but not built report "Not Run".
 
 Set a ctest `TIMEOUT`. Without the visited set the sharing case does not fail,
 it hangs; the timeout is what turns that into a reported failure.
+
+> **DONE (2026-08-18):** `tests/cpp/ff_test_graph_bounds.cpp` ships the three
+> cases; registered in all five CMake lists with `TIMEOUT 60`.
+>
+> Making the cycle case red exposed that the XP-1.1 path check could not fire in
+> the queue-based traversal (an ancestor's frame pops before its children
+> process) and the `done` memo silently absorbed cycles: a node referenced back
+> by one of its own descendants is already in `done`, so an unconditional
+> memo-return skipped the very enqueue that closes the loop. Fix:
+> `PendingWrite` snapshots the enqueuing node's full ancestry; the cycle guard
+> and the archived-once memo both run at **enqueue** time (where the ancestry is
+> live); and the process-time memo is conditional — it returns early only when
+> no direct child of the re-processed node sits on the restored path
+> (`child_touches_path`), so a re-walk that could newly close a cycle always
+> reaches the enqueue-time throw. Arrays also route through `archive_node` so an
+> array block gets the same guards.
+>
+> Verified: cycle and depth tests fail red when their guard is removed, pass
+> green with it; the 200-parent shared DAG is accepted and fast; `ff_test_
+> compactor` (shared subtree) and the full suite stay green except the
+> pre-existing `py_roundtrip` red (A23/A24/A25/A26).
 
 **Done when:** all three pass, and with the visited set removed the sharing
 case times out rather than passing.
@@ -354,290 +616,23 @@ exact expected output.
 | WO-2 | A14 — small-input ingest | DONE — 1 MiB arena floor; A14.1/A14.3 ticked; A14.2, A14.4 open |
 | WO-3 | A16 — wire gate prefix rule | DONE — gate delegates to `_check_permanence`; A16.1/A16.2 ticked |
 | WO-4 | A21 — runnable Python tests | DONE — readme py_* 11/11; **py_roundtrip red until A23/A24/A25/A26** (was passing vacuously — see A23 finding 4) |
-| WO-5 | E13 — lint debt (307 violations) | OPEN — zero *new* violations added by the WO-2/3/4 work |
-
----
-
-## WO-1 — Make the test signal trustworthy (tasks A20 + A22)
-
-**Why first:** two wiring bugs make `ctest` lie. Until they are fixed you cannot tell a
-real failure from a phantom one, and WO-2 depends on being able to read the suite. Both
-edits are mechanical. Budget: 30 minutes.
-
-### Precheck
-
-```bash
-cd /Users/ryanlandvater/GitHub/FastFHIR
-sed -n '484,494p' CMakeLists.txt
-sed -n '33,38p' tests/python/test_roundtrip.py
-```
-
-Expect exactly this `_BUILD_ALL` block:
-
-```cmake
-set(_BUILD_ALL fastfhir ff_export ff_compact)
-if(FASTFHIR_BUILD_INGESTOR)
-    list(APPEND _BUILD_ALL fastfhir_ingestor ff_ingest)
-endif()
-if(FASTFHIR_BUILD_TESTS)
-    list(APPEND _BUILD_ALL ff_test_readme)
-endif()
-```
-
-and this import block:
-
-```python
-from roundtrip_diff import (
-    diff_doms,
-    filter_allowlisted,
-    format_diff_report,
-    DiffEntry,
-)
-```
-
-If either differs, STOP.
-
-### Step 1 — `build_all` must build the test binaries (A20)
-
-The six unit-test executables and `ff_roundtrip` are registered as ctest entries but are
-not in `_BUILD_ALL`, so `cmake --build --target build_all` never builds them and `ctest`
-reports six `***Not Run`. In `CMakeLists.txt`, replace:
-
-```cmake
-if(FASTFHIR_BUILD_TESTS)
-    list(APPEND _BUILD_ALL ff_test_readme)
-endif()
-```
-
-with:
-
-```cmake
-if(FASTFHIR_BUILD_TESTS)
-    # Must match the ctest registration list at the `foreach(_standalone ...)` above:
-    # a target registered as a test but absent here builds nothing and ctest reports
-    # "Not Run". add_ff_cpp_test() does neither for you.
-    list(APPEND _BUILD_ALL ff_test_readme ff_roundtrip
-         ff_test_primitives ff_test_memory ff_test_simd
-         ff_test_amend ff_test_cc ff_test_bundle)
-endif()
-```
-
-### Step 2 — `DiffKind` is used but never imported (A22)
-
-`tests/python/test_roundtrip.py` calls `DiffKind.VALUE_MISMATCH` on five error paths
-(lines 107, 115, 122, 134, 143) but never imports it, so any harness failure dies with
-`NameError` instead of reporting the real problem. Add `DiffKind` to the import list:
-
-```python
-from roundtrip_diff import (
-    diff_doms,
-    filter_allowlisted,
-    format_diff_report,
-    DiffEntry,
-    DiffKind,
-)
-```
-
-### Verify
-
-```bash
-rm -rf build && cmake --preset ninja && cmake --build build --target build_all -j
-ctest --test-dir build 2>&1 | tail -20
-```
-
-**Pass condition:** zero `Not Run`. Exactly 12 failures remain, all named `py_*`, all
-reporting `ModuleNotFoundError: No module named 'fastfhir'`. That module error is WO-4's
-job — **do not try to fix it here.**
-
-If any `cpp_*` test fails, STOP and report which.
-
----
-
-## WO-2 — Fix the small-input ingest failure (task A14)
-
-**The bug:** `ff_ingest` fails on every input below ~152 bytes and succeeds above it, 100%
-deterministic in both directions. A 44 MB bundle works; a single Patient resource does not.
-
-**Leading hypothesis, with the arithmetic** — confirm before fixing:
-
-`tools/ingestor/FF_Ingest.cpp:181` sizes the arena as `json_buffer.size() * 2`, with a
-comment claiming 2× is "a safe one-and-done allocation". Fixed overhead does not scale
-with input: the `FF_HEADER` is **54 bytes** and the `FF_PATIENT` vtable is **191 bytes**
-(`generated_src/FF_Patient_internal.hpp`, `FF_PATIENT::HEADER_R4_SIZE`), so one empty
-Patient needs **245 bytes** before a single character of string data. At 2×, the input must
-be ≥123 bytes just to cover that, and the observed cliff at 153 bytes is that plus the `id`
-string block. The heuristic is asymptotically fine and wrong at the bottom.
-
-### Precheck
-
-```bash
-cd /Users/ryanlandvater/GitHub/FastFHIR
-sed -n '179,182p' tools/ingestor/FF_Ingest.cpp
-printf '{"resourceType":"Patient","id":"p1","active":true,"gender":"male"}' > /tmp/tiny.json
-wc -c < /tmp/tiny.json
-./build/ff_ingest /tmp/tiny.json /tmp/tiny.ffhr
-echo "exit=$?"
-```
-
-Expect the source lines to be the `HEURISTIC` comment plus
-`size_t capacity_hint = json_buffer.size() * 2;`; `wc -c` to print **66**; and the run to
-print `Fatal Ingestion Error: Standard Exception: FastFHIR VMA Capacity Exceeded` followed
-by `exit=1`. If it exits 0, the bug is already fixed — STOP and report.
-
-**Do not pipe `ff_ingest` into `tail`/`head` when checking the exit code** — `$?` would
-then be the exit code of the pipe's last command (0) and you would wrongly conclude the bug
-is fixed.
-
-### Step 1 — Confirm the hypothesis
-
-```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer lldb -b \
-  -o "breakpoint set --file FF_Ingest.cpp --line 182" \
-  -o "run /tmp/tiny.json /tmp/out.ffhr" \
-  -o "frame variable capacity_hint" \
-  -o "kill" -- ./build/ff_ingest
-```
-
-Expect `(std::size_t) capacity_hint = 132` (2 × the 66-byte file). Confirm it is **less
-than 245**. If `capacity_hint` is ≥ 245 the hypothesis is wrong — STOP and report the
-value, because the fault is then somewhere else and this work order does not cover it.
-
-### Step 2 — Confirm the arena is sparse before choosing a floor
-
-The fix is a minimum arena size. That is only cheap if the arena is reserved virtual
-memory rather than committed physical pages. Verify:
-
-```bash
-grep -n "mmap\|MAP_NORESERVE\|VirtualAlloc\|MEM_RESERVE" src/FF_Memory.cpp | head
-```
-
-Expect reservation-style allocation (see `architecture.md` §2, "reserve a sparse virtual
-arena"). If the arena commits physical memory up front, a large floor is **not** free —
-STOP and report, because the fix then needs a different shape (growth, or a computed
-minimum).
-
-### Step 3 — Apply the floor
-
-In `tools/ingestor/FF_Ingest.cpp`, replace lines 179–181 (the comment and the assignment)
-with:
-
-```cpp
-        // HEURISTIC: Clinical JSON is heavy on syntax (quotes, braces, keys) and
-        // FastFHIR binary is dense, so 2x the input is ample for any real document.
-        // It is not ample at the bottom: FF_HEADER is 54 bytes and a resource vtable
-        // is up to ~250 (FF_PATIENT is 191), and neither scales with input size. A
-        // 66-byte Patient asked for 132 bytes and needed 245. The floor covers the
-        // fixed overhead; because the arena is reserved virtual memory, not committed
-        // pages, over-reserving here costs nothing.
-        static constexpr size_t FF_MIN_ARENA = 1ull << 20;  // 1 MiB
-        size_t capacity_hint = std::max(json_buffer.size() * 2, FF_MIN_ARENA);
-```
-
-Ensure `<algorithm>` is included at the top of the file (add it if absent, keeping the
-existing include order).
-
-### Verify
-
-```bash
-cmake --build build -j
-./build/ff_ingest /tmp/tiny.json /tmp/tiny.ffhr; echo "exit=$?"      # must be 0
-python3 - <<'EOF'
-import json, subprocess, os
-base = {"resourceType":"Patient","id":"p1","active":True,"gender":"male"}
-for pad in [0, 5, 20, 60, 200, 5000]:
-    d = dict(base)
-    if pad: d["_p"] = "x"*pad
-    p = "/tmp/ff_v.json"; open(p,"w").write(json.dumps(d))
-    rc = subprocess.run(["./build/ff_ingest", p, "/tmp/ff_v.ffhr"], capture_output=True).returncode
-    print(f"{os.path.getsize(p):>6} bytes -> {'ok' if rc==0 else 'FAIL'}")
-EOF
-ctest --test-dir build -R cpp_ --output-on-failure 2>&1 | tail -3
-```
-
-**Pass condition:** every size prints `ok`, and all 19 `cpp_*` tests still pass.
-
-### Step 4 — Regression test
-
-Add the tiny-input case to `tests/cpp/test_bundle_ingest.cpp` following the existing
-`CHECK`/`TEST_GROUP` style in that file: ingest a ~65-byte single Patient through the same
-path the CLI uses, assert success, assert the parsed `id` is `"p1"`. Then re-run
-`ctest --test-dir build -R cpp_ff_test_bundle --output-on-failure`.
-
-Finally, tick A14.1 and A14.3 in Block A and write the confirmed cause under A14 as a
-`> Result (date):` note.
-
----
-
-## WO-3 — Stop the wire gate rejecting legal changes (task A16)
-
-**Why:** `test_vtable_layout_stable` asserts the golden and the current output are
-*identical*. Adding a resource, or a field to an existing resource, therefore fails the
-gate — even though both are legal and the same file's `_check_permanence` already
-implements the correct rule and `test_permanence_accepts_addition` asserts additions are
-fine. A gate that fires on every legitimate change gets its golden regenerated
-reflexively, which is exactly the drift it exists to catch.
-
-**Read the IFE audit section below (2026-08-12) before starting.** Then follow task **A16**
-in Block A, which has the full detail. Summary of the required change:
-
-- `tests/generator/test_wire_format.py:57` — replace `set(current) == set(expected)` and
-  the `order ==` / `sizes ==` equality assertions with prefix assertions: every golden
-  block still present (new blocks allowed); every golden field present, in golden order, at
-  the **head** of `current[block]["order"]` (appended fields allowed); every golden `sizes`
-  entry unchanged (new entries allowed); `header_sizes` unchanged for versions already in
-  the golden.
-- Prefer delegating to `_check_permanence` in `tests/generator/wire_witness.py:111` rather
-  than re-implementing the rule — the duplication is what let the two halves diverge.
-- Add the five negative cases listed in A16.2, each verified by mutating a copy of the
-  witness dict.
-
-### Verify
-
-```bash
-FASTFHIR_GENERATED_DIR=generated_src python3 -m pytest tests/generator -q
-```
-
-Expect 40+ passed, 0 failed. Then confirm the gate still catches a real break: reorder two
-fields in a copy of the witness dict inside a scratch test and confirm it fails. Do **not**
-regenerate `tests/generator/golden/wire_witness.json` — this work order must not touch it.
-
----
-
-## WO-4 — Make the Python tests runnable (task A21)
-
-**Why:** 11 of 12 remaining ctest failures are one cause — nothing assembles an importable
-`fastfhir` package. The pieces exist (`build/_core.*.so`, `python/fastfhir/__init__.py`,
-285 generated files under `generated_src/python/`) but are never put on a path together, so
-`py_*` cannot pass on any machine.
-
-**This one needs a decision, so read A21 in Block A first and pick a mechanism.**
-Recommended: option (b), a ctest fixture that sets `PYTHONPATH` — smallest change, needs no
-packaging metadata (task H1 owns that, and it does not exist yet). Do **not** pick option
-(a) `pip install -e .`; `pyproject.toml` has no `[project]` table.
-
-Also resolve A21.3 in the same session: `CMakeLists.txt:371` prefers
-`${CMAKE_SOURCE_DIR}/.venv/bin/python` when it exists, and the `.venv` currently in the tree
-contains only `pip` — no pytest. Either require it to be populated and fail configure
-loudly naming what is missing, or drop the preference. Silently selecting an interpreter
-that cannot run the tests is the current behaviour and the worst option.
-
-### Verify
-
-```bash
-rm -rf build && cmake --preset ninja && cmake --build build -j
-ctest --test-dir build --output-on-failure 2>&1 | tail -5
-```
-
-**Pass condition:** 32/32. If `py_roundtrip` still fails, check WO-1 step 2 landed.
+| WO-5 | E13 — lint debt (315 violations) | OPEN — zero *new* violations added by the WO-2/3/4 work |
 
 ---
 
 ## WO-5 — Clear the lint debt (task E13)
 
-**Why:** the documented lint command **fails today**. It examines all 36 files and reports
-**307 ruff violations plus 2 files black would reformat**. E1's CI recipe runs this exact
-command, so CI would be red from its first commit — and a step that is red on day one gets
-ignored or wrapped in `continue-on-error`, which is how a gate dies. Land this before CI.
+**Why:** the documented lint command **fails today**. It examines all 37 files and reports
+**315 ruff violations**. E1's CI recipe runs this exact command, so CI would be red from its
+first commit — and a step that is red on day one gets ignored or wrapped in
+`continue-on-error`, which is how a gate dies. Land this before CI.
+
+> **Re-measured 2026-08-18** with the same tooling as the original count (ruff 0.15.1 /
+> black 26.5.1), so the movement is code drift, not a tool upgrade. Ruff went **307 → 315**
+> (`E501` 143 → 150, `I001` 9 → 10; everything else unchanged). **black is now clean** —
+> the 2 files it wanted to reformat no longer need it, so step 2 below is a no-op and the
+> `black --check` half of the gate already passes. The generator suite is **46** tests, not
+> the 40 recorded below.
 
 **Read task E13 in Block E first**, including the `> Unreproduced observation` note at the
 end of it. Do **not** rewrite the `pyproject.toml` `include` patterns: an earlier session
@@ -652,22 +647,24 @@ ruff check generator tests/generator 2>&1 | grep -E "Found [0-9]+ error|No Pytho
 black --check generator tests/generator 2>&1 | tail -1
 ```
 
-Expect `Found 307 errors.` and `2 files would be reformatted, 34 files would be left
-unchanged.` If you instead see `No Python files found under the given path(s)`, **STOP** —
+Expect `Found 315 errors.` and `37 files would be left unchanged.` (black is already
+clean — see the re-measurement note above.) If you instead see `No Python files found
+under the given path(s)`, **STOP** —
 that is the unreproduced condition; capture the full output plus `ruff check --show-files`
 and report it, because that evidence is what E13's note is asking for.
 
 ### Steps
 
-1. `ruff check --fix generator tests/generator` — clears 88 automatically. Inspect the
+1. `ruff check --fix generator tests/generator` — clears 89 automatically. Inspect the
    diff before going further; `--fix` touches imports and f-strings.
-2. `black generator tests/generator` — reformats the 2 files.
+2. `black generator tests/generator` — **no-op as of 2026-08-18**; black already reports
+   all 37 files unchanged. Run it anyway to confirm, but expect no diff.
 3. Re-run `FASTFHIR_GENERATED_DIR=generated_src python3 -m pytest tests/generator -q`.
-   **Must still be 40 passed.** The autofixes touch generator code; if any test breaks,
+   **Must still be 46 passed.** The autofixes touch generator code; if any test breaks,
    revert that specific fix rather than adapting the test.
-4. Fix the remaining ~219 by hand. Breakdown: `E501` (line >100 chars) 143, `F541`
+4. Fix the remaining ~226 by hand. Breakdown: `E501` (line >100 chars) 150, `F541`
    (f-string with no placeholder) 56, `ANN001/201/202` (missing type hints) 70, `F401`
-   (unused import) 21, `I001` (import order) 9, `B007` (unused loop var) 4, `UP015`/`F841`
+   (unused import) 21, `I001` (import order) 10, `B007` (unused loop var) 4, `UP015`/`F841`
    4. **No `F821`** — nothing here indicates a live bug; this is style debt against the
    project's own declared standard, not defect triage.
 5. Keep the autofixes and the manual fixes as **two separate commits** so review stays
@@ -681,7 +678,7 @@ echo "exit=$?"
 FASTFHIR_GENERATED_DIR=generated_src python3 -m pytest tests/generator -q
 ```
 
-**Pass condition:** `exit=0`, and 40 generator tests still pass. Confirm the wire witness
+**Pass condition:** `exit=0`, and 46 generator tests still pass. Confirm the wire witness
 did not move: `git diff --stat tests/generator/golden/wire_witness.json` must be empty.
 
 ---
@@ -692,154 +689,7 @@ the sanitizer leg (**G2**) and then Block **K**, the conformance validation laye
 
 ---
 
-## IFE audit (2026-08-12) — provenance for A15–A18, B7, E8–E12, I1.6
-
-`LessonsFromIFE.md` (now consumed — its content lives in this audit and the tasks it
-produced) reported what the Iris File Extension migration cost when a wire detail was got
-wrong, and nominated two items as the highest-value work here. Auditing every lesson
-against this tree produced the tasks listed above; each carries the evidence in its
-**Context**. Two of the lessons' own nominations resolved as follows:
-
-- **"Enforce append-only mechanically"** — the machinery exists (A4) and is the right
-  shape. It is mis-aimed (A15), inverted in the one direction that matters (A16), and rests
-  on an unstated ordering invariant (A17).
-- **"Audit every packed/masked read under a sanitizer"** — the audit came back **clean**:
-  `LOAD_U8/16/32/64` (`include/FF_Ops.hpp:49-71`) `memcpy` exactly 1/2/4/8 bytes, there is
-  no `u24`/`u40` equivalent, and no load-wider-and-mask anywhere in `include/` or `src/`.
-  The bug class that cost IFE the most is absent. **Do not re-audit this.** The sanitizer
-  half remains open as G2, and the byteswap branches remain untested (E1).
-
-Also verified clean, recorded so nobody repeats the work: prefix/index composition uses no
-`|`-with-index pattern (IFE A3); `tests/generator/test_cross_language_constants.py` already
-supplies the C++/Python redundancy IFE B1 argues for; the `.hpp`/`.cpp`/`_internal.hpp`
-split IFE had to be corrected back into is already the norm here; and FHIR package
-*versions* are pinned at `generator/specs.py:20-21` (their content is not — E8).
-
----
-
-## Phase 0 baseline (2026-08-12, macOS 15 / arm64, AppleClang 21, Python 3.14.6)
-
-First recorded end-to-end run of `configure → build_all → ctest → pytest` on a clean tree.
-Before this, no task's *Verify* command had been executed; the numbers below are what
-"green" and "red" actually mean today. **Re-measure and update this block whenever the
-figures change** — a task that claims to fix something here must move a number.
-
-| Stage | Result |
-|---|---|
-| `cmake -S . -B build …` | **fails on a clean tree** until the Python floor is set — see A19 |
-| Generator | 98 files into `generated_src/`, 39.6 s, clean |
-| `cmake --build build --target build_all -j` | exit 0 — but does **not** build the test binaries (A20) |
-| `ctest` after `build_all` | 32/32 pass; 0 "Not Run" (was 6), 0 failed (re-measured 2026-08-13, WO-1→WO-4) |
-| `ctest` after building **all** targets | **32/32 pass** — all 19 `cpp_*` + all 13 `py_*` green (WO-4) |
-| `pytest tests/generator -q` | **43 passed** in ~5 s (40 at Phase 0; +3 from WO-3's A16.2 cases) |
-| `ruff check generator tests/generator` | **307 violations** — the documented lint command fails today (E13) |
-| `black --check generator tests/generator` | 2 files would be reformatted (E13) |
-| Wire witness vs committed golden | **identical** — 0 permanence violations, no blocks added or removed |
-
-Two results worth keeping in view:
-
-- **Upstream has not drifted.** A freshly generated tree produces a witness byte-identical
-  to `tests/generator/golden/wire_witness.json`. The risk flagged against A15.4 and E8 — that
-  packages.fhir.org re-published 4.0.1 content — has not materialised as of this date. That
-  is a measurement with a shelf life, not a guarantee; E8 is what would make it one.
-- **A14 is fixed (WO-2):** the `ff_ingest` arena is now floored at 1 MiB (`FF_MIN_ARENA`),
-  closing the deterministic small-input cliff; regression test added in
-  `test_bundle_ingest.cpp`. The suite is stable — 25/25 consecutive `ff_test_bundle` runs
-  at Phase 0, and every run since WO-1 has been deterministic.
-
-Environment notes: the `.venv` trap is resolved (A21.3, WO-4) — the interpreter preference
-is dropped, so tests use the CMake-found Python3 (A19 floor, 3.11+). The stale `.venv/`
-(pip only) is now inert and can be deleted. The Synthea zip re-downloads on every
-configure (B4.4). **All 111 Synthea fixtures are Bundles** — `py_roundtrip` is red until
-A23 lands (bundle encode corruption); see A23.
-
----
-
 ## Block A — Build & correctness fixes (highest priority, all independent)
-
-### A1. Fix `ff_ingest` source-file case mismatch (build blocker)
-
-**Context:** The source file on disk is `tools/ingestor/FF_Ingest.cpp` (capital letters).
-Both build systems reference a lowercase name that does not exist. On case-sensitive
-filesystems (Linux), any build with `FASTFHIR_BUILD_INGESTOR=ON` fails.
-
-- [x] A1.1 In `CMakeLists.txt`, find the line (currently line 178):
-  ```cmake
-  add_executable(ff_ingest tools/ingestor/ff_ingest.cpp)
-  ```
-  Change it to:
-  ```cmake
-  add_executable(ff_ingest tools/ingestor/FF_Ingest.cpp)
-  ```
-- [x] A1.2 In `BUILD.bazel`, find the line (currently line 49):
-  ```python
-  srcs = ["tools/ingestor/ff_ingest.cpp"],
-  ```
-  Change it to:
-  ```python
-  srcs = ["tools/ingestor/FF_Ingest.cpp"],
-  ```
-- Locate: `grep -rn 'ff_ingest.cpp' CMakeLists.txt BUILD.bazel` (expect exactly 2 hits).
-- Do NOT rename the file itself to lowercase — all other tool sources are capitalized
-  (`FF_Export.cpp`, `FF_Compact.cpp`); the build files are what's wrong.
-- Acceptance: `grep -rn 'ff_ingest.cpp' CMakeLists.txt BUILD.bazel` → no matches.
-- Verify:
-  ```bash
-  cmake -S . -B build -DFASTFHIR_BUILD_INGESTOR=ON
-  cmake --build build --target ff_ingest -j
-  ```
-
-### A2. Normalize `#include` paths to bare names
-
-**Context:** Some sources use `"../include/X.hpp"` / `"../generated_src/X.hpp"`. Both
-directories are already on the compiler include path (CMake: `FASTFHIR_INCLUDE_DIR` and
-`FASTFHIR_GENERATED_DIR` via `target_include_directories`; Bazel: `includes`). Relative
-paths break out-of-tree layouts and must become bare: `#include "X.hpp"`.
-
-**Rule for every subtask:** change ONLY the path inside the quotes. Keep the header name,
-keep the order of includes, keep any trailing comment on the line.
-
-- [x] A2.1 `src/FF_Parser.cpp` — lines 13–17. Current state:
-  ```cpp
-  #include "../include/FF_Utilities.hpp"
-  #include "../include/FF_Parser.hpp"
-  #include "../include/FF_SIMD.hpp"
-  #include "../include/FF_Dictionary.hpp"
-  #include "../generated_src/FF_Reflection.hpp"
-  ```
-  Becomes:
-  ```cpp
-  #include "FF_Utilities.hpp"
-  #include "FF_Parser.hpp"
-  #include "FF_SIMD.hpp"
-  #include "FF_Dictionary.hpp"
-  #include "FF_Reflection.hpp"
-  ```
-- [x] A2.2 `src/FF_Compactor.cpp` — top of file: `"../include/FF_Compactor.hpp"`,
-  `"../include/FF_Queue.hpp"`, `"../include/FF_Utilities.hpp"`,
-  `"../generated_src/FF_Reflection.hpp"` → bare names, same pattern as A2.1.
-- [x] A2.3 `src/FF_Ingestor.cpp` — lines 6–11: `"../include/FF_Queue.hpp"`,
-  `"../include/FF_SIMD.hpp"`, `"../include/FF_Utilities.hpp"`,
-  `"../generated_src/FF_Bundle.hpp"`, `"../generated_src/FF_IngestMappings.hpp"`,
-  `"../generated_src/FF_KnownExtensions.hpp"` → bare names.
-- [x] A2.4 `src/FF_Extensions.cpp` line 7 (`"../include/FF_Extensions.hpp"`) and
-  `src/FF_Dictionary.cpp` lines 16–17 (`"../include/FF_Dictionary.hpp"`,
-  `"../include/FF_Primitives.hpp"` — keep its trailing comment) → bare names.
-- [x] A2.5 Generator emitters must also emit bare includes, or the problem returns on
-  regeneration. Known instance — `generator/emit/code_ids.py` line 103:
-  ```python
-  cpp = '#include "../include/FF_Dictionary.hpp"\n\nstatic const FF_CodeEntry k{}Table[] = {{\n'.format(v_name)
-  ```
-  Change `"../include/FF_Dictionary.hpp"` to `"FF_Dictionary.hpp"` (inside the Python
-  string; keep everything else on the line identical). Then sweep for others:
-  `grep -rn '"\.\./' generator/` and fix each the same way. After fixing, regenerate
-  (`python -m generator`) and confirm the regenerated `dictionaries/` files changed only
-  in their include lines (`git diff dictionaries/`).
-- [x] A2.6 Full rebuild + test after A2.1–A2.5 are all merged (do this task last):
-  clean-configure, `cmake --build build --target build_all -j`,
-  `ctest --test-dir build --output-on-failure`.
-- Locate (whole block): `grep -rn '"\.\./' src/ include/ generator/`
-- Acceptance: that grep returns nothing; build and ctest pass.
 
 ### A3. Fix stale API examples in `include/FastFHIR.hpp` doc comment
 
@@ -936,72 +786,6 @@ generator fails, converting "generator broken" into "tests pass".
 - Verify: `pytest tests/generator -q -rs` — confirm no `SKIPPED` lines for
   `test_wire_format.py`.
 
-### A5. Verify dictionary code-ID integrity guards (master-codes path)
-
-**Context:** Dictionary code IDs are wire values: once a stream is written with ID N for
-code string S, N must mean S forever.
-
-**This was not merely unproven — it was already broken.** Commit `118d6ad` renumbered the
-ledger from 1, dropped 16,436 codes, and added none; every ID changed meaning (`"!="` went
-1 → 3294). The restore rebuilt `dictionaries/master_codes.json` from `b1d8b36`, cross-verified
-byte-for-byte against `generated_src/FF_Dictionary_Strings.cpp` (whose array index *is* the
-ID), and made `assign_ids()` append-only. See `dictionaries/README.md`.
-
-- [x] A5.1 **Uniqueness:** confirm two distinct code strings can never receive the same ID.
-  Read `generator/emit/code_ids.py` (`generate_master_codes`) and
-  `generator/emit/code_ids.py`; if any path can assign a duplicate ID, add a
-  fail-loud guard: build a `dict` of id→label during emission and
-  `raise RuntimeError(f"code ID collision: {id} maps to {a!r} and {b!r}")` on clash.
-- [x] A5.2 **Stability:** confirm regeneration never reassigns an ID already committed in
-  `dictionaries/master_codes.json` (i.e. existing entries are loaded and preserved; only new
-  labels get new IDs). If not enforced, add the guard and a clear error message.
-- [x] A5.3 **Reserved values:** confirm no assignable ID can equal `0xFFFFFFFF`
-  (`FF_CODE_NULL`) or have bit 31 set (`FF_CODEABLE_CONCEPT_FLAG = 0x80000000` marks
-  custom-string references — see README "Code Assignment Semantics"). The max-ID guard at
-  `code_ids.py:137` may already cover this; verify the constant it checks is
-  `< 0x80000000`, and add a comment stating WHY (bit 31 is the CodeableConcept flag).
-- [x] A5.4 Add `tests/generator/test_code_ids.py` with three tests: duplicate-label input
-  handling, committed-ID stability across two runs, and reserved-bit exclusion. Document
-  the three guarantees in the `code_ids.py` module docstring.
-- Acceptance: all three properties either demonstrated by existing code (cite line in the
-  test's docstring) or newly guarded; pytest passes.
-- Verify: `pytest tests/generator/test_code_ids.py -q`.
-
----
-
-### A6. Concurrent bundle ingest — FIXED
-
-`src/FF_Ingestor.cpp` passed a `task_payloads` vector to `Bundle_from_json`
-expecting it to slice the entry array; the generated function only threaded its
-`concurrent_queue` parameter to children and never pushed into it, so the count
-guard always fired. The vector was vestigial — workers already index
-`entry_chunks[idx]`. Removed it and took the count from `entry_chunks`.
-
-- [x] A6.1 Contract decided: `entry_chunks` is the single source of truth.
-- [x] A6.2 `task_payloads` deleted; `Bundle_from_json` called for metadata only.
-- [x] A6.3 Misleading comment corrected.
-- Result: bundles ingest ("bundle ingested : 2 resources"). Tests 5/9/11 now
-  fail on three *different*, deeper issues — see A9, A10, A11.
-
-### A7. Compact read path returned wrong codes — FIXED
-
-`generator/model/structure.py:_compact_slot_size` re-derived the dense slot
-width from `fhir_type`/`data_type` heuristics while the compactor
-(`src/FF_Compactor.cpp:48 compact_slot_size`) switched on `FF_FieldKind`. They
-disagreed on **1,393 of 1,611 slots** — the writer laid out 8-byte slots where
-the reader's table said 0, so every field after the first string/array/block was
-read from the wrong address.
-
-Fixed structurally: `_compact_slot_size` now keys off `_field_kind_expr()`, the
-same `FF_FieldKind` the C++ switch receives, so the two cannot drift apart. Note
-the `return 0` fallback was only 1,366 of the mismatches — 27 more were
-arrays-of-Resource, where the Python checked `fhir_type == "Resource"` before
-`is_array` and returned 10 against the writer's 8.
-
-- [x] A7.1–A7.3 Fixed and verified; `cpp_test_7` and `cpp_test_8` pass.
-- Follow-up: add a generator test asserting every emitted `COMPACT_SLOT_SIZES`
-  entry equals `compact_slot_size(kind)` for its `FF_FieldInfo` kind.
-
 ### A8. CodeableConcept system discriminator is never set
 
 **Context:** `generator/emit/codesystems.py:148` initialises
@@ -1063,57 +847,6 @@ the read path was always correct despite the inverted value).
       something `FF_ARRAY::entry_kind()` already states on the wire. Remove it from
       `FF_FieldInfo`/`FF_FieldKey` and from `emit/views.py`.
 
-### A10. Code fields round-tripped as garbage — FIXED
-
-**Root cause was a dangling `std::string_view`, not the CodeableConcept path.**
-`generator/emit/ingest_mappings.py` emitted, for every `code` field without a
-bound enum:
-
-```cpp
-data.code = std::string(c);   // field is std::string_view
-```
-
-The temporary `std::string` dies at the end of the statement, leaving the view
-pointing at freed memory. The store pass then read whatever was there. Traced by
-instrumenting both sides: the offsets were correct all along
-(`cc_off=504 block_off=419` matching on encode and decode), but `ENCODE_FF_CODE`
-received `'xIG'` instead of `'8867-4'` — the corruption was already in the POD.
-
-Sibling fields were never affected because `string`/`uri` fields assign the view
-directly (`data.system = s;`). Only the `code` branch wrapped it in a temporary.
-Two emitter sites (scalar at ~line 329, array at ~line 243); the `code_enum`
-variants were always safe because the temporary is consumed producing an enum.
-
-The ledger reset did not cause this — it exposed it, by moving LOINC and other
-external codes off the dictionary fast path onto the branch that reads the POD.
-
-- [x] A10.1 Both emitter sites now assign the view directly.
-- Result: `cpp_test_9` passes; `py_roundtrip` passes; OMB race codes
-  (`2106-3`, `2186-5`) and LOINC (`8867-4`) round-trip exactly.
-
-### A13. CPT and CVX payloads widened (Q12) — DONE
-
-**Was:** CPT stored in 2 bytes and CVX in 1, against real ranges of 00100–99499
-and up to ~320. `99213` became `33677`; `300` became `44`. Silent, and latent
-only because A8 keeps every code on the UNKNOWN branch.
-
-**Q12 (Ryan): widen, keep fixed-width numeric.** CPT is now 4 bytes, CVX 2.
-Free to do because no CodeableConcept block has ever been written with those
-systems; it would not have been once A8 landed.
-
-- [x] A13.1 CPT 2 -> 4 bytes, CVX 1 -> 2 bytes.
-- [x] A13.2 Done before A8, per the sequencing note.
-- [x] A13.3 Root cause removed: encode and decode were two independent
-      per-system switches, so the widening needed both edited and the decode
-      side still carried a `char buf[4]` sized for the old `uint8` CVX --
-      enough to render 65535 as "655". Both now drive from one `FF_CC_CODECS`
-      table in `src/FF_Primitives.cpp`, and `Entry::print_scalar_json` calls
-      the shared decoder instead of carrying a third switch that handled only
-      4 of the 17 systems.
-- Verify: `ctest --test-dir build -R cpp_ff_test_cc --output-on-failure`
-  (104 assertions: per-system round-trip, header bytes, cursor advance,
-  out-of-range rejection, and a row-exists check over every enum value).
-
 ### A12. `Reference.reference` truncates and corrupts on export
 
 **Context:** one Synthea fixture still round-trips to invalid UTF-8:
@@ -1143,35 +876,6 @@ before acting on it.
       zero-copy view strategy against simdjson ondemand's buffer lifetime.
 - Repro: `./build/ff_roundtrip <the AllergyIntolerance entry>` — see
   `cpp_test_5`'s fixture set.
-
-### A11. Shared-prefix extension URL not reconstructed (cpp_test_11) — FIXED
-
-**Root cause was a dangling `std::string_view`, not the prefix scheme.** The trie,
-the prior chain and `get_url()` were all correct; they were fed garbage.
-
-`collect_extension_urls_pipeline` captured the URL with simdjson **ondemand**
-`get_string()`, which unescapes into the *parser's* internal string buffer. That
-buffer is reused by the very next string parsed from the document — including the
-`unescaped_key()` calls in the remaining iterations of the same loop, before
-`push_url()` is even reached — and is destroyed when `scan_chunk_producer()`
-returns, well before the consumer thread reads the batch.
-
-Every URL therefore arrived blank at the correct length. With no `/` in the view,
-`insert_url_to_trie` split nothing, so the directory held one junk row per URL
-(`prior=-1`, segment = a run of spaces) instead of a shared-prefix chain.
-
-Fixed by taking the URL from `raw_json_token()`, which points into the chunk the
-caller owns for the whole predigest call, with the JSON quotes stripped and
-backslash-escaped URLs skipped (no zero-copy source representation). The directory
-now holds 8 entries for the fixture, with `alpha` and `beta` as siblings under one
-shared `shared-prefix` parent.
-
-Same defect class as A10, and the mechanism A12 hypothesised — now proven here.
-
-- [x] A11.1 Traced; root cause was the cross-thread view, not prefix storage.
-- [x] A11.2 `cpp_test_11` extended with structural assertions: alpha and beta must
-      be distinct leaves sharing one parent entry, so storing whole URLs per entry
-      can no longer pass by satisfying `get_url()` alone.
 
 ### A13. simdjson reads now always use a padded buffer — FIXED
 
@@ -1372,64 +1076,6 @@ not, producing the exact inverse.
   `ctest` produces zero "Not Run".
 - Verify: `rm -rf build && cmake -S . -B build -DFASTFHIR_BUILD_TESTS=ON -DFASTFHIR_BUILD_INGESTOR=ON && cmake --build build --target build_all -j && ctest --test-dir build -N | tail -1`
   then `ctest --test-dir build -R cpp_ --output-on-failure`.
-
-### A21. The Python test suite cannot import `fastfhir`
-
-**Context:** 11 of the 12 remaining ctest failures are one error:
-
-```
-tests/python/test_readme.py:25: import fastfhir as ff
-E   ModuleNotFoundError: No module named 'fastfhir'
-E   RuntimeError: fastfhir is not importable in this environment.
-```
-
-Nothing in the build installs the package or puts it on `PYTHONPATH`. The pieces all exist
-and are built — `build/_core.cpython-314-darwin.so` (the pybind11 module),
-`python/fastfhir/__init__.py`, and 285 generated files under `generated_src/python/` — but
-they are never assembled into an importable package. So `py_getting_started` and
-`py_test_1`…`py_test_10` cannot pass from any build, on any machine.
-
-Related: `CLAUDE.md`'s repo map says "`fastfhir/fields.py` is generated at build time". It is
-not. `generator/bindings/python_fields.py:14` writes one module per resource to
-`generated_src/python/fields/<resource>.py` (+ `.pyi` stubs, 285 files). Whatever A21
-decides, that line needs correcting (E5.4).
-
-- [x] A21.1 Decide the mechanism and write it down: (a) `pip install -e .` into a venv as a
-  configure step, (b) a ctest fixture that sets `PYTHONPATH` to the built module plus
-  `python/`, or (c) assemble a staging package dir under `build/` and point the tests at it.
-  (b) is the smallest and needs no packaging metadata (H1 owns that); (c) is closest to what
-  users will actually import. Do not pick (a) before H1 exists.
-- [x] A21.2 Implement it so `ctest -R py_` passes from a clean build with no manual steps.
-- [x] A21.3 Resolve the `.venv` trap: `CMakeLists.txt:371` prefers `${CMAKE_SOURCE_DIR}/.venv/bin/python`
-  when present, and the `.venv` currently in the tree contains only `pip` — no pytest. Either
-  require that venv to be populated (and fail configure loudly, naming the missing package,
-  if it is not) or drop the preference. Silently selecting an interpreter that cannot run the
-  tests is the current behaviour and the worst of the three.
-- Acceptance: `ctest --test-dir build -R py_ --output-on-failure` green from a clean build.
-- Verify: `rm -rf build && cmake -S . -B build -DFASTFHIR_BUILD_TESTS=ON -DFASTFHIR_BUILD_PYTHON_BINDINGS=ON -DFASTFHIR_BUILD_INGESTOR=ON && cmake --build build -j && ctest --test-dir build -R py_`
-
-> **Result (2026-08-13, WO-4):** Mechanism (c) implemented and verified. `fastfhir_python`'s
-> POST_BUILD assembles `build/python/fastfhir/` (`__init__.py` + `generated_src/python/fields/`
-> + `_core.<ext>.so`), mirroring the install layout; the py_* tests get
-> `PYTHONPATH=build/python:tests/python`. The WO's recommended (b) was infeasible as written:
-> `fastfhir/__init__.py` imports relatively (`from . import _core`, `from .fields import *`),
-> so the pieces must sit inside the package directory. Three pre-existing generator/binding
-> bugs had to be fixed before `import fastfhir` worked at all: (1) no `fields/__init__.py` —
-> the per-resource modules were a PEP 420 namespace package (emitter added); (2) UPPERCASE
-> class names (`class PATIENT`) vs the documented PascalCase API (`Patient`, `BundleEntry`) —
-> map keys now derived from the FHIR path's own case in `generator/library.py`; (3) per-block
-> off-by-one field indices (`Patient.ID` was `-1`) vs the global C++ `FieldKeys::Registry` —
-> reconciled at emission, `Patient.ID` is now the true global index 1155. The bindings were
-> also missing the Field-object `__setitem__` overload — documented
-> `patient_node[Patient.X] = v` threw "Requires ASTNode" (registered before the generic
-> `py::object` overload). A21.3: the `.venv` preference is dropped; A19's floor guarantees a
-> capable interpreter and the pip-only `.venv` is inert. Verified: readme py_* tests
-> 12/12 (py_setup + getting_started + test_1…10), generator gate 43/43, zero new ruff
-> violations. **py_roundtrip is red until A23** — it passed vacuously at the time (a
-> temporary Bundle skip excluded all fixtures, and every Synthea fixture is a Bundle — see
-> A23 finding 4; the skip is reverted). Other caveats: the Python API cannot read a compact
-> archive (no Parser binding; Stream wraps Builder, which refuses compact) — test_8's
-> gender assertion was corrected to pin dict-code storage instead of the literal string.
 
 ### A22. `DiffKind` is undefined on the round-trip harness error path
 
@@ -1978,13 +1624,24 @@ which is itself worth fixing.
       the build-configuration dependency this task removed. Revisit only if the enum ever
       becomes a measurable compile cost — and if so, filter the generated *C++ structs*,
       which is already what the profile does, not the tag registry.
-- [ ] A27.5f Everything above is *capacity and identity*. The tags for the other 150 resources and ~625
+- [x] A27.5f Everything above is *capacity and identity*. The tags for the other 150 resources and ~625
       backbone paths still have to exist before `all` can be selected. At ~900 hand-written
       entries this is no longer a hand-maintenance job — decide whether
       `include/FF_Recovery.hpp` stays hand-maintained (CLAUDE.md's current rule, with the
       generator only validating) or becomes generated with the *values* pinned by a
       committed ledger like `master_codes.json`. The ledger model already solved exactly
       this problem for 5,796 dictionary codes; recovery tags have no equivalent.
+      > **RESOLVED — it became generated, pinned by a ledger.** Decided and shipped by
+      > A27.5c/d (see the DONE note above): `dictionaries/master_tags.json` is the
+      > committed tag ledger, `generator/emit/recovery_tags.py` reconciles it against the
+      > packages append-only and emits `include/FF_Recovery.hpp`, and `assert_no_drift`
+      > fails if an existing value moved or vanished — exactly the `master_codes.json`
+      > model this item asked for. Discovery is whole-spec, so the header no longer
+      > varies with the profile and the tags for every grouping already exist: 978 in the
+      > ledger, including `RECOVER_FF_ACCOUNT` (0x101D), `RECOVER_FF_CLAIM` (0x1030) and
+      > `RECOVER_FF_EXPLANATIONOFBENEFIT` (0x1053) — the very tags A27's error message
+      > cites as missing. Ticked 2026-08-18 as a record of a decision already taken, not
+      > new work.
 - [ ] A27.5c-old **superseded — kept for the reasoning.** Original note: settle the band
       layout before appending ANY tag. Tags are permanent, so a band cannot be re-cut later; appending billing tags at
       `0x03xx` now and discovering the band is too small afterwards is unrecoverable.
@@ -2222,49 +1879,6 @@ unguarded** — editing one is caught by code review alone.
   (verify by doing it, per the red-green rule this task exists to restore); reverting the
   edit makes it pass again.
 - Verify: `pytest tests/generator -q -rs` — no `SKIPPED` for `test_wire_format.py`.
-
-### A16. Assert the shipped prefix, not the current total, in the vtable gate
-
-**Context:** `test_vtable_layout_stable` (`tests/generator/test_wire_format.py:57`) asserts
-`set(current) == set(expected)`, then per block `current[block]["order"] ==
-expected[block]["order"]`. Adding a new resource block fails the first; appending a field to
-an existing block fails the second. Both are **legal, expected changes** — FastFHIR models 28
-of ~145 R4 resources, so growth is the normal case.
-
-`_check_permanence` (`tests/generator/wire_witness.py:111`) already implements the correct
-rule (changes and deletions rejected, additions allowed), and
-`test_permanence_accepts_addition` (`:93`) explicitly asserts additions are legal. The two
-halves of one file disagree about what the rule is. A gate that fires on every legitimate
-addition gets its golden regenerated reflexively — which is exactly the "golden update
-without a corresponding change" that `CLAUDE.md` calls a red flag. The gate as written
-trains the reviewer to ignore it.
-
-- [x] A16.1 Rewrite `test_vtable_layout_stable` to assert the shipped **prefix**: every
-  golden block still present (new blocks allowed); every golden field present, in golden
-  order, at the head of `current[block]["order"]` (appended fields allowed); every golden
-  entry in `sizes` unchanged (new entries allowed); `header_sizes` unchanged for every
-  version already in the golden. Prefer delegating to `_check_permanence` over
-  re-implementing — the duplication is what let the two rules diverge.
-- [x] A16.2 Add the negative cases as tests, each verified by making the change on a copy of
-  the witness dict: reordering two fields fails; removing a field fails; changing a
-  `size_const` fails; **appending a field passes**; **adding a block passes**.
-- Acceptance: the five cases in A16.2 behave as stated; `pytest tests/generator -q` green.
-- Verify: `pytest tests/generator/test_wire_format.py -q`.
-
-> **Result (2026-08-13, WO-3):** `test_vtable_layout_stable` now delegates entirely to
-> `_check_permanence` (tests/generator/test_wire_format.py), and `_check_permanence`'s
-> `order` handling was changed from strict equality to the **prefix rule** — the one place
-> the "correct rule" was still equality, so an appended field previously failed both the
-> gate and the golden-writer. The gate and `dump()` now share one implementation of the
-> rule (the duplication that let them diverge is gone). New tests: field reorder fails,
-> field removal fails, field append passes (plus the pre-existing size-change-fails and
-> block-add-passes), all five A16.2 cases covered. Verified: `test_wire_format.py` 9/9,
-> full generator suite 43 passed (was 40). Note: the WO's `python3 -m pytest` form fails on
-> this machine — `/usr/bin/python3` is the Xcode CLT 3.9 with no pytest; the suite is run
-> with `pytest` (conda base, Python 3.14), the same interpreter the Phase 0 baseline used.
-> Also note the behavior change to `dump()`: with the prefix rule, legal additions now
-> regenerate the golden without `--force` (the golden update is still committed alongside
-> the change, per CLAUDE.md); changes/deletions still refuse.
 
 ### A17. Pin the R4-prefix invariant the version contract depends on
 
@@ -2516,7 +2130,7 @@ ledger to the emitted string table. None would catch a correct-offset/wrong-load
 field at the right place read at the wrong width, or an enum cast from the wrong type — and
 none proves that a stream written last year still parses today. The only check that does is
 bytes produced by a shipped encoder, read back through the current reader. (IFE C6 — see the
-IFE audit above — records this as IFE's own standing gap, so it is a shared one; A4.3's
+IFE audit (2026-08-12, in git history) — records this as IFE's own standing gap, so it is a shared one; A4.3's
 compile smoke test is the nearest existing relative and is complementary, not a substitute.)
 
 - [ ] B7.1 Produce one small sealed `.ffhr` from the current builder: a Patient plus an
@@ -2826,16 +2440,18 @@ cached binary (`<binary_hash_hex>.wasm`). Never use one where the other is expec
         `throw std::runtime_error` at `:180`, which defers to runtime what the compiler can
         settle. Add `float` and a 2-byte type to `TYPE_MAP` locally to confirm both now fail
         to compile, then revert.
-- [ ] E13. **The lint gate is red: 307 ruff violations, 2 files black would reformat** —
-  measured 2026-08-12 with ruff 0.15.1 / black 26.5.1, stable across repeated runs and
-  identical whether the paths are passed as directories or as an explicit file list. So the
-  `CLAUDE.md` command `ruff check generator tests/generator && black --check generator
-  tests/generator` fails today, and E1's CI recipe would fail with it on day one. Breakdown:
-  `E501` 143, `F541` 56, `ANN001/201/202` 70, `F401` 21, `I001` 9, `B007` 4, `UP015`/`F841` 4.
+- [ ] E13. **The lint gate is red: 315 ruff violations** (black is clean) —
+  first measured 2026-08-12 as 307 violations + 2 files black would reformat, re-measured
+  2026-08-18 with the *same* tooling (ruff 0.15.1 / black 26.5.1), stable across repeated
+  runs and identical whether the paths are passed as directories or as an explicit file
+  list. So the `CLAUDE.md` command `ruff check generator tests/generator && black --check
+  generator tests/generator` still fails today — on the ruff half only — and E1's CI recipe
+  would fail with it on day one. Breakdown:
+  `E501` 150, `F541` 56, `ANN001/201/202` 70, `F401` 21, `I001` 10, `B007` 4, `UP015`/`F841` 4.
   **No `F821`** — nothing here indicates a live bug, so this is style debt against the
   project's own declared standard (`CLAUDE.md` invariant 3), not defect triage.
-  - [ ] E13.1 `ruff check --fix` clears 88 automatically. Do those as one commit and the
-        remaining ~219 as a second, so review stays tractable. Generated output must not
+  - [ ] E13.1 `ruff check --fix` clears 89 automatically. Do those as one commit and the
+        remaining ~226 as a second, so review stays tractable. Generated output must not
         move: re-run `pytest tests/generator -q` and confirm the wire witness is unchanged.
   - [ ] E13.2 Land this **before** E1, or E1 ships with a step that is red from the first
         commit and gets ignored or `continue-on-error`'d — which is how a gate dies.
@@ -3628,7 +3244,7 @@ FastFHIR analogue of IFE's hand-authored `conformance: {level, clause, requireme
 blocks — with the advantage that it is normative and upstream, and the disadvantage that
 `expression` is FHIRPath, a full language.
 
-**Cap the expressiveness in writing, per IFE B6 (see the IFE audit above).** The generator
+**Cap the expressiveness in writing, per IFE B6 (see the IFE audit of 2026-08-12, in git history).** The generator
 emits checks for a **closed allow-list** of shapes and nothing else:
 
 - [ ] K3.1 Allow-list, in this order of value: (a) `min >= 1` → required-field presence;

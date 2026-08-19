@@ -78,11 +78,14 @@ PRODUCTION_TYPES: list[str] = [
 # pulls hl7.fhir.r4.core / hl7.fhir.r5.core from -- so these should eventually be
 # derived from `hl7.fhir.us.core` etc. rather than transcribed.
 #
-# COST WARNING: every resource added here needs its own RECOVERY_TAG plus one per
-# nested BackboneElement, and those are permanent hand-maintained wire constants
-# (include/FF_Recovery.hpp). Selecting a grouping whose tags have not been
-# appended fails loudly at the generator's tag gate, naming each missing tag.
-# Measured: BILLING_RESOURCES = 59 new tags; profile "all" = 884.
+# COST NOTE: every resource added here needs its own RECOVERY_TAG plus one per
+# nested BackboneElement. Those are permanent wire constants, but they are no
+# longer a per-grouping cost: dictionaries/master_tags.json covers the whole
+# R4 union R5 spec (978 tags), so the tags for every grouping already exist and
+# include/FF_Recovery.hpp is byte-identical whichever profile is compiled.
+# What a grouping still costs is emitted C++ volume and compile time.
+# Historical: before the ledger, BILLING_RESOURCES needed 59 tags appended by
+# hand and profile "all" needed 884 -- see TASKS.md A27.5.
 
 US_CORE_RESOURCES: list[str] = [
     "AllergyIntolerance",

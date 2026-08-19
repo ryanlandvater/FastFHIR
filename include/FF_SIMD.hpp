@@ -28,7 +28,11 @@
 #include <cstdint>
 #include <cstddef>
 
-// ─── Architecture detection ──────────────────────────────────────────────────
+// MARK: - Architecture Detection
+//
+// These macros describe what the compiler is allowed to emit. They are based
+// on compile-time target features so dispatch below
+// is just a preprocessor choice with no branch on the hot path.
 
 #if defined(__AVX2__)
 #  define FF_HAS_AVX2 1
@@ -47,7 +51,7 @@
 #  define FF_HAS_NEON 1
 #endif
 
-// ─── Platform headers ────────────────────────────────────────────────────────
+// MARK: - Platform Headers
 
 #if defined(FF_HAS_AVX2) || defined(FF_HAS_BMI2) || defined(FF_HAS_SSE41)
 #  include <immintrin.h>
@@ -57,7 +61,7 @@
 #  include <arm_neon.h>
 #endif
 
-// ─── MSVC __builtin_ctz shim ─────────────────────────────────────────────────
+// MARK: - MSVC Bit-Scan Compatibility
 // MSVC lacks __builtin_ctz.  _BitScanForward is undefined when v==0; all
 // call sites guard with `while (v != 0)` so this is safe.
 
@@ -73,9 +77,7 @@ static inline unsigned ff_ctz_u32(uint32_t v) noexcept {
 #  define __builtin_ctz(v) ::FastFHIR::detail::ff_ctz_u32(static_cast<uint32_t>(v))
 #endif
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ff_sum_sizes_masked
-// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Masked Slot-Width Sum
 // Sum the sizes[] entries whose corresponding bit is set in `mask`.
 // sizes[i] = byte width of compact-layout field i (i in [0,7]).
 // Used by ff_compact_dense_offset to accumulate field byte offsets.
@@ -93,22 +95,32 @@ static inline uint32_t ff_sum_sizes_masked_scalar(const uint8_t* sizes,
 }
 
 #if defined(FF_HAS_AVX2)
-// AVX2: zero-branch mask expansion + horizontal sum of 8 × int32.
+// MARK: - AVX2 Masked Slot-Width Sum
+// AVX2 works on eight 32-bit lanes at once. The input bytes are widened to
+// lanes first because the horizontal-add instructions operate on integers,
+// not on the original packed uint8_t values.
 static inline uint32_t ff_sum_sizes_masked_avx2(const uint8_t* sizes,
                                                  uint8_t mask) noexcept {
+    // Load eight bytes, then widen them to eight independent 32-bit lanes.
     const __m128i xmm_sizes   = _mm_loadl_epi64(
                                      reinterpret_cast<const __m128i*>(sizes));
     const __m256i sizes_epi32 = _mm256_cvtepu8_epi32(xmm_sizes);
 
+    // Turn the scalar bitmap into eight lane masks. Lane i receives a
+    // nonzero value exactly when bit i is set in `mask`.
     const __m256i mask_broad  = _mm256_set1_epi32(static_cast<int>(mask));
     const __m256i bit_ids     = _mm256_setr_epi32(1, 2, 4, 8, 16, 32, 64, 128);
     const __m256i selected    = _mm256_and_si256(mask_broad, bit_ids);
+    // Integer equality produces either all-zero or all-one bits per lane.
     const __m256i is_zero     = _mm256_cmpeq_epi32(selected,
                                                     _mm256_setzero_si256());
     const __m256i keep        = _mm256_xor_si256(is_zero,
                                                   _mm256_set1_epi32(-1));
+    // Clear the size in lanes whose bitmap bit is absent.
     const __m256i active      = _mm256_and_si256(sizes_epi32, keep);
 
+    // Split the YMM register into two XMM halves, add corresponding lanes,
+    // then fold four lanes down to one scalar with horizontal adds.
     __m128i lo = _mm256_castsi256_si128(active);
     __m128i hi = _mm256_extracti128_si256(active, 1);
     __m128i s  = _mm_add_epi32(lo, hi);
@@ -119,15 +131,23 @@ static inline uint32_t ff_sum_sizes_masked_avx2(const uint8_t* sizes,
 #endif // FF_HAS_AVX2
 
 #if defined(FF_HAS_NEON)
-// NEON: zero-branch mask expansion using vtst; widening sum.
+// MARK: - NEON Masked Slot-Width Sum
+// NEON widens the eight byte widths before summing. `vtst` tests each lane
+// independently: it returns 0xFF when the bitmap bit is present and 0
+// otherwise. The signed reinterpretations let those all-ones lanes widen into
+// bitwise-AND keep masks.
 static inline uint32_t ff_sum_sizes_masked_neon(const uint8_t* sizes,
                                                  uint8_t mask) noexcept {
+    // Widen byte widths to 32-bit lanes. NEON widening operates on half-
+    // vectors, hence the low/high split.
     const uint8x8_t  sizes_u8  = vld1_u8(sizes);
     const uint16x8_t sizes_u16 = vmovl_u8(sizes_u8);
     const uint32x4_t sizes_lo  = vmovl_u16(vget_low_u16(sizes_u16));
     const uint32x4_t sizes_hi  = vmovl_u16(vget_high_u16(sizes_u16));
 
     static const uint8_t bit_ids[8] = {1, 2, 4, 8, 16, 32, 64, 128};
+    // Duplicate the bitmap byte into all lanes, then test it against the
+    // corresponding one-hot bit ID in each lane.
     const uint8x8_t  keep_u8  = vtst_u8(vdup_n_u8(mask), vld1_u8(bit_ids));
     const int8x8_t   keep_s8  = vreinterpret_s8_u8(keep_u8);
     const int16x8_t  keep_s16 = vmovl_s8(keep_s8);
@@ -136,13 +156,15 @@ static inline uint32_t ff_sum_sizes_masked_neon(const uint8_t* sizes,
     const uint32x4_t keep_hi  = vreinterpretq_u32_s32(
                                      vmovl_s16(vget_high_s16(keep_s16)));
 
+    // Keep selected widths, clear unselected widths, and sum both halves.
     const uint32x4_t active_lo = vandq_u32(sizes_lo, keep_lo);
     const uint32x4_t active_hi = vandq_u32(sizes_hi, keep_hi);
     return static_cast<uint32_t>(vaddvq_u32(active_lo) + vaddvq_u32(active_hi));
 }
 #endif // FF_HAS_NEON
 
-// Dispatch: choose the fastest available implementation at compile time.
+// MARK: - Masked Slot-Width Dispatch
+// Choose the fastest implementation available for this compilation target.
 static inline uint32_t ff_sum_sizes_masked(const uint8_t* sizes,
                                             uint8_t mask) noexcept {
 #if defined(FF_HAS_AVX2)
@@ -154,14 +176,14 @@ static inline uint32_t ff_sum_sizes_masked(const uint8_t* sizes,
 #endif
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ff_compact_dense_offset
-// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Compact Dense Offset
 // Compute the byte distance from the start of a compact-layout dense payload
 // to field slot `target_index`.  Equivalent to summing sizes_table[i] for all
 // i < target_index where bit i is set in the presence bitmap.
 
-// Scalar reference (always compiled, also used as the fallback tail loop).
+// MARK: - Scalar Dense-Offset Reference
+// This version is deliberately straightforward and is useful as both the
+// fallback and the behavioral reference for tests of the SIMD path.
 static inline uint64_t ff_compact_dense_offset_scalar(
     const uint8_t* presence,
     const uint8_t* sizes_table,
@@ -189,7 +211,10 @@ static inline uint64_t ff_compact_dense_offset_scalar(
     return rel;
 }
 
-// BMI2 fast-path: handles target_index ≤ 32 with a single _bzhi_u32.
+// MARK: - BMI2 Dense-Offset Prefix Mask
+// For the first 32 fields, BMI2 can load the bitmap into one word and clear
+// every bit at or after target_index with _bzhi_u32. The remaining set bits
+// identify exactly the preceding present fields.
 static inline uint64_t ff_compact_dense_offset_bmi2(
     const uint8_t* presence,
     const uint8_t* sizes_table,
@@ -200,10 +225,13 @@ static inline uint64_t ff_compact_dense_offset_bmi2(
 #if defined(FF_HAS_BMI2)
     if (target_index <= 32) {
         uint32_t present_word = 0;
+        // Assemble little-endian bitmap bytes into the low bits of a word.
         const size_t bytes = (target_index + 7) / 8;
         for (size_t i = 0; i < bytes; ++i)
             present_word |= static_cast<uint32_t>(presence[i]) << (8 * i);
 
+        // Keep only bits below target_index. This is a prefix operation, not
+        // a test for whether target_index itself is present.
         const uint32_t masked = _bzhi_u32(present_word,
                                            static_cast<unsigned>(target_index));
         uint64_t rel = 0;
@@ -220,7 +248,10 @@ static inline uint64_t ff_compact_dense_offset_bmi2(
     return 0;
 }
 
-// Main dispatch: tries BMI2, then SIMD chunk-sum, then scalar tail.
+// MARK: - Dense-Offset Dispatch
+// Try the compact prefix shortcut first. Otherwise sum complete eight-field
+// bitmap chunks with the architecture-specific masked sum, then handle the
+// final partial chunk with a tail mask.
 static inline uint64_t ff_compact_dense_offset(
     const uint8_t* presence,
     const uint8_t* sizes_table,
@@ -252,9 +283,7 @@ static inline uint64_t ff_compact_dense_offset(
     return rel;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// compact_presence helpers — shared by writer and reader
-// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Compact Presence Bitmap
 // Compact objects pack a presence bitmap immediately after the DATA_BLOCK
 // header.  Writer (Compactor) and reader (Parser) must agree on the formula
 // and the bit-indexing convention — these functions are the single definition.
@@ -270,9 +299,7 @@ static inline bool compact_presence_contains(const uint8_t* presence,
     return (presence[byte_index] & bit_mask) != 0;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ff_match_mask_u64x8
-// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Eight-Lane uint64 Match Mask
 // Compare a fixed array of exactly 8 uint64_t values against `needle`.
 // Returns an 8-bit bitmask: bit i is set if haystack[i] == needle.
 //
@@ -285,8 +312,10 @@ static inline bool compact_presence_contains(const uint8_t* presence,
 // a straight unrolled loop that the compiler can vectorise at -O2.
 
 #if defined(FF_HAS_AVX2)
+// MARK: - AVX2 Eight-Lane Match
 static inline uint8_t ff_match_mask_u64x8_avx2(const uint64_t* haystack,
                                                 uint64_t needle) noexcept {
+    // Broadcast the scalar needle into all four 64-bit lanes.
     const __m256i target = _mm256_set1_epi64x(static_cast<int64_t>(needle));
 
     // Low 4 lanes (indices 0–3)
@@ -301,7 +330,9 @@ static inline uint8_t ff_match_mask_u64x8_avx2(const uint64_t* haystack,
     const uint32_t mhi = static_cast<uint32_t>(
                             _mm256_movemask_epi8(_mm256_cmpeq_epi64(hi, target)));
 
-    // _mm256_movemask_epi8: per-lane match produces 8 consecutive set bits.
+    // _mm256_movemask_epi8 compresses the sign bit of every byte into a
+    // scalar mask. A matching uint64 lane therefore produces eight adjacent
+    // one bits; bit 7 of each group is enough to represent that lane.
     // Extract one bit per lane from bit position 7 (MSB of the first matching byte).
     uint8_t r = 0;
     r |= static_cast<uint8_t>(((mlo >>  7) & 1u) << 0);
@@ -317,7 +348,8 @@ static inline uint8_t ff_match_mask_u64x8_avx2(const uint64_t* haystack,
 #endif // FF_HAS_AVX2
 
 #if defined(FF_HAS_SSE41)
-// SSE4.1: process pairs of uint64 lanes.
+// MARK: - SSE4.1 Eight-Lane Match
+// SSE4.1 has two 64-bit lanes per vector, so the loop processes four pairs.
 static inline uint8_t ff_match_mask_u64x8_sse41(const uint64_t* haystack,
                                                   uint64_t needle) noexcept {
     const __m128i target = _mm_set1_epi64x(static_cast<int64_t>(needle));
@@ -334,12 +366,17 @@ static inline uint8_t ff_match_mask_u64x8_sse41(const uint64_t* haystack,
 #endif // FF_HAS_SSE41
 
 #if defined(FF_HAS_NEON)
-// NEON: process pairs of uint64 lanes with vceqq_u64.
+// MARK: - NEON Eight-Lane Match
+// NEON has two 64-bit lanes in a 128-bit vector. `vceqq_u64` returns an
+// all-ones lane for equality, so extracting each lane and testing for zero
+// converts the vector comparison into the result bitmap.
 static inline uint8_t ff_match_mask_u64x8_neon(const uint64_t* haystack,
                                                 uint64_t needle) noexcept {
     const uint64x2_t target = vdupq_n_u64(needle);
     uint8_t r = 0;
     for (uint32_t i = 0; i < 8; i += 2) {
+        // Load two adjacent values and compare both against the broadcast
+        // needle in one NEON instruction group.
         const uint64x2_t v  = vld1q_u64(haystack + i);
         const uint64x2_t eq = vceqq_u64(v, target);
         if (vgetq_lane_u64(eq, 0) != 0) r |= static_cast<uint8_t>(1u << i);
@@ -349,7 +386,7 @@ static inline uint8_t ff_match_mask_u64x8_neon(const uint64_t* haystack,
 }
 #endif // FF_HAS_NEON
 
-// Scalar fallback: 8-iteration unrolled loop (compiler-vectorisable at -O2).
+// MARK: - Scalar Eight-Lane Match Fallback
 static inline uint8_t ff_match_mask_u64x8_scalar(const uint64_t* haystack,
                                                    uint64_t needle) noexcept {
     uint8_t r = 0;
@@ -359,7 +396,7 @@ static inline uint8_t ff_match_mask_u64x8_scalar(const uint64_t* haystack,
     return r;
 }
 
-// Main dispatch.
+// MARK: - Eight-Lane Match Dispatch
 static inline uint8_t ff_match_mask_u64x8(const uint64_t* haystack,
                                             uint64_t needle) noexcept {
 #if defined(FF_HAS_AVX2)
