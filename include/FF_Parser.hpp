@@ -47,8 +47,21 @@ struct Entry;
  * @class Parser
  * @brief Entry point for reading a FastFHIR byte stream.
  *
- * `Parser` validates file structure at creation time and exposes read-only
- * accessors for header metadata, checksum metadata, and the root node.
+ * At creation time `Parser` validates **the header and the root offset only**:
+ * magic bytes, FHIR revision, the stream-layout flag, the structural integrity
+ * of the checksum block when one is present, and that `ROOT_OFFSET` is either
+ * null or addressable within the buffer.
+ *
+ * It does **not** walk the offset graph, and it does **not** verify the
+ * checksum digest — `checksum()` exposes the stored digest for a caller that
+ * wants to check it. Every other offset in the stream is therefore still
+ * untrusted after construction. Do not treat a successfully constructed
+ * `Parser` as proof that the bytes are well-formed; on untrusted input the
+ * graph must be validated explicitly (TASKS.md XP-2.3).
+ *
+ * This comment previously claimed the constructor "validates file structure",
+ * which overstated it by everything in the paragraph above and cost a reviewer
+ * a wrong assumption.
  */
 class Parser {
     friend class Builder;

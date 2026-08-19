@@ -231,6 +231,27 @@ static const ParserOps* select_ops(FF_StreamCompaction layout) {
 // optional block offsets (URL_DIR_OFFSET, MODULE_REG_OFFSET) are read from
 // the header. Both default to FF_NULL_OFFSET, meaning the corresponding
 // feature is absent in this stream.
+// The root offset is the entry point to every traversal, so it is the one
+// offset worth checking before it is stored. FF_NULL_OFFSET is legitimate --
+// it is the "no root" sentinel m_root_offset is default-initialised to -- but
+// any other value must address a block that actually fits in the buffer.
+// Checking `off < size` alone would admit an offset in the last nine bytes,
+// where the universal 10-byte block header cannot fit, so the bound is against
+// DATA_BLOCK::HEADER_SIZE rather than against size itself.
+static Offset checked_root_offset(Offset root, size_t size) {
+    if (root == FF_NULL_OFFSET) return root;
+    if (root < FF_HEADER::HEADER_SIZE ||
+        root > size - DATA_BLOCK::HEADER_SIZE) {
+        throw std::runtime_error(
+            "FastFHIR Parsing Error: ROOT_OFFSET " + std::to_string(root) +
+            " is out of bounds; a root block must lie within [" +
+            std::to_string(FF_HEADER::HEADER_SIZE) + ", " +
+            std::to_string(size - DATA_BLOCK::HEADER_SIZE) + "] for a " +
+            std::to_string(size) + "-byte stream.");
+    }
+    return root;
+}
+
 Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast<const BYTE*>(buffer)), m_size(size) {
     if (size < FF_HEADER::HEADER_SIZE) {
         throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
@@ -244,7 +265,7 @@ Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast
     m_engine_version     = header.get_engine_version(m_base);
     m_stream_layout      = header.get_stream_layout(m_base);
     m_ops                = Reflective::select_ops(m_stream_layout);
-    m_root_offset        = header.get_root(m_base);
+    m_root_offset        = checked_root_offset(header.get_root(m_base), m_size);
     m_root_recovery      = header.get_root_type(m_base);
     m_url_dir_offset     = header.get_url_dir_offset(m_base);    // FF_NULL_OFFSET if no extension URLs
     m_module_reg_offset  = header.get_module_reg_offset(m_base); // FF_NULL_OFFSET until Phase 7
@@ -263,7 +284,7 @@ Parser::Parser(const Memory& memory) : m_memory(memory), m_base(memory.base()), 
     m_engine_version     = header.get_engine_version(m_base);
     m_stream_layout      = header.get_stream_layout(m_base);
     m_ops                = Reflective::select_ops(m_stream_layout);
-    m_root_offset        = header.get_root(m_base);
+    m_root_offset        = checked_root_offset(header.get_root(m_base), m_size);
     m_root_recovery      = header.get_root_type(m_base);
     m_url_dir_offset     = header.get_url_dir_offset(m_base);
     m_module_reg_offset  = header.get_module_reg_offset(m_base);

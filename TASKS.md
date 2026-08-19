@@ -531,7 +531,7 @@ has and IFE lacks — chiefly the wire witness) is at the top of
 | ID | Priority | Task | Why | Status |
 |---|---|---|---|---|
 | XP-1 | **P0** | Bound and cycle-check the stored-graph traversal | Unbounded recursion over attacker-controlled offsets — stack overflow, not slowness | **DONE** (1.1+1.3 2026-08-18, 1.2 verified 2026-08-19) |
-| XP-2 | **P0** | Deep-validate the offset graph on open; fix the Parser's overclaim | `Parser` validates the header only, while its docstring says "file structure" | open |
+| XP-2 | **P0** | Deep-validate the offset graph on open; fix the Parser's overclaim | `Parser` validates the header only, while its docstring says "file structure" | XP-2.1 + XP-2.2 DONE (2026-08-19); XP-2.3 open, XP-2.4 ⚠ needs Ryan |
 | XP-3 | P1 | Add `--check` and `--validate` to the generator | No drift or consistency gate exists | open |
 | XP-4 | P1 | Port IFE's `portability_lint.py` | Six mechanical checks, each bought with a CI round-trip there | open |
 | XP-5 | P1 | Add CI workflows | `.github/` has templates and no workflows; nothing is gated | open |
@@ -704,14 +704,45 @@ grep -rn "validate_deep\|validate_graph" src/ include/ | head
 **Expect:** the docstring claim at ~49, `m_root_offset = header.get_root(...)`
 with no bounds check, third grep **empty**.
 
-### XP-2.1 — Bounds-check the root
+### XP-2.1 — Bounds-check the root — ✅ DONE 2026-08-19
 Reject a root offset that is not within `[HEADER_SIZE, m_size)` before storing
 it. One comparison; it is the entry point to every traversal.
 
-### XP-2.2 — Correct the docstring first
+> **DONE.** `checked_root_offset()` in `src/FF_Parser.cpp`, applied in **both**
+> constructors (the buffer+size one and the `Memory` one — the task text and its
+> Locate block only showed the first; they had drifted apart before and a helper
+> is what stops that recurring).
+>
+> Two refinements over the literal spec, both deliberate:
+> * `FF_NULL_OFFSET` is **accepted**. It is the "no root" sentinel that
+>   `m_root_offset` is default-initialised to, so rejecting everything outside
+>   `[HEADER_SIZE, size)` would have broken every rootless stream.
+> * The upper bound is `size - DATA_BLOCK::HEADER_SIZE`, not `size`. `off < size`
+>   alone admits an offset in the last nine bytes, where the universal 10-byte
+>   block header cannot fit — addressable but unreadable.
+>
+> Regression added to `tests/cpp/ff_test_graph_bounds.cpp` (already registered,
+> so no new CMake wiring): valid root accepted, out-of-bounds rejected with a
+> message naming `ROOT_OFFSET`, and the no-room-for-a-header case rejected.
+> Red-greened — with the guard disabled exactly those three fail and the
+> valid-root case still passes.
+
+### XP-2.2 — Correct the docstring first — ✅ DONE 2026-08-19
 Change `FF_Parser.hpp:49` to say what the code does today — header and
 checksum — before adding anything. A comment that overstates coverage is worse
 than no comment, and this one already cost a reviewer a wrong assumption.
+
+> **DONE.** The claim "validates file structure at creation time" is replaced
+> with what `FF_HEADER::validate_full` actually does, read out of the source
+> rather than assumed: magic bytes, FHIR revision, the stream-layout flag, and
+> the checksum block's **structural** integrity when present.
+>
+> Two things the old wording hid, now stated explicitly: the constructor does
+> not walk the offset graph, and **it does not verify the checksum digest** —
+> `FF_CHECKSUM::validate_full` only confirms the block is where it says it is
+> and is not truncated; `Parser::checksum()` exposes the stored digest for a
+> caller that wants to check it. The docstring now says every other offset
+> remains untrusted after construction, and points at XP-2.3.
 
 ### XP-2.3 — `Parser::validate_deep()`
 Walk the graph from the root: bounds, self-offset, recovery tag per block,

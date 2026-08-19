@@ -128,6 +128,44 @@ int main() {
         if (!ok) printf("      unexpected rejection: %s\n", msg.c_str());
     }
 
+    // ── 4. XP-2.1: the root offset is bounds-checked before it is stored ────
+    // ROOT_OFFSET is the entry point to every traversal, so an out-of-bounds
+    // value there is the cheapest way to aim the reader at arbitrary memory.
+    // The Parser used to store it unchecked while its docstring claimed to
+    // "validate file structure" (XP-2.2).
+    {
+        Memory mem = Memory::create(1ull << 22);
+        Builder b(mem);
+        IdentifierData id;
+        auto hid = b.append_obj(id);
+        wire_root(b, {hid.offset()}, "root-bounds");
+        auto view = b.finalize();
+
+        // A well-formed stream still parses.
+        bool ok = true;
+        try { Parser good(view.data(), view.size()); } catch (const std::exception&) { ok = false; }
+        CHECK(ok, "valid root offset is accepted");
+
+        // Corrupt ROOT_OFFSET (FF_HEADER bytes 16-23) to just past the buffer.
+        std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+        STORE_U64(bytes.data() + FF_HEADER::ROOT_OFFSET, view.size() + 4096);
+        std::string msg;
+        bool threw = false;
+        try { Parser bad(bytes.data(), bytes.size()); }
+        catch (const std::exception& e) { threw = true; msg = e.what(); }
+        CHECK(threw, "out-of-bounds root offset is rejected");
+        CHECK(msg.find("ROOT_OFFSET") != std::string::npos, "message names ROOT_OFFSET");
+
+        // An offset inside the buffer but with no room for the 10-byte block
+        // header is equally unusable -- `off < size` alone would admit it.
+        std::vector<BYTE> tight(view.data(), view.data() + view.size());
+        STORE_U64(tight.data() + FF_HEADER::ROOT_OFFSET, view.size() - 4);
+        bool threw_tight = false;
+        try { Parser bad2(tight.data(), tight.size()); }
+        catch (const std::exception&) { threw_tight = true; }
+        CHECK(threw_tight, "root with no room for a block header is rejected");
+    }
+
     printf("%s\n", failures ? "FAILURES" : "all graph-bounds checks pass");
     return failures ? 1 : 0;
 }
