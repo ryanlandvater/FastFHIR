@@ -161,7 +161,7 @@ are building payer-side, you want `us-core,billing`.
 > **The profile does not change the tag header.** Every resource needs a permanent
 > `RECOVERY_TAG` — plus one per nested BackboneElement — but tag discovery is
 > deliberately profile-independent: the ledger `dictionaries/master_tags.json`
-> covers the whole R4 ∪ R5 spec, so `include/FF_Recovery.hpp` is byte-identical
+> covers the whole R4 ∪ R5 spec, so `generated_src/FF_Recovery.hpp` is byte-identical
 > whichever groupings you compile. A permanent wire artifact whose contents
 > depend on build configuration is not a permanent wire artifact. Switching
 > profile therefore changes only which resources get C++ emitted. If a newer FHIR

@@ -360,7 +360,7 @@ their concrete type is not statically determinable from the parent V-Table.
 ### 3.2 `RECOVERY_TAG` — Semantic Identifier
 
 A 16-bit (`uint16_t`) ID embedded at bytes 8–9 of every block (immediately
-after the 8-byte `VALIDATION` word). Emitted into `include/FF_Recovery.hpp` by
+after the 8-byte `VALIDATION` word). Emitted into `generated_src/FF_Recovery.hpp` by
 `generator/emit/recovery_tags.py` from the committed tag ledger
 `dictionaries/master_tags.json`. The header is generated **and** committed —
 it is a permanent wire artifact reviewed in diffs, and must never be
@@ -369,19 +369,36 @@ R4 ∪ R5 spec, so the emitted header is byte-identical for every
 `FASTFHIR_PRODUCTION_PROFILE`. The inclusion is at `FF_Primitives.hpp`, which
 includes it as `"FF_Recovery.hpp"`.
 
-The tag space is partitioned by high byte:
+The tag space is partitioned into five **bands**, and the boundaries are
+themselves wire constants — a tag's band is part of its identity:
 
-- `RECOVER_FF_SCALAR_BLOCK = 0x0100` — primitive-block tags
-  (`RECOVER_FF_BOOL`, `RECOVER_FF_INT32`, …).
-- `RECOVER_FF_DATA_TYPE_BLOCK = 0x0200` — the inclusive lower bound for
-  generic FHIR data-type blocks (e.g. `RECOVER_FF_STRING`, complex
-  datatypes). The runtime check `base >= RECOVER_FF_DATA_TYPE_BLOCK`
-  (`FF_Primitives.hpp:221`) groups data-types and concrete resources
-  together as the `FF_FIELD_BLOCK` family; specific resources occupy values
-  above the data-type range allocated by the generator.
+| Band | Range | Holds |
+|---|---|---|
+| Core Primitives | `0x0000 – 0x00FF` | FastFHIR's own structural blocks — `FF_HEADER`, `FF_STRING`, `FF_RESOURCE`, `FF_CHECKSUM`, the directories and registries |
+| Inline Scalars | `0x0100 – 0x01FF` | values that live *in* the V-Table slot — `FF_BOOL`, `FF_INT32` … `FF_FLOAT64`, `FF_CODE`, and the packed date/time family |
+| Data Types | `0x0200 – 0x0FFF` | FHIR complex datatypes |
+| Resources | `0x1000 – 0x1FFF` | concrete FHIR resource types |
+| Sub-elements | `0x2000 – 0x7FFF` | BackboneElements (bit 15 is `RECOVER_ARRAY_BIT`, so `0x7FFF` is the ceiling) |
 
-The runtime tag dispatcher `Recovery_to_Kind` (`FF_Primitives.hpp:203–223`)
-implements exactly this partition.
+**Bands are not documentation — they are dispatch.** `Recovery_to_Kind`
+(`FF_Primitives.hpp`, `Recovery_to_Kind`) tests
+`(base & 0xFF00) == RECOVER_FF_SCALAR_BLOCK` to decide whether a tag denotes an
+inline scalar, and `FF_IsScalarBlockTag` / `FF_IsResourceTag` /
+`FF_IsBackboneTag` (`FF_Utilities.hpp`) classify the same way. A tag placed in
+the wrong band is therefore *silently misclassified at runtime* rather than
+failing to compile.
+
+That is not hypothetical. `RECOVER_FF_CODE` sat in the Core Primitives band
+until 2026-08-19 while being an inline scalar, which put it outside the band
+test — so a `case RECOVER_FF_CODE:` written inside the scalar-band switch was
+unreachable, and the same misbanding silently disabled the code path in the
+Compactor's `write_choice_slot` for the 11 FHIR choice fields that carry a
+`code` variant. It now lives at `0x010B` with the other inline scalars. See
+TASKS.md DT-0.1; the band map with live occupancy counts is emitted at the top
+of `generated_src/FF_Recovery.hpp`.
+
+Within the block family, the check `base >= RECOVER_FF_DATA_TYPE_BLOCK` groups
+data types and concrete resources together as the `FF_FIELD_BLOCK` family.
 
 #### The `0x8000` Array Bit
 
@@ -1047,7 +1064,7 @@ The stages:
    only on the first run.
    - **Stage 1b — `emit.recovery_tags.generate_recovery_tags(...)`** —
      reconcile the permanent tag ledger (`dictionaries/master_tags.json`)
-     against the packages and emit `include/FF_Recovery.hpp`. Runs before
+     against the packages and emit `generated_src/FF_Recovery.hpp`. Runs before
      anything that references a tag. **Append-only**, per band. Discovery is
      profile-independent, so the emitted header does not vary with
      `FASTFHIR_PRODUCTION_PROFILE`.
@@ -1077,7 +1094,7 @@ The stages:
 One thing this pipeline does **not** do, contrary to older documentation: it
 does not delete the spec tree. `fhir_packages/` is a cache and is reused.
 
-It *does* generate `include/FF_Recovery.hpp` — stage 1b, before anything that
+It *does* generate `generated_src/FF_Recovery.hpp` — stage 1b, before anything that
 references a tag. `emit.recovery_tags.reconcile_tag_ledger` appends any tag the
 committed ledger lacks (append-only, per band), `assert_no_drift` fails if an
 existing value moved or vanished, and the header is then emitted from the

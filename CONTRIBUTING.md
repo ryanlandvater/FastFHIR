@@ -5,14 +5,15 @@ Thanks for contributing. FastFHIR is a binary wire format for healthcare data �
 ## The absolutes
 
 1. **Wire constants are permanent.** Never renumber or reorder `RECOVERY_TAG`
-   values (`include/FF_Recovery.hpp`), dictionary code IDs
+   values (`dictionaries/master_tags.json` — `generated_src/FF_Recovery.hpp` is
+   its generated projection, not the source), dictionary code IDs
    (`dictionaries/master_codes.json`), vtable offset arithmetic, the `FF_HEADER`
    layout, `FF_CODEABLE_CONCEPT_FLAG`, `FF_CODE_NULL`, or `FF_NULL_OFFSET`.
    A PR that changes a committed wire value will be rejected regardless of
    its other merits.
-2. **Never hand-edit generated files** (`generated_src/` — including `FF_Codes.hpp` and
-   the dictionary tables — `include/FF_Recovery.hpp`, `python/fastfhir/fields.py`). Fix the emitter
-   in `generator/emit/` and regenerate.
+2. **Never hand-edit generated files** (`generated_src/` — including `FF_Codes.hpp`,
+   the dictionary tables and `FF_Recovery.hpp` — plus `python/fastfhir/fields.py`). Fix
+   the emitter in `generator/emit/` and regenerate.
 3. **Two style regimes.** Python under `generator/` and `tests/generator/`
    is ruff/black-enforced with full type hints and fail-loud error handling.
    C++ matches the surrounding hand-tuned style and is not subject to the

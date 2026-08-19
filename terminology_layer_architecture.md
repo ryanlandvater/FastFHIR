@@ -177,7 +177,7 @@ ARM and other platforms that fault on unaligned 64-bit loads.
 
 ```
 Offset  0– 7 : VALIDATION  (uint64_t)     — standard DATA_BLOCK
-Offset  8– 9 : RECOVERY    (uint16_t)     — RECOVER_FF_CODEABLE_CONCEPT (0x000A)
+Offset  8– 9 : RECOVERY    (uint16_t)     — RECOVER_FF_CODEABLE_CONCEPT (0x0009)
 Offset 10    : SYSTEM      (uint8_t)      — FF_ExternalCodeSystem enum value
 Offset 11–17 : CODE        (7 bytes)      — packed code payload, system-specific
 Offset 18–23 : _PADDING    (6 bytes)      — alignment to 24-byte stride
@@ -195,7 +195,7 @@ Variable-length block. No fixed padding — `FF_Ops.hpp` handles unaligned ARM a
 
 ```
 Offset  0– 7 : VALIDATION  (uint64_t) — standard DATA_BLOCK
-Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT (0x000A)
+Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT (0x0009)
 Offset 10    : SYSTEM      (uint8_t)  — FF_CodeableConceptSystem discriminator
 Offset 11    : LENGTH      (uint8_t)  — payload byte count
 Offset 12+   : PAYLOAD     (variable) — LENGTH bytes
@@ -735,7 +735,8 @@ opaque to the dispatch mechanism.
 1. Add `FF_CODEABLE_CONCEPT_FLAG` and `FF_CODE_PAYLOAD_MASK` to
    `FF_Primitives.hpp`.
 2. Define `FF_CODEABLE_CONCEPT` block struct in `FF_Primitives.hpp`.
-3. Add `RECOVER_FF_CODEABLE_CONCEPT = 0x000A` to `FF_Recovery.hpp`.
+3. `RECOVER_FF_CODEABLE_CONCEPT = 0x0009` in `dictionaries/master_tags.json`
+   (projected into `generated_src/FF_Recovery.hpp`).
 4. Implement `_encode_codeable_concept` and `_pack_code` in
    `FF_Primitives.cpp`.
 5. Update read path in `FF_Parser.cpp` to handle the three-way branch.

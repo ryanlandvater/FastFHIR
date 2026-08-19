@@ -32,7 +32,8 @@ a flash model must not take alone.
 
 | ID | Priority | Task | Why | Status |
 |---|---|---|---|---|
-| RT-1 | P1 | Align round-trip entries by identity before diffing | 79% of reported diffs are cascade from one dropped resource | **DONE 2026-08-19** |
+| RT-1 | P1 | Align round-trip entries by identity before diffing | 79% of reported diffs are cascade from one dropped resource | **DONE 2026-08-19** (eb008e2) |
+| DT-0 | P1 | Band correction + header relocation (prerequisites) | `FF_CODE` was misbanded, silently disabling a compactor path | **DONE 2026-08-19** (eb008e2) |
 | DT-1 | P1 | `FF_DateTime` packed representation + primitives | 4 tags sit reserved and unused; dateTime is a string today | open |
 | DT-2 | P1 | Generator: route date/dateTime/instant/time off STRING_TYPES | 306 elements across 120 types | open |
 | DT-3 | P1 | Ingest + export paths | where the encode/decode actually happens | open |
@@ -213,7 +214,7 @@ Measured on one 2.7 MB Synthea bundle: 2,467 date/time values, 118 KB, of which
 **~93 KB (79%) is recoverable**. Comparison also becomes an integer compare
 instead of a string compare.
 
-`include/FF_Recovery.hpp:81-84` already reserves `RECOVER_FF_DATE = 0x0107`,
+`generated_src/FF_Recovery.hpp` already reserves `RECOVER_FF_DATE = 0x0107`,
 `RECOVER_FF_DATETIME = 0x0108`, `RECOVER_FF_TIME = 0x0109`,
 `RECOVER_FF_INSTANT = 0x010A` in the scalar band, annotated **"Reserved for
 bit-packing"**, referenced by nothing. The numbering is already done and
@@ -508,8 +509,8 @@ has and this repository does not.** The reciprocal list (what this repository
 has and IFE lacks — chiefly the wire witness) is at the top of
 `../Iris-File-Extension/MIGRATION.md`.
 
-**These precede the IMMEDIATE WORK ORDERS below.** XP-1 is a memory-safety
-defect reachable from any untrusted `.ffh`; do it first.
+**These precede the IMMEDIATE WORK ORDERS below.** XP-1 is **done** (2026-08-19);
+**XP-2 is now the only open P0** and is what the DT block is gated behind.
 
 ## Rules (override anything else in this file)
 
@@ -1939,8 +1940,13 @@ which is itself worth fixing.
       keep its identity either way. Nothing dispatches on the sub-element band, so it is the
       cheapest to widen. Whatever is chosen, write it into the header's Convention comment —
       that comment is currently the only specification of the layout.
-- [ ] A27.5b Append the 61 `billing` recovery tags to `include/FF_Recovery.hpp` so
-      `us-core,billing` can be selected. Permanent wire constants — **append, never
+- [x] A27.5b Append the 61 `billing` recovery tags so `us-core,billing` can be selected.
+      > **OBSOLETE (2026-08-19) — done by the ledger, not by this task.** Tag discovery is
+      > profile-independent: `dictionaries/master_tags.json` covers the whole R4 ∪ R5 spec
+      > (978 tags), so the billing tags already exist and no manual append is needed.
+      > Verified: `RECOVER_FF_CLAIM = 0x1030`, `RECOVER_FF_EXPLANATIONOFBENEFIT = 0x1053`.
+      > The original text below is kept for the reasoning only.
+      > ~~Permanent wire constants — **append, never
       renumber**, and get sign-off first. Until then the grouping is defined but
       unselectable: the generator's tag gate refuses it and names all 61
       (`FASTFHIR_PRODUCTION_PROFILE=us-core,billing python -m generator` to list them).
@@ -2436,9 +2442,15 @@ Order matters: C1 → C2 → C3…C8. `Blocked on Q1` for C1.
 
 - [ ] C1. **`recover_archive(...)` orchestrator** `Unblocked` (Q1 answered: copy-swap per element)
   Add `FF_RecoveryReport recover_archive(Memory&, FF_RecoveryPolicy)` (free function or
-  Builder static — decide and document) in a new `src/FF_Recovery.cpp` +
-  declaration in `include/FF_Recovery.hpp` (which today holds only tags/constants — keep
-  the wire-constant section untouched at the top, add an API section below).
+  Builder static — decide and document) in a new `src/FF_Recovery.cpp` + declaration in a
+  **new hand-written header**.
+  > **STALE (2026-08-19): this step's original plan is no longer possible.** It said to add
+  > an API section to `include/FF_Recovery.hpp` below the wire constants. That file is now
+  > GENERATED from `dictionaries/master_tags.json` into `generated_src/` and is overwritten
+  > at every configure — a hand-written declaration in it would be silently destroyed.
+  > Put the recovery API in its own header (e.g. `include/FF_Archive.hpp`); do **not**
+  > extend the generated tag header. The name collision between `src/FF_Recovery.cpp` and
+  > the generated `FF_Recovery.hpp` is also worth avoiding while naming this.
   It must be the single path that decides recover-or-fail when `Builder`'s constructor
   catch-block fires on memory that `looks_like_fastfhir_header()` says was once a stream
   (see `src/FF_Memory.cpp:194`). Establish the error-marker convention here: every
@@ -2654,7 +2666,17 @@ cached binary (`<binary_hash_hex>.wasm`). Never use one where the other is expec
   - [ ] E8.3 Do **not** put a clock in the banner. A rolling date or `datetime.today()`
         makes output depend on build date, breaks byte-identical regeneration, and would
         fail A4.4. Source any year from the package metadata.
-- [ ] E9. **State and guard the recovery-tag family ceilings** — `include/FF_Recovery.hpp:19-25`
+- [ ] E9. **State and guard the recovery-tag family ceilings**
+  > **LARGELY STALE (2026-08-19) — re-scope before starting.** This item describes the
+  > pre-re-cut layout (resources `0x0300`–, sub-elements `0x0400`–) and occupancy
+  > (11, 11, 29, 29, 86). Both are gone. The 2026-08-14 band re-cut moved resources to
+  > `0x1000` and backbones to `0x2000`, and current occupancy is 10, 12, 61, 179, 716.
+  > What E9 asked for now largely exists: the bands are declared as
+  > `RECOVER_BAND_*_FIRST/LAST` constants, the emitted header carries a BAND MAP with live
+  > counts, `static_assert`s catch a boundary edit that overlaps or under-sizes a band, and
+  > `generator/utilities.py:validate_recovery_bands()` checks every tag on every run. What
+  > may remain is documenting the *cost* of crossing a ceiling. Re-verify before claiming.
+  > Original text: `include/FF_Recovery.hpp:19-25`
   declares the family convention (core `0x0000`–`0x00FF`, scalars `0x0100`–, data types
   `0x0200`–, resources `0x0300`–, sub-elements `0x0400`–) but never says these are hard
   ceilings, nor what crossing one costs. Current occupancy: 11, 11, 29, 29, **86** — one
