@@ -2,7 +2,7 @@
   "_format": 1,
   "_rule": "PERMANENT WIRE LEDGER. A tag is written into bytes 8-9 of every DATA_BLOCK and decodes .ffhr streams forever. Never change an existing value. Never reuse a retired one. New tags append at the _next_id of their band. Removing a type from FHIR does NOT free its tag.",
   "_scope": "Covers the WHOLE FHIR spec (R4 union R5), never just the compiled profile. The emitted FF_Recovery.hpp is therefore identical for every FASTFHIR_PRODUCTION_PROFILE -- a permanent wire artifact must not depend on build configuration. Primitive and scalar tags are FastFHIR's own concepts, hand-seeded here, not discovered from StructureDefinitions.",
-  "_provenance": "Seeded 2026-08-14 from the hand-maintained include/FF_Recovery.hpp, preserving all 166 values as they stood after the band re-cut (TASKS.md A27.5c). Every tag after that was appended by discovery.",
+  "_provenance": "Seeded 2026-08-14 from the hand-maintained include/FF_Recovery.hpp, preserving all 166 values as they stood after the band re-cut (TASKS.md A27.5c). Every tag after that was appended by discovery. 2026-08-19 pre-alpha re-cut: RECOVER_FF_CODE moved to the scalar band (0x010B) because band membership is the inline-scalar dispatch test, and the primitive band was then COMPACTED to close the hole -- RESOURCE..CODEABLE_CONCEPT each shifted down by one. No archives existed. Append-only resumes from here.",
   "_bands": {
     "primitive": {
       "first": "0x0000",
@@ -26,8 +26,8 @@
     }
   },
   "_next_id": {
-    "primitive": "0x000B",
-    "scalar": "0x010B",
+    "primitive": "0x000A",
+    "scalar": "0x010C",
     "datatype": "0x023D",
     "resource": "0x10B3",
     "backbone": "0x22CC"
@@ -46,39 +46,40 @@
       "band": "primitive"
     },
     "RECOVER_FF_CODE": {
+      "value": "0x010B",
+      "band": "scalar",
+      "note": "4-byte inline scalar: MSB clear = permanent dictionary ID, MSB set = signed relative offset to an FF_CODEABLE_CONCEPT block. Banded with the inline scalars because that band membership IS the dispatch test used by Recovery_to_Kind and FF_IsScalarBlockTag."
+    },
+    "RECOVER_FF_RESOURCE": {
       "value": "0x0003",
       "band": "primitive"
     },
-    "RECOVER_FF_RESOURCE": {
+    "RECOVER_FF_CHECKSUM": {
       "value": "0x0004",
       "band": "primitive"
     },
-    "RECOVER_FF_CHECKSUM": {
-      "value": "0x0005",
-      "band": "primitive"
-    },
     "RECOVER_FF_URL_DIRECTORY": {
-      "value": "0x0006",
+      "value": "0x0005",
       "band": "primitive",
       "note": "Stream-level URL intern table"
     },
     "RECOVER_FF_MODULE_REGISTRY": {
-      "value": "0x0007",
+      "value": "0x0006",
       "band": "primitive",
       "note": "WASM extension module registry"
     },
     "RECOVER_FF_OPAQUE_JSON": {
-      "value": "0x0008",
+      "value": "0x0007",
       "band": "primitive",
       "note": "Path B passive raw-JSON extension blob"
     },
     "RECOVER_FF_WASM_PAYLOAD": {
-      "value": "0x0009",
+      "value": "0x0008",
       "band": "primitive",
       "note": "Path A WASM-encoded extension payload"
     },
     "RECOVER_FF_CODEABLE_CONCEPT": {
-      "value": "0x000A",
+      "value": "0x0009",
       "band": "primitive",
       "note": "External codeable concept (UCUM, SNOMED CT, ...)"
     },
@@ -113,22 +114,22 @@
     "RECOVER_FF_DATE": {
       "value": "0x0107",
       "band": "scalar",
-      "note": "Reserved for bit-packing"
+      "note": "8-byte inline scalar, same slot contract as RECOVER_FF_CODE. Civil date only -- FHIR 'date' never carries a timezone."
     },
     "RECOVER_FF_DATETIME": {
       "value": "0x0108",
       "band": "scalar",
-      "note": "Reserved for bit-packing"
+      "note": "8-byte inline scalar, same slot contract as RECOVER_FF_CODE: MSB clear = packed civil date/time, MSB set = signed relative offset to an FF_STRING. Precision field says how much of the value is populated (year / year-month / date / second / fractional)."
     },
     "RECOVER_FF_TIME": {
       "value": "0x0109",
       "band": "scalar",
-      "note": "Reserved for bit-packing"
+      "note": "8-byte inline scalar, same slot contract as RECOVER_FF_CODE. Time of day only -- FHIR 'time' carries no date and no timezone."
     },
     "RECOVER_FF_INSTANT": {
       "value": "0x010A",
       "band": "scalar",
-      "note": "Reserved for bit-packing"
+      "note": "8-byte inline scalar, same slot contract as RECOVER_FF_CODE. Always full precision with a timezone, per FHIR 'instant'."
     },
     "RECOVER_FF_DATA_TYPE_BLOCK": {
       "value": "0x0200",

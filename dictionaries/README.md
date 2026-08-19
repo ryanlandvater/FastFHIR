@@ -7,7 +7,7 @@ Two ledgers live here, under identical rules:
 
 - **`master_codes.json`** — dictionary code IDs (what a clinical code *is*).
 - **`master_tags.json`** — `RECOVERY_TAG` values (what a block *is*), projected
-  into `include/FF_Recovery.hpp`.
+  into `generated_src/FF_Recovery.hpp`.
 
 Both are committed, both are append-only, and both are generated-and-reviewed
 rather than hand-edited. `master_tags.json` was moved here from `generator/` in
@@ -98,7 +98,7 @@ in step instead of one. Review wire changes on the ledger diff.
 | File | Direction | Role |
 |---|---|---|
 | `master_codes.json` | — | **The code ledger.** Source of truth for every dictionary ID. Committed, append-only, human-readable. Everything below is generated from it. |
-| `master_tags.json` | — | **The recovery-tag ledger.** Source of truth for every `RECOVERY_TAG` value. Same rules; projected into `include/FF_Recovery.hpp` by `generator/emit/recovery_tags.py`. Covers the whole FHIR spec, so the emitted header does not vary with the build profile. |
+| `master_tags.json` | — | **The recovery-tag ledger.** Source of truth for every `RECOVERY_TAG` value. Same rules; projected into `generated_src/FF_Recovery.hpp` by `generator/emit/recovery_tags.py`. That header is generated at configure time and **gitignored** (2026-08-19) — the same reasoning applied to the code projections below: a projection is not a second source of truth. Covers the whole FHIR spec, so it does not vary with the build profile. |
 | `generated_src/FF_Dictionary_Strings.cpp` | ID → string | The one backing store. **Array index _is_ the ID**, so slot order is the wire format. Retired IDs remain as `nullptr` holes. |
 | `generated_src/FF_Codes.hpp` | name → ID | Named C++ constants, scoped by terminology source then CodeSystem (see below). Compile-time ergonomics only; never consulted at runtime. |
 | `generated_src/FF_R4_Dictionary.cpp`<br>`generated_src/FF_R5_Dictionary.cpp`<br>`generated_src/FF_UCUM_Dictionary.cpp` | string → ID | Ingest lookup, one table per FHIR revision. Rows reference `FF_Codes.hpp` constants **symbolically**, so a rename or deletion breaks the *compile* instead of silently drifting. That is the one wire-safety property a C++ compiler can enforce for us. |
@@ -224,7 +224,7 @@ the variable-length payload.
 
 ```
 Offset  0– 7 : VALIDATION  (uint64_t)
-Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT (0x000A)
+Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT (0x0009)
 Offset 10    : SYSTEM      (uint8_t)  — FF_CodeableConceptSystem
 Offset 11    : LENGTH      (uint8_t)  — payload byte count
 Offset 12+   : PAYLOAD     (variable) — LENGTH bytes

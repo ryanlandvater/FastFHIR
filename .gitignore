@@ -37,3 +37,9 @@ generated_src/
 dictionaries/*.cpp
 dictionaries/*.hpp
 !dictionaries/README.md
+
+# NOTE: generated_src/ above also covers FF_Recovery.hpp, which moved there from
+# include/ on 2026-08-19. It is generated from dictionaries/master_tags.json at
+# configure time; the committed record of every tag value is that ledger plus
+# tests/generator/golden/wire_witness.json. A third copy was one more thing to
+# keep in step, and nothing detected a stale one.

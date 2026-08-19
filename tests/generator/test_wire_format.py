@@ -144,7 +144,7 @@ def test_codes_section_is_populated(baseline: dict) -> None:
     """The codes/tags sections must never be empty again.
 
     They were `{}` for as long as `witness()` scanned only generated_src/, while
-    the constants live in dictionaries/FF_Codes.hpp and include/FF_Recovery.hpp.
+    the constants live in dictionaries/FF_Codes.hpp and generated_src/FF_Recovery.hpp.
     Two of the three sections of "the ONE hard gate" were therefore comparing an
     empty dict against an empty dict and passing unconditionally (TASKS.md A15).
     A gate that passes when it measures nothing is the failure mode this whole
@@ -156,7 +156,7 @@ def test_codes_section_is_populated(baseline: dict) -> None:
     )
     assert len(baseline["tags"]) > 100, (
         f"golden has only {len(baseline['tags'])} recovery tags — the witness is "
-        "not seeing include/FF_Recovery.hpp"
+        "not seeing generated_src/FF_Recovery.hpp"
     )
 
 

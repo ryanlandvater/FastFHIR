@@ -145,7 +145,7 @@ def witness(
     why this takes more than `generated_dir`:
 
       * vtable layouts   -> generated_src/*_internal.hpp   (regenerated)
-      * recovery tags    -> include/FF_Recovery.hpp        (generated, committed)
+      * recovery tags    -> generated_src/FF_Recovery.hpp        (generated, gitignored)
       * dictionary codes -> generated_src/FF_Codes.hpp     (regenerated)
 
     Both generated trees are projections of committed ledgers in dictionaries/
@@ -160,7 +160,7 @@ def witness(
     protection whatsoever. See TASKS.md A15.
     """
     repo_root = Path(__file__).resolve().parents[2]
-    recovery_header = recovery_header or repo_root / "include" / "FF_Recovery.hpp"
+    recovery_header = recovery_header or repo_root / "generated_src" / "FF_Recovery.hpp"
     # FF_Codes.hpp is generator output now, so take it from the tree being
     # witnessed rather than a fixed repo path — that is what makes the gate work
     # against a freshly regenerated tree in a tmpdir.

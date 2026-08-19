@@ -52,7 +52,7 @@ option(FASTFHIR_ENABLE_EXTENSIONS  "Enable WASM extension codec" OFF)
 # Real deployments compose -- a payer needs US Core *and* claims. Accepted names
 # live in RESOURCE_GROUPINGS (generator/model/type_map.py); "us"/"uk" are legacy
 # aliases. NOTE: commas, not semicolons -- CMake treats ';' as its list separator.
-# Adding a grouping requires its RECOVERY_TAGs in include/FF_Recovery.hpp first
+# Adding a grouping requires its RECOVERY_TAGs in generated_src/FF_Recovery.hpp first
 # (permanent wire constants); the generator fails loudly and names the missing
 # ones. See TASKS.md A27.
 set(FASTFHIR_PRODUCTION_PROFILE "us-core" CACHE STRING
@@ -507,7 +507,7 @@ install(FILES
     ${FASTFHIR_INCLUDE_DIR}/FF_Builder.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.hpp
-    ${FASTFHIR_INCLUDE_DIR}/FF_Recovery.hpp
+    ${FASTFHIR_GENERATED_DIR}/FF_Recovery.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_ResourceTypes.hpp
     DESTINATION include
 )

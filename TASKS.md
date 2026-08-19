@@ -25,14 +25,14 @@ interpreted and XP-2 is what bounds-checks the graph a bad slot would reach.
 
 **Rules: the same ones as the cross-pollination orders below** — one task ID per
 session, run *Locate* first and STOP on a mismatch, do not commit, never
-hand-edit `generated_src/` or `include/FF_Recovery.hpp`, and ⚠ marks a decision
+hand-edit anything under `generated_src/` (which now includes `FF_Recovery.hpp`), and ⚠ marks a decision
 a flash model must not take alone.
 
 ## Priority summary
 
 | ID | Priority | Task | Why | Status |
 |---|---|---|---|---|
-| RT-1 | P1 | Align round-trip entries by identity before diffing | 79% of reported diffs are cascade from one dropped resource | open |
+| RT-1 | P1 | Align round-trip entries by identity before diffing | 79% of reported diffs are cascade from one dropped resource | **DONE 2026-08-19** |
 | DT-1 | P1 | `FF_DateTime` packed representation + primitives | 4 tags sit reserved and unused; dateTime is a string today | open |
 | DT-2 | P1 | Generator: route date/dateTime/instant/time off STRING_TYPES | 306 elements across 120 types | open |
 | DT-3 | P1 | Ingest + export paths | where the encode/decode actually happens | open |
@@ -67,8 +67,17 @@ member for a dropped or added resource.
 
 ### RT-1.1 — Pair entries before diffing
 In `roundtrip_diff.py`, special-case `Bundle.entry`: build an index of output
-entries keyed by `fullUrl` when present, else `(resourceType, id)`, and diff each
-input entry against its matched counterpart rather than against the same index.
+entries keyed by `(resourceType, id)`, and diff each input entry against its
+matched counterpart rather than against the same index.
+
+> **Correction (2026-08-19, during implementation).** This step originally said
+> to key on `fullUrl` first and fall back to `(resourceType, id)`. That is
+> backwards and would have matched **nothing**: the exporter emits no `fullUrl`
+> at all (A26), so every input entry would key on `fullUrl` and every output
+> entry on `(resourceType, id)`, reporting the whole bundle as dropped AND
+> added. `(resourceType, id)` is the primary key precisely because it is
+> intrinsic to the resource and therefore derivable on both sides; `fullUrl` is
+> the fallback for an entry whose resource carries no `id`.
 
 ### RT-1.2 — Two new diff kinds
 Add `DROPPED_RESOURCE` and `ADDED_RESOURCE`. An input entry with no counterpart
@@ -79,9 +88,119 @@ is one finding naming the type and id — **not** a subtree walk. Same in revers
 the field diffs. The current report makes a 4-resource drop look like 20,000
 field defects.
 
-**Done when:** the 12-fixture sample reports ~5,890 field diffs plus an explicit
+**Done when:** the 12-fixture sample reports ~9,328 field diffs plus an explicit
 `DROPPED_RESOURCE` line per missing resource, and deleting one entry from a
 fixture's output produces exactly one new `DROPPED_RESOURCE`, not a cascade.
+
+> **The 9,328 figure supersedes the ~5,890 first written here.** 5,890 was
+> measured by diffing `entry[i].resource` subtrees only. The harness correctly
+> also diffs the entry *wrapper*, which adds `fullUrl` + `request` once per
+> matched entry — 1,719 matched entries x 2 = 3,438, and 5,890 + 3,438 = 9,328
+> exactly. Both numbers are right about different things; the harness's is the
+> one to assert against.
+
+> **DONE (2026-08-19).** `_entry_identity` / `_is_entry_array` /
+> `_diff_entry_array` in `tests/python/roundtrip_diff.py`; `DROPPED_RESOURCE`
+> and `ADDED_RESOURCE` added to `DiffKind`; `format_diff_report` leads with the
+> structural summary. Unmatched entries are reported as one finding and never
+> walked as a subtree — that walk *is* the cascade.
+>
+> Corpus-wide (342 fixtures): field diffs **6,453,617 -> 1,844,523 (-71%)**, and
+> the log went from 12,909,302 lines to 3,692,122. `VALUE_MISMATCH` collapsed
+> **2,125,763 -> 7,123** and `ARRAY_LENGTH` **139,925 -> 0**, which is the
+> signature of the cascade: those two kinds were almost entirely the artefact of
+> comparing unrelated resources. 88,260 dropped resources are now stated once
+> each instead of being inferred from the wreckage — `Claim` 36,614,
+> `ExplanationOfBenefit` 36,614, `SupplyDelivery` 8,117,
+> `MedicationAdministration` 5,471, `ImagingStudy` 1,444. Every one is
+> out-of-profile for `us-core`, which is A27's signal, previously invisible.
+>
+> Red-green: removing one matched entry from the middle of a fixture's output
+> yields exactly **1** new `DROPPED_RESOURCE` (net diff delta -3). With
+> `_is_entry_array` forced to False the same edit yields **2,405 diffs instead
+> of 833 — 1,572 spurious**. `py_roundtrip` stays red, correctly: the remaining
+> 1.84M diffs are real defects (A24/A25/A26/A27), not measurement error.
+
+---
+
+## DT-0 — Band correction and header untracking (P1) — ✅ DONE 2026-08-19
+
+Two prerequisites that fell out of speccing DT-1, both landed before it starts.
+
+### DT-0.1 — `RECOVER_FF_CODE` rebanded, primitive band compacted
+`RECOVER_FF_CODE` moved from `0x0003` (primitive) to **`0x010B`** (scalar), and
+the primitive band was then **compacted to close the hole** rather than leaving
+`0x0003` retired — pre-alpha, so the band is re-cut clean instead of carrying a
+gap forever:
+
+```
+RESOURCE          0x0004 -> 0x0003        OPAQUE_JSON       0x0008 -> 0x0007
+CHECKSUM          0x0005 -> 0x0004        WASM_PAYLOAD      0x0009 -> 0x0008
+URL_DIRECTORY     0x0006 -> 0x0005        CODEABLE_CONCEPT  0x000A -> 0x0009
+MODULE_REGISTRY   0x0007 -> 0x0006        primitive _next_id -> 0x000A
+```
+
+The band is now contiguous `0x0000..0x0009`, verified no duplicates anywhere in
+the ledger. **Append-only resumes from here** — this was the last free re-cut.
+
+This was not tidying. The scalar band membership test
+`(tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK` is what routes inline scalars, and
+`FF_CODE` is an inline scalar that sat outside it. Two branches written for it
+were therefore unreachable:
+
+* `Recovery_to_Kind` — a `case RECOVER_FF_CODE:` inside the scalar switch, dead
+  because `0x0003 & 0xFF00 == 0x0000`. Harmless: a duplicate in the second
+  switch did the work.
+* `Compactor::write_choice_slot` — `if (FF_IsScalarBlockTag(tag)) { if (tag ==
+  RECOVER_FF_CODE) { ... } }`. **Not harmless.** `FF_IsScalarBlockTag(0x0003)`
+  is false, so a choice slot holding a code never took the inline path and fell
+  through to the block path instead. **11 FHIR choice fields carry a `code`
+  variant** (`ElementDefinition.defaultValue[x]`, `.fixed[x]`, `.pattern[x]`,
+  `.example.value[x]`, `Parameters.parameter.value[x]`, …), so this was a live
+  defect, not a theoretical one.
+
+Both are now live. `Recovery_to_Kind`'s `FF_CODE` case moved into the scalar
+switch and out of the second; verified `FF_IsScalarBlockTag(RECOVER_FF_CODE)`
+is now true and every tag still resolves to its previous `FF_FieldKind`.
+`tests/cpp/test_primitives.cpp` pins the new values and the new band membership.
+Wire witness refreshed with `--force` in two passes — `RECOVER_FF_CODE: 3 -> 267`,
+then the seven primitive shifts, each named in the override banner.
+`dictionaries/README.md`'s CodeableConcept block layout updated `0x000A -> 0x0009`.
+Pre-release re-cut, no archives exist (verified: nothing tracked in git, no
+pinned corpus, benchmark repo generates at runtime, the only `.ffhr` on disk are
+build artifacts the suite regenerates).
+
+### DT-0.2 — `include/FF_Recovery.hpp` untracked
+Generated at configure time and now gitignored. The committed record of every
+tag value is the ledger plus `tests/generator/golden/wire_witness.json`; a third
+copy was one more thing to keep in step, which is the same argument
+`dictionaries/README.md` already makes for not committing the code projections.
+Nothing detected a **stale** committed header, and XP-3.2 (`--check`) — the
+thing that would have — is still unbuilt.
+
+Docs updated: `CLAUDE.md` (repo map + invariant 1), `dictionaries/README.md`.
+
+### DT-0.3 — `FF_Recovery.hpp` relocated to `generated_src/`
+Done 2026-08-19. The header now sits with the other projections rather than in
+`include/`, which is what "generated" means everywhere else in this tree.
+`generated_src/` was already gitignored and already on the include path, so
+`#include "FF_Recovery.hpp"` resolves unchanged.
+
+Repointed: `HEADER_PATH` in `emit/recovery_tags.py`, six paths in
+`generator/utilities.py`, four in `library.py`, `model/type_map.py`, the path
+construction in `tests/generator/wire_witness.py` and `test_recovery_tags.py`,
+`test_wire_format.py`, and `CMakeLists.txt`'s install list
+(`FASTFHIR_INCLUDE_DIR` -> `FASTFHIR_GENERATED_DIR`). The `.gitignore` entry for
+the old location is gone — `generated_src/` covers it.
+
+**Verified by deleting it and rebuilding from the ledger alone**, not by
+inspection: with no copy in either location, `generate_recovery_tags()`
+reconciled 978 tags, appended 0, and emitted 74,365 bytes to
+`generated_src/FF_Recovery.hpp` carrying the full BAND MAP — which now reads
+`Core Primitives … 10 used` and `Inline Scalars … 12 used`, reflecting DT-0.1.
+`src/FF_Primitives.cpp` was then forced to recompile and did so cleanly with
+**no copy in `include/`**, proving the include resolves from the new location.
+`ctest` 33/34 (the known `py_roundtrip` red), generator gate 46/46.
 
 ---
 
@@ -154,16 +273,131 @@ fit, both worth stating because they are not obvious:
    MINUTE precision to store.
 
 Anything that still does not fit — more than 3 fractional digits, a year outside
-0001..9999 — sets bit 63 and stores the original text in an `FF_STRING` block.
-**This mirrors the code-field pattern exactly** (dictionary ID inline, else an
-offset to a block with the flag set), so it is an existing idiom rather than a
-new mechanism, and it makes byte-exact round-trip total rather than best-effort.
+0001..9999 — sets bit 63 and stores the original text in an `FF_STRING` block at
+a **signed relative offset**, exactly as a non-dictionary code does.
+
+### `FF_DATETIME` is `FF_CODE`, widened — say so everywhere
+
+This is not merely "a similar idea". It is the same slot contract at 8 bytes
+instead of 4, and every document that describes one must describe the other in
+the same terms, so a reader who has understood code slots already understands
+date/time slots:
+
+|  | `FF_CODE` (4 bytes) | `FF_DATETIME` (8 bytes) |
+|---|---|---|
+| Discriminator | bit 31 (`FF_CODEABLE_CONCEPT_FLAG`) | bit 63 |
+| Flag **clear** | 31-bit dictionary ID | 63-bit packed civil date/time |
+| Flag **set** | 31-bit **signed relative** offset to an `FF_CODEABLE_CONCEPT` block | 63-bit **signed relative** offset to an `FF_STRING` block |
+| Offset is relative to | the containing block | the containing block (identical rule) |
+| Sign-extension helper | `FF_ResolveCodeableConceptOffset` | `FF_ResolveDateTimeOffset` (to write) |
+| Null sentinel | `FF_CODE_NULL` = `0xFFFFFFFF` | `FF_NULL_OFFSET` = `0xFFFF'FFFF'FFFF'FFFF` |
+
+Two properties are worth stating explicitly because they are what make the
+parity exact rather than approximate:
+
+1. **Relative, not absolute.** The fallback offset is signed and relative to the
+   containing block, the same convention `ENCODE_FF_CODE` already uses. Absolute
+   offsets would have worked and would have been wrong here: a second convention
+   for the same job is the thing a reader has to memorise instead of transfer.
+2. **The null sentinel lives inside the flag-set space and is reserved out of
+   it.** `FF_CODE_NULL` has bit 31 set, so it would otherwise read as a relative
+   offset of `0x7FFFFFFF`; it is reserved instead. All-ones does the same for
+   `FF_DATETIME` — an impossible relative offset, so it is free to mean "absent".
+   Same trick, same reasoning, and both need the same sentence in the docs.
+
+**Documentation this must land in (DT-1.4):** `architecture.md` (a subsection
+beside the code-slot description, not a separate chapter), `README.md`'s "Code
+Assignment Semantics" — which gains a sibling "Date/Time Assignment Semantics"
+written to the same shape — and the `FF_Primitives.hpp` comment block, which
+should cross-reference the code slot by name. `terminology_layer_architecture.md`
+§3's VTable-slot bit-layout table gets the 8-byte row alongside the 4-byte one.
+
+### The tag value — already assigned; do not move it
+
+`RECOVER_FF_DATETIME` is **`0x0108`**, in the **scalar** band, and stays there.
+It has been assigned since the 2026-08-14 band re-cut, together with its
+siblings `RECOVER_FF_DATE` `0x0107`, `RECOVER_FF_TIME` `0x0109` and
+`RECOVER_FF_INSTANT` `0x010A`, all four sitting directly after
+`RECOVER_FF_FLOAT64`. No ledger renumbering is required by this work order, and
+none should be attempted.
+
+**The band is functional, not decorative.** `Recovery_to_Kind` routes on
+`(base & 0xFF00) == RECOVER_FF_SCALAR_BLOCK` — that test *is* the "this is an
+inline scalar" decision, and a packed date/time is an inline scalar of exactly
+the same class as `FF_FLOAT64`. `0x0108` is where it must live for dispatch to
+work; anywhere in the primitive band and it falls out of that branch.
+
+⚠ **Rejected alternative, recorded so it is not re-proposed:** relocating
+`FF_DATETIME` to `0x0004` so it sits beside `RECOVER_FF_CODE` in the emitted
+enum. It fails on three counts, in increasing order of importance:
+
+1. `0x0004` is `RECOVER_FF_RESOURCE`, so the insert shifts **seven** assigned
+   tags (`RESOURCE`, `CHECKSUM`, `URL_DIRECTORY`, `MODULE_REGISTRY`,
+   `OPAQUE_JSON`, `WASM_PAYLOAD`, `CODEABLE_CONCEPT`).
+2. It splits the date/time family across two bands, leaving `DATE`, `TIME` and
+   `INSTANT` behind in the scalar band.
+3. **It moves a scalar out of the scalar band**, which is the one that actually
+   matters. `FF_CODE` at `0x0003` is the anomaly here, not the model: it behaves
+   like a value type while being banded with the structural blocks. That
+   confusion had already produced a bug — an unreachable `case RECOVER_FF_CODE:`
+   inside the scalar-band switch, dead because `0x0003 & 0xFF00 == 0x0000`.
+   Copying `FF_CODE`'s banding would propagate the mistake rather than the
+   pattern.
+
+> **Note (2026-08-19):** the dead case is now deleted, and the branch carries a
+> comment explaining why `FF_CODE` must not be named there and why packed
+> date/time must. Verified behaviour-preserving: `FF_CODE` still resolves to
+> `FF_FIELD_CODE` through the second switch, and all nine scalar/structural tags
+> dispatch unchanged.
+
+The FF_CODE parity that motivated the proposal is delivered instead by the table
+above, by DT-1.4's documentation pass, and by the ledger `note` fields — which
+now state the shared contract at the point of definition, so `FF_Recovery.hpp`
+explains itself:
+
+```
+RECOVER_FF_DATETIME = 0x0108,  // 8-byte inline scalar, same slot contract as
+                               // RECOVER_FF_CODE: MSB clear = packed civil
+                               // date/time, MSB set = signed relative offset to
+                               // an FF_STRING. Precision field says how much of
+                               // the value is populated.
+```
+
+### One layout, four tags
+
+There is a **single packed representation**, not four. The recovery tag says
+which FHIR type a slot holds; the 3-bit precision field says how much of the
+value is populated (year / year-month / date / second / fractional). That split
+is what keeps the precision enum inside 3 bits, and it is why `date`, `time`,
+`dateTime` and `instant` can share one encoder, one decoder and one set of
+pack/unpack helpers while still validating against their own FHIR rules —
+`date` rejecting a timezone, `time` rejecting a date, `instant` requiring both.
+
+⚠ **Do not fold the four tags into one.** In a choice (`[x]`) slot the 2-byte
+recovery tag is the ONLY thing identifying the active variant, and **20 choice
+fields mix two or more date/time variants** — 7 of them carry all four
+(`ElementDefinition.defaultValue[x]`, `.fixed[x]`, `.pattern[x]`, `.minValue[x]`,
+`.maxValue[x]`, `.example.value[x]`, `Parameters.parameter.value[x]`), plus
+`QuestionnaireResponse.item.answer.value[x]` and
+`Questionnaire.item.enableWhen.answer[x]` at three each. With one shared tag the
+exporter cannot choose between `valueDate`, `valueDateTime`, `valueInstant` and
+`valueTime` — which is the `effectiveDateTime -> effectiveString` defect DT
+exists to remove, reproduced at finer grain. Precision cannot substitute: it is
+ambiguous in both directions, since `precision = DATE` is equally a `date` or a
+`dateTime` at date precision (FHIR permits `2024-01-15` for `dateTime`), and
+`precision = SECOND` with an offset is equally a `dateTime` or an `instant`.
 
 ### DT-1.1 — Constants and helpers in `FF_Primitives.hpp`
 Field widths/shifts as symbolic sums (never literal offsets), a `precision` enum,
 the `Z` sentinel code, `FF_PACK_DATETIME` / `FF_UNPACK_DATETIME`, and the
 discriminator predicate. Civil-days conversion is the standard days-from-civil
 algorithm; keep it branch-free and `constexpr`.
+
+Name and site these against their code-slot counterparts so the parity is visible
+in the source, not only in prose: put the block adjacent to the `FF_CODE`
+helpers, mirror their naming, and have `ENCODE_FF_DATETIME` take the same
+`(base, block_offset, child_offset, ...)` shape as `ENCODE_FF_CODE` so the
+relative-offset arithmetic is written once in each and reads identically.
 
 ### DT-1.2 — `FF_FieldKind`
 ⚠ Adding `FF_FIELD_DATETIME` extends a permanent enum. It appends, so it is
@@ -176,6 +410,17 @@ a 6-digit fraction taking the fallback. Assert **text in == text out**.
 
 **Done when:** the pack/unpack pair is byte-exact for every case above, and the
 fallback triggers only for the cases listed.
+
+### DT-1.4 — The documentation pass
+Land the parity table and the two properties above in `architecture.md`,
+`README.md`, `FF_Primitives.hpp` and `terminology_layer_architecture.md` per the
+list in this section. This is not a follow-up: a reader meeting an 8-byte slot
+with a high-bit discriminator and no stated relationship to the 4-byte one will
+assume they are unrelated, which is the confusion this whole framing exists to
+prevent.
+
+**Done when:** each of the four documents describes the date/time slot in the
+same terms it uses for the code slot, and names the other.
 
 ---
 
@@ -272,7 +517,7 @@ defect reachable from any untrusted `.ffh`; do it first.
 2. **Run the *Locate* block first.** If its output does not match *Expect*,
    **STOP** and report what you saw instead. Do not improvise.
 3. **Do not commit.** Ryan commits. Leave changes in the working tree.
-4. **Never edit generated files** (`generated_src/`, `include/FF_Recovery.hpp`).
+4. **Never edit generated files** (`generated_src/`, which since 2026-08-19 includes `FF_Recovery.hpp`).
    Fix `generator/emit/` instead.
 5. **Never change a wire constant.** None of these tasks needs to; a step that
    seems to is a step written wrong — STOP.
@@ -284,7 +529,7 @@ defect reachable from any untrusted `.ffh`; do it first.
 
 | ID | Priority | Task | Why | Status |
 |---|---|---|---|---|
-| XP-1 | **P0** | Bound and cycle-check the stored-graph traversal | Unbounded recursion over attacker-controlled offsets — stack overflow, not slowness | XP-1.1 + XP-1.3 DONE (2026-08-18); XP-1.2
+| XP-1 | **P0** | Bound and cycle-check the stored-graph traversal | Unbounded recursion over attacker-controlled offsets — stack overflow, not slowness | **DONE** (1.1+1.3 2026-08-18, 1.2 verified 2026-08-19) |
 | XP-2 | **P0** | Deep-validate the offset graph on open; fix the Parser's overclaim | `Parser` validates the header only, while its docstring says "file structure" | open |
 | XP-3 | P1 | Add `--check` and `--validate` to the generator | No drift or consistency gate exists | open |
 | XP-4 | P1 | Port IFE's `portability_lint.py` | Six mechanical checks, each bought with a CI round-trip there | open |
@@ -378,6 +623,23 @@ conditions distinct errors here from the start.
 
 **Done when:** the two failures produce different messages, and each
 red-greens **independently** — disable one guard, only its own test fails.
+
+> **DONE (2026-08-19) — satisfied by the XP-1.3 work; verified, not assumed.**
+> The two conditions already throw distinct messages:
+> `"cycle in the stored graph at node offset N"` and
+> `"node nesting exceeds the maximum depth of N"`, and
+> `tests/cpp/ff_test_graph_bounds.cpp` asserts each names its own condition.
+>
+> Independence re-verified by disabling each guard in turn:
+> * **depth guard off** -> only the two depth assertions fail; both cycle
+>   assertions and the shared-DAG case still pass. Clean isolation.
+> * **cycle guard off** -> the cycle case does not fail cleanly, it **hangs**
+>   and is killed, so no assertions report at all. That is still unambiguously
+>   red, and it is the behaviour XP-1.3 anticipated when it required a ctest
+>   `TIMEOUT` ("without the visited set the sharing case does not fail, it
+>   hangs; the timeout is what turns that into a reported failure"). The
+>   `TIMEOUT 60` on the target is therefore load-bearing, not decorative —
+>   do not remove it.
 
 ### XP-1.3 — The regression test
 
@@ -573,9 +835,10 @@ with a message rather than silently truncated. Red-green the truncation case.
 5. **Never renumber wire constants** (RECOVERY_TAG values, dictionary code IDs in
    `dictionaries/master_codes.json`, vtable offsets, `FF_HEADER` layout). If a task seems to
    require it, the task is wrong — stop and flag it.
-6. **Never hand-edit generated files** (`generated_src/` — including `FF_Codes.hpp` and
-   the dictionary tables — and `include/FF_Recovery.hpp`). Fix the emitter in
-   `generator/emit/` instead. `dictionaries/` now holds only the JSON ledgers.
+6. **Never hand-edit generated files** (`generated_src/` — including `FF_Codes.hpp`,
+   the dictionary tables, and `FF_Recovery.hpp`, which moved there from `include/` on
+   2026-08-19). Fix the emitter in `generator/emit/` instead. `dictionaries/` now holds
+   only the JSON ledgers.
 7. One task = one commit. Commit message: `TASKS <ID>: <one-line summary>`. Check the box
    in TASKS.md in the same commit and append the short hash: `- [x] ... (abc1234)`.
 8. Build prerequisites: first `cmake -S . -B build ...` configure needs network access
@@ -600,7 +863,7 @@ exact expected output.
    report what you saw instead. Do not improvise, do not "fix" the mismatch, do not
    continue to the next step. A mismatch means the tree moved and the work order is stale.
 2. **Do not commit.** Ryan commits. Leave changes in the working tree and report.
-3. **Never edit generated files** (`generated_src/`, `include/FF_Recovery.hpp`). If a fix
+3. **Never edit generated files** (`generated_src/`, which since 2026-08-19 includes `FF_Recovery.hpp`). If a fix
    seems to need one, the fix belongs in `generator/emit/` — stop and say so.
 4. **Never change a wire constant** (recovery tag values, dictionary IDs, vtable field
    order, `FF_HEADER` layout). If a step seems to require it, STOP.

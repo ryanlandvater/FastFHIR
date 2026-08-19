@@ -432,6 +432,14 @@ struct RecoveryTraits<RECOVER_FF_RESOURCE>
 inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag)
 {
     RECOVERY_TAG base = GetTypeFromTag(tag);
+    // The scalar band (0x01xx) is the membership test for "inline scalar".
+    // Every inline value type belongs in it, RECOVER_FF_CODE included: it moved
+    // out of the primitive band to 0x010B on 2026-08-19 precisely so this branch
+    // can reach it. While it sat at 0x0003, 0x0003 & 0xFF00 == 0x0000, so the
+    // case below was unreachable and the live handling was a duplicate in the
+    // second switch -- and the same misbanding silently disabled the code path
+    // in the compactor's write_choice_slot. The primitive band was compacted
+    // afterwards, so 0x0003 now belongs to RECOVER_FF_RESOURCE.
     if ((base & 0xFF00) == RECOVER_FF_SCALAR_BLOCK)
     {
         switch (base)
@@ -456,8 +464,6 @@ inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag)
     }
     switch (base)
     {
-    case RECOVER_FF_CODE:
-        return FF_FIELD_CODE;
     case RECOVER_FF_STRING:
         return FF_FIELD_STRING;
     case RECOVER_FF_RESOURCE:

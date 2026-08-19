@@ -413,19 +413,19 @@ def compile_fhir_library(
     write_if_changed(os.path.join(output_dir, "FF_AllTypes.hpp"), all_types_hpp)
 
     # --- Validate RECOVERY_TAG references against the permanent header ---
-    # include/FF_Recovery.hpp is GENERATED from dictionaries/master_tags.json at
+    # generated_src/FF_Recovery.hpp is GENERATED from dictionaries/master_tags.json at
     # stage 1b, so every tag the spec needs is already declared by now. The
     # emitters build some tag names by concatenation, though, so this checks
     # every emitted name actually resolves, instead of letting a bad one surface
     # as a wall of C++ "undeclared identifier" errors.
-    n_tags = validate_recovery_tags(output_dir, "include/FF_Recovery.hpp")
-    print(f"-- Validated {n_tags} RECOVERY_TAG references against include/FF_Recovery.hpp")
+    n_tags = validate_recovery_tags(output_dir, "generated_src/FF_Recovery.hpp")
+    print(f"-- Validated {n_tags} RECOVERY_TAG references against generated_src/FF_Recovery.hpp")
 
     # --- Validate the header's own band discipline ---
     # Independent of what was emitted: every tag must sit inside a band, and no
     # two tags may share a value. Bands drive runtime classification
     # (FF_IsResourceTag), so a misplaced tag is silent, not a compile error.
-    validate_recovery_bands("include/FF_Recovery.hpp")
+    validate_recovery_bands("generated_src/FF_Recovery.hpp")
     print("-- Validated RECOVERY_TAG band membership and uniqueness")
 
     # --- Ingest mappings ---

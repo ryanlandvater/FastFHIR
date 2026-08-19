@@ -28,16 +28,16 @@ def enclose_namespace(ns: str, code: str) -> str:
     return f"namespace {ns} {{\n{code}\n}} // namespace {ns}\n"
 
 
-def parse_recovery_tags(recovery_path: str = "include/FF_Recovery.hpp") -> dict[str, int]:
+def parse_recovery_tags(recovery_path: str = "generated_src/FF_Recovery.hpp") -> dict[str, int]:
     """Parse ``RECOVERY_TAG`` enum values from the permanent recovery header.
 
-    Reads ``include/FF_Recovery.hpp`` and extracts all ``NAME = 0xVALUE``
+    Reads ``generated_src/FF_Recovery.hpp`` and extracts all ``NAME = 0xVALUE``
     entries.  Used by the generator to validate that emitted recovery tags
     match the permanent C++ header.
 
     Args:
         recovery_path: Path to ``FF_Recovery.hpp`` relative to workspace root.
-            Defaults to ``include/FF_Recovery.hpp``.
+            Defaults to ``generated_src/FF_Recovery.hpp``.
 
     Returns:
         Dict mapping tag names (e.g. ``"RECOVER_FF_STRING"``) to their
@@ -58,7 +58,7 @@ def parse_recovery_tags(recovery_path: str = "include/FF_Recovery.hpp") -> dict[
     return tags
 
 
-def validate_recovery_bands(recovery_path: str = "include/FF_Recovery.hpp") -> None:
+def validate_recovery_bands(recovery_path: str = "generated_src/FF_Recovery.hpp") -> None:
     """Fail loudly if a tag sits outside the band its NAME implies, or collides.
 
     The bands in FF_Recovery.hpp are not documentation: FF_IsResourceTag and
@@ -119,10 +119,12 @@ def validate_recovery_bands(recovery_path: str = "include/FF_Recovery.hpp") -> N
         )
 
 
-def validate_recovery_tags(output_dir: str, recovery_path: str = "include/FF_Recovery.hpp") -> int:
+def validate_recovery_tags(
+    output_dir: str, recovery_path: str = "generated_src/FF_Recovery.hpp"
+) -> int:
     """Fail loudly if the generator emitted a RECOVERY_TAG the header lacks.
 
-    `include/FF_Recovery.hpp` is emitted by emit/recovery_tags.py from the
+    `generated_src/FF_Recovery.hpp` is emitted by emit/recovery_tags.py from the
     committed ledger `dictionaries/master_tags.json`, at stage 1b -- before
     anything that references a tag. Its values are permanent wire constants.
     Every tag the spec needs is therefore already declared by the time the
