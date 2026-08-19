@@ -11,6 +11,174 @@
 
 ---
 
+# ▶ OPEN TOPIC — READ-PATH TRAVERSAL THROUGHPUT (unscoped, investigate first)
+
+Written 2026-08-19 out of XP-2.3. **This is not a validation task.** Validation
+is only where the cost became visible: the same traversal machinery backs every
+whole-document read — JSON export, Python iteration, compaction, `Node::fields()`
+— so whatever is slow here is slow for plain data access too. Scope it before
+implementing anything.
+
+**The claim under threat.** README:56 states *"Reading a FastFHIR stream requires
+0 heap allocations. A lightweight `Node` viewing lens is passed directly over the
+raw memory buffer, enabling nanosecond read times from the instant the message
+hits RAM."* Random-access field reads are genuinely O(1) and that part holds.
+**Whole-document traversal does not**, and at least one read-path function
+allocates per call (see §C). Either the code changes or the claim does.
+
+---
+
+## §A — The measurements that exist (do not re-derive these)
+
+Fixture: the largest Synthea bundle, ingested to a 50.8 MB `.ffhr`.
+Hardware: Ryan's Mac, `-O2`, single-threaded.
+
+| Measurement | Value |
+|---|---|
+| `Parser` construction (header + root bounds only) | **1.7 µs** |
+| `validate_FFHR_stream()` — full graph walk | **107 ms** (0.46 GB/s) |
+| Blocks reachable from the root | **913,809** |
+| Distinct block types in that stream | 46 |
+| Declared slots visited (blocks × ~20 fields) | **~18.3M** |
+| Cost per slot visit | **~6 ns** (~20 cycles) |
+| Touch all 913,809 block headers **sequentially** | **0.8 ms** (62 GB/s) |
+| Touch all 913,809 block headers **shuffled** | **3.7 ms** (13.6 GB/s) |
+
+**The gap is the whole topic.** The walk is ~30x slower than *worst-case random*
+access to the same headers. Memory latency is NOT the limit — that was measured
+and ruled out, against expectation. The time is in our own per-slot work.
+
+**Slot-kind distribution** (from `generated_src/FF_FieldKeys.hpp`, 1,611 declared
+slots across all blocks): 641 ARRAY, 454 BLOCK, 298 STRING, 102 CODE, 52 CHOICE,
+3 RESOURCE = **1,550 offset-bearing (96.2%)**; 23 BOOL, 19 FLOAT64, 19 UINT32 =
+61 inline scalar (3.8%). Consequence: **you cannot speed this up by skipping
+slot kinds.** Almost every slot must be followed.
+
+---
+
+## §B — What was already tried, and what it bought
+
+Do not repeat these. Two of three plausible hypotheses were **wrong**, which is
+the main lesson: measure, do not reason.
+
+| Change | Result | Verdict |
+|---|---|---|
+| Memoise the per-block field table | 551 → 477 ms | 13% — the `std::vector` copy was **not** the main cost, contrary to expectation |
+| `reserve()` the visited set | 477 → 379 ms | rehashing was 20% |
+| Visited set → bit-per-offset | 379 → 192 ms | node-based `unordered_set` was ~half the remaining time |
+| Hoist per-field bounds check out of the loop | 192 → 186 ms | **noise — not a factor** |
+| Recursion returns `bool`, not `FF_Result` | 186 → **108 ms** | **largest single win** |
+| `FF_Result` threaded by reference vs. parked on the struct | 105–107 ms both | **identical** — pick on clarity |
+| Skip inline-scalar slots in the structural pass | no change | only 3.8% of slots are skippable (§A) |
+| **Locality hypothesis** (cache misses are the floor) | **refuted** | shuffled access is 3.7 ms vs the walk's 107 ms |
+
+**Why `FF_Result`-by-value was so expensive:** it carries a `std::string`.
+Returning one from every level of a recursion that visits ~18.3M slots meant
+millions of string constructions to report *success*. This pattern is worth
+grepping for elsewhere in the read path.
+
+---
+
+## §C — A known, live defect (start here; it is concrete)
+
+`reflected_fields(uint16_t recovery)` in `generated_src/FF_Reflection.cpp`
+returns **`std::vector<FF_FieldInfo>` by value**:
+
+```cpp
+template <typename T_Block>
+std::vector<FF_FieldInfo> fields_for_block() {
+    return std::vector<FF_FieldInfo>(T_Block::FIELDS, T_Block::FIELDS + T_Block::FIELD_COUNT);
+}
+```
+
+`T_Block::FIELDS` is already a `static const FF_FieldInfo[FIELD_COUNT]`. Every
+call therefore heap-allocates and copies `FIELD_COUNT × 16` bytes to hand back
+data that is already sitting in static storage.
+
+**A zero-copy replacement already exists and is generated:**
+`reflected_fields_view(uint16_t) -> std::span<const FF_FieldInfo>`, emitted by
+`generator/emit/views.py`. **Only `validate_FFHR_stream()` uses it.** These
+callers still use the allocating version:
+
+| Caller | Why it matters |
+|---|---|
+| `src/FF_Parser.cpp` — `Node::fields()` | the documented public read API |
+| `src/FF_Parser.cpp` — `node_size()` | **builds an entire vector just to call `.size()`** — `FIELD_COUNT` is a compile-time constant |
+| `src/FF_Parser.cpp` (~line 91) | reflection dispatch |
+| `python/FF_PythonBindings.cpp` ×2 | the entire Python read path |
+
+`node_size()` is the most clearly wrong and the cheapest to fix. **Fixing these
+is not the same as fixing §A** — the memoisation experiment showed the field
+table was only ~13% — but it is a real allocation on a path documented as
+allocation-free, and it must be measured, not assumed.
+
+---
+
+## §D — Directions to investigate (nothing here is decided)
+
+1. **Migrate every `reflected_fields()` caller to `reflected_fields_view()`**,
+   starting with `node_size()`. Measure each. Then decide whether
+   `reflected_fields()` should exist at all, or stay for binding code that
+   genuinely needs an owning copy.
+2. **Measure the other whole-document paths the same way** — `print_json()`
+   export, `ff_export`, the Python iteration path, and `Compactor::archive()`.
+   The traversal shape is shared; the numbers are not yet known. Do this before
+   optimising anything, so effort lands where the cost actually is.
+3. **Does `Node`/`Entry` construction allocate or touch memory it need not?**
+   architecture.md §8.1 claims a `Node` is built "in CPU registers". Verify that
+   is still true — count instructions or check for spills.
+4. **Parallelism.** The walk splits cleanly across `Bundle.entry` subtrees, and
+   a Synthea bundle is ~913k blocks under one entry array. This is the only
+   identified route to a large multiple, rather than a percentage. Requires
+   deciding whether the read path may use threads at all (it currently does not)
+   — ⚠ that is Ryan's call, not an implementation detail.
+5. **Reduce blocks, not per-block cost.** 913,809 blocks for a 50.8 MB stream is
+   ~58 bytes/block. Ask whether the encoding is over-fragmenting — e.g. small
+   strings each getting a 14-byte-header block. This is a wire-format question
+   and therefore DT-adjacent; do not act on it without Ryan.
+
+---
+
+## §E — How to reproduce (exact, so no time is lost re-inventing it)
+
+```bash
+cmake --build --preset ninja
+F=$(ls -S build/synthea_fhir_r4/*.json | head -1)
+./build/ff_ingest "$F" -o /tmp/big.ffhr        # ~50.8 MB
+```
+
+Then a small `-O2` program linked against `build/libfastfhir.dylib`
+(`-Iinclude -Igenerated_src -Lbuild -lfastfhir`, run with
+`DYLD_LIBRARY_PATH=build`) that constructs a `Parser` over the bytes and times
+the call under test. **Take the minimum of ≥5 runs**, not the mean — run-to-run
+spread is ~5 ms and has already produced one false conclusion.
+
+Sampling profiler that worked (macOS):
+
+```bash
+./yourbench /tmp/big.ffhr & PID=$!; sleep 2; sample $PID 3 -f /tmp/prof.txt; wait $PID
+```
+
+---
+
+## §F — Rules for whoever takes this
+
+1. **Every claim needs a number.** Two of three intuitions were wrong here.
+   State before/after and the fixture.
+2. **Do not make validation automatic.** XP-2.4 settled this: construction is
+   1.7 µs, the walk is 107 ms. `Builder::query()` constructs a `Parser` over a
+   *build in progress* and must stay free.
+3. **Bounds-check before indexing anything by an offset.** A guard ordered after
+   an offset-indexed lookup was a live out-of-bounds read in
+   `validate_FFHR_stream()` for one build, and it presented as a
+   *non-deterministic* test failure. See the comment in `DeepValidator::walk`.
+4. **Do not change the wire format for speed** without Ryan. Direction 5 above
+   is the only one that would, and it is flagged ⚠ for that reason.
+5. Keep `ctest --preset ninja` at its current state (33/34; `py_roundtrip` is a
+   known red from A23–A27, unrelated to this topic).
+
+---
+
 # ▶ WIRE WORK ORDER — DT: pack date/time; RT: stop the diff cascade
 
 Written 2026-08-19. Two related orders. **RT-1 first** — it is the measuring
@@ -29,6 +197,10 @@ hand-edit anything under `generated_src/` (which now includes `FF_Recovery.hpp`)
 a flash model must not take alone.
 
 ## Priority summary
+
+**XP-2 is closed (2026-08-19), so there is no open P0.** DT is unblocked; its
+two ⚠ decisions (the `FF_FIELD_DATETIME` enum value, and the compatibility
+wording) are the only things standing between here and DT-1.
 
 | ID | Priority | Task | Why | Status |
 |---|---|---|---|---|
@@ -531,7 +703,7 @@ has and IFE lacks — chiefly the wire witness) is at the top of
 | ID | Priority | Task | Why | Status |
 |---|---|---|---|---|
 | XP-1 | **P0** | Bound and cycle-check the stored-graph traversal | Unbounded recursion over attacker-controlled offsets — stack overflow, not slowness | **DONE** (1.1+1.3 2026-08-18, 1.2 verified 2026-08-19) |
-| XP-2 | **P0** | Deep-validate the offset graph on open; fix the Parser's overclaim | `Parser` validates the header only, while its docstring says "file structure" | XP-2.1 + XP-2.2 DONE (2026-08-19); XP-2.3 open, XP-2.4 ⚠ needs Ryan |
+| XP-2 | **P0** | Deep-validate the offset graph on open; fix the Parser's overclaim | `Parser` validates the header only, while its docstring says "file structure" | **DONE 2026-08-19** — XP-2.1/2.2 (87ae434), XP-2.3 `validate_FFHR_stream()`; XP-2.4 answered: explicit call, not automatic |
 | XP-3 | P1 | Add `--check` and `--validate` to the generator | No drift or consistency gate exists | open |
 | XP-4 | P1 | Port IFE's `portability_lint.py` | Six mechanical checks, each bought with a CI round-trip there | open |
 | XP-5 | P1 | Add CI workflows | `.github/` has templates and no workflows; nothing is gated | open |
@@ -744,21 +916,165 @@ than no comment, and this one already cost a reviewer a wrong assumption.
 > caller that wants to check it. The docstring now says every other offset
 > remains untrusted after construction, and points at XP-2.3.
 
-### XP-2.3 — `Parser::validate_deep()`
-Walk the graph from the root: bounds, self-offset, recovery tag per block,
-reusing XP-1's path and visited set. Not in the constructor — an explicit call
-a caller makes on untrusted input, matching IFE's split between construction
-and `validate_file_structure`.
+### XP-2.3 — `Parser::validate_FFHR_stream()` — ✅ DONE 2026-08-19
 
-⚠ **XP-2.4 — is validation opt-in or mandatory?** IFE made structural
-validation unconditional and left conformance to an attachable layer. Whether
-`Parser`'s constructor should call `validate_deep()` for everyone, or callers
-opt in, is a policy call with a real cost on large arenas. Produce the analysis
-— cost measured on the largest fixture, and what a server accepting untrusted
-`.ffh` would need — and STOP.
+> **DONE.** Named `validate_FFHR_stream()` (Ryan, 2026-08-19 — after
+> `validate_deep` and `validate_file_structure` were each tried; the final name
+> is the one in the code). Declared in `include/FF_Parser.hpp`, implemented in
+> `src/FF_Parser.cpp`.
+>
+> **Two responsibilities, exactly as specified:**
+> 1. **The offset chain, including recovery.** For every reachable non-null
+>    offset: the block's `VALIDATION` word must equal its own offset, and its
+>    `RECOVERY` must equal the type the *schema* declares for that slot. A
+>    `Patient.meta` holding a well-formed block that is not a `Meta` is
+>    rejected — `FF_FIELD_BLOCK` carries `child_recovery = RECOVER_FF_META`,
+>    and arrays are checked as `ToArrayTag(child_recovery)` so the element type
+>    is enforced too.
+> 2. **Byte ranges.** Every offset is bounds-checked *before* the bytes at it
+>    are addressed, with room for a full block header; strings and arrays are
+>    additionally checked against their declared length/stride×count so a
+>    truncated payload cannot overrun the buffer.
+>
+> **It reads raw offsets, never Node/Entry.** The lens assumes the offsets it is
+> given are trustworthy — precisely the assumption under test. The per-block
+> checks mirror `DATA_BLOCK::validate_offset` but are open-coded so a failure
+> names the offset *and the field it was reached through*.
+>
+> Cycle and depth guards use XP-1's policy, with `MAX_VALIDATION_DEPTH` set to
+> the same 64 as the compactor's `MAX_NODE_DEPTH` and a comment saying they must
+> not drift. `done` is recorded on completion, never on entry.
+>
+> **Measured cost — this is why it stays explicit.** On the largest Synthea
+> fixture (50.8 MB, 913,809 blocks): `Parser` construction **1.7 µs**, the walk
+> **108 ms**. Automatic validation would have made every open, including
+> `Builder::query()`, pay ~0.1 s on a 50 MB stream. The XP-2.4 reversal was
+> correct.
+>
+> **Optimised 551 ms -> 108 ms (5.1x) after profiling.** Two of the three
+> hypotheses were wrong, which is worth recording so nobody re-derives them:
+>
+> | Change | Time | Verdict |
+> |---|---|---|
+> | first working version | 551 ms | — |
+> | memoise the per-block field table | 477 ms | 13% — the `std::vector` copy was **not** the main cost |
+> | `reserve()` the visited set | 379 ms | rehashing was 20% |
+> | visited set -> bit-per-offset | 192 ms | the node-based `unordered_set` was ~half |
+> | hoist the per-field bounds check | 186 ms | noise — **not** a factor |
+> | recursion returns `bool`, not `FF_Result` | **108 ms** | the single largest win |
+>
+> The last one is the lesson: `FF_Result` carries a `std::string`, and the walk
+> returned one from every level for ~18M field visits. Building millions of
+> strings to say "fine" cost more than everything else combined. The message is
+> now built once, on the failing path only.
+>
+> **Locality was measured and ruled out**, against a hypothesis that it was the
+> floor: touching all 913,809 block headers sequentially costs **0.8 ms**, and in
+> **shuffled** order **3.7 ms**. The walk was 50x slower than worst-case random
+> access, so it was never a memory-bandwidth problem — it was our own code.
+>
+> **Two entry points, split on what an attacker can do (Ryan, 2026-08-19).**
+> `validate_FFHR_stream()` is the anti-attack pass: it follows only slots that
+> can carry an offset. `validate_FFHR_stream_deep()` additionally inspects
+> inline scalar values (a bool outside {0,1,sentinel}; a dictionary code id that
+> resolves to nothing). A nonsense scalar is not an attack — the byte sits
+> inside a V-Table the structural pass has already bounds-checked — so it does
+> not belong in the fast path.
+>
+> **The split buys correctness of scope, not speed, and the measurement says
+> why: 96.2% of declared slots are offset-bearing** (1,550 of 1,611 — 641 ARRAY,
+> 454 BLOCK, 298 STRING, 102 CODE, 52 CHOICE, 3 RESOURCE) against just 61 inline
+> scalars (23 BOOL, 19 FLOAT64, 19 UINT32). Skipping scalars can therefore
+> remove at most 3.8% of visits, and both passes measure ~107 ms on the 50 MB
+> fixture. FHIR's shape defeats the optimisation: it is overwhelmingly strings,
+> arrays, blocks and codes, every one of which must be followed.
+>
+> **Throughput measured in bytes understates it.** Work is proportional to field
+> slots, not stream size: ~18.3M slots in 108 ms is **~170M field slots/sec**,
+> about 6 ns (~20 cycles) each for a switch dispatch, a load and a compare.
+> Getting materially below that needs *fewer visits*, not faster ones — a
+> generated per-tag table of only the offset-bearing fields would skip the
+> scalar slots entirely. Logged as a follow-up, not done.
+>
+> **`reflected_fields_view()` was added to the generator** (`emit/views.py`) —
+> a `std::span` over the static `FIELDS` array, no allocation, no copy. The
+> pre-existing `reflected_fields()` still returns by value and is still used by
+> `Node::fields()`, `node_size()` (which allocates a whole vector just to read
+> `.size()`) and the Python bindings — all on the documented read path, against
+> README's "Reading a FastFHIR stream requires 0 heap allocations". Switching
+> those over is its own task.
+>
+> **One bug this shook out, worth remembering:** the visited-bitset lookup was
+> ordered *before* the bounds check, so a hostile offset indexed the bitset out
+> of range — an out-of-bounds read inside the very function meant to reject it.
+> It presented as a *non-deterministic* test failure, which is how heap
+> overflows usually present. Bounds are now checked first, with a comment
+> saying why the order is load-bearing.
+>
+> Ten cases in `tests/cpp/ff_test_graph_bounds.cpp` (already registered):
+> clean stream passes; broken self-offset, wrong recovery tag, out-of-bounds
+> child, and a cycle each rejected with a naming message; plus the
+> `Patient.meta` schema-type case in both directions.
 
-**Done when:** a hand-corrupted fixture with an out-of-bounds child offset is
-rejected with a message naming the block and the offset.
+<details><summary>Original task text</summary>
+
+#### `Parser::validate_deep()` — explicit, not automatic
+
+**Ryan's decision (2026-08-19), which also answers XP-2.4: validation is an
+explicit call the caller makes, NOT something the constructor does.** This was
+briefly written up the other way and reversed the same day — the reversal is the
+decision, and matches IFE, which this repository's split was modelled on:
+`IrisCodec::validate_file_structure(ptr, size)` is a method the caller invokes,
+and IFE's README pairs it with a blunt warning that skipping it means "uncaught
+runtime exceptions will be thrown". Loud expectation, caller's choice.
+
+**Why opt-in wins here.** Making it automatic would have cost three things that
+are cheap to keep:
+
+* `Builder::query()` (`include/FF_Builder.hpp:183`) constructs a `Parser` over a
+  **build in progress**. Its docstring promises "nearly zero-cost as it only
+  populates CPU registers", and architecture.md §4.3 says readers of it must
+  accept transient `FF_NULL_OFFSET`s. Validating a deliberately incomplete graph
+  is both expensive and semantically wrong.
+* `src/FF_Builder.cpp:54` constructs a `Parser` inside a try/catch to hydrate
+  from an existing archive — another internal path that wants no walk.
+* Open stays **O(1)**. README's "nanosecond read times from the instant the
+  message hits RAM" and architecture.md §8.1 stay true, and no benchmark
+  re-sync is triggered (execution-contract rule 9).
+
+None of those need a carve-out mechanism if the walk is never implicit.
+
+**What `validate_deep()` checks** — walk the offset graph from the root and, for
+every edge whose offset is not `FF_NULL_OFFSET`:
+
+1. the offset is in bounds, with room for a full block header (the same rule
+   XP-2.1 applies to the root);
+2. the block's `VALIDATION` word equals **its own offset** — the self-offset
+   chain;
+3. the block's `RECOVERY` tag equals what the referring slot said it would be.
+
+**Most of this already exists — do not rewrite it.**
+`DATA_BLOCK::validate_offset(base, type_name, recovery_tag)` in
+`src/FF_Primitives.cpp` already performs checks 2 and 3 exactly, with messages
+naming the type and both tags. XP-2.3 is the **traversal** that applies it to
+every reachable block, not a new validator. Cycle and depth protection come from
+XP-1's `path` / `done` / `MAX_NODE_DEPTH` machinery in `src/FF_Compactor.cpp`,
+which is built and tested — lift it somewhere shared rather than writing a
+second copy that can drift apart from it.
+
+**The documentation duty is the whole risk of opt-in.** A check nobody knows to
+call protects nobody. `FF_Parser.hpp`'s class comment (corrected in XP-2.2)
+already states that offsets remain untrusted after construction and points here;
+README and architecture.md need the same sentence, in IFE's register: anyone
+reading a stream they did not produce should call `validate_deep()` first.
+
+**Done when:** hand-corrupted fixtures — an out-of-bounds child offset, a wrong
+self-offset, and a wrong recovery tag — are each rejected with a message naming
+the block and the offset; every Synthea fixture passes; `Builder::query()` and
+normal `Parser` construction are measurably unchanged; and the docs tell callers
+when to invoke it.
+
+</details>
 
 ---
 

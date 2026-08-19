@@ -96,6 +96,36 @@ public:
      */
     explicit Parser (const Memory& memory);
 
+    /**
+     * @brief Walk the offset graph and verify it is structurally sound.
+     *
+     * **Call this on any stream you did not produce.** Construction validates
+     * the header and the root offset only; every other offset is untrusted
+     * until this returns success. Deliberately explicit rather than automatic,
+     * so opening a trusted stream stays O(1) — the cost here is O(blocks).
+     *
+     * For every reachable non-null offset it checks that the target is in
+     * bounds, that the block's `VALIDATION` word equals its own offset, and
+     * that its `RECOVERY` tag is what the referring slot said it would be.
+     * Cycles and excessive nesting are rejected rather than followed.
+     *
+     * @return `FF_SUCCESS`, or a failure whose message names the offending
+     *         offset and the field it was reached through.
+     */
+    FF_Result validate_FFHR_stream() const;
+
+    /**
+     * @brief `validate_FFHR_stream()` plus inspection of inline scalar slots.
+     *
+     * The structural pass deliberately skips scalar slots: they are data
+     * inside a V-Table it has already bounds-checked, so they cannot aim the
+     * reader at memory it does not own and are irrelevant to deciding whether
+     * a stream is hostile. This variant visits them too, at proportionally
+     * higher cost, for callers who want the values inspected as well as the
+     * shape.
+     */
+    FF_Result validate_FFHR_stream_deep() const;
+
     /** 
     * @brief Check whether this parser instance references a parsed buffer.
     * @return `true` when the parser holds a valid underlying buffer; otherwise `false`.

@@ -166,6 +166,126 @@ int main() {
         CHECK(threw_tight, "root with no room for a block header is rejected");
     }
 
+    // ── 5. XP-2.3: validate_FFHR_stream() walks the graph on demand ───────────────
+    // Explicit, not automatic: construction must stay cheap, so each case below
+    // constructs a Parser successfully and only then asks for the walk.
+    {
+        Memory mem = Memory::create(1ull << 22);
+        Builder b(mem);
+        IdentifierData ix, iy;
+        auto hx = b.append_obj(ix);
+        auto hy = b.append_obj(iy);
+        CodeableConceptData cc;
+        auto hcc = b.append_obj(cc);
+        b.amend_pointer(hx.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
+        wire_root(b, {hx.offset(), hy.offset()}, "deep");
+        auto view = b.finalize();
+
+        FastFHIR::Parser good(view.data(), view.size());
+        CHECK(static_cast<bool>(good.validate_FFHR_stream()), "clean stream passes validate_FFHR_stream");
+
+        // (a) broken self-offset chain: corrupt a block's VALIDATION word.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            STORE_U64(bytes.data() + hcc.offset() + DATA_BLOCK::VALIDATION,
+                      hcc.offset() + 8);
+            FastFHIR::Parser p(bytes.data(), bytes.size());
+            auto r = p.validate_FFHR_stream();
+            CHECK(!r, "broken self-offset is rejected");
+            CHECK(r.message.find("self-offset") != std::string::npos,
+                  "message names the self-offset break");
+        }
+
+        // (b) wrong recovery tag on an otherwise well-placed block.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            STORE_U16(bytes.data() + hcc.offset() + DATA_BLOCK::RECOVERY,
+                      static_cast<uint16_t>(RECOVER_FF_PATIENT));
+            FastFHIR::Parser p(bytes.data(), bytes.size());
+            auto r = p.validate_FFHR_stream();
+            CHECK(!r, "wrong recovery tag is rejected");
+            CHECK(r.message.find("recovery tag") != std::string::npos,
+                  "message names the recovery tag");
+        }
+
+        // (c) out-of-bounds child offset behind a valid root.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            STORE_U64(bytes.data() + hx.offset() + FF_IDENTIFIER::TYPE,
+                      view.size() + 4096);
+            FastFHIR::Parser p(bytes.data(), bytes.size());
+            auto r = p.validate_FFHR_stream();
+            CHECK(!r, "out-of-bounds child offset is rejected");
+            CHECK(r.message.find("out of bounds") != std::string::npos,
+                  "message names the bounds failure");
+        }
+
+        // (d) a cycle reachable only by walking: X.type -> X.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            STORE_U64(bytes.data() + hx.offset() + FF_IDENTIFIER::TYPE, hx.offset());
+            FastFHIR::Parser p(bytes.data(), bytes.size());
+            auto r = p.validate_FFHR_stream();
+            CHECK(!r, "cycle is rejected by validate_FFHR_stream");
+        }
+    }
+
+    // ── 6. The schema-declared child type is what gets enforced ────────────
+    // Patient.meta is FF_FIELD_BLOCK with child_recovery = RECOVER_FF_META, so
+    // a non-null meta offset must point at a block whose VALIDATION word is its
+    // own offset AND whose RECOVERY is RECOVER_FF_META. Nothing else is
+    // accepted there, however well-formed it is in isolation.
+    {
+        Memory mem = Memory::create(1ull << 22);
+        Builder b(mem);
+        MetaData meta;
+        auto hmeta = b.append_obj(meta);
+        PatientData p; p.id = "meta-case";
+        auto hp = b.append_obj(p);
+        b.amend_pointer(hp.offset(), FF_PATIENT::META, hmeta.offset());
+        b.set_root(hp);
+        auto view = b.finalize();
+
+        FastFHIR::Parser good(view.data(), view.size());
+        CHECK(static_cast<bool>(good.validate_FFHR_stream()),
+              "Patient.meta -> Meta validates");
+
+        // Re-tag the meta block as a Patient: structurally intact, schema-wrong.
+        std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+        STORE_U16(bytes.data() + hmeta.offset() + DATA_BLOCK::RECOVERY,
+                  static_cast<uint16_t>(RECOVER_FF_PATIENT));
+        FastFHIR::Parser bad(bytes.data(), bytes.size());
+        auto r = bad.validate_FFHR_stream();
+        CHECK(!r, "Patient.meta pointing at a non-Meta block is rejected");
+        CHECK(r.message.find("meta") != std::string::npos,
+              "message names the field it was reached through");
+    }
+
+    // ── 7. The structural / deep split is real ─────────────────────────────
+    // A scalar slot cannot aim the reader anywhere -- it is inline data inside
+    // a V-Table already bounds-checked as a whole -- so a nonsense scalar is
+    // NOT an attack and validate_FFHR_stream() deliberately ignores it.
+    // validate_FFHR_stream_deep() is the pass that looks.
+    {
+        Memory mem = Memory::create(1ull << 22);
+        Builder b(mem);
+        PatientData p; p.id = "scalar-split"; p.active = true;
+        auto hp = b.append_obj(p);
+        b.set_root(hp);
+        auto view = b.finalize();
+
+        std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+        bytes[hp.offset() + FF_PATIENT::ACTIVE] = 7;   // not 0, 1 or the sentinel
+
+        FastFHIR::Parser p2(bytes.data(), bytes.size());
+        CHECK(static_cast<bool>(p2.validate_FFHR_stream()),
+              "structural pass ignores a nonsense scalar");
+        auto d = p2.validate_FFHR_stream_deep();
+        CHECK(!d, "deep pass rejects a nonsense scalar");
+        CHECK(d.message.find("bool") != std::string::npos,
+              "deep message names the offending slot kind");
+    }
+
     printf("%s\n", failures ? "FAILURES" : "all graph-bounds checks pass");
     return failures ? 1 : 0;
 }

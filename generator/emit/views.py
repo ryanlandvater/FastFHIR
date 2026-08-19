@@ -168,10 +168,17 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "#pragma once\n"
         '#include "FF_Primitives.hpp"\n'
         "#include <string_view>\n"
-        "#include <vector>\n\n"
+        "#include <vector>\n"
+        "#include <span>\n\n"
     )
     hpp_body = (
         "namespace Reflective { class Node; }\n"
+        "// Zero-copy view over a block's static FF_FieldInfo table.\n"
+        "// reflected_fields() below returns the same data BY VALUE, which heap-\n"
+        "// allocates and copies FIELD_COUNT*sizeof(FF_FieldInfo) bytes on every\n"
+        "// call. Prefer this on any hot path: FIELDS is a static array, so the\n"
+        "// span is a pointer and a length with no allocation and no copy.\n"
+        "std::span<const FF_FieldInfo> reflected_fields_view(uint16_t recovery);\n"
         "std::vector<FF_FieldInfo> reflected_fields(uint16_t recovery);\n"
         "std::vector<std::string_view> reflected_keys(uint16_t recovery);\n"
         "Reflective::Node reflected_child_node(const BYTE* base, Size size, uint32_t version, Offset offset, uint16_t recovery, std::string_view key);\n"
@@ -218,6 +225,18 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "        keys.emplace_back(T_Block::FIELDS[i].name);\n"
         "    }\n"
         "    return keys;\n"
+        "}\n\n"
+        "std::span<const FF_FieldInfo> reflected_fields_view(uint16_t recovery) {\n"
+        "    switch (recovery) {\n"
+    )
+    for s_name in sorted(block_struct_names):
+        cpp_body += (
+            f"        case {s_name}::recovery: "
+            f"return {{{s_name}::FIELDS, {s_name}::FIELD_COUNT}};\n"
+        )
+    cpp_body += (
+        "        default: return {};\n"
+        "    }\n"
         "}\n\n"
         "std::vector<FF_FieldInfo> reflected_fields(uint16_t recovery) {\n"
         "    switch (recovery) {\n"

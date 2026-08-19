@@ -16,6 +16,8 @@
 #include "FF_Dictionary.hpp"
 #include "FF_Reflection.hpp"
 #include <assert.h>
+#include <algorithm>
+#include <unordered_set>
 
 namespace FastFHIR {
 namespace Reflective {
@@ -309,6 +311,331 @@ Parser::ChecksumValidation Parser::checksum() const {
         cs.get_algorithm(m_base),
         cs.get_hash_view(m_base)
     };
+}
+
+
+// =====================================================================
+// XP-2.3 — Parser::validate_FFHR_stream()
+//
+// Explicit, never automatic. Construction stays O(1) so Builder::query() and
+// the ordinary open path pay nothing; a caller reading bytes it did not produce
+// asks for this walk deliberately. (IFE's split, which this mirrors:
+// validate_FFHR_stream is a call, not a constructor side effect.)
+//
+// Everything here reads RAW OFFSETS and bounds-checks them BEFORE addressing
+// the bytes. It deliberately does not go through Node/Entry: that lens assumes
+// the offsets it is handed are already trustworthy, which is exactly the
+// assumption under test. The per-block checks mirror DATA_BLOCK::validate_offset
+// (self-offset word, recovery tag) but are open-coded so a failure can name the
+// offset it was reached from.
+//
+// Cycle and depth policy is XP-1's, and MAX_VALIDATION_DEPTH is deliberately
+// the same 64 as the compactor's MAX_NODE_DEPTH: both bound the same FHIR
+// object graph, so they must not drift. `done` is recorded on COMPLETION, never
+// on entry -- marking on entry would let a block that reaches itself find its
+// own entry and report success.
+namespace {
+
+constexpr std::size_t MAX_VALIDATION_DEPTH = 64;
+
+// Which V-Table slot kinds can hold an offset into the arena. Everything not
+// listed here is inline data and structurally inert.
+static inline bool slot_carries_offset(FF_FieldKind k) {
+    switch (k) {
+        case FF_FIELD_STRING:
+        case FF_FIELD_BLOCK:
+        case FF_FIELD_ARRAY:
+        case FF_FIELD_RESOURCE:
+        case FF_FIELD_CHOICE:
+        case FF_FIELD_CODE:      // only when FF_CODEABLE_CONCEPT_FLAG is set
+            return true;
+        default:
+            return false;
+    }
+}
+
+struct DeepValidator {
+    const BYTE* base = nullptr;
+    Size        size = 0;
+    std::vector<Offset>        path;
+    // "Already fully validated" set. A node-based unordered_set costs a hash
+    // and an allocation per block, and this walk visits every block in the
+    // stream -- 913,809 of them in a 50 MB fixture, where that overhead was
+    // more than half the total runtime. A bit per byte-offset removes both,
+    // but costs size/8 bytes, so it is only used when that is affordable;
+    // above the threshold we fall back to a pre-reserved hash set.
+    // Structural pass only, or also inspect inline scalar values. Scalars
+    // cannot point anywhere: they are data inside a V-Table this walk has
+    // already bounds-checked as a whole, so they are irrelevant to "is this
+    // stream trying to make me read memory I do not own". Skipping them is
+    // what separates validate_FFHR_stream() from its _deep() counterpart.
+    bool check_scalars = false;
+    uint32_t version = 0;   // FHIR revision, for dictionary resolution in _deep()
+
+    static constexpr Size BITSET_MAX_STREAM = 1ull << 30;   // 1 GiB -> 128 MiB bits
+    std::vector<uint64_t>      done_bits;
+    std::unordered_set<Offset> done_set;
+    bool use_bits = false;
+
+    void init_visited(Size size) {
+        use_bits = size <= BITSET_MAX_STREAM;
+        if (use_bits) done_bits.assign((size >> 6) + 2, 0);
+        else          done_set.reserve(1u << 20);
+    }
+    bool seen(Offset o) const {
+        return use_bits ? ((done_bits[o >> 6] >> (o & 63)) & 1ull) != 0
+                        : done_set.count(o) != 0;
+    }
+    void mark(Offset o) {
+        if (use_bits) done_bits[o >> 6] |= 1ull << (o & 63);
+        else          done_set.insert(o);
+    }
+    // The recursion returns bool and threads ONE FF_Result by reference; it
+    // never returns FF_Result by value. FF_Result carries a std::string, and
+    // materialising one at every level of a walk that visits ~900k blocks with
+    // ~20 fields each meant millions of string constructions to report success.
+    // Measured: that alone was ~180 ms of the 186 ms this walk used to cost on
+    // a 50 MB stream -- 50x more than touching every block header in random
+    // order (3.7 ms). The result is written once, by the frame that fails, and
+    // floats up untouched as each caller returns false.
+    //
+    // Threading it by reference rather than parking it on the validator was
+    // measured against that alternative: 105-107 ms either way, i.e. identical.
+    // The reference wins on being visible in the signature instead of hidden
+    // state, not on speed.
+    static bool fail(FF_Result& out, std::string msg) {
+        out = {FF_VALIDATION_FAILURE, "FastFHIR Validation Error: " + std::move(msg)};
+        return false;
+    }
+    // `need <= size` first: size - need would wrap on a short buffer.
+    bool fits(Offset off, Size need) const {
+        return need <= size && off >= FF_HEADER::HEADER_SIZE && off <= size - need;
+    }
+
+    bool walk(Offset off, RECOVERY_TAG expected, std::size_t depth, const char* via,
+              FF_Result& out);
+    bool walk_array(Offset off, RECOVERY_TAG array_tag, std::size_t depth, FF_Result& out);
+    bool walk_fields(Offset off, RECOVERY_TAG tag, std::size_t depth, FF_Result& out);
+};
+
+bool DeepValidator::walk(Offset off, RECOVERY_TAG expected, std::size_t depth,
+                              const char* via, FF_Result& out) {
+    if (off == FF_NULL_OFFSET) return true;
+
+    if (depth > MAX_VALIDATION_DEPTH) {
+        return fail(out, "nesting exceeds the maximum depth of " +
+                    std::to_string(MAX_VALIDATION_DEPTH) + " at offset " +
+                    std::to_string(off) + " (via " + via + ")");
+    }
+    // BOUNDS FIRST -- before anything indexes by `off`. seen() addresses the
+    // visited bitset at off>>6, so checking it ahead of this would itself read
+    // out of bounds on exactly the hostile offset this function exists to
+    // reject. That ordering bug was live for one build and showed up as a
+    // NON-DETERMINISTIC test failure (the OOB read usually hit mapped memory
+    // and happened to return 0), which is how heap overflows normally present.
+    if (!fits(off, DATA_BLOCK::HEADER_SIZE)) {
+        return fail(out, "offset " + std::to_string(off) + " (via " + via +
+                    ") is out of bounds for a " + std::to_string(size) + "-byte stream");
+    }
+    if (std::find(path.begin(), path.end(), off) != path.end()) {
+        return fail(out, "cycle in the stored graph at offset " + std::to_string(off) +
+                    " (via " + via + "); a block references one of its own ancestors");
+    }
+    if (seen(off)) return true;
+
+    const Offset stored = LOAD_U64(base + off + DATA_BLOCK::VALIDATION);
+    if (stored != off) {
+        return fail(out, "block at offset " + std::to_string(off) + " (via " + via +
+                    ") has self-offset " + std::to_string(stored) +
+                    "; the offset chain is broken");
+    }
+    const RECOVERY_TAG actual =
+        static_cast<RECOVERY_TAG>(LOAD_U16(base + off + DATA_BLOCK::RECOVERY));
+    if (expected != FF_RECOVER_UNDEFINED && actual != expected) {
+        return fail(out, "block at offset " + std::to_string(off) + " (via " + via +
+                    ") has recovery tag " + std::to_string(actual) + ", expected " +
+                    std::to_string(expected));
+    }
+
+    path.push_back(off);
+    bool r = true;
+    if (IsArrayTag(actual)) {
+        r = walk_array(off, actual, depth, out);
+    } else if (actual == RECOVER_FF_STRING) {
+        const uint32_t len = LOAD_U32(base + off + FF_STRING::LENGTH);
+        if (!fits(off, FF_STRING::HEADER_SIZE + len)) {
+            r = fail(out, "string at offset " + std::to_string(off) + " (via " + via +
+                     ") claims " + std::to_string(len) + " bytes and overruns the stream");
+        }
+    } else {
+        r = walk_fields(off, actual, depth, out);
+    }
+    path.pop_back();
+    if (r) mark(off);   // on completion only
+    return r;
+}
+
+bool DeepValidator::walk_array(Offset off, RECOVERY_TAG array_tag,
+                               std::size_t depth, FF_Result& out) {
+    if (!fits(off, FF_ARRAY::HEADER_SIZE)) {
+        return fail(out, "array header at offset " + std::to_string(off) + " overruns the stream");
+    }
+    const uint16_t packed = LOAD_U16(base + off + FF_ARRAY::KIND_AND_STEP);
+    const uint16_t step   = packed & FF_ARRAY::STEP_MASK;
+    const auto     kind   = static_cast<FF_ARRAY::EntryKind>(packed & FF_ARRAY::KIND_MASK);
+    const uint32_t count  = LOAD_U32(base + off + FF_ARRAY::ENTRY_COUNT);
+    const RECOVERY_TAG element = GetTypeFromTag(array_tag);
+
+    if (step == 0 && count != 0) {
+        return fail(out, "array at offset " + std::to_string(off) + " has a zero stride");
+    }
+    const Size span = static_cast<Size>(count) * static_cast<Size>(step);
+    if (!fits(off, FF_ARRAY::HEADER_SIZE + span)) {
+        return fail(out, "array at offset " + std::to_string(off) + " declares " +
+                    std::to_string(count) + " entries of " + std::to_string(step) +
+                    " bytes and overruns the stream");
+    }
+
+    const Offset entries = off + FF_ARRAY::HEADER_SIZE;
+    if (kind == FF_ARRAY::OFFSET) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const Offset child = LOAD_U64(base + entries + static_cast<Size>(i) * step);
+            if (!walk(child, element, depth + 1, "array entry", out)) return false;
+        }
+    } else if (kind == FF_ARRAY::INLINE_BLOCK) {
+        // Each entry is a complete block at its own offset, so the same checks apply.
+        for (uint32_t i = 0; i < count; ++i) {
+            const Offset child = entries + static_cast<Size>(i) * step;
+            if (!walk(child, element, depth + 1, "inline array entry", out)) return false;
+        }
+    }
+    // SCALAR entries carry no offsets; the span check above is the whole check.
+    return true;
+}
+
+bool DeepValidator::walk_fields(Offset off, RECOVERY_TAG tag,
+                                std::size_t depth, FF_Result& out) {
+    const std::span<const FF_FieldInfo> fields = reflected_fields_view(tag);
+    if (fields.empty()) return true;
+
+    // Bounds-check the whole V-Table ONCE, then the per-field loop below is
+    // pure offset arithmetic and loads. Doing it per field cost ~18M redundant
+    // range checks on a 50 MB stream. Slots are emitted in ascending offset
+    // order, so the last one bounds the table; TYPE_SIZE_RESOURCE is the widest
+    // slot (10 bytes) and covers every kind.
+    const Size vtable_end =
+        static_cast<Size>(fields.back().field_offset) + TYPE_SIZE_RESOURCE;
+    if (!fits(off, vtable_end)) {
+        return fail(out, "block at offset " + std::to_string(off) +
+                    " has a V-Table that overruns the stream");
+    }
+
+    for (const FF_FieldInfo& f : fields) {
+        // Structural pass: only slots that can carry an offset are worth
+        // visiting. Everything else is inline bytes inside the V-Table already
+        // bounds-checked above, and cannot aim the reader anywhere.
+        if (!check_scalars && !slot_carries_offset(f.kind)) continue;
+
+        const Offset slot = off + f.field_offset;
+
+        switch (f.kind) {
+            case FF_FIELD_STRING:
+                if (!walk(LOAD_U64(base + slot), RECOVER_FF_STRING, depth + 1, f.name, out))
+                    return false;
+                break;
+            case FF_FIELD_BLOCK:
+                if (!walk(LOAD_U64(base + slot), f.child_recovery, depth + 1, f.name, out))
+                    return false;
+                break;
+            case FF_FIELD_ARRAY:
+                if (!walk(LOAD_U64(base + slot), ToArrayTag(f.child_recovery),
+                                  depth + 1, f.name, out))
+                    return false;
+                break;
+            case FF_FIELD_RESOURCE: {
+                // 10-byte slot: the concrete type is inline beside the offset.
+                const auto tgt = static_cast<RECOVERY_TAG>(
+                    LOAD_U16(base + slot + DATA_BLOCK::RECOVERY));
+                if (!walk(LOAD_U64(base + slot), tgt, depth + 1, f.name, out)) return false;
+                break;
+            }
+            case FF_FIELD_CHOICE: {
+                // 8 raw bytes + 2-byte tag. For a scalar variant the raw bytes
+                // ARE the value, so there is no offset to follow.
+                const auto tgt = static_cast<RECOVERY_TAG>(
+                    LOAD_U16(base + slot + DATA_BLOCK::RECOVERY));
+                if (tgt == FF_RECOVER_UNDEFINED || FF_IsScalarBlockTag(tgt)) break;
+                if (!walk(LOAD_U64(base + slot), tgt, depth + 1, f.name, out)) return false;
+                break;
+            }
+            case FF_FIELD_CODE: {
+                // MSB set => signed relative offset to an FF_CODEABLE_CONCEPT.
+                const uint32_t raw = LOAD_U32(base + slot);
+                if (raw == FF_CODE_NULL) break;
+                if ((raw & FF_CODEABLE_CONCEPT_FLAG) == 0) {
+                    // Plain dictionary id: structurally inert, so only _deep()
+                    // checks that it actually resolves to a code.
+                    const char* resolved = FF_ResolveCode(raw, version);
+                    if (check_scalars && (resolved == nullptr || *resolved == 0)) {
+                        return fail(out, "code slot '" + std::string(f.name) +
+                                    "' at offset " + std::to_string(slot) +
+                                    " holds dictionary id " + std::to_string(raw) +
+                                    ", which resolves to nothing");
+                    }
+                    break;
+                }
+                const int32_t rel = static_cast<int32_t>(raw << 1) >> 1;
+                const Offset cc = off + static_cast<Offset>(static_cast<int64_t>(rel));
+                if (!walk(cc, RECOVER_FF_CODEABLE_CONCEPT, depth + 1, f.name, out))
+                    return false;
+                break;
+            }
+            case FF_FIELD_BOOL:
+                // Structurally inert, so only the _deep() pass looks. A bool
+                // outside {0,1} is not an attack -- the byte is inside a
+                // bounds-checked V-Table -- but it is a stream no writer of
+                // ours produced.
+                if (check_scalars) {
+                    const uint8_t v = base[slot];
+                    if (v > 1 && v != FF_NULL_UINT8) {
+                        return fail(out, "bool slot '" + std::string(f.name) +
+                                    "' at offset " + std::to_string(slot) +
+                                    " holds " + std::to_string(v) +
+                                    "; expected 0, 1 or the null sentinel");
+                    }
+                }
+                break;
+            default:
+                break;   // remaining inline scalars carry no offset
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+FF_Result Parser::validate_FFHR_stream() const {
+    if (m_root_offset == FF_NULL_OFFSET) return {FF_SUCCESS};   // rootless stream
+    DeepValidator v;
+    v.base = m_base;
+    v.size = m_size;
+    v.init_visited(m_size);
+    FF_Result out{FF_SUCCESS};
+    v.walk(m_root_offset, m_root_recovery, 0, "root", out);
+    return out;
+}
+
+FF_Result Parser::validate_FFHR_stream_deep() const {
+    if (m_root_offset == FF_NULL_OFFSET) return {FF_SUCCESS};
+    DeepValidator v;
+    v.base = m_base;
+    v.size = m_size;
+    v.check_scalars = true;
+    v.version = m_version;
+    v.init_visited(m_size);
+    FF_Result out{FF_SUCCESS};
+    v.walk(m_root_offset, m_root_recovery, 0, "root", out);
+    return out;
 }
 
 Reflective::Node Parser::root() const {
