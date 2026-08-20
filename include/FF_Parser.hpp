@@ -17,6 +17,7 @@
 
 #include <concepts>
 #include <iosfwd>
+#include <span>
 #include <type_traits>
 
 #include "FF_Dictionary.hpp"
@@ -421,10 +422,12 @@ public:
     bool is() const { return m_recovery == ResourceTypeTraits<T>::recovery; }
 
     /**
-     * @brief Enumerate reflected field metadata for object nodes.
-     * @return Field metadata list for object nodes; empty for non-object nodes.
+     * @brief Zero-copy view of reflected field metadata for object nodes.
+     * @return Span over the block's static field table; empty for non-object
+     *         nodes. No allocation: the table is a static array in the
+     *         generated block (see reflected_fields_view()).
      */
-    std::vector<FF_FieldInfo> fields() const;
+    std::span<const FF_FieldInfo> fields() const;
 
     /**
      * @brief Enumerate reflected key names for object nodes.

@@ -130,6 +130,36 @@ Key CMake options: `FASTFHIR_PRODUCTION_PROFILE` (comma-separated union of
 Bazel targets mirror the CMake ones (`MODULE.bazel`/`BUILD.bazel`) but CMake is primary.
 Windows: OpenSSL via vcpkg (see README → Windows Build Prerequisites).
 
+### Performance measurements: Release only (2026-08-19)
+
+All three presets (`ninja`, `xcode`, `xcode-asan`) configure **Debug (`-O0`)**
+builds. Timings against `build/libfastfhir.dylib` are Debug numbers — TASKS.md's
+OPEN TOPIC §A/§B tables were measured that way and their "-O2" label is wrong.
+Whole-document read-path costs drop ~10× in Release:
+
+| Path (50.8 MiB bundle, min of 7) | Debug `-O0` | Release `-O3` |
+|---|---|---|
+| `validate_FFHR_stream()` | 107.5 ms | **10.4 ms** |
+| `Bundle.entry.entries()` (31,042 elements) | 856 µs | **36 µs** |
+| `print_json()` → null sink | 734 ms | 197 ms |
+
+Measure performance against a Release build (keep the Debug preset for
+debugging):
+
+```bash
+cmake -S . -B build-opt -DCMAKE_BUILD_TYPE=Release -DFASTFHIR_BUILD_INGESTOR=ON
+cmake --build build-opt -j
+# link: -Iinclude -Igenerated_src -Lbuild-opt -lfastfhir, run with DYLD_LIBRARY_PATH=build-opt
+```
+
+Do not micro-optimize the read path from Debug measurements: a one-shot
+`vector(count)` + `out[i]=` fill of `standard_node_entries()` won 856→525 µs at
+`-O0` but **regressed 36→58 µs at `-O3`** (libc++ container annotations inline
+to nothing at `-O3`; per-element `push_back` writes each 48-byte `Node` once,
+the fill writes twice). Reverted — the `push_back` version stands. The
+companion benchmark repo pins `--compilation_mode=opt` in its `.bazelrc`; keep
+it there (see its README, "the Debug trap").
+
 ## Architecture in brief
 
 - **Memory (VMA)** — `Memory::create()` / `createFromFile()` reserve a sparse virtual arena

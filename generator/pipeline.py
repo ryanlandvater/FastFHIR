@@ -51,7 +51,10 @@ def run(output_dir: str = "generated_src", *, keep_specs: bool = False) -> None:
     #     release takes the next free value in its band and nothing already
     #     assigned moves. Covers the whole spec, so the header does NOT vary
     #     with FASTFHIR_PRODUCTION_PROFILE.
-    n_tags, n_new = generate_recovery_tags(specs_dir=_PKG_ROOT)
+    n_tags, n_new = generate_recovery_tags(
+        specs_dir=_PKG_ROOT,
+        header_path=os.path.join(output_dir, "FF_Recovery.hpp"),
+    )
     print(f"  Recovery tags: {n_tags} in ledger, {n_new} appended")
 
     # 2. Reconcile the HL7 code sets against the permanent ID ledger.
@@ -64,9 +67,9 @@ def run(output_dir: str = "generated_src", *, keep_specs: bool = False) -> None:
         }
     )
 
-    # 3. Emit dictionaries/ from the ledger (FF_Codes.hpp + runtime tables).
-    generate_code_names()
-    generate_dictionary_tables(ledger)
+    # 3. Project the ledger into the output dir (FF_Codes.hpp + runtime tables).
+    generate_code_names(output_dir=output_dir)
+    generate_dictionary_tables(ledger, output_dir=output_dir)
 
     # 4. Resolve resource types and build code-system enums.
     resources = resolve_production_resources(specs_dir=_PKG_ROOT)

@@ -41,13 +41,13 @@ emit/                model -> C++ strings.
   -- the three ledger emitters; see "Ledgers vs projections" below --
   code_ids.py          Owns code NUMBERING (permanent). Scans packages, appends
                        to dictionaries/master_codes.json, emits the string table
-                       and per-version lookup tables into generated_src/.
+                       and per-version lookup tables into the output dir.
   code_names.py        Owns code NAMING (source-level only). Mints C++
-                       identifiers and emits generated_src/FF_Codes.hpp.
+                       identifiers and emits FF_Codes.hpp into the output dir.
   recovery_tags.py     Owns tag NUMBERING (permanent). Reconciles
                        dictionaries/master_tags.json and emits
-                       generated_src/FF_Recovery.hpp. No naming counterpart: a tag's
-                       name is mechanically its FHIR path.
+                       FF_Recovery.hpp into the output dir. No naming
+                       counterpart: a tag's name is mechanically its FHIR path.
   codesystems.py       Bounded code enums (FF_CodeSystems.hpp)
   store.py             size_fields / store_fields
   deserialize.py       Eager struct deserializers
@@ -72,9 +72,11 @@ noted above, which are deliberately staged for planned work rather than dead.
    network only on first run.
 2. **Reconcile IDs** — `emit/code_ids.py` scans the packages and appends any
    new codes to `master_codes.json`. **Append-only.**
-3. **Project the ledger** — `emit/code_names.py` writes `generated_src/FF_Codes.hpp`;
-   `emit/code_ids.py` writes the string table and per-version lookup tables, also
-   into `generated_src/`.
+3. **Project the ledger** — `emit/code_names.py` writes `FF_Codes.hpp` into the
+   output dir; `emit/code_ids.py` writes the string table and per-version lookup
+   tables, also into the output dir. (Both, plus `recovery_tags.py`, honor
+   `--output-dir`; the wire gate regenerates into a tmp dir and witnesses that
+   tree.)
 4. **Code systems** — `emit/codesystems.py` writes `FF_CodeSystems.hpp`.
 5. **Library** — `library.py` emits the per-resource C++, field keys,
    reflection, and Python bindings.

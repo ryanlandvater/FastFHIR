@@ -448,7 +448,7 @@ namespace FastFHIR
             bool is_string() const;
             bool is_scalar() const;
             size_t size() const;
-            std::vector<FF_FieldInfo> fields() const;
+            std::span<const FF_FieldInfo> fields() const;
             std::vector<std::string_view> keys() const;
 
             // Field/index access
@@ -503,7 +503,7 @@ namespace FastFHIR
             bool is_string() const { return as_node().is_string(); }
             bool is_scalar() const { return as_node().is_scalar(); }
             size_t size() const { return as_node().size(); }
-            std::vector<FF_FieldInfo> fields() const { return as_node().fields(); }
+            std::span<const FF_FieldInfo> fields() const { return as_node().fields(); }
             std::vector<std::string_view> keys() const { return as_node().keys(); }
 
             MutableEntry operator[](FF_FieldKey key) const;
@@ -526,7 +526,7 @@ namespace FastFHIR
         inline bool MutableEntry::is_string() const { return as_handle().is_string(); }
         inline bool MutableEntry::is_scalar() const { return as_handle().is_scalar(); }
         inline size_t MutableEntry::size() const { return as_handle().size(); }
-        inline std::vector<FF_FieldInfo> MutableEntry::fields() const { return as_handle().fields(); }
+        inline std::span<const FF_FieldInfo> MutableEntry::fields() const { return as_handle().fields(); }
         inline std::vector<std::string_view> MutableEntry::keys() const { return as_handle().keys(); }
 
         // 3. Field/Index Access

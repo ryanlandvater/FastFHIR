@@ -286,7 +286,7 @@ static py::object materialize_handle_value(const std::shared_ptr<Builder>& build
         return values;
     }
 
-    for (const FF_FieldInfo& field : FastFHIR::reflected_fields(handle.recovery())) {
+    for (const FF_FieldInfo& field : FastFHIR::reflected_fields_view(handle.recovery())) {
         FF_FieldKey key(handle.recovery(), field.kind, field.field_offset, field.child_recovery,
                         field.array_entries_are_offsets, field.name,
                         field.name ? std::char_traits<char>::length(field.name) : 0);
@@ -403,7 +403,7 @@ static py::list collect_filled_object_values(const std::shared_ptr<Builder>& bui
         return filled_fields;
     }
 
-    for (const FF_FieldInfo& field : FastFHIR::reflected_fields(handle.recovery())) {
+    for (const FF_FieldInfo& field : FastFHIR::reflected_fields_view(handle.recovery())) {
         FF_FieldKey key(handle.recovery(), field.kind, field.field_offset, field.child_recovery,
                         field.array_entries_are_offsets, field.name,
                         field.name ? std::char_traits<char>::length(field.name) : 0);
@@ -428,7 +428,7 @@ static py::list collect_filled_object_items(const std::shared_ptr<Builder>& buil
         return items;
     }
 
-    for (const FF_FieldInfo& field : FastFHIR::reflected_fields(handle.recovery())) {
+    for (const FF_FieldInfo& field : FastFHIR::reflected_fields_view(handle.recovery())) {
         FF_FieldKey key(handle.recovery(), field.kind, field.field_offset, field.child_recovery,
                         field.array_entries_are_offsets, field.name,
                         field.name ? std::char_traits<char>::length(field.name) : 0);

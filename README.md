@@ -53,7 +53,7 @@ Cross-language support is available through Python bindings (C++ and Python both
 ### 1. Extreme Performance & Compact Size
 FastFHIR turns data traversal into pure pointer arithmetic, outpacing text formats and avoiding the unpack step of serialized binaries.
 * **O(1) Random Access:** Jump instantly to any deeply nested FHIR field — completely bypassing the O(N) linear scanning of HL7v2 and the O(N) string-hashing and DOM construction of JSON.
-* **Zero-Heap Allocation:** Reading a FastFHIR stream requires 0 heap allocations. A lightweight `Node` viewing lens is passed directly over the raw memory buffer, enabling nanosecond read times from the instant the message hits RAM.
+* **Zero-Heap Allocation:** Reading a FastFHIR stream requires 0 heap allocations for field navigation and reflection — field metadata is exposed as zero-copy `std::span` views over static tables, and a lightweight `Node` viewing lens is passed directly over the raw memory buffer, enabling nanosecond read times from the instant the message hits RAM. (Array materialization via `entries()` is the one exception: it returns an owning `std::vector<Node>`, one allocation per call, ~1 ns per element at `-O3`.)
 * **Zero-Copy Engine:** There is no deserialization phase — no varint unpacking, no C++ message objects. The receiver reads the bytes it was sent. Measured at 2.4–3.4x the receiver-side throughput of an `orjson` JSON pipeline across 1.7–162 MB bundles ([FastFHIR-benchmark](https://github.com/ryanlandvater/FastFHIR-benchmark), Test 1).
 * **Fraction of Size on Disk:** Optional compact archive mode reduces storage by up to **66%** on sparse resources through presence bitmasks and dense field packing (see [Compact Archives](#7--compact-archives)).
 

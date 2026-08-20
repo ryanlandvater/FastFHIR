@@ -11,42 +11,57 @@
 
 ---
 
-# ▶ OPEN TOPIC — READ-PATH TRAVERSAL THROUGHPUT (unscoped, investigate first)
+# ▶ OPEN TOPIC — READ-PATH TRAVERSAL THROUGHPUT — INVESTIGATION COMPLETE 2026-08-19
 
-Written 2026-08-19 out of XP-2.3. **This is not a validation task.** Validation
-is only where the cost became visible: the same traversal machinery backs every
-whole-document read — JSON export, Python iteration, compaction, `Node::fields()`
-— so whatever is slow here is slow for plain data access too. Scope it before
-implementing anything.
+Written 2026-08-19 out of XP-2.3. The investigation is done; what remains is
+the §C fix and the §D.1/3/4/5 decisions (two of them Ryan's call).
 
-**The claim under threat.** README:56 states *"Reading a FastFHIR stream requires
-0 heap allocations. A lightweight `Node` viewing lens is passed directly over the
-raw memory buffer, enabling nanosecond read times from the instant the message
-hits RAM."* Random-access field reads are genuinely O(1) and that part holds.
-**Whole-document traversal does not**, and at least one read-path function
-allocates per call (see §C). Either the code changes or the claim does.
+**The claim under threat (resolved).** README:56 states *"Reading a FastFHIR
+stream requires 0 heap allocations... enabling nanosecond read times..."* The
+claim holds for optimized builds: at `-O3` the whole-document walk is 10.4 ms
+over ~18.3M slots (~0.6 ns/slot) and `entries()` materializes 31k entries in
+36 µs (~1.2 ns each). The 107 ms walk that motivated this topic was a Debug
+(`-O0`) build artifact — the `ninja` preset configures `CMAKE_BUILD_TYPE=Debug`
+— not a read-path defect. §C's `reflected_fields()` allocation is still a real
+(if Debug-inflated) defect; see the correction below.
+
+> **Correction (2026-08-19) — the §A numbers are Debug-build measurements.**
+> The `ninja` preset configures `CMAKE_BUILD_TYPE=Debug`, so `libfastfhir.dylib`
+> in `build/` is `-O0`; the report's "-O2" label does not match the build the
+> numbers came from. Re-measured on a Release (`-O3 -DNDEBUG`, `build-opt/`)
+> build of the same tree and fixture (min of 7):
+>
+> | Measurement | Debug `-O0` | Release `-O3` |
+> |---|---|---|
+> | `validate_FFHR_stream()` | 107.5 ms (0.46 GiB/s) — reproduces the original report | **10.4 ms (4.9 GiB/s)** |
+> | `Bundle.entry.entries()` (31,042 elements) | 856 µs (`push_back`) | **36 µs** |
+> | reflective walk (public API, 975k visits) | 116 ms | 25.6 ms |
+> | `print_json()` → null sink | 734 ms | 197 ms |
+> | `Compactor::archive()` | 908 ms | 159–191 ms |
+> | `root().size()` (§C) | 0.16 µs | 17.5 ns |
+>
+> Consequences: (1) the "~30× gap" between the walk and shuffled header access
+> (§A) is **2.8× at `-O3`** — per-slot cost is ~0.6 ns (~2 cycles), near the
+> floor, and README:56's "nanosecond read times" is defensible for optimized
+> builds. (2) A one-shot-fill `standard_node_entries()` (`vector(count)` +
+> `out[i] = Node(...)`) was tried: at `-O0` it wins 856→525 µs, but at `-O3`
+> it **regresses 36→58 µs** (the value-init + assign double-write loses once
+> libc++'s container-annotation chain inlines to nothing). Reverted — the
+> per-element `push_back` is correct. (3) §B's relative wins (memoise,
+> visited-set bitmap, `FF_Result`→`bool`) were all measured at `-O0`; re-derive
+> at `-O3` before acting on them. §C's defect is real but Debug-inflated.
 
 ---
 
-## §A — The measurements that exist (do not re-derive these)
+## §A — Fixture facts (timings superseded — see the correction above)
 
-Fixture: the largest Synthea bundle, ingested to a 50.8 MB `.ffhr`.
-Hardware: Ryan's Mac, `-O2`, single-threaded.
+The measurements that opened this topic were Debug (`-O0`) numbers and are
+superseded by the correction above; the fixture facts still stand:
 
-| Measurement | Value |
-|---|---|
-| `Parser` construction (header + root bounds only) | **1.7 µs** |
-| `validate_FFHR_stream()` — full graph walk | **107 ms** (0.46 GB/s) |
-| Blocks reachable from the root | **913,809** |
-| Distinct block types in that stream | 46 |
-| Declared slots visited (blocks × ~20 fields) | **~18.3M** |
-| Cost per slot visit | **~6 ns** (~20 cycles) |
-| Touch all 913,809 block headers **sequentially** | **0.8 ms** (62 GB/s) |
-| Touch all 913,809 block headers **shuffled** | **3.7 ms** (13.6 GB/s) |
-
-**The gap is the whole topic.** The walk is ~30x slower than *worst-case random*
-access to the same headers. Memory latency is NOT the limit — that was measured
-and ruled out, against expectation. The time is in our own per-slot work.
+- Fixture: largest Synthea bundle → 50.8 MB `.ffhr`; **913,809 blocks** reachable
+  from the root, 46 block types, **~18.3M declared slots** (blocks × ~20 fields).
+- Header touch (Debug-era; re-derive at `-O3` if needed): 0.8 ms sequential /
+  3.7 ms shuffled — even at `-O0` the walk was not memory-latency-bound.
 
 **Slot-kind distribution** (from `generated_src/FF_FieldKeys.hpp`, 1,611 declared
 slots across all blocks): 641 ARRAY, 454 BLOCK, 298 STRING, 102 CODE, 52 CHOICE,
@@ -105,25 +120,51 @@ callers still use the allocating version:
 | `src/FF_Parser.cpp` — `Node::fields()` | the documented public read API |
 | `src/FF_Parser.cpp` — `node_size()` | **builds an entire vector just to call `.size()`** — `FIELD_COUNT` is a compile-time constant |
 | `src/FF_Parser.cpp` (~line 91) | reflection dispatch |
-| `python/FF_PythonBindings.cpp` ×2 | the entire Python read path |
+| `python/FF_PythonBindings.cpp` ×3 (lines 289, 406, 431) | the entire Python read path |
 
 `node_size()` is the most clearly wrong and the cheapest to fix. **Fixing these
 is not the same as fixing §A** — the memoisation experiment showed the field
 table was only ~13% — but it is a real allocation on a path documented as
 allocation-free, and it must be measured, not assumed.
 
+> **Measured (2026-08-19):** at `-O3` the defect is Debug-inflated —
+> `root().size()` is 17.5 ns/call, `root().fields()` ~17 ns/call on the
+> 31,042-entry bundle. Still the right zero-cost fix; no longer a headline.
+
+> **DONE (2026-08-19, uncommitted).** All six `reflected_fields()` callers
+> migrated to `reflected_fields_view()` (span): `standard_node_size`,
+> `compact_node_lookup_field`, `Node::fields()`, and the three Python binding
+> sites. `Node::fields()` / `ObjectHandle::fields()` /
+> `MutableEntry::fields()` now return `std::span<const FF_FieldInfo>` (public
+> API change — benchmark-parity note required; `read_path_bench` in the
+> companion repo compiles unchanged). The allocating `reflected_fields()` and
+> `fields_for_block()` are deleted from the emitter (`generator/emit/views.py`)
+> and regenerated out of `generated_src/FF_Reflection.*`. Verified: build
+> green, `ctest --preset ninja` 33/34, `pytest tests/generator` 46/46.
+>
+> **Wire-gate fix in the same change set (see A4):** the gate was red because
+> `generator/emit/code_names.py` wrote `FF_Codes.hpp` to the repo
+> `generated_src/` regardless of `--output-dir`, so the tmp-tree witness found
+> an empty codes section. All three hardcoded-path emitters (`code_names`,
+> `code_ids` dictionary tables, `recovery_tags`) now take `output_dir`, and the
+> witness reads `FF_Recovery.hpp` from the witnessed tree like it already did
+> for `FF_Codes.hpp`. Gate is green and honest for both families.
+
 ---
 
 ## §D — Directions to investigate (nothing here is decided)
 
 1. **Migrate every `reflected_fields()` caller to `reflected_fields_view()`**,
-   starting with `node_size()`. Measure each. Then decide whether
-   `reflected_fields()` should exist at all, or stay for binding code that
-   genuinely needs an owning copy.
+   starting with `node_size()`. **Measured 2026-08-19** (see §C): at `-O3` the
+   allocation is ~17 ns/call — the migration is a zero-cost alloc/cleanliness
+   fix, not a throughput lever. Then decide whether `reflected_fields()` should
+   exist at all, or stay for binding code that genuinely needs an owning copy.
 2. **Measure the other whole-document paths the same way** — `print_json()`
    export, `ff_export`, the Python iteration path, and `Compactor::archive()`.
-   The traversal shape is shared; the numbers are not yet known. Do this before
-   optimising anything, so effort lands where the cost actually is.
+   **DONE 2026-08-19** (min of 7, 50.8 MB fixture, `-O3`): reflective walk
+   25.6 ms, `print_json()` 197 ms, `Compactor::archive()` 159–191 ms, deep
+   validate ≈ shallow validate. Numbers live in the correction above; the
+   canonical instrument is `read_path_bench` in the companion benchmark repo.
 3. **Does `Node`/`Entry` construction allocate or touch memory it need not?**
    architecture.md §8.1 claims a `Node` is built "in CPU registers". Verify that
    is still true — count instructions or check for spills.
@@ -147,17 +188,22 @@ F=$(ls -S build/synthea_fhir_r4/*.json | head -1)
 ./build/ff_ingest "$F" -o /tmp/big.ffhr        # ~50.8 MB
 ```
 
-Then a small `-O2` program linked against `build/libfastfhir.dylib`
-(`-Iinclude -Igenerated_src -Lbuild -lfastfhir`, run with
-`DYLD_LIBRARY_PATH=build`) that constructs a `Parser` over the bytes and times
-the call under test. **Take the minimum of ≥5 runs**, not the mean — run-to-run
-spread is ~5 ms and has already produced one false conclusion.
+Then a small `-O2` program linked against a **Release** `libfastfhir`
+(`-Iinclude -Igenerated_src -Lbuild-opt -lfastfhir`, run with
+`DYLD_LIBRARY_PATH=build-opt`; `build-opt` = `-DCMAKE_BUILD_TYPE=Release` —
+`build/` from the `ninja` preset is **Debug `-O0`** and reproduces the old
+numbers, see the correction above) that constructs a `Parser` over the bytes
+and times the call under test. **Take the minimum of ≥5 runs**, not the mean —
+run-to-run spread is ~5 ms and has already produced one false conclusion.
 
 Sampling profiler that worked (macOS):
 
 ```bash
 ./yourbench /tmp/big.ffhr & PID=$!; sleep 2; sample $PID 3 -f /tmp/prof.txt; wait $PID
 ```
+
+Canonical instrument: `//bench:read_path_bench` in the companion benchmark repo
+(Bazel, opt) — same measurements, per-Bundle-entry averages, 50 µs/entry gate.
 
 ---
 
@@ -166,8 +212,9 @@ Sampling profiler that worked (macOS):
 1. **Every claim needs a number.** Two of three intuitions were wrong here.
    State before/after and the fixture.
 2. **Do not make validation automatic.** XP-2.4 settled this: construction is
-   1.7 µs, the walk is 107 ms. `Builder::query()` constructs a `Parser` over a
-   *build in progress* and must stay free.
+   ~1.7 µs and the walk 107 ms on the Debug build — 0.125 µs / 10.4 ms at
+   `-O3` (see the correction above). `Builder::query()` constructs a `Parser`
+   over a *build in progress* and must stay free.
 3. **Bounds-check before indexing anything by an offset.** A guard ordered after
    an offset-indexed lookup was a live out-of-bounds read in
    `validate_FFHR_stream()` for one build, and it presented as a
@@ -493,6 +540,13 @@ siblings `RECOVER_FF_DATE` `0x0107`, `RECOVER_FF_TIME` `0x0109` and
 `RECOVER_FF_INSTANT` `0x010A`, all four sitting directly after
 `RECOVER_FF_FLOAT64`. No ledger renumbering is required by this work order, and
 none should be attempted.
+
+> **DECIDED (2026-08-19, Ryan):** keep the current breakdown in
+> `dictionaries/master_tags.json` lines 114–133 exactly as assigned — the four
+> 8-byte inline scalar tags DATE `0x0107`, DATETIME `0x0108`, TIME `0x0109`,
+> INSTANT `0x010A` in the scalar band, notes unchanged. DT-1 is implementable
+> on this layout. (DT-1.2's `FF_FieldKind` enum value and DT-4.4's
+> compatibility wording remain the other ⚠ items.)
 
 **The band is functional, not decorative.** `Recovery_to_Kind` routes on
 `(base & 0xFF00) == RECOVER_FF_SCALAR_BLOCK` — that test *is* the "this is an
@@ -1396,6 +1450,23 @@ generator fails, converting "generator broken" into "tests pass".
   passing; deleting a key from the golden JSON makes them fail.
 - Verify: `pytest tests/generator -q -rs` — confirm no `SKIPPED` lines for
   `test_wire_format.py`.
+
+> **Gate is green and honest for all three families (2026-08-19).** A4.1's 08-12 note
+> said the codes/tags sections were "structurally unfillable by the current witness" —
+> that was true *then*; A15 fixed the witness to read the regenerated tree, which made
+> the golden's codes/tags sections fillable (5,796 codes at eb008e2). One half of the
+> chain was still broken: `generator/emit/code_names.py` and
+> `generator/emit/code_ids.py` wrote their output to the repo `generated_src/` via
+> hardcoded module paths, **ignoring `--output-dir`**, so the witness's tmp-tree
+> regeneration produced an empty codes section and `test_dictionary_codes_stable`
+> reported all 5,796 golden codes as DELETED. Fix (with §C, same change set): all three
+> hardcoded-path emitters (`code_names`, `code_ids` dictionary tables, `recovery_tags`)
+> now take `output_dir` from the pipeline; the witness reads `FF_Recovery.hpp` from the
+> witnessed tree exactly as it already did for `FF_Codes.hpp` (previously tags were read
+> from the repo path — the asymmetry that masked the same bug for tags). Verified:
+> `pytest tests/generator -q` = **46/46**, and a fresh `python -m generator
+> --output-dir <tmp>` tree now contains `FF_Codes.hpp`, `FF_Recovery.hpp`, and
+> `FF_Dictionary_Strings.cpp` (previously missing).
 
 ### A8. CodeableConcept system discriminator is never set
 

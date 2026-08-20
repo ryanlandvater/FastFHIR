@@ -368,8 +368,7 @@ def generate_master_codes(package_dirs: dict[str, str]) -> tuple[dict, dict, set
 
 # DERIVED artifacts: the runtime lookup tables are a pure projection of
 # master_codes.json, so they live with the generator output. The ledger stays
-# in dictionaries/ -- source there, derived here.
-_DICT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "generated_src")
+# in dictionaries/ -- source there, derived in the output dir (generated_src/).
 
 _BANNER = (
     "// Auto-generated from dictionaries/master_codes.json. DO NOT EDIT.\n"
@@ -424,7 +423,9 @@ def _qualified_names(ledger: dict) -> dict[int, str]:
     return out
 
 
-def generate_dictionary_tables(ledger: dict | None = None) -> None:
+def generate_dictionary_tables(
+    ledger: dict | None = None, output_dir: str = "generated_src"
+) -> None:
     """Emit FF_Dictionary_Strings.cpp and the per-version lookup tables."""
     ledger = ledger or load_ledger()
     ids = ledger["ids"]
@@ -444,7 +445,7 @@ def generate_dictionary_tables(ledger: dict | None = None) -> None:
         "static_assert(sizeof(FF_DICTIONARY_STRINGS) / sizeof(FF_DICTIONARY_STRINGS[0])\n"
         '              == FF_DICTIONARY_STRINGS_SIZE, "string table size mismatch");\n'
     )
-    written = [_emit(os.path.join(_DICT_DIR, "FF_Dictionary_Strings.cpp"), strings)]
+    written = [_emit(os.path.join(output_dir, "FF_Dictionary_Strings.cpp"), strings)]
 
     # ---- per-version {id, label} tables for string -> id ingest lookup ----
     qualified = _qualified_names(ledger)
@@ -462,6 +463,6 @@ def generate_dictionary_tables(ledger: dict | None = None) -> None:
             f"const size_t FF_{vname}_DICTIONARY_SIZE = "
             f"sizeof(k{vname}Table) / sizeof(k{vname}Table[0]);\n"
         )
-        written.append(_emit(os.path.join(_DICT_DIR, f"FF_{vname}_Dictionary.cpp"), cpp))
+        written.append(_emit(os.path.join(output_dir, f"FF_{vname}_Dictionary.cpp"), cpp))
 
     print(f"  Tables: {top + 1} string slots, {sum(written)}/4 files rewritten")

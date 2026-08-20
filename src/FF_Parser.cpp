@@ -88,7 +88,7 @@ Entry ParserOps::compact_node_lookup_field(const Node& n, FF_FieldKey key) {
         }
     }
 
-    const auto f_list = reflected_fields(n.m_recovery);
+    const auto f_list = reflected_fields_view(n.m_recovery);
     if (f_list.empty()) return NULL_ENTRY;
 
     const uint8_t* sizes_table = compact_field_sizes(n.m_recovery);
@@ -966,9 +966,9 @@ RECOVERY_TAG Node::recovery() const { return m_recovery; }
 // =====================================================================
 // Node reflection helpers
 // =====================================================================
-std::vector<FF_FieldInfo> Node::fields() const {
+std::span<const FF_FieldInfo> Node::fields() const {
     if (!is_object()) return {};
-    return reflected_fields(m_recovery);
+    return reflected_fields_view(m_recovery);
 }
 
 std::vector<std::string_view> Node::keys() const {
@@ -992,7 +992,7 @@ size_t ParserOps::standard_node_size(const Node& n) {
         return array.entry_count(n.m_base);
     }
     if (n.is_object()) {
-        return reflected_fields(n.m_recovery).size();
+        return reflected_fields_view(n.m_recovery).size();
     }
     return 0;
 }

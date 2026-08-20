@@ -11,12 +11,13 @@ the values that actually serialize into a `.ffhr` stream:
                            (`RECOVERY = VALIDATION + VALIDATION_S`) resolved by
                            the C++ compiler, so we capture the *structure* that
                            determines them, not a (non-existent) literal offset.
-  * dictionary codes     — the permanent uint32 IDs in dictionaries/FF_Codes.hpp,
+  * dictionary codes     — the permanent uint32 IDs projected into FF_Codes.hpp,
                            scoped by terminology source then CodeSystem
                            (`UCUM::PERCENT`, `FHIR::FDI_SURFACE::B`)
 
-Two of these three live OUTSIDE generated_src/ — see witness() — which is why the
-`tags` and `codes` sections witnessed empty dicts for so long.
+All three families are read from the tree being witnessed (see witness()); the
+`tags` and `codes` sections used to witness empty dicts because they were read
+from fixed repo paths instead of the regenerated tree.
 
 If the witness JSON is unchanged across a refactor, the wire format is preserved
 regardless of how the emitting Python or the C++ source text was reorganised.
@@ -159,11 +160,10 @@ def witness(
     the constants that decode every archive ever written -- had no regression
     protection whatsoever. See TASKS.md A15.
     """
-    repo_root = Path(__file__).resolve().parents[2]
-    recovery_header = recovery_header or repo_root / "generated_src" / "FF_Recovery.hpp"
-    # FF_Codes.hpp is generator output now, so take it from the tree being
-    # witnessed rather than a fixed repo path — that is what makes the gate work
-    # against a freshly regenerated tree in a tmpdir.
+    # FF_Recovery.hpp and FF_Codes.hpp are generator output now, so take them
+    # from the tree being witnessed rather than a fixed repo path -- that is
+    # what makes the gate work against a freshly regenerated tree in a tmpdir.
+    recovery_header = recovery_header or generated_dir / "FF_Recovery.hpp"
     codes_header = codes_header or generated_dir / "FF_Codes.hpp"
 
     out: dict = {"tags": {}, "codes": {}, "vtables": {}}

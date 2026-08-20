@@ -191,7 +191,7 @@ def _band_map_comment(ledger: dict) -> str:
 
 
 def generate_recovery_header(ledger: dict, header_path: str = HEADER_PATH) -> None:
-    """Emit generated_src/FF_Recovery.hpp from the ledger."""
+    """Emit FF_Recovery.hpp from the ledger at the given header_path."""
     bands = ledger["_bands"]
     b = {name: (v["first"], v["last"]) for name, v in bands.items()}
     counts: dict[str, int] = {name: 0 for name in bands}
