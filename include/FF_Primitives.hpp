@@ -559,6 +559,9 @@ enum FF_FieldKind : uint16_t
     FF_FIELD_FLOAT64,
     FF_FIELD_RESOURCE,
     FF_FIELD_CHOICE,
+    // ONE kind for all four date/time tags. Which of date/dateTime/time/instant
+    // a slot holds is the RECOVERY_TAG's job;
+    FF_FIELD_DATETIME,
 };
 
 // =====================================================================
@@ -588,6 +591,7 @@ constexpr uint8_t ff_slot_width(const FF_FieldKind kind)
     case FF_FIELD_UINT64:   return TYPE_SIZE_UINT64;
     case FF_FIELD_FLOAT64:  return TYPE_SIZE_FLOAT64;
     case FF_FIELD_CODE:     return TYPE_SIZE_UINT32;
+    case FF_FIELD_DATETIME: return TYPE_SIZE_UINT64;
     case FF_FIELD_RESOURCE: return TYPE_SIZE_RESOURCE;
     case FF_FIELD_CHOICE:   return TYPE_SIZE_CHOICE;
     // STRING, ARRAY, BLOCK and UNKNOWN hold an arena offset.
@@ -615,6 +619,15 @@ inline RECOVERY_TAG Kind_to_Recovery(const FF_FieldKind kind)
         return RECOVER_FF_FLOAT64;
     case FF_FIELD_CODE:
         return RECOVER_FF_CODE;
+    // FF_FIELD_DATETIME is deliberately ABSENT. This mapping is a function only
+    // where a kind names exactly one tag, and the date/time kind names four
+    // (DATE, DATETIME, TIME, INSTANT). Guessing DATETIME would be wrong three
+    // times in four and would surface as a `date` exported as `valueDateTime` --
+    // the same class of defect the DT work order exists to remove. Every caller
+    // uses this only as a fallback when FF_FieldKey::child_recovery is
+    // UNDEFINED, and a generated date/time key always carries its specific tag,
+    // so the fallback must not fire; returning UNDEFINED keeps "I do not know"
+    // honest instead of laundering it into a plausible wrong answer.
     default:
         return FF_RECOVER_UNDEFINED;
     }
@@ -660,6 +673,29 @@ struct RecoveryTraits<RECOVER_FF_CODE>
 {
     static constexpr FF_FieldKind kind = FF_FIELD_CODE;
 };
+// The compile-time half of Recovery_to_Kind, and it must agree with it: two
+// mappings from the same tags to the same kinds is two chances to disagree, so
+// the static_asserts after this block pin them together.
+template <>
+struct RecoveryTraits<RECOVER_FF_DATE>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_DATETIME;
+};
+template <>
+struct RecoveryTraits<RECOVER_FF_DATETIME>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_DATETIME;
+};
+template <>
+struct RecoveryTraits<RECOVER_FF_TIME>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_DATETIME;
+};
+template <>
+struct RecoveryTraits<RECOVER_FF_INSTANT>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_DATETIME;
+};
 template <>
 struct RecoveryTraits<RECOVER_FF_STRING>
 {
@@ -701,6 +737,14 @@ inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag)
             return FF_FIELD_FLOAT64;
         case RECOVER_FF_CODE:
             return FF_FIELD_CODE;
+        // All four collapse to one kind: the tag survives alongside it and is
+        // what tells the encoder, the exporter and the validator which FHIR
+        // type this is. See FF_FIELD_DATETIME's comment on the enum.
+        case RECOVER_FF_DATE:
+        case RECOVER_FF_DATETIME:
+        case RECOVER_FF_TIME:
+        case RECOVER_FF_INSTANT:
+            return FF_FIELD_DATETIME;
         default:
             return FF_FIELD_UNKNOWN;
         }
@@ -715,6 +759,22 @@ inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag)
         return (base >= RECOVER_FF_DATA_TYPE_BLOCK) ? FF_FIELD_BLOCK : FF_FIELD_UNKNOWN;
     }
 }
+
+// The two tag->kind mappings above (compile-time RecoveryTraits, runtime
+// Recovery_to_Kind) are independent code paths over the same facts, which is
+// exactly the shape that drifts. Pin them. The width assert is here too because
+// the packed date/time is only "free" if it did not widen its slot: 8 bytes is
+// what FF_FIELD_STRING already occupied, so routing these types off STRING_TYPES
+// in DT-2 moves no V-Table offset.
+static_assert(Recovery_to_Kind(RECOVER_FF_DATE) == RecoveryTraits<RECOVER_FF_DATE>::kind &&
+              Recovery_to_Kind(RECOVER_FF_DATETIME) == RecoveryTraits<RECOVER_FF_DATETIME>::kind &&
+              Recovery_to_Kind(RECOVER_FF_TIME) == RecoveryTraits<RECOVER_FF_TIME>::kind &&
+              Recovery_to_Kind(RECOVER_FF_INSTANT) == RecoveryTraits<RECOVER_FF_INSTANT>::kind,
+              "the compile-time and runtime tag->kind mappings disagree for date/time");
+static_assert(Recovery_to_Kind(RECOVER_FF_DATE) == FF_FIELD_DATETIME,
+              "all four date/time tags must collapse to the single FF_FIELD_DATETIME kind");
+static_assert(ff_slot_width(FF_FIELD_DATETIME) == TYPE_SIZE_UINT64,
+              "a packed date/time must occupy the same 8 bytes the string offset did");
 
 struct FF_FieldInfo
 {

@@ -356,7 +356,7 @@ static uint32_t _pack_codeable_concept_offset(Offset cc_offset, Offset block_off
         throw std::runtime_error(
             "FastFHIR: CodeableConcept fallback offset of -1 collides with FF_CODE_NULL.");
     }
-    return (static_cast<uint32_t>(static_cast<int32_t>(rel)) & 0x7FFFFFFFu) | FF_CODEABLE_CONCEPT_FLAG;
+    return (static_cast<uint32_t>(static_cast<int32_t>(rel)) & FF_CODE_PAYLOAD_MASK) | FF_CODEABLE_CONCEPT_FLAG;
 }
 
 // =====================================================================

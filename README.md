@@ -38,6 +38,7 @@ Cross-language support is available through Python bindings (C++ and Python both
 - [Reference](#reference)
     - [Typed Resource Keys](#typed-resource-keys--fastfhirfieldsresourcefield)
     - [Code Assignment Semantics](#code-assignment-semantics)
+    - [Date/Time Assignment Semantics](#datetime-assignment-semantics)
     - [Polymorphic Choice Assignment and Readback](#polymorphic-choice-assignment-and-readback)
     - [Checksum Algorithms](#checksum-algorithms)
     - [FHIR Versions](#fhir-versions)
@@ -930,6 +931,74 @@ On read, `Node::as<std::string_view>()` performs the inverse resolution order:
 
 This is why code fields can be assigned with normal strings while still keeping
 fast dictionary-backed storage for known values.
+
+### Date/Time Assignment Semantics
+
+> **Status:** the representation and its primitives are implemented and
+> unit-tested, but **not yet wired into the generator**. `date`, `dateTime`,
+> `instant` and `time` are still stored as strings today — `Patient.birthDate`
+> and `Observation.issued` below are both `FF_FIELD_STRING` in the current
+> generated headers. The section describes the encoding they move to; **the
+> assignment and read API does not change when they do**, only the bytes.
+> Tracked as DT-2/DT-3 in `TASKS.md`.
+
+`date`, `dateTime`, `instant` and `time` use an 8-byte slot that works exactly
+like the 4-byte code slot above — same discriminator idea, same relative-offset
+rule, same null convention, one width up:
+
+1. Packed inline (the fast path, MSB clear)
+2. Original-text fallback (`FF_STRING` + relative pointer, MSB set)
+3. Null sentinel (`FF_DATETIME_NULL`) for empty input
+
+#### 1) Packed inline
+
+The value is packed into 63 bits as **civil time plus precision plus UTC
+offset** — not an instant. FHIR forces this: `"2024"` is not
+`"2024-01-01T00:00:00Z"`, `date` never carries a timezone, `time` has no date,
+and a leap second (`:60`) is legal and must survive. Comparison for equality
+becomes an integer compare instead of a string compare, and a value costs 8
+bytes instead of an 8-byte pointer plus a 14-byte block header plus the text.
+
+```cpp
+patient_handle[FastFHIR::Fields::PATIENT::BIRTH_DATE] = "1969-07-20";
+obs_handle[FastFHIR::Fields::OBSERVATION::ISSUED]     = "2024-01-15T13:45:30Z";
+// Packed inline: no child block, no pointer chase.
+```
+
+Precision round-trips, so a partial date stays partial — `"2024"` reads back as
+`"2024"`, never as a fabricated January 1st. So does the spelling of a zero
+offset: `Z` and `+00:00` are the same instant and stay distinct texts.
+
+#### 2) Original-text fallback
+
+If the value cannot be packed — more than three fractional digits, or text that
+is not legal for that FHIR type — FastFHIR writes the **original string** into
+the arena as an `FF_STRING`, and stores the relative offset with
+`FF_DATETIME_FALLBACK_FLAG` (bit 63) set, exactly as an unknown code is stored.
+
+```cpp
+obs_handle[FastFHIR::Fields::OBSERVATION::ISSUED] = "2024-01-15T13:45:30.123456Z";
+// 6 fractional digits -> FF_STRING fallback; the text is preserved byte-for-byte.
+```
+
+The round trip is byte-exact on **both** paths. The fallback is not a data-loss
+path and not an error path: unparseable text is preserved rather than rejected,
+for the same reason an unknown code becomes a block instead of an exception.
+
+#### 3) Null handling
+
+An empty string stores `FF_DATETIME_NULL` (all ones), the 8-byte counterpart of
+`FF_CODE_NULL`.
+
+#### Read path (inverse operation)
+
+1. All ones → the field is absent
+2. Bit 63 clear → unpack the civil fields and render at the stored precision
+3. Bit 63 set → sign-extend the relative offset, follow it to the `FF_STRING`,
+   and return the original text
+
+Full layout, rationale, and the constraints that fix the epoch and field widths
+are in [architecture.md §6.3](architecture.md).
 
 ### Polymorphic Choice Assignment and Readback
 

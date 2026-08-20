@@ -117,7 +117,12 @@ inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_of
         case FF_FIELD_UINT32:
             return LOAD_U32(base + field_absolute_offset) == FF_NULL_UINT32;
             
+        // Both are 8 inline bytes whose null is all-ones, so they share a case.
+        // Omitting FF_FIELD_DATETIME would not fail loudly: the `default` below
+        // returns true, so every date/time field in the stream would report as
+        // absent and be dropped on export.
         case FF_FIELD_FLOAT64:
+        case FF_FIELD_DATETIME:
             return LOAD_U64(base + field_absolute_offset) == FF_NULL_UINT64;
             
         case FF_FIELD_BOOL:

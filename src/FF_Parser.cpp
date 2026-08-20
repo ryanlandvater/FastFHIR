@@ -958,7 +958,11 @@ Node::operator bool() const {
 bool Node::is_array()  const { return m_kind == FF_FIELD_ARRAY; }
 bool Node::is_object() const { return m_kind == FF_FIELD_BLOCK; }
 bool Node::is_string() const { return m_kind == FF_FIELD_STRING; }
-bool Node::is_scalar() const { return m_kind == FF_FIELD_BOOL || m_kind == FF_FIELD_INT32 || m_kind == FF_FIELD_UINT32 || m_kind == FF_FIELD_INT64 || m_kind == FF_FIELD_UINT64 || m_kind == FF_FIELD_FLOAT64 || m_kind == FF_FIELD_CODE; }
+// FF_FIELD_DATETIME belongs here: a packed date/time is an inline value in the
+// V-Table slot, exactly like FF_FIELD_CODE. That a flagged one can point at an
+// FF_STRING no more makes it a string than a fallback CodeableConcept makes a
+// code a block -- the slot is still the value's home.
+bool Node::is_scalar() const { return m_kind == FF_FIELD_BOOL || m_kind == FF_FIELD_INT32 || m_kind == FF_FIELD_UINT32 || m_kind == FF_FIELD_INT64 || m_kind == FF_FIELD_UINT64 || m_kind == FF_FIELD_FLOAT64 || m_kind == FF_FIELD_CODE || m_kind == FF_FIELD_DATETIME; }
 
 FF_FieldKind Node::kind()     const { return m_kind; }
 RECOVERY_TAG Node::recovery() const { return m_recovery; }

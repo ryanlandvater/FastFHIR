@@ -357,6 +357,12 @@ Slot widths are exactly the values in `TYPE_SIZE`
 slots are **10 bytes**, not 8 — they carry an inline recovery tag because
 their concrete type is not statically determinable from the parent V-Table.
 
+`FF_FIELD_CODE` is the one kind above whose interpretation depends on the value
+rather than the kind: its top bit selects between a dictionary ID and a pointer.
+The packed date/time slot added in DT-1 is the same mechanism at 8 bytes; both
+are described together in §6.3. Its kind (`FF_FIELD_DATETIME`) is not yet a
+member of the enum above — see the status note at the end of that section.
+
 ### 3.2 `RECOVERY_TAG` — Semantic Identifier
 
 A 16-bit (`uint16_t`) ID embedded at bytes 8–9 of every block (immediately
@@ -787,6 +793,121 @@ The Builder side is `amend_variant(parent_off, vtable_off, raw_bits, tag)`
 fits both inline scalars (which avoid the indirection of an offset slot) and
 heap-resident polymorphic targets in the same fixed-stride 10-byte slot,
 preserving the array invariant of §5.
+
+### 6.3 MSB-discriminated value slots — `FF_CODE` and `FF_DATETIME`
+
+Two slot kinds hold a value inline *most* of the time and degrade to a pointer
+when the value will not fit. They are the same mechanism at two widths, and
+this section describes them together because a reader who has understood one
+has understood the other — that is the entire design intent, and it is why the
+constants sit adjacent in `FF_Primitives.hpp` rather than in separate blocks.
+
+|  | `FF_CODE` (4 bytes) | `FF_DATETIME` (8 bytes) |
+|---|---|---|
+| Discriminator | bit 31 (`FF_CODEABLE_CONCEPT_FLAG`) | bit 63 (`FF_DATETIME_FALLBACK_FLAG`) |
+| Flag **clear** | 31-bit dictionary ID | 63-bit packed civil date/time |
+| Flag **set** | 31-bit **signed relative** offset to an `FF_CODEABLE_CONCEPT` | 63-bit **signed relative** offset to an `FF_STRING` |
+| Offset is relative to | the containing block | the containing block (identical rule) |
+| Sign-extension helper | `FF_ResolveCodeableConceptOffset` | `FF_ResolveDateTimeOffset` |
+| Null sentinel | `FF_CODE_NULL` = `0xFFFF'FFFF` | `FF_DATETIME_NULL` = `0xFFFF'FFFF'FFFF'FFFF` |
+| Emitters | `SIZE_`/`STORE_`/`ENCODE_FF_CODE` | `SIZE_`/`STORE_`/`ENCODE_FF_DATETIME` |
+
+Two properties make the parity exact rather than approximate:
+
+1. **Relative, not absolute.** Both fallback offsets are signed and relative to
+   the containing block. Absolute offsets would have worked and would have been
+   wrong: a second convention for the same job is something a reader must
+   memorise instead of transfer.
+2. **The null sentinel is reserved out of the flag-set space.** All-ones has the
+   flag set, so it would otherwise decode as a relative offset of `0x7FFF…`.
+   That offset is unreachable — the smallest block is larger than one byte — so
+   the pattern is free to mean "absent". Both paths therefore test the null
+   **before** the flag, and `_pack_datetime_offset` additionally refuses to emit
+   the one relative offset (`-1`) that would collide with it.
+
+```mermaid
+flowchart TD
+    V["value to store"] --> N{"empty?"}
+    N -- yes --> NUL["FF_CODE_NULL / FF_DATETIME_NULL<br/>(all ones)"]
+    N -- no --> F{"fits the inline form?"}
+    F -- "code: in the dictionary<br/>date: parses and fits 63 bits" --> INL["store inline<br/>MSB = 0"]
+    F -- "no" --> BLK["write child block<br/>FF_CODEABLE_CONCEPT / FF_STRING"]
+    BLK --> REL["store signed relative offset<br/>MSB = 1"]
+
+    INL --> RD{"read: slot value"}
+    REL --> RD
+    NUL --> RD
+    RD -- "all ones" --> ABS["absent"]
+    RD -- "MSB = 0" --> DEC["decode inline<br/>FF_ResolveCode / FF_UNPACK_DATETIME"]
+    RD -- "MSB = 1" --> SX["sign-extend, add to block offset,<br/>read the child block"]
+```
+
+**A flagged slot is an edge, and the validator must follow it.**
+`validate_FFHR_stream()` skips inline scalars because they cannot aim the reader
+at memory it does not own — but when the MSB is set the slot is not inline data,
+and it is walked like any other offset. `FF_FIELD_CODE` already is
+(`src/FF_Parser.cpp:573–590`, checked against `RECOVER_FF_CODEABLE_CONCEPT`); the
+date/time half is TASKS.md DT-1.5. A slot kind that can point somewhere and is
+absent from `slot_carries_offset` is a hole in the validator.
+
+#### The packed date/time payload
+
+63 bits, assigned low field first as symbolic sums (`FF_DateTimeBits`); there are
+no literal shifts anywhere, and `static_assert(FF_DT_FLAG == 63)` pins the total.
+
+```
+bit  63      discriminator  0 = packed inline, 1 = offset to FF_STRING fallback
+bits 62..41  civil days from 0001-01-01, UNSIGNED (22) — years 0001..9999
+bits 40..36  hour   (5)
+bits 35..30  minute (6)
+bits 29..24  second (6)   — 60 is representable, so leap seconds survive
+bits 23..14  millisecond (10)
+bits 13..3   UTC offset, signed minutes (11)
+bits  2..0   precision (3)
+```
+
+**It is packed civil time, not an instant**, and that is forced by FHIR itself:
+`dateTime` is a union of gYear/gYearMonth/date/dateTime, so `"2024"` must not
+round-trip as `"2024-01-01T00:00:00Z"`; `date` never carries a timezone, so an
+epoch-UTC encoding would invent one; `time` has no date to anchor an instant to;
+and seconds may legally be `60`, which `std::chrono` would silently normalise.
+
+Three consequences worth stating because they are not obvious:
+
+- **The epoch is 0001-01-01 and the day field is unsigned.** Not a free choice: a
+  signed count from 1970 needs 2,932,896 days for 1970→9999, and signed 22 bits
+  reach 2,097,151 — capping the format at year 7711 while FHIR permits 9999.
+  From 0001-01-01 the whole span is 3,652,058 days against an unsigned capacity
+  of 4,194,303. The conversion helpers count from 1970 (Hinnant's
+  `days_from_civil`), so the **epoch shift crosses zero** for every pre-1970
+  date; computing it in unsigned arithmetic wraps, which is what
+  `tests/cpp/test_datetime.cpp` [CivilEpoch] exists to catch.
+- **`Z` and `+00:00` are one instant and two texts.** The offset field needs 1,681
+  codes of its 2,048, so one spare code spells `Z` and numeric zero spells
+  `+00:00`. No extra bit.
+- **Precision expresses within-type variation only** — `YEAR, YEAR_MONTH, DATE,
+  SECOND, FRAC1, FRAC2, FRAC3`, seven values in three bits. *Which* of
+  date/dateTime/time/instant a slot holds is the recovery tag's job, which is
+  why all four tags share one layout, one encoder and one decoder while still
+  validating against their own FHIR rules. Folding the four tags into one is not
+  available: in a choice (`[x]`) slot the tag is the only thing naming the active
+  variant, and 20 choice fields mix two or more date/time variants.
+
+Anything that does not fit — more than three fractional digits, a value illegal
+for its tag — sets bit 63 and keeps its **original text** in an `FF_STRING`, so
+the round trip is byte-exact either way. A parse failure is deliberately *not* an
+exception: it takes the same fallback a non-dictionary code takes, because
+preserving the bytes that arrived is always defensible and judging FHIR legality
+belongs to ingest.
+
+> **Status (2026-08-20).** The representation, the pack/unpack pair, the text
+> codec and the emitter triple exist and are unit-tested (`ff_test_datetime`,
+> TASKS.md DT-1.1/DT-1.3). **Nothing calls them yet**: `FF_FieldKind` has no
+> `FF_FIELD_DATETIME` member (DT-1.2, decided as `13`) and the generator still
+> routes `date`/`dateTime`/`instant`/`time` through `STRING_TYPES`
+> (`generator/model/type_map.py`), so no stream contains a packed date/time.
+> DT-2 and DT-3 wire it up; DT-4 re-baselines the wire witness in the same
+> commit.
 
 ---
 

@@ -680,6 +680,53 @@ relative-offset arithmetic is written once in each and reads identically.
 > an ABI/source choice, so it appends rather than renumbers for ABI stability,
 > not for wire permanence.
 
+> **DONE (2026-08-20, working tree, uncommitted).** `FF_FIELD_DATETIME = 13`
+> appended to `FF_FieldKind`, plus the five places that decide *what a kind is*
+> — leaving any of them inconsistent is what turns a new enumerator into a
+> silent hole:
+> - `ff_slot_width` → `TYPE_SIZE_UINT64`. The compact slot tables and the
+>   generated V-Table `static_assert`s are emitted as calls to this function, so
+>   the compactor inherits the width with no second edit.
+> - `Recovery_to_Kind` — all four tags collapse to the one kind, inside the
+>   existing scalar-band branch (the band test is a range check, so `0x0107`–
+>   `0x010A` already reach it).
+> - `RecoveryTraits<>` — four specializations, the compile-time twin of the
+>   above. Two independent mappings over the same facts is the shape that
+>   drifts, so a `static_assert` now pins them equal, and a second pins the
+>   width at 8 bytes.
+> - `FF_IsFieldEmpty` — joins the `FF_FIELD_FLOAT64` arm (8 inline bytes,
+>   all-ones null). **This one was load-bearing**: that switch's `default`
+>   returns `true`, so an omitted case would have reported every date/time field
+>   as absent and dropped it on export — no crash, no warning.
+> - `Node::is_scalar()` — a packed date/time is an inline value like
+>   `FF_FIELD_CODE`; that a flagged one can point at an `FF_STRING` no more
+>   makes it a string than a fallback CodeableConcept makes a code a block.
+>
+> **`Kind_to_Recovery` deliberately gets NO case**, and the omission is pinned by
+> a test so nobody "completes" the table later. One kind names four tags, so any
+> single answer is wrong three times in four, and the wrong answer surfaces as a
+> `date` exported as `valueDateTime` — the exact defect class DT exists to
+> remove. All three call sites use it only as a fallback when
+> `FF_FieldKey::child_recovery` is `UNDEFINED`, and a generated date/time key
+> always carries its specific tag, so the fallback must not fire; `UNDEFINED`
+> keeps "I do not know" honest rather than laundering it into a plausible guess.
+>
+> **Deliberately NOT touched**: value rendering (`print_json`, `Entry::as<T>`,
+> the Python bindings) is DT-3, and `slot_carries_offset` / `walk_fields` is
+> DT-1.5 — **now unblocked**. Both are safe to defer because nothing emits the
+> kind yet: the generator still routes these types through `STRING_TYPES`, so
+> `FF_FIELD_DATETIME` is unreachable at runtime until DT-2.
+>
+> Verified: `ff_test_datetime` 32 tests / 0 failures (a `[Layout]` group now
+> covers the value, both widths, the four-to-one collapse, the `Kind_to_Recovery`
+> omission, and `FF_IsFieldEmpty` on null / a packed value / `0001-01-01`, whose
+> mostly-zero bits must still read present). `ctest --preset ninja` 34/35
+> (`py_roundtrip` the same known red), `pytest tests/generator` 46/46, wire
+> witness unmoved, and no new compiler warnings — every warning in a clean build
+> comes from simdjson. Red-green on both new `static_assert`s: making the
+> compile-time trait disagree, and setting the width to 4 bytes, each fails the
+> build with its stated message.
+
 ### DT-1.3 — Round-trip unit tests before any generator change
 `tests/cpp/test_datetime.cpp`: every precision level; `Z` vs `+00:00`; a leap
 second; a negative (pre-1970) date; year 0001 and 9999; 1–3 fractional digits;
@@ -737,6 +784,42 @@ prevent.
 **Done when:** each of the four documents describes the date/time slot in the
 same terms it uses for the code slot, and names the other.
 
+> **DONE (2026-08-20, working tree, uncommitted).** All four, each written to
+> the shape that document already uses for the code slot and naming it:
+> - **`architecture.md` §6.3** — new subsection *"MSB-discriminated value slots
+>   — `FF_CODE` and `FF_DATETIME`"*, placed beside the other primitives (§6.1
+>   `FF_STRING`, §6.2 the 10-byte wrappers) rather than as its own chapter. The
+>   parity table, the two properties, the bit layout, the FHIR constraints that
+>   force civil-time-plus-precision, and a **Mermaid flowchart** of the shared
+>   encode/decode decision (style guide requires a diagram where prose would
+>   describe a shape). §3.1's slot-width table gained a pointer to it.
+> - **`README.md`** — *"Date/Time Assignment Semantics"* as a sibling of *"Code
+>   Assignment Semantics"*, same 1/2/3 + read-path structure, plus a TOC entry.
+> - **`terminology_layer_architecture.md` §3.1** — the 8-byte row beside the
+>   4-byte one, with the read-path branch written the same way, and an explicit
+>   statement that a date/time shares the *slot contract* and nothing else: it
+>   never consults the dictionary, so none of that document's CodeSystem
+>   machinery applies to it.
+> - **`FF_Primitives.hpp`** — the parity table landed with DT-1.1 and
+>   cross-references `FF_CODE` by name.
+>
+> Also documented, since DT-1.3 produced rules that outlive it: `CLAUDE.md`
+> gained a **Date/time** bullet beside **Codes**, the four-places C++ test
+> registration rule (the A20 trap), and the seeded-randomised-suite convention.
+>
+> **Every document carries a status banner**: the primitives exist and are
+> tested, `FF_FieldKind` still has no `FF_FIELD_DATETIME`, and the generator
+> still routes these types through `STRING_TYPES` — so no stream contains a
+> packed date/time yet. Without that, README would advertise a working feature.
+> The README examples were corrected during review: they originally named
+> `OBSERVATION::EFFECTIVE_DATE_TIME`, which **does not exist** (the real key is
+> `OBSERVATION::EFFECTIVE`, an `FF_FIELD_CHOICE`). They now use
+> `PATIENT::BIRTH_DATE` and `OBSERVATION::ISSUED`, both verified present in
+> `generated_src/FF_FieldKeys.hpp` and both `FF_FIELD_STRING` today, which makes
+> the status banner concrete. Verified: no test parses `README.md` at runtime
+> (`tests/cpp/test_readme.cpp` is a hand-written mirror), all fences balanced,
+> the Mermaid block parses, and the TOC anchor matches the heading.
+
 ### DT-1.5 — The fallback offset must be validated like a code's
 
 **Rule (Ryan, 2026-08-20): a slot whose MSB flags an offset is validated as an
@@ -762,7 +845,10 @@ validator.
   whose fallback offset points out of bounds, and one pointing at a block whose
   tag is not `RECOVER_FF_STRING`. Both must fail validation naming the field.
 
-**Blocked on DT-1.2** (needs the `FF_FIELD_DATETIME` enum value to exist).
+**UNBLOCKED 2026-08-20** — DT-1.2 landed `FF_FIELD_DATETIME`, so this is ready
+to claim. Not urgent while nothing emits the kind (the generator still routes
+these types through `STRING_TYPES`), but it **must land before DT-2**, which is
+the commit that first puts a flagged date/time offset on the wire.
 **Done when:** a corrupted date/time fallback offset is rejected by
 `validate_FFHR_stream()` with the offending offset and field named, exactly as a
 corrupted CodeableConcept offset already is.

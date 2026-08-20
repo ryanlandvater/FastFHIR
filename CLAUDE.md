@@ -123,6 +123,19 @@ pytest tests/generator -q
 ruff check generator tests/generator && black --check generator tests/generator
 ```
 
+**A new C++ test needs registering in FOUR places in `CMakeLists.txt`**, not one:
+`add_ff_cpp_test(...)`, the ctest `foreach(_standalone ...)`, the `_BUILD_ALL` list, and
+the two IDE folder/scheme lists. `add_ff_cpp_test` only creates the target — a test
+registered with ctest but missing from `_BUILD_ALL` builds nothing and reports **"Not
+Run"**, which is task A20 and is easy to reintroduce.
+
+**Randomised suites pin their seed.** `ff_test_datetime` samples dates rather than
+enumerating them, so it fixes a default seed, prints it on every run, and takes
+`--seed <n>` to vary it — a suite that flakes is a suite that gets ignored, and a red
+log has to name the command that reproduces it. Where a space is small enough to cover
+completely (all 87,840 h:m:s, all 1,681 UTC offsets) it is enumerated instead. Prefer
+that shape for new property-style tests.
+
 Key CMake options: `FASTFHIR_PRODUCTION_PROFILE` (comma-separated union of
 `us-core` (default) | `uk-core` | `billing` | `all`; `us`/`uk` are accepted aliases),
 `FASTFHIR_BUILD_INGESTOR`
@@ -182,6 +195,16 @@ it there (see its README, "the Debug trap").
   Named constants are scoped by terminology source then CodeSystem
   (`FF_CODE::FHIR::ADMINISTRATIVE_GENDER::MALE`, `FF_CODE::UCUM::MMHG`); FHIR
   revision is *not* a namespace axis — that lives in the per-revision lookup tables.
+- **Date/time** — the same slot contract as `FF_CODE`, widened to 8 bytes: bit 63 clear
+  is a packed civil date/time (days from 0001-01-01, h/m/s, ms, signed UTC offset,
+  3-bit precision), bit 63 set is a signed relative offset to an `FF_STRING` holding the
+  original text, `FF_DATETIME_NULL` = all ones. **Civil time plus precision, never an
+  instant** — `"2024"` must not round-trip as `"2024-01-01T00:00:00Z"`, `date` has no
+  timezone, `time` has no date, and `:60` is a legal leap second. One layout, four tags
+  (`RECOVER_FF_DATE`/`DATETIME`/`TIME`/`INSTANT`) — the tag names the FHIR type, the
+  precision field says how much is populated. Primitives are implemented and tested
+  (`ff_test_datetime`); the generator still routes these types through `STRING_TYPES`
+  until TASKS.md DT-2. Full layout: architecture.md §6.3.
 - **Extensions** — per-extension `EXT_REF` word routes to a registered WASM codec module
   (MSB=1), a retained URL in `FF_URL_DIRECTORY` (MSB=0), or suppression (`0xFFFFFFFF`).
 - **Compactor** — post-finalize rewrite of a sealed stream into a presence-bitmask compact

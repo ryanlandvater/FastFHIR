@@ -145,6 +145,48 @@ constexpr uint32_t FF_CODE_PAYLOAD_MASK     = 0x7FFFFFFF;  // Lower 31 bits
 constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x7FFFFFFF;
 ```
 
+### 3.1 The 8-byte sibling: `FF_DATETIME` (primitives implemented, not yet wired)
+
+The packed date/time slot is the same mechanism one width up, and belongs beside
+this table so the two are read together rather than discovered separately:
+
+| | `FF_FIELD_CODE` (4 B) | `FF_DATETIME` (8 B) |
+|---|---|---|
+| Discriminator | Bit 31, `FF_CODEABLE_CONCEPT_FLAG` | Bit 63, `FF_DATETIME_FALLBACK_FLAG` |
+| MSB = 0 | 31-bit dictionary index | 63-bit packed civil date/time |
+| MSB = 1 | 31-bit signed relative offset → `FF_CODEABLE_CONCEPT` | 63-bit signed relative offset → `FF_STRING` |
+| Payload mask | `FF_CODE_PAYLOAD_MASK` (`0x7FFFFFFF`) | `FF_DATETIME_PAYLOAD_MASK` (`0x7FFF'FFFF'FFFF'FFFF`) |
+| Null | `FF_CODE_NULL` (all ones) | `FF_DATETIME_NULL` (all ones) |
+| Sign-extension | `FF_ResolveCodeableConceptOffset` | `FF_ResolveDateTimeOffset` |
+
+```
+Bit 63 (MSB) = FF_DATETIME_FALLBACK_FLAG → 63-bit signed relative offset to FF_STRING
+Bits 62–41   = civil days from 0001-01-01, unsigned (years 0001..9999)
+Bits 40–36   = hour     Bits 35–30 = minute     Bits 29–24 = second (60 legal)
+Bits 23–14   = millisecond          Bits 13–3  = UTC offset, signed minutes
+Bits  2–0    = precision (YEAR, YEAR_MONTH, DATE, SECOND, FRAC1, FRAC2, FRAC3)
+```
+
+Read path — the same binary branch as the code slot, testing the null sentinel
+first because all-ones has the flag bit set in both:
+
+```cpp
+case FF_FIELD_DATETIME: {                       // kind pending, TASKS.md DT-1.2
+    uint64_t raw = LOAD_U64(base + slot);
+    if (raw == FF_DATETIME_NULL) { /* absent */ }
+    if (FF_DATETIME_IS_FALLBACK(raw)) {
+        Offset str_off = FF_ResolveDateTimeOffset(raw, parent_offset);  // sign-extend 63-bit
+        return /* the original text in that FF_STRING */;
+    }
+    return FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(raw), tag);
+}
+```
+
+Unlike the code slot, the inline form carries no terminology at all — a
+date/time is not a coded concept and never consults the dictionary, so none of
+the CodeSystem machinery in this document applies to it. It shares the *slot
+contract* and nothing else. Full rationale is in `architecture.md` §6.3.
+
 **Read path** — binary branch with sign-extension (see `include/FF_Parser.hpp`,
 `include/FF_Utilities.hpp::FF_ResolveCodeableConceptOffset`):
 

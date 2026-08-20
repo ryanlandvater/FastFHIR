@@ -748,6 +748,55 @@ static void test_layout_constants()
     CHECK(!ff_datetime_fits(bad), "offset past +14:00");
 }
 
+// ── The kind (DT-1.2) ──────────────────────────────────────────────────────
+
+static void test_field_kind()
+{
+    TEST("FF_FIELD_DATETIME is the pinned value and the right width");
+    CHECK_EQ(static_cast<int>(FF_FIELD_DATETIME), 13, "appended value is ABI-pinned");
+    CHECK_EQ(static_cast<int>(ff_slot_width(FF_FIELD_DATETIME)),
+             static_cast<int>(TYPE_SIZE_UINT64), "8 bytes");
+    // The slot did not widen: routing these types off STRING_TYPES in DT-2 moves
+    // no V-Table offset, which is what makes the change confined to a field's
+    // interpretation.
+    CHECK_EQ(static_cast<int>(ff_slot_width(FF_FIELD_DATETIME)),
+             static_cast<int>(ff_slot_width(FF_FIELD_STRING)),
+             "must match the string-offset slot it replaces");
+
+    TEST("all four tags collapse to the one kind");
+    CHECK(Recovery_to_Kind(RECOVER_FF_DATE) == FF_FIELD_DATETIME, "date");
+    CHECK(Recovery_to_Kind(RECOVER_FF_DATETIME) == FF_FIELD_DATETIME, "dateTime");
+    CHECK(Recovery_to_Kind(RECOVER_FF_TIME) == FF_FIELD_DATETIME, "time");
+    CHECK(Recovery_to_Kind(RECOVER_FF_INSTANT) == FF_FIELD_DATETIME, "instant");
+
+    TEST("the reverse mapping stays UNDEFINED, deliberately");
+    // Pinned so nobody "completes" the table later: one kind names four tags, so
+    // any single answer here is wrong three times in four, and the wrong answer
+    // would show up as a `date` exported as valueDateTime.
+    CHECK(Kind_to_Recovery(FF_FIELD_DATETIME) == FF_RECOVER_UNDEFINED,
+          "Kind_to_Recovery must not guess which of the four tags this is");
+
+    TEST("emptiness is detected, not defaulted");
+    // FF_IsFieldEmpty's default arm returns true, so a missing case would report
+    // every date/time field as absent and silently drop it on export.
+    std::vector<BYTE> buf(32, 0);
+    STORE_U64(buf.data(), FF_DATETIME_NULL);
+    CHECK(FF_IsFieldEmpty(buf.data(), 0, FF_FIELD_DATETIME), "all-ones reads as absent");
+
+    const auto packed = FF_PARSE_DATETIME("2024-01-15", RECOVER_FF_DATE);
+    CHECK(packed.has_value(), "fixture parses");
+    STORE_U64(buf.data(), FF_PACK_DATETIME(*packed));
+    CHECK(!FF_IsFieldEmpty(buf.data(), 0, FF_FIELD_DATETIME), "a packed value is present");
+
+    // A pre-epoch date packs to a small day count; its high bytes are zero, and
+    // zero must not read as absent either.
+    const auto early = FF_PARSE_DATETIME("0001-01-01", RECOVER_FF_DATE);
+    CHECK(early.has_value(), "epoch fixture parses");
+    STORE_U64(buf.data(), FF_PACK_DATETIME(*early));
+    CHECK(!FF_IsFieldEmpty(buf.data(), 0, FF_FIELD_DATETIME),
+          "0001-01-01 packs to mostly zero bits and must still read as present");
+}
+
 int main(int argc, char **argv)
 {
     const char *filter = "";
@@ -766,6 +815,7 @@ int main(int argc, char **argv)
 
     TEST_GROUP("Layout");
     run("test_layout_constants", test_layout_constants);
+    run("test_field_kind", test_field_kind);
 
     TEST_GROUP("Precision");
     run("test_precision_levels", test_precision_levels);
