@@ -245,9 +245,9 @@ a flash model must not take alone.
 
 ## Priority summary
 
-**XP-2 is closed (2026-08-19), so there is no open P0.** DT is unblocked; its
-two ⚠ decisions (the `FF_FIELD_DATETIME` enum value, and the compatibility
-wording) are the only things standing between here and DT-1.
+**XP-2 is closed (2026-08-19), so there is no open P0.** DT is unblocked and
+**all three of its ⚠ decisions are now answered** (tag breakdown and DT-1.2 /
+DT-4.4, 2026-08-20 — see each task). Nothing gates DT-1.
 
 | ID | Priority | Task | Why | Status |
 |---|---|---|---|---|
@@ -545,8 +545,8 @@ none should be attempted.
 > `dictionaries/master_tags.json` lines 114–133 exactly as assigned — the four
 > 8-byte inline scalar tags DATE `0x0107`, DATETIME `0x0108`, TIME `0x0109`,
 > INSTANT `0x010A` in the scalar band, notes unchanged. DT-1 is implementable
-> on this layout. (DT-1.2's `FF_FieldKind` enum value and DT-4.4's
-> compatibility wording remain the other ⚠ items.)
+> on this layout. **Reconfirmed 2026-08-20.** (DT-1.2 and DT-4.4, the other two
+> ⚠ items, were both answered 2026-08-20 — see each task. No ⚠ remains in DT.)
 
 **The band is functional, not decorative.** `Recovery_to_Kind` routes on
 `(base & 0xFF00) == RECOVER_FF_SCALAR_BLOCK` — that test *is* the "this is an
@@ -626,9 +626,59 @@ helpers, mirror their naming, and have `ENCODE_FF_DATETIME` take the same
 `(base, block_offset, child_offset, ...)` shape as `ENCODE_FF_CODE` so the
 relative-offset arithmetic is written once in each and reads identically.
 
+> **DONE (2026-08-20, working tree, uncommitted).** `FF_Primitives.hpp` gained
+> the slot-contract table against `FF_CODE`, `FF_DATETIME_FALLBACK_FLAG` /
+> `_PAYLOAD_MASK` / `_NULL`, the `FF_DateTimeBits` symbolic-sum enum
+> (`static_assert(FF_DT_FLAG == 63)`), `FF_DateTimePrecision`, the
+> `FF_DATETIME_OFFSET_Z` sentinel, `FF_DateTimeParts`, `constexpr`
+> `ff_days_from_civil` / `ff_civil_from_days` (Hinnant) with the epoch shift
+> isolated in `ff_datetime_days_from_civil` / `ff_datetime_civil_from_days`,
+> `FF_PACK_DATETIME` / `FF_UNPACK_DATETIME`, `ff_datetime_fits`, and
+> `FF_DATETIME_IS_FALLBACK`. `FF_Utilities.hpp` gained `FF_ResolveDateTimeOffset`
+> beside its 31-bit counterpart. `FF_Primitives.cpp` gained the parser, the
+> formatter, and the `SIZE_`/`STORE_`/`ENCODE_FF_DATETIME` triple mirroring the
+> code emitters. **Nothing calls them yet — DT-2 wires the generator up.**
+>
+> Verified (Debug build): every DT-1.3 case round-trips text-in == text-out —
+> all seven precision levels, `Z` vs `+00:00`, ±offsets to the ±14:00 limit,
+> leap second `23:59:60`, pre-1970, year 0001 and 9999, leap day, time-only,
+> 1–3 fractional digits. Fallback (not an exception) for: 4- and 6-digit
+> fractions, a `date` carrying a time, an `instant` without one, `T` without a
+> timezone, `2024-02-31`, `2023-02-29`, unpadded `2024-1-5`, month 13, hour 25,
+> offset `+15:00`, and garbage. The arena path was checked separately: packable
+> text leaves `child_off` untouched, unfittable text writes an `FF_STRING` whose
+> bytes match the input exactly and whose flagged relative offset resolves back
+> through `FF_ResolveDateTimeOffset` in both directions. The civil conversion was
+> checked against an independent day-by-day calendar walk: **3,652,059 days,
+> 0 mismatches.** `ctest --preset ninja` 33/34 (`py_roundtrip` red as before,
+> on `fullUrl`/`request` — A26, unrelated), `pytest tests/generator` 46/46, wire
+> witness unmoved (correct: nothing generated changed).
+>
+> Two decisions taken inside the task, both recorded in the source comments:
+> (1) a parse failure takes the **fallback**, not an exception, matching the code
+> slot — preserving the bytes that arrived is always defensible, and judging FHIR
+> legality belongs to ingest (DT-3); (2) `_pack_datetime_offset` **rejects a
+> relative offset of −1**, which would encode to all-ones and collide with
+> `FF_DATETIME_NULL`. It cannot occur (the smallest block is larger than one
+> byte), but the sentinel's claim to that bit pattern is that no real offset
+> produces it. `FF_CODE` has the identical latent case at 31 bits and no such
+> guard.
+
 ### DT-1.2 — `FF_FieldKind`
-⚠ Adding `FF_FIELD_DATETIME` extends a permanent enum. It appends, so it is
-additive, but confirm the value with Ryan before writing it.
+> **DECIDED (2026-08-20, Ryan): one value, `FF_FIELD_DATETIME = 13`,** appended
+> after `FF_FIELD_CHOICE` in `include/FF_Primitives.hpp:304`. **One kind for all
+> four tags** — the recovery tag says which FHIR type the slot holds, the kind
+> says only "inline 8-byte packed date/time", exactly as "One layout, four tags"
+> above requires. `Recovery_to_Kind` maps `RECOVER_FF_DATE` / `DATETIME` / `TIME`
+> / `INSTANT` all to this single value inside the existing scalar-band branch,
+> and `ff_slot_width` gains one `case` returning `TYPE_SIZE_UINT64`. Do not add
+> per-type kinds; a later split would be additive and is not needed.
+>
+> This value is **not a wire constant**: `FF_FieldKind` is never serialized — it
+> is derived from the recovery tag by `Recovery_to_Kind` and otherwise lives only
+> in the static `FF_FieldInfo` tables, `FF_FieldKey`, and `ff_slot_width`. It is
+> an ABI/source choice, so it appends rather than renumbers for ABI stability,
+> not for wire permanence.
 
 ### DT-1.3 — Round-trip unit tests before any generator change
 `tests/cpp/test_datetime.cpp`: every precision level; `Z` vs `+00:00`; a leap
@@ -637,6 +687,44 @@ a 6-digit fraction taking the fallback. Assert **text in == text out**.
 
 **Done when:** the pack/unpack pair is byte-exact for every case above, and the
 fallback triggers only for the cases listed.
+
+> **DONE (2026-08-20, working tree, uncommitted).** `tests/cpp/test_datetime.cpp`,
+> registered as `cpp_ff_test_datetime` in all four `CMakeLists.txt` lists (the
+> `add_ff_cpp_test` call, the ctest `foreach`, `_BUILD_ALL`, and the two IDE
+> folder/scheme lists — omitting `_BUILD_ALL` is what produced A20's silent
+> "Not Run"). 28 tests, 0 failures, 0.05 s in ctest; suite now 34/35 with
+> `py_roundtrip` the same known red.
+>
+> **Every case runs through an arena slot**, not parse-then-format: `ENCODE_
+> FF_DATETIME` into a slot, then decode that slot the way a reader must (null,
+> then discriminator, then packed value or the `FF_STRING` the relative offset
+> names). A parse/format pair would exercise neither the discriminator, the
+> relative offset, nor the fallback block. `decode_slot()` in the test is the
+> reference DT-3's export path should match.
+>
+> **Dates are sampled, precisions are enumerated** (Ryan, 2026-08-20): 1,500
+> random dates per bucket either side of 1970 × every precision each tag admits
+> (YEAR→FRAC3 for `dateTime`, YEAR→DATE for `date`, SECOND→FRAC3 for `instant`
+> and `time`) = 18 legal tag×precision cells, plus 12 named boundary days
+> (0001-01-01, first leap year, the 100/400 century rules, 1900-02-28,
+> 1969-12-31, 1970-01-01, 2000-02-29, 9999-12-31) at every precision. The
+> sampler asserts its own coverage — every legal cell must be reached and no
+> illegal one — so a hole cannot hide behind a green run. Seed is fixed and
+> printed (`--seed` to vary); green on seeds 1, 42, 99999, 20260820,
+> 4294967295. Time-of-day and UTC offset stay exhaustive because those spaces
+> are small: all 24×60×61 = 87,840 times including leap seconds, all 1,000
+> millisecond values, all 1,681 legal offsets.
+>
+> **Red-green, and it corrected a wrong belief.** The first mutation tried —
+> deleting the negative-`era` branch of Hinnant's `civil_from_days` — changed
+> **nothing**: that function adds 719,468 before dividing, so within years
+> 0001..9999 its internal `z` is always positive and the branch is unreachable.
+> The epoch straddle is a **signedness** boundary, not a branch. The mutation
+> that does bite is computing the epoch shift in unsigned arithmetic
+> (`days - (uint32_t)FF_DATETIME_CIVIL_EPOCH`), which wraps for every pre-1970
+> date and turns 0001-01-01 into 9222-01-21: **119 failures, all pre-1970,
+> every post-1970 case still green.** Both findings are now recorded in the
+> test's header comment and beside `ff_civil_from_days`.
 
 ### DT-1.4 — The documentation pass
 Land the parity table and the two properties above in `architecture.md`,
@@ -648,6 +736,36 @@ prevent.
 
 **Done when:** each of the four documents describes the date/time slot in the
 same terms it uses for the code slot, and names the other.
+
+### DT-1.5 — The fallback offset must be validated like a code's
+
+**Rule (Ryan, 2026-08-20): a slot whose MSB flags an offset is validated as an
+offset.** `validate_FFHR_stream()` skips inline scalars because they cannot aim
+the reader at memory it does not own — but a date/time slot with bit 63 set is
+not inline data, it is an edge, and the walk must follow it. This is the same
+variant the code slot already gets: `FF_FIELD_CODE` with
+`FF_CODEABLE_CONCEPT_FLAG` set is sign-extended, resolved relative to the
+containing block, and walked against `RECOVER_FF_CODEABLE_CONCEPT`
+(`src/FF_Parser.cpp:573–590`). Parity here is not decoration; a kind that can
+point somewhere and is missing from `slot_carries_offset` is a hole in the
+validator.
+
+- **DT-1.5.1** Add `FF_FIELD_DATETIME` to `slot_carries_offset`
+  (`src/FF_Parser.cpp:343`), with the same "only when the flag is set" comment
+  the `FF_FIELD_CODE` line carries.
+- **DT-1.5.2** Add a `case FF_FIELD_DATETIME:` to `DeepValidator::walk_fields`
+  mirroring `case FF_FIELD_CODE:` exactly: read the 8 bytes, `break` on
+  `FF_DATETIME_NULL`, `break` when bit 63 is clear (packed value — structurally
+  inert; the `_deep()` pass may range-check the fields), otherwise sign-extend
+  the 63-bit relative offset and `walk(..., RECOVER_FF_STRING, ...)`.
+- **DT-1.5.3** Extend `tests/cpp/ff_test_graph_bounds.cpp` with a date/time slot
+  whose fallback offset points out of bounds, and one pointing at a block whose
+  tag is not `RECOVER_FF_STRING`. Both must fail validation naming the field.
+
+**Blocked on DT-1.2** (needs the `FF_FIELD_DATETIME` enum value to exist).
+**Done when:** a corrupted date/time fallback offset is rejected by
+`validate_FFHR_stream()` with the offending offset and field named, exactly as a
+corrupted CodeableConcept offset already is.
 
 ---
 
@@ -711,10 +829,31 @@ through `ff_ingest | ff_export`.
   A golden update without a corresponding source change is a red flag; this one
   has the change, so state it in the commit message.
 
-⚠ **DT-4.4 — the compatibility statement.** Every archive written before DT-2
-becomes unreadable. Q13 keeps the format unfrozen, so this is permitted, but the
-alpha caveat in README/SPEC should say plainly that date/time representation
-changed and when. Produce the wording and STOP.
+**DT-4.4 — the compatibility statement. CLOSED (2026-08-20, Ryan): none is
+required.** The project is **pre-alpha and has never been used in the wild**, so
+there is no historical archive to be compatible with. No README/SPEC caveat, no
+engine-version gate, no migration path — do not write one, and do not
+re-litigate this at the next breaking wire change while the pre-alpha status
+holds. Nothing on disk is at risk either: **no `.ffhr` is tracked in git**, and
+the ones under `build/tests/cpp/` are written by the tests themselves on each
+run (verified 2026-08-20).
+
+> **The original framing was wrong and is corrected here for the record.** It
+> said a pre-DT archive "becomes unreadable". It does not — it reads
+> *successfully and wrongly*. After DT-2 a date slot is an **inline** scalar, so
+> the 8 bytes that used to hold an offset are decoded as a packed civil
+> date/time; an ordinary offset has bit 63 clear, so the discriminator says
+> "packed" and a plausible wrong date comes back. `validate_FFHR_stream()` does
+> not catch it: the structural pass deliberately skips inline scalars
+> (`slot_carries_offset`), because scalars cannot aim the reader at memory it
+> does not own. The `Parser` reads `engine_version` but never rejects on it
+> (`src/FF_Parser.cpp:257–292`), so nothing else catches it either.
+>
+> That is harmless under the pre-alpha decision above. It is recorded because it
+> generalises past this task: **any future change to how an inline scalar slot
+> is interpreted is silent — no validator, no version check, and no exception
+> stands between it and a wrong value.** Whether that is worth a gate is a
+> question for whoever decides the alpha freeze (Q13/I1), not for DT.
 
 **Verify (whole block):**
 ```bash

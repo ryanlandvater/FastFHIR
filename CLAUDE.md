@@ -3,7 +3,8 @@
 FastFHIR is a C++20 zero-copy **binary serialization format for HL7 FHIR** (R4/R5):
 offset-based data blocks in a memory-mapped arena, lock-free concurrent building, JSON
 ingest/export, optional compact archives, and a Python code generator that emits the typed
-C++ from official HL7 StructureDefinitions. Alpha stage. Licensed under **MPL-2.0**; the
+C++ from official HL7 StructureDefinitions. **Pre-alpha** — see *Breaking the wire format
+is currently allowed* below. Licensed under **MPL-2.0**; the
 "FastFHIR" name and compatibility claims are governed by the conformance policy in
 `TRADEMARK.md`, and attribution lives in `NOTICE`. Never modify `LICENSE`, `NOTICE`, or
 `TRADEMARK.md`, and never strip the MPL header notice from source files, without explicit
@@ -187,6 +188,38 @@ it there (see its README, "the Debug trap").
   layout; output is read-only, traversed with the same Node API.
 
 ## Hard invariants — breaking these corrupts data on the wire
+
+**Breaking the wire format is currently allowed (pre-alpha, decided 2026-08-20).** The
+format has never been used in the wild, so there is no stored archive to stay compatible
+with. A change to how a slot is *interpreted* — DT-1's packed date/time is the live example
+— needs no compatibility statement, no engine-version gate, and no migration path, and no
+reader-side shim for a superseded layout may be written. Do not add one, and do not
+re-open the question at the next breaking change while this status holds. Nothing is at
+risk on disk: no `.ffhr` is tracked in git, and the ones under `build/` are written by the
+tests on each run.
+
+This licenses **representation** changes, not renumbering. Invariant 1 below stands
+unchanged: a `RECOVERY_TAG` or dictionary ID that has been assigned still never moves.
+That discipline costs nothing to keep now, and it is the habit that has to already be in
+place when the format freezes — which is precisely when it stops being recoverable.
+Relaxing invariant 1 would be a separate decision, and it is Ryan's alone.
+
+**A flagged offset is an offset, whatever slot it lives in.** `validate_FFHR_stream()`
+skips inline scalars because they cannot aim the reader at memory it does not own — but a
+scalar slot whose MSB flags a *fallback offset* is not inline data, and it is validated
+like any other edge. That is the rule, not an exception to it: `FF_FIELD_CODE` with
+`FF_CODEABLE_CONCEPT_FLAG` set is already sign-extended, resolved relative to the
+containing block, and walked against `RECOVER_FF_CODEABLE_CONCEPT`
+(`src/FF_Parser.cpp:573–590`). Every future MSB-discriminated slot owes the same — DT's
+8-byte date/time slot with bit 63 set must be walked as a signed relative offset to an
+`FF_STRING` (TASKS.md DT-1.5). A slot kind that can point somewhere and is not in
+`slot_carries_offset` is a hole in the validator.
+
+The residue that remains genuinely unchecked is narrow: a slot holding *only* inline bytes
+(bit 63 clear), reinterpreted by a later format change. The `Parser` reads `engine_version`
+but never rejects on it, so such a stream reads back *successfully and wrongly* rather than
+failing — harmless while pre-alpha, and the reason the freeze (TASKS.md Q13/I1) has to
+decide whether a version gate is wanted.
 
 1. **Wire constants are permanent.** Never renumber or reorder: `RECOVERY_TAG` values
    (`dictionaries/master_tags.json` — the committed tag ledger; `generated_src/FF_Recovery.hpp` is

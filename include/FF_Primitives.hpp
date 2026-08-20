@@ -28,6 +28,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <limits>
+#include <optional>
 #include <unordered_map>
 #include <variant>
 #include "FF_Version.hpp"
@@ -110,6 +111,248 @@ constexpr uint32_t FF_CODE_PAYLOAD_MASK     = 0x7FFFFFFF;  // Lower 31 bits
 // Hard cap on permanent dictionary size to prevent overflow into Bit 31.
 // Enforced at generation time by generator/emit/dictionary.py.
 constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x7FFFFFFF;
+
+// ── Packed Date/Time Slot ─────────────────────────────────────────────
+// THE SAME SLOT CONTRACT AS FF_CODE ABOVE, WIDENED TO 8 BYTES. Read that
+// block first; everything here is its counterpart, deliberately so:
+//
+//                    FF_CODE (4 bytes)              FF_DATETIME (8 bytes)
+//   Discriminator    bit 31 (CODEABLE_CONCEPT_FLAG) bit 63 (FALLBACK_FLAG)
+//   Flag clear       31-bit dictionary ID           63-bit packed civil value
+//   Flag set         31-bit signed relative offset  63-bit signed relative offset
+//                    to an FF_CODEABLE_CONCEPT      to an FF_STRING
+//   Offset is rel to the containing block           the containing block (same rule)
+//   Sign-extension   FF_ResolveCodeableConceptOffset FF_ResolveDateTimeOffset
+//   Null sentinel    FF_CODE_NULL (all ones)        FF_DATETIME_NULL (all ones)
+//
+// Two properties that make the parity exact rather than approximate:
+//
+//   1. The fallback offset is SIGNED and RELATIVE to the containing block, not
+//      absolute. Absolute would have worked and would have been wrong: a second
+//      convention for the same job is a thing to memorise instead of transfer.
+//   2. The null sentinel lives inside the flag-set space and is reserved out of
+//      it. All-ones has the flag set, so it would otherwise read as a relative
+//      offset of 0x7FFF'FFFF'FFFF'FFFF -- an impossible one, which is what makes
+//      it free to mean "absent". Test the null BEFORE the flag, exactly as the
+//      code path does.
+//
+// AND IT IS AN EDGE, NOT INLINE DATA, WHENEVER THE FLAG IS SET. A packed value
+// is structurally inert and validate_FFHR_stream() may skip it; a flagged one
+// points somewhere and MUST be walked like any other offset (TASKS.md DT-1.5).
+// That is the rule the code slot already follows (src/FF_Parser.cpp:573-590),
+// not an exception to it.
+constexpr uint64_t FF_DATETIME_FALLBACK_FLAG = 0x8000000000000000;  // Bit 63
+constexpr uint64_t FF_DATETIME_PAYLOAD_MASK  = 0x7FFFFFFFFFFFFFFF;  // Lower 63
+constexpr uint64_t FF_DATETIME_NULL          = FF_NULL_UINT64;
+
+// Bit assignments as symbolic sums, low field first -- the same idiom the
+// V-Table blocks below use (VALIDATION_S / VALIDATION). Never write a literal
+// shift: the sums are the single definition, and a new field is inserted by
+// adding a width, not by re-adding a column of numbers.
+//
+// Days sit at the TOP of the payload so that two values sharing a UTC offset
+// compare chronologically as plain integers. That does NOT generalise to values
+// with different offsets -- the offset field is below the time fields, so an
+// integer compare orders by local wall time, not by instant. Equality is exact
+// for every case; ordering is only meaningful within one offset.
+enum FF_DateTimeBits : uint8_t
+{
+    FF_DT_PRECISION_S = 3,   // 7 values, see FF_DateTimePrecision
+    FF_DT_OFFSET_S    = 11,  // signed minutes, -840..+840 (1,681 of 2,048 used)
+    FF_DT_MILLI_S     = 10,  // 0..999
+    FF_DT_SECOND_S    = 6,   // 0..60 -- 60 is representable, leap seconds survive
+    FF_DT_MINUTE_S    = 6,   // 0..59
+    FF_DT_HOUR_S      = 5,   // 0..23
+    FF_DT_DAYS_S      = 22,  // civil days from 0001-01-01, UNSIGNED
+
+    FF_DT_PRECISION = 0,
+    FF_DT_OFFSET    = FF_DT_PRECISION + FF_DT_PRECISION_S,
+    FF_DT_MILLI     = FF_DT_OFFSET    + FF_DT_OFFSET_S,
+    FF_DT_SECOND    = FF_DT_MILLI     + FF_DT_MILLI_S,
+    FF_DT_MINUTE    = FF_DT_SECOND    + FF_DT_SECOND_S,
+    FF_DT_HOUR      = FF_DT_MINUTE    + FF_DT_MINUTE_S,
+    FF_DT_DAYS      = FF_DT_HOUR      + FF_DT_HOUR_S,
+    FF_DT_FLAG      = FF_DT_DAYS      + FF_DT_DAYS_S,
+};
+static_assert(FF_DT_FLAG == 63, "packed date/time payload must be exactly 63 bits");
+
+// Days from 0001-01-01 to 1970-01-01. The epoch is 0001-01-01 and the field is
+// UNSIGNED, and neither is a free choice: a signed count from the usual 1970
+// epoch does not fit. 1970->9999 is 2,932,896 days and signed 22 bits reach only
+// 2,097,151, which would cap the format at year 7711 while FHIR permits 9999.
+// Measured from 0001-01-01 the whole legal span is 3,652,058 days against an
+// unsigned 22-bit capacity of 4,194,303.
+constexpr int64_t  FF_DATETIME_CIVIL_EPOCH = 719162;
+constexpr uint32_t FF_DATETIME_MAX_DAYS    = 3652058;   // 9999-12-31
+
+// How much of the value is populated. This expresses WITHIN-TYPE variation
+// only: which of date/dateTime/time/instant a slot holds is the RECOVERY_TAG's
+// job, not this field's, and keeping that split is what holds the enum to 3
+// bits. FHIR's own grammar makes seconds mandatory once 'T' is present, so
+// there is no MINUTE precision to represent.
+//
+// FRAC1..3 exist because ".5", ".50" and ".500" are one instant and three
+// texts, and byte-exact round-trip means reproducing the text that arrived.
+enum class FF_DateTimePrecision : uint8_t
+{
+    YEAR       = 0,   // "2024"
+    YEAR_MONTH = 1,   // "2024-01"
+    DATE       = 2,   // "2024-01-15"
+    SECOND     = 3,   // "2024-01-15T13:45:30Z"      (no fractional part)
+    FRAC1      = 4,   // "2024-01-15T13:45:30.5Z"
+    FRAC2      = 5,   // "2024-01-15T13:45:30.50Z"
+    FRAC3      = 6,   // "2024-01-15T13:45:30.500Z"
+};
+
+// 'Z' and "+00:00" are the same instant and different text, so the offset field
+// distinguishes them rather than costing a bit elsewhere: 1,681 of its 2,048
+// codes are legal offsets, leaving 367 spare, and one spare code carries the
+// spelling. Numeric 0 means the text said "+00:00"; this sentinel means it said
+// "Z". Chosen as the most negative 11-bit two's-complement value, which is
+// unreachable as a real offset (legal range is -840..+840).
+constexpr int16_t FF_DATETIME_OFFSET_Z   = -1024;
+constexpr int16_t FF_DATETIME_OFFSET_MIN = -840;
+constexpr int16_t FF_DATETIME_OFFSET_MAX = 840;
+
+/// Unpacked form of the 8-byte slot.
+///
+/// PRECONDITION FOR BYTE-EXACT EQUALITY: every field the owning RECOVERY_TAG
+/// does not make meaningful MUST be left at zero, so that two equal values are
+/// one integer compare. The tag decides: RECOVER_FF_DATE has no time and no
+/// offset, RECOVER_FF_TIME has no days and no offset, RECOVER_FF_DATETIME
+/// carries an offset only at SECOND precision or finer (FHIR requires a
+/// timezone once 'T' is present), RECOVER_FF_INSTANT always carries one.
+/// Defaulting every member to zero is what makes that the natural outcome
+/// rather than a rule to remember.
+struct FF_DateTimeParts
+{
+    uint32_t days        = 0;   // from 0001-01-01; 0 when the tag carries no date
+    uint8_t  hour        = 0;
+    uint8_t  minute      = 0;
+    uint8_t  second      = 0;   // 60 is legal
+    uint16_t millisecond = 0;
+    int16_t  utc_offset  = 0;   // minutes, or FF_DATETIME_OFFSET_Z for a literal 'Z'
+    FF_DateTimePrecision precision = FF_DateTimePrecision::YEAR;
+};
+
+struct FF_CivilDate
+{
+    int32_t year  = 0;
+    uint8_t month = 0;
+    uint8_t day   = 0;
+};
+
+/// Days from 1970-01-01 for a civil date (Howard Hinnant's days_from_civil).
+/// Kept in its published form rather than trimmed to this domain: the `era`
+/// ternary is dead for year >= 1, and rewriting a proven algorithm to save a
+/// conditional move is how such algorithms acquire bugs.
+/// PRECONDITION: a real civil date; month 1-12, day valid for the month.
+constexpr int64_t ff_days_from_civil(int32_t y, uint32_t m, uint32_t d) noexcept
+{
+    y -= (m <= 2);
+    const int64_t  era = (y >= 0 ? y : y - 399) / 400;
+    const uint32_t yoe = static_cast<uint32_t>(y - era * 400);              // [0, 399]
+    const uint32_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;    // [0, 365]
+    const uint32_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;             // [0, 146096]
+    return era * 146097 + static_cast<int64_t>(doe) - 719468;
+}
+
+/// Inverse of ff_days_from_civil (Hinnant's civil_from_days). Its `era` ternary
+/// is likewise dead here -- the +719468 lands z above zero for every year in
+/// 0001..9999, confirmed by mutation -- and is likewise kept. The signedness
+/// that DOES matter is the epoch shift in ff_datetime_civil_from_days below:
+/// computing that in unsigned arithmetic wraps every pre-1970 date.
+constexpr FF_CivilDate ff_civil_from_days(int64_t z) noexcept
+{
+    z += 719468;
+    const int64_t  era = (z >= 0 ? z : z - 146096) / 146097;
+    const uint32_t doe = static_cast<uint32_t>(z - era * 146097);           // [0, 146096]
+    const uint32_t yoe =
+        (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;              // [0, 399]
+    const uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);           // [0, 365]
+    const uint32_t mp  = (5 * doy + 2) / 153;                               // [0, 11]
+    const uint32_t d   = doy - (153 * mp + 2) / 5 + 1;                      // [1, 31]
+    const uint32_t m   = mp + (mp < 10 ? 3 : -9);                           // [1, 12]
+    return {static_cast<int32_t>(static_cast<int64_t>(yoe) + era * 400 + (m <= 2)),
+            static_cast<uint8_t>(m), static_cast<uint8_t>(d)};
+}
+
+// Stored days are relative to 0001-01-01; the civil helpers above are relative
+// to 1970-01-01. These two are the ONLY place that shift happens -- a second
+// spelling of the epoch is a second chance to get it wrong.
+constexpr uint32_t ff_datetime_days_from_civil(int32_t y, uint32_t m, uint32_t d) noexcept
+{
+    return static_cast<uint32_t>(ff_days_from_civil(y, m, d) + FF_DATETIME_CIVIL_EPOCH);
+}
+constexpr FF_CivilDate ff_datetime_civil_from_days(uint32_t days) noexcept
+{
+    return ff_civil_from_days(static_cast<int64_t>(days) - FF_DATETIME_CIVIL_EPOCH);
+}
+static_assert(ff_datetime_days_from_civil(1, 1, 1) == 0, "civil epoch is 0001-01-01");
+static_assert(ff_datetime_days_from_civil(9999, 12, 31) == FF_DATETIME_MAX_DAYS,
+              "9999-12-31 must be the last representable day");
+static_assert(FF_DATETIME_MAX_DAYS < (1u << FF_DT_DAYS_S),
+              "the legal FHIR year range must fit the days field");
+
+constexpr uint64_t ff_dt_mask(uint8_t width) noexcept { return (1ull << width) - 1ull; }
+
+/// Assemble the 8-byte slot. Bit 63 is always clear: a packed value is by
+/// definition not a fallback offset. Every field is masked to its own width, so
+/// an out-of-range component can corrupt only itself and never its neighbours --
+/// range VALIDATION belongs to the caller (ff_datetime_fits), which decides
+/// between packing and the FF_STRING fallback.
+constexpr uint64_t FF_PACK_DATETIME(const FF_DateTimeParts& p) noexcept
+{
+    return (static_cast<uint64_t>(p.days)   & ff_dt_mask(FF_DT_DAYS_S))   << FF_DT_DAYS
+         | (static_cast<uint64_t>(p.hour)   & ff_dt_mask(FF_DT_HOUR_S))   << FF_DT_HOUR
+         | (static_cast<uint64_t>(p.minute) & ff_dt_mask(FF_DT_MINUTE_S)) << FF_DT_MINUTE
+         | (static_cast<uint64_t>(p.second) & ff_dt_mask(FF_DT_SECOND_S)) << FF_DT_SECOND
+         | (static_cast<uint64_t>(p.millisecond) & ff_dt_mask(FF_DT_MILLI_S)) << FF_DT_MILLI
+         | (static_cast<uint64_t>(p.utc_offset)  & ff_dt_mask(FF_DT_OFFSET_S)) << FF_DT_OFFSET
+         | (static_cast<uint64_t>(p.precision)   & ff_dt_mask(FF_DT_PRECISION_S));
+}
+
+/// Split the 8-byte slot. PRECONDITION: the slot is a packed value, i.e. it is
+/// neither FF_DATETIME_NULL nor flagged -- test both before calling.
+///
+/// The offset is sign-extended by shifting its top bit up to bit 31 and back
+/// down arithmetically, the same idiom FF_ResolveCodeableConceptOffset uses for
+/// the 31-bit case.
+constexpr FF_DateTimeParts FF_UNPACK_DATETIME(uint64_t slot) noexcept
+{
+    constexpr uint8_t OFF_PAD = 32 - FF_DT_OFFSET_S;
+    const auto raw_off = static_cast<uint32_t>((slot >> FF_DT_OFFSET) & ff_dt_mask(FF_DT_OFFSET_S));
+    return {
+        static_cast<uint32_t>((slot >> FF_DT_DAYS)   & ff_dt_mask(FF_DT_DAYS_S)),
+        static_cast<uint8_t> ((slot >> FF_DT_HOUR)   & ff_dt_mask(FF_DT_HOUR_S)),
+        static_cast<uint8_t> ((slot >> FF_DT_MINUTE) & ff_dt_mask(FF_DT_MINUTE_S)),
+        static_cast<uint8_t> ((slot >> FF_DT_SECOND) & ff_dt_mask(FF_DT_SECOND_S)),
+        static_cast<uint16_t>((slot >> FF_DT_MILLI)  & ff_dt_mask(FF_DT_MILLI_S)),
+        static_cast<int16_t> (static_cast<int32_t>(raw_off << OFF_PAD) >> OFF_PAD),
+        static_cast<FF_DateTimePrecision>(slot & ff_dt_mask(FF_DT_PRECISION_S)),
+    };
+}
+
+/// Does this value fit the packed form? Everything that does not -- a year
+/// outside 0001..9999, more than 3 fractional digits (the caller reports that
+/// as a precision it cannot express), an offset beyond +/-14:00 -- takes the
+/// FF_STRING fallback instead, exactly as a non-dictionary code does.
+constexpr bool ff_datetime_fits(const FF_DateTimeParts& p) noexcept
+{
+    return p.days <= FF_DATETIME_MAX_DAYS
+        && p.hour <= 23 && p.minute <= 59 && p.second <= 60
+        && p.millisecond <= 999
+        && (p.utc_offset == FF_DATETIME_OFFSET_Z
+            || (p.utc_offset >= FF_DATETIME_OFFSET_MIN && p.utc_offset <= FF_DATETIME_OFFSET_MAX));
+}
+
+/// Is this slot a relative offset to an FF_STRING rather than a packed value?
+/// PRECONDITION: the caller has already excluded FF_DATETIME_NULL, which has
+/// bit 63 set and would otherwise answer true. Same ordering as the code slot.
+constexpr bool FF_DATETIME_IS_FALLBACK(uint64_t slot) noexcept
+{
+    return (slot & FF_DATETIME_FALLBACK_FLAG) != 0;
+}
 
 // ── CodeableConcept System Discriminator ───────────────────────────
 // Byte at offset 10 of the CodeableConcept block.
@@ -1169,3 +1412,25 @@ Offset STORE_FF_CODE(BYTE *const __base, Offset start_offset, std::string_view c
 uint32_t ENCODE_FF_CODE(BYTE *const __base, Offset block_offset, Offset &child_off,
                          const std::string &code_str, uint32_t version = FHIR_VERSION_R5,
                          FF_CodeableConceptSystem system = FF_CodeableConceptSystem::UNKNOWN);
+
+// ── Packed date/time: the same three functions, one width up ──────────
+// SIZE/STORE/ENCODE split exactly as the code emitters above, and for the same
+// reason: SIZE answers "how many bytes of child space does this need" before
+// the arena is claimed, STORE writes the fallback block if there is one, and
+// ENCODE returns the V-Table slot. `tag` selects the per-type FHIR rules the
+// way `system` does for codes -- RECOVER_FF_DATE rejects a timezone,
+// RECOVER_FF_TIME rejects a date, RECOVER_FF_INSTANT demands both -- which is
+// how four tags share one encoder.
+//
+// Text that parses and fits returns a packed value (MSB=0). Text that is legal
+// FHIR but does not fit the 63 bits (a year outside 0001..9999, more than three
+// fractional digits) returns a relative offset with FF_DATETIME_FALLBACK_FLAG
+// set (MSB=1) to an FF_STRING holding the ORIGINAL text, so the round trip is
+// byte-exact either way. Empty text returns FF_DATETIME_NULL.
+std::optional<FF_DateTimeParts> FF_PARSE_DATETIME(std::string_view text, RECOVERY_TAG tag);
+std::string FF_FORMAT_DATETIME(const FF_DateTimeParts &parts, RECOVERY_TAG tag);
+Size SIZE_FF_DATETIME(std::string_view text, RECOVERY_TAG tag);
+Offset STORE_FF_DATETIME(BYTE *const __base, Offset start_offset,
+                          std::string_view text, RECOVERY_TAG tag);
+uint64_t ENCODE_FF_DATETIME(BYTE *const __base, Offset block_offset, Offset &child_off,
+                             std::string_view text, RECOVERY_TAG tag);

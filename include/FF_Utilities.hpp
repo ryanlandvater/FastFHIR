@@ -143,3 +143,15 @@ inline Offset FF_ResolveCodeableConceptOffset(uint32_t raw,
     int32_t rel_off = static_cast<int32_t>(raw << 1) >> 1;
     return parent_off + static_cast<Offset>(static_cast<int64_t>(rel_off));
 }
+
+/// The 8-byte counterpart: sign-extend a 63-bit relative offset out of a packed
+/// date/time slot (FF_DATETIME_FALLBACK_FLAG already stripped by the shift).
+/// Identical arithmetic to the 31-bit case one width up -- the two are written
+/// the same way on purpose, so a reader who has understood one has understood
+/// both. PRECONDITION: the caller has excluded FF_DATETIME_NULL and confirmed
+/// the flag is set; a packed value is not an offset.
+inline Offset FF_ResolveDateTimeOffset(uint64_t raw,
+                                       Offset parent_off) noexcept {
+    int64_t rel_off = static_cast<int64_t>(raw << 1) >> 1;
+    return parent_off + static_cast<Offset>(rel_off);
+}
