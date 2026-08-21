@@ -578,28 +578,80 @@ int main() {
               "print_json renders the same code");
     }
 
-    // ── 7. TRIPWIRE: the date/time half of DT-1.5 (see section 6) ──────────
-    // validate_FFHR_stream() handles FF_FIELD_DATETIME exactly as it handles
-    // FF_FIELD_CODE, but that branch is UNREACHABLE from any stream today
-    // because no generated block declares such a slot -- so it has no
-    // corruption test, and cannot have one yet.
-    //
-    // This check fails the moment that stops being true. When it does, DT-2 has
-    // landed and the two corruption cases in section 6 must be duplicated for a
-    // date/time slot: bit 63 set with (a) an out-of-bounds relative offset and
-    // (b) an offset to a block whose tag is not RECOVER_FF_STRING. Delete this
-    // tripwire in the same commit that adds them.
+    // ── 7. THE DATE/TIME HALF OF DT-1.5 (DT-2 landed) ─────────────────────
+    // validate_FFHR_stream() treats an FF_FIELD_DATETIME slot exactly as an
+    // FF_FIELD_CODE slot one width up: packed values and the null sentinel are
+    // inline 8 bytes (no edge), but bit 63 set is a signed relative offset to
+    // an FF_STRING holding the original text — an EDGE that must be walked.
+    // These are the two corruption cases the section-6 tripwire demanded;
+    // the tripwire itself is deleted in the same change that adds them.
     {
-        size_t datetime_slots = 0;
-        for (uint32_t tag = 0; tag <= 0xFFFF; ++tag) {
-            for (const FF_FieldInfo& f :
-                 FastFHIR::reflected_fields_view(static_cast<uint16_t>(tag))) {
-                if (f.kind == FF_FIELD_DATETIME) ++datetime_slots;
-            }
+        Memory mem = Memory::create(1ull << 22);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
+        PatientData p; p.id = "dt-flagged";
+        auto hp = FF_StreamAppendObject(stream, p);
+        // A real packed date makes the baseline a legal non-null slot — the
+        // control that proves the discriminator (bit 63), not the slot kind,
+        // is what makes a value an edge.
+        hp[FastFHIR::Fields::PATIENT::BIRTH_DATE] = std::string_view("1990-03-21");
+        // A sibling block to aim the flagged offset at in case (b): in bounds,
+        // not an ancestor (so the cycle check cannot fire first), and not an
+        // FF_STRING — only the expected-tag check can catch it.
+        IdentifierData d2; d2.id = "sibling";
+        auto hd2 = FF_StreamAppendObject(stream, d2);
+        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
+            .stream = stream,
+            .root = hp,
+        }), "set root");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
+
+        const Offset pat = hp.offset();
+        const Offset bdate = pat + FF_PATIENT::BIRTHDATE;   // FF_FIELD_DATETIME, 8 bytes
+
+        FastFHIR::Parser good(view.data(), view.size());
+        CHECK(static_cast<bool>(good.validate_FFHR_stream()),
+              "baseline stream with a packed datetime slot passes");
+
+        // Pack a signed relative offset the way ENCODE_FF_DATETIME does.
+        auto flagged64 = [](int64_t rel) {
+            return (static_cast<uint64_t>(rel) & FF_DATETIME_PAYLOAD_MASK)
+                   | FF_DATETIME_FALLBACK_FLAG;
+        };
+
+        // (a) flagged offset pointing past the end of the stream.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            const int64_t rel = static_cast<int64_t>(bytes.size() + 4096) -
+                                static_cast<int64_t>(pat);
+            STORE_U64(bytes.data() + bdate, flagged64(rel));
+            FastFHIR::Parser px(bytes.data(), bytes.size());
+            auto r = px.validate_FFHR_stream();
+            CHECK(!r, "out-of-bounds flagged datetime offset is rejected");
+            CHECK(r.message.find("out of bounds") != std::string::npos,
+                  "message names the bounds failure");
         }
-        CHECK(datetime_slots == 0,
-              "TRIPWIRE: a block now declares an FF_FIELD_DATETIME slot -- write the "
-              "two flagged-offset corruption cases for it (see section 7 comment)");
+
+        // (b) flagged offset pointing at a real block that is not an
+        //     FF_STRING. In bounds, self-consistent, and not an ancestor of
+        //     the slot (so the cycle check cannot fire first) — only the
+        //     expected-tag check can catch it.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            const int64_t rel = static_cast<int64_t>(hd2.offset()) -
+                                static_cast<int64_t>(pat);
+            STORE_U64(bytes.data() + bdate, flagged64(rel));
+            FastFHIR::Parser px(bytes.data(), bytes.size());
+            auto r = px.validate_FFHR_stream();
+            CHECK(!r, "flagged datetime offset to a non-string block is rejected");
+            CHECK(r.message.find("recovery tag") != std::string::npos,
+                  "message names the recovery tag mismatch");
+        }
     }
 
     printf("%s\n", failures ? "FAILURES" : "all graph-bounds checks pass");

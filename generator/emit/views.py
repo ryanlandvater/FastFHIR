@@ -28,6 +28,10 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
             ret_type = "ChoiceEntry"
         elif f.get("raw_scalar"):
             ret_type = f["cpp_type"]
+        elif f["fhir_type"] in _tm.DATETIME_TYPES:
+            # DT-2: the accessor resolves the packed/fallback slot to TEXT —
+            # the zero-copy path stays Node/Entry (TASKS.md DT-2 decision 1).
+            ret_type = "std::string"
         elif f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES:
             ret_type = "std::string_view"
         elif f["fhir_type"] in _tm.TYPE_MAP and f["fhir_type"] not in (
@@ -51,6 +55,7 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
             scalar_types = [
                 "FF_ARRAY",
                 "std::string_view",
+                "std::string",
                 "ResourceReference",
                 "FastFHIR::Reflective::Node",
                 "ChoiceEntry",
@@ -82,6 +87,15 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
             hpp += f"        return Decode::choice(base, offset + {vtable_off});\n"
         elif f.get("raw_scalar"):
             hpp += f"        return {f['macro']}(base + offset + {vtable_off});\n"
+        elif f["fhir_type"] in _tm.DATETIME_TYPES:
+            # DT-2: packed value formats to text; a flagged relative offset
+            # resolves to the FF_STRING holding the original text.
+            hpp += f"        const uint64_t __dt_raw = LOAD_U64(base + offset + {vtable_off});\n"
+            hpp += "        if (__dt_raw == FF_DATETIME_NULL) return std::string();\n"
+            hpp += "        if (FF_DATETIME_IS_FALLBACK(__dt_raw)) {\n"
+            hpp += f"            return std::string(FF_STRING(FF_ResolveDateTimeOffset(__dt_raw, offset), 0, VERSION).read_view(base));\n"
+            hpp += "        }\n"
+            hpp += f"        return FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(__dt_raw), {_st._child_recovery_expr(f, block_struct_name)});\n"
         elif f["fhir_type"] in _tm.TYPE_MAP and f["fhir_type"] not in (
             "string",
             "code",

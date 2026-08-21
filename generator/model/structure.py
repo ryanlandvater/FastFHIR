@@ -20,6 +20,7 @@ import os
 import re
 
 from generator.model.type_map import (
+    DATETIME_TYPES,
     GROUPING_ALIASES,
     PRODUCTION_PROFILE_ENV,
     RESOURCE_GROUPINGS,
@@ -219,6 +220,13 @@ def _field_kind_expr(f: dict) -> str:
         return "FF_FIELD_ARRAY"
     if f["fhir_type"] == "string":
         return "FF_FIELD_STRING"
+    if f["fhir_type"] in DATETIME_TYPES:
+        # DT-2: one packed 8-byte slot, four tags (RECOVER_FF_DATE/DATETIME/
+        # INSTANT/TIME). The width (TYPE_SIZE_UINT64) matches the offset it
+        # replaces, so no V-Table offset moves — but the KIND must be right:
+        # FF_FIELD_UNKNOWN would only pass the width static_assert by
+        # coincidence while the reflection table was wrong.
+        return "FF_FIELD_DATETIME"
     if f["cpp_type"] == "Offset":
         return "FF_FIELD_BLOCK"
     if f["fhir_type"] == "code":
@@ -274,6 +282,11 @@ def _array_entries_are_offsets_expr(f: dict) -> str:
         return "false"  # Strings/codes are stored inline in arrays
     if f["fhir_type"] in SCALAR_PRIMITIVE_TYPES:
         return "false"  # Scalars are inline
+    if f["fhir_type"] in DATETIME_TYPES:
+        # DT-2: datetime arrays keep the string-array layout (an OFFSET array
+        # of FF_STRING blocks), so they share the string flag. Non-array
+        # datetime fields never consult this flag.
+        return "false"
     return "true"  # Block-typed children are arena offsets
 
 

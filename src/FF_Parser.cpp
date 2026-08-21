@@ -122,7 +122,14 @@ Entry ParserOps::compact_node_lookup_field(const Node& n, FF_FieldKey key) {
     RECOVERY_TAG target_tag = key.child_recovery;
     FF_FieldKind out_kind = key.kind;
     if (out_kind == FF_FIELD_UNKNOWN) out_kind = target_field.kind;
-    if (target_tag == FF_RECOVER_UNDEFINED && out_kind != FF_FIELD_UNKNOWN) {
+    if (key.kind == FF_FIELD_CHOICE) {
+        // Same rule as the standard path: the runtime variant tag in the
+        // slot is authoritative; the static child_recovery only names the
+        // first variant. The presence bitmap above guarantees the slot is
+        // present, so the runtime tag is valid here — never FF_RECOVER_UNDEFINED.
+        target_tag = static_cast<RECOVERY_TAG>(
+            LOAD_U16(n.m_base + slot_offset + DATA_BLOCK::RECOVERY));
+    } else if (target_tag == FF_RECOVER_UNDEFINED && out_kind != FF_FIELD_UNKNOWN) {
         target_tag = Kind_to_Recovery(out_kind);
     }
 
@@ -188,6 +195,21 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
         case FF_FIELD_CODE:
             return code_node(e.base, size, version, e.parent_offset, slot_offset,
                              compact_ops, e.m_engine_version);
+
+        case FF_FIELD_DATETIME: {
+            // DT-2: same discriminator as code_node, one width up — packed/null
+            // values are inline, bit 63 set is a relative offset to an FF_STRING.
+            const uint64_t raw = LOAD_U64(e.base + slot_offset);
+            if (raw == FF_DATETIME_NULL || !FF_DATETIME_IS_FALLBACK(raw)) {
+                return Node(e.base, size, version, slot_offset, expected_tag,
+                            schema_kind, FF_RECOVER_UNDEFINED, false, compact_ops,
+                            e.m_engine_version);
+            }
+            return Node(e.base, size, version,
+                        FF_ResolveDateTimeOffset(raw, e.parent_offset),
+                        RECOVER_FF_STRING, FF_FIELD_STRING,
+                        FF_RECOVER_UNDEFINED, false, compact_ops, e.m_engine_version);
+        }
 
         case FF_FIELD_CHOICE:
             // parent_offset, not slot_offset: the fallback offset inside a
@@ -846,6 +868,7 @@ void Reflective::Node::print_json(std::ostream& out) const {
                     case FF_FIELD_UINT64:
                     case FF_FIELD_FLOAT64:
                     case FF_FIELD_CODE:
+                    case FF_FIELD_DATETIME:
                         child_entry.print_scalar_json(out, m_version);
                         break;
                     default:
@@ -888,6 +911,19 @@ void Reflective::Node::print_json(std::ostream& out) const {
             escape_json_string(out, as<std::string_view>());
             out << "\"";
             break;
+        case FF_FIELD_DATETIME: {
+            // Inline packed value — a flagged fallback resolves to an
+            // FF_STRING node via entry_as_node, which prints via the string
+            // case above.
+            const uint64_t raw = LOAD_U64(m_base + m_node_offset);
+            std::string dt_text = (raw == FF_DATETIME_NULL)
+                                      ? std::string()
+                                      : FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(raw), m_recovery);
+            out << "\"";
+            escape_json_string(out, dt_text);
+            out << "\"";
+            break;
+        }
         default: break;
     }
 }
@@ -917,8 +953,7 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
             break;
         case FF_FIELD_CODE: {
             uint32_t raw = LOAD_U32(base + slot);
-            if (raw == FF_CODE_NULL) { out << "null"; break; }
-            if (raw & FF_CODEABLE_CONCEPT_FLAG) {
+            if (raw == FF_CODE_NULL) { out << "null"; break; }            if (raw & FF_CODEABLE_CONCEPT_FLAG) {
                 // One decoder, shared with every other read path.
                 //
                 // This used to be a third copy of the per-system switch, and it
@@ -946,6 +981,23 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
                     out << "null";
                 }
             }
+            break;
+        }
+        case FF_FIELD_DATETIME: {
+            // DT-2: packed values format canonically; a flagged fallback
+            // returns the ORIGINAL text byte-exact.
+            const uint64_t raw = LOAD_U64(base + slot);
+            if (raw == FF_DATETIME_NULL) { out << "null"; break; }
+            std::string dt_text;
+            if (FF_DATETIME_IS_FALLBACK(raw)) {
+                FF_STRING s(FF_ResolveDateTimeOffset(raw, parent_offset), 0, version);
+                dt_text = std::string(s.read_view(base));
+            } else {
+                dt_text = FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(raw), target_recovery);
+            }
+            out << '"';
+            escape_json_string(out, dt_text);
+            out << '"';
             break;
         }
         default:
@@ -1215,7 +1267,15 @@ Entry ParserOps::standard_node_lookup_field(const Node& n, FF_FieldKey key) {
     }
 
     RECOVERY_TAG target_tag = key.child_recovery;
-    if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN) {
+    if (key.kind == FF_FIELD_CHOICE) {
+        // A choice slot's variant tag is written at runtime; the static
+        // child_recovery only names the first variant and would mislabel the
+        // JSON suffix (valueString for valueDecimal). FF_IsFieldEmpty above
+        // already rejected absent choices, so the runtime tag is guaranteed
+        // valid here — never FF_RECOVER_UNDEFINED.
+        target_tag = static_cast<RECOVERY_TAG>(
+            LOAD_U16(n.m_base + value_offset + DATA_BLOCK::RECOVERY));
+    } else if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN) {
         target_tag = Kind_to_Recovery(key.kind);
     }
     return {n.m_base, n.m_node_offset, key.field_offset, target_tag, key.kind, n.m_size, n.m_version, n.m_ops, n.m_engine_version};
@@ -1293,6 +1353,22 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
             // A code is inline ONLY while its flag is clear; see code_node.
             return code_node(e.base, size, version, e.parent_offset, slot_offset,
                              ops, e.m_engine_version);
+
+        case FF_FIELD_DATETIME: {
+            // DT-2: the same discriminator as code_node, one width up. Packed
+            // values and the null sentinel are inline 8 bytes; bit 63 set is a
+            // signed relative offset to an FF_STRING holding the ORIGINAL text.
+            const uint64_t raw = LOAD_U64(e.base + slot_offset);
+            if (raw == FF_DATETIME_NULL || !FF_DATETIME_IS_FALLBACK(raw)) {
+                return Node(e.base, size, version, slot_offset, expected_tag,
+                            schema_kind, FF_RECOVER_UNDEFINED, false, ops,
+                            e.m_engine_version);
+            }
+            return Node(e.base, size, version,
+                        FF_ResolveDateTimeOffset(raw, e.parent_offset),
+                        RECOVER_FF_STRING, FF_FIELD_STRING,
+                        FF_RECOVER_UNDEFINED, false, ops, e.m_engine_version);
+        }
 
         case FF_FIELD_CHOICE: 
             // parent_offset, not slot_offset -- see the compact path above.

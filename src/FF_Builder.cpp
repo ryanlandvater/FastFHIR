@@ -214,6 +214,31 @@ void Builder::amend_variant(Offset object_offset, size_t field_vtable_offset, ui
     STORE_U16(scope.slot() + DATA_BLOCK::RECOVERY, new_tag);
 }
 
+void Builder::amend_datetime(Offset object_offset, size_t field_vtable_offset,
+                             std::string_view text, RECOVERY_TAG tag)
+{
+    // The slot's absent value is FF_DATETIME_NULL, which is all-ones — the same
+    // probe semantics as OffsetIsNull, so the shared _amend_prepare applies.
+    AmendScope scope = _amend_prepare(object_offset, field_vtable_offset,
+                                      sizeof(uint64_t), AssignedProbe::OffsetIsNull,
+                                      "Datetime");
+    // DT-2: the fallback FF_STRING (text that does not fit the packed 63 bits)
+    // is claimed from child space and written by ENCODE_FF_DATETIME; empty and
+    // packable text claim nothing (SIZE_FF_DATETIME returns 0 for both).
+    const Size need = SIZE_FF_DATETIME(text, tag);
+    Offset child_off = m_memory.claim_space(need);
+    const Offset write_head = child_off;
+    const uint64_t encoded = ENCODE_FF_DATETIME(m_base, object_offset, child_off, text, tag);
+    if (child_off != write_head + need)
+    {
+        throw std::runtime_error(
+            "FastFHIR: SIZE/STORE contract violated in datetime amend: claimed " +
+            std::to_string(need) + " bytes but encode consumed " +
+            std::to_string(child_off - write_head) + ".");
+    }
+    STORE_U64(scope.slot(), encoded);
+}
+
 // =====================================================================
 // Finalization & Checksums
 // =====================================================================

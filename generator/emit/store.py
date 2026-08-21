@@ -1,4 +1,5 @@
 from generator.model.type_map import (
+    DATETIME_TYPES,
     SCALAR_PRIMITIVE_TYPES,
     STRING_TYPES,
     TYPE_MAP,
@@ -39,7 +40,7 @@ def generate_size_fields(layout, block_struct_name, data_name):
             cpp += f"        }}\n"
             cpp += f"    }}, {data_name}.{f['cpp_name']}.value);\n"
         elif kind == "FF_FIELD_ARRAY":
-            if f["fhir_type"] == "string" or f["fhir_type"] in STRING_TYPES:
+            if f["fhir_type"] == "string" or f["fhir_type"] in STRING_TYPES or f["fhir_type"] in DATETIME_TYPES:
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * TYPE_SIZE_OFFSET);\n"
                 cpp += f"        for (const auto& __item : {data_name}.{f['cpp_name']}) {{\n"
@@ -85,6 +86,13 @@ def generate_size_fields(layout, block_struct_name, data_name):
         elif kind == "FF_FIELD_STRING":
             cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
             cpp += f"        __total += SIZE_FF_STRING({data_name}.{f['cpp_name']});\n    }}\n"
+
+        elif kind == "FF_FIELD_DATETIME":
+            # DT-2: the slot is inline (already counted in HEADER_SIZE); only
+            # the fallback FF_STRING (text that does not fit the packed 63
+            # bits) needs reserved child space. SIZE_FF_DATETIME returns 0 for
+            # empty text and for text that packs inline.
+            cpp += f"    __total += SIZE_FF_DATETIME({data_name}.{f['cpp_name']}, {_scalar_recovery_tag(f['fhir_type'])});\n"
 
         elif kind == "FF_FIELD_BLOCK":
             # STRING_TYPES (dateTime, base64Binary, markdown, ...) need no special
@@ -161,7 +169,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             # `in STRING_TYPES` test, never `== "string"`: dateTime, markdown,
             # uri and id share this layout and silently take the wrong branch
             # otherwise.
-            if f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES:
+            if f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES or f["fhir_type"] in DATETIME_TYPES:
                 code_enum = f.get("code_enum")
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
@@ -298,6 +306,11 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             else:
                 cpp += f"        STORE_U32({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_CODE(__base, hdr_off, child_off, __code_str, __version));\n"
             cpp += f"    }}\n"
+        elif f["fhir_type"] in DATETIME_TYPES:
+            # DT-2: packed inline u64, or a flagged relative offset to an
+            # FF_STRING fallback written by ENCODE_FF_DATETIME into child
+            # space (the SIZE pass above reserves it).
+            cpp += f"    STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_DATETIME(__base, hdr_off, child_off, {data_name}.{f['cpp_name']}, {_scalar_recovery_tag(f['fhir_type'])}));\n"
         else:
             cpp += f"    {get_store_macro(f['macro'])}({ptr_name} + {block_struct_name}::{f['name']}, {data_name}.{f['cpp_name']});\n"
 

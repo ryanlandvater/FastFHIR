@@ -312,6 +312,14 @@ namespace FastFHIR
             requires std::is_arithmetic_v<T>
         void amend_scalar(Offset object_offset, size_t field_vtable_offset, T val);
 
+        /**
+         * @brief DT-2: writes a date/time text into an inline 8-byte slot —
+         * packed, or a flagged relative offset to an FF_STRING fallback claimed
+         * from child space. The mutation-path counterpart of ENCODE_FF_DATETIME.
+         */
+        void amend_datetime(Offset object_offset, size_t field_vtable_offset,
+                            std::string_view text, RECOVERY_TAG tag);
+
         // --- Finalization & Checksums ---
 
         /**
@@ -532,6 +540,21 @@ namespace FastFHIR
             requires(!std::is_arithmetic_v<T_Data>)
         Offset MutableEntry::operator=(const T_Data &data)
         {
+            // DT-2: a date/time slot is an inline 8-byte packed word (or a
+            // flagged relative offset to an FF_STRING fallback). String
+            // assignment must ENCODE into the slot — storing an FF_STRING child
+            // and patching a pointer would leave an offset word that the reader
+            // now unpacks as datetime bits (garbage dates).
+            if constexpr (std::is_same_v<T_Data, std::string_view>)
+            {
+                if (m_kind == FF_FIELD_DATETIME)
+                {
+                    m_builder->amend_datetime(m_parent_offset, m_vtable_offset,
+                                              data, m_recovery);
+                    return offset();
+                }
+            }
+
             // 1. Offload strict schema validation to the translation unit
             validate_assignment(TypeTraits<T_Data>::recovery);
 

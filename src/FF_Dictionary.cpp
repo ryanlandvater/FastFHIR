@@ -41,6 +41,13 @@ uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t version) noexcept
     {
         static const Map s_ucum_map = [] {
             static std::vector<std::string> lowered;
+            // CRITICAL: reserve BEFORE the loop. `lowered` grows below, and a
+            // reallocation moves the std::string objects; short SSO labels keep
+            // their chars inside the object, so the string_view keys already
+            // emplaced into m would dangle after the move (heap-use-after-free
+            // caught by ASAN under DT-2's code-lookup volume). Pre-reserving
+            // pins every string's address for the lifetime of the map.
+            lowered.reserve(FF_UCUM_DICTIONARY_SIZE);
             Map m; m.reserve(FF_UCUM_DICTIONARY_SIZE * 2);
             for (size_t i = 0; i < FF_UCUM_DICTIONARY_SIZE; ++i) {
                 const char* label = FF_UCUM_DICTIONARY[i].label;

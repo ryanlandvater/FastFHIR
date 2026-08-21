@@ -995,6 +995,68 @@ machine drift and was **not** isolated.)
 
 ## DT-2 — Generator: stop treating them as strings (P1)
 
+> ⚠ **IN PROGRESS 2026-08-21 — the tree is in an inconsistent state. Read this
+> before configuring.** `generator/model/type_map.py` has DT-2.1 applied, but
+> `generated_src/` still holds pre-DT-2 output, so the build is green only
+> because nothing has regenerated yet. **The next `cmake --preset ninja`
+> configure runs the generator and the build will fail** (four emitters still
+> emit date/time as if it were a string; see below). Either finish DT-2.2/2.3
+> or revert `type_map.py` before configuring.
+>
+> **DT-2.1 — DONE.** `date`/`dateTime`/`instant`/`time` removed from
+> `STRING_TYPES`; new `DATETIME_TYPES` dict maps each to its permanent tag;
+> `_scalar_recovery_tag` gained the four (so the tag flows through the existing
+> scalar machinery); `TYPE_MAP` gained a `date` descriptor — `cpp: uint64_t`,
+> `data_type: std::string`, `TYPE_SIZE_UINT64`, plus `encode`/`decode` keys —
+> and the other three are projected from it rather than copy-pasted.
+>
+> **Verified by regenerating into a scratch tree and diffing (165 files
+> differ).** Three things are already correct: the slot is
+> `ISSUED_S = TYPE_SIZE_UINT64` (**same 8 bytes as the offset it replaces, so no
+> V-Table offset moves** — the DT-1.2 `static_assert` holds), the data-struct
+> member became `std::string`, and the per-field tag is `RECOVER_FF_INSTANT`.
+>
+> **DT-2.2 / DT-2.3 — OPEN. The regeneration named exactly five defects:**
+> | Site | Emits now | Must emit |
+> |---|---|---|
+> | reflection + `COMPACT_SLOT_SIZES` + `static_assert` | `FF_FIELD_UNKNOWN` | `FF_FIELD_DATETIME` |
+> | `emit/store.py` size pass | contribution dropped entirely | `SIZE_FF_DATETIME` (the fallback `FF_STRING` needs reserved space) |
+> | `emit/store.py` store pass | `STORE_U64(slot, data.issued)` — a `std::string` into a `u64`, **does not compile** | `ENCODE_FF_DATETIME` |
+> | `emit/deserialize.py` | `data.issued = Decode::scalar<uint64_t>(...)` — **does not compile** | `FF_FORMAT_DATETIME` |
+> | `emit/views.py` accessor | `Decode::scalar<uint64_t>` behind `auto` | decode to text |
+>
+> `FF_FIELD_UNKNOWN` is the dangerous one: `ff_slot_width(FF_FIELD_UNKNOWN)` is
+> also 8, so the width `static_assert` **passes by coincidence** while the
+> reflection table is wrong. It would not have failed loudly.
+>
+> **Plus one suspected regression to investigate first:** `Observation.effective`
+> is a choice field, and its emitted `child_recovery` changed from
+> `RECOVER_FF_STRING` to `RECOVER_FF_DATETIME` — the choice path picking up its
+> first variant's tag. **RESOLVED 2026-08-21:** the static `child_recovery` for a
+> choice only ever names the first variant, and is *not* the design's error
+> sentinel (`FF_RECOVER_UNDEFINED` stays reserved as an error/absent marker and
+> is never emitted for a real field). The reader now derives the Entry's
+> `target_recovery` from the **runtime variant tag in the slot** (both
+> `standard_node_lookup_field` and `compact_node_lookup_field`), so
+> `print_json`'s `get_choice_suffix` labels `valueDecimal`/`valueCoding`/etc.
+> correctly. Confirmed on the round-trip fixture: extension `value[x]` now emits
+> the right suffix. The static `child_recovery` value remains harmless (it is
+> only a fallback for absent choices, which are rejected earlier).
+>
+> **Two decisions the next session must take, neither of them mechanical:**
+> 1. **What the view accessor returns.** Text costs an allocation on a path
+>    documented as zero-copy; the raw packed word pushes the fallback-offset
+>    resolution onto the caller, which is exactly the DT-1.7 trap (the accessor
+>    knows the containing block; the caller may not). Recommend: accessor
+>    resolves and returns text, and the zero-copy path stays `Node`/`Entry`.
+> 2. **Consumer fallout is unbounded until measured.** `std::string_view` ->
+>    `std::string` on 306 elements across 120 types ripples into tests, tools
+>    and the Python bindings. Build after the emitters are fixed and count.
+>
+> Then DT-4.3: the witness moves (it records the `TYPE_SIZE_*` constant per
+> field, and `TYPE_SIZE_OFFSET` -> `TYPE_SIZE_UINT64` is exactly the kind of
+> change it exists to catch), so re-baseline it **in the same commit**.
+
 ### Locate
 ```bash
 grep -n "STRING_TYPES" -A 14 generator/model/type_map.py
@@ -4606,7 +4668,58 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
 
 # ▶ WORK ORDER — FF_* EXTERNAL API: asciidoc generation + README sweep
 
-> **Review of `docs/api.adoc` (2026-08-21).** Checked claim-by-claim against
+> **Structural review against `../Iris-File-Extension/spec/` (2026-08-21).**
+> The question was how much of IFE's rendered spec comes from source versus
+> hand-written code blocks. Measured:
+>
+> | | `docs/api.adoc` | `spec/ife_spec.adoc` |
+> |---|---|---|
+> | lines | 356 | 898 |
+> | code blocks | **12** | **0** |
+> | lines inside code blocks | **158 (44%)** | **0** |
+> | `include::` directives | **0** | **41** |
+>
+> **IFE's spec contains no hand-written declarations at all.** Every layout and
+> value table is an `include::` of a fragment generated from three JSON files
+> (`ife_constants.json`, `ife_fields.json`, `ife_header.json`) extracted from
+> source — 42 fragments. The `.adoc` is prose plus include directives.
+>
+> The fragments render as **AsciiDoc tables, not code blocks**, and that is the
+> reviewability difference: a table diff is one row per changed field, whereas
+> `api.adoc`'s 40-line `FF_Result` block diffs as a wall. Each fragment carries
+> a `DO NOT EDIT` banner, the generating command, and a **sha256 wire witness**
+> that `--check` verifies against the spec. Tables cross-reference each other
+> (`<<ife-const-recovery-codes,recovery codes>>`) instead of repeating values,
+> and offsets are *derived from field order and width, never stored* — the same
+> rule as this repository's symbolic vtable sums.
+>
+> **This is the argument for I1.9, now with evidence.** 44% of `api.adoc` is
+> C++ transcribed by hand from `FastFHIR.hpp`, and the review below found
+> **nine defects in it**, including an example that does not compile. That is
+> the expected failure rate for hand-copied declarations; it is not a reason to
+> proofread harder. `api.adoc` should become prose + generated includes, with
+> the declarations extracted from the header the same way I1.7 extracts the
+> wire tables. Until then the hand-checking is the cost of the current shape.
+>
+> **Adopted into `docs/build_docs.sh` immediately — a third gate.** IFE's
+> script checks something mine did not: `include::` is a directive ONLY at
+> column 0; indented anywhere else, Asciidoctor prints it as literal text, exits
+> 0, and the "Unresolved directive" check stays silent for the worst reason —
+> nothing was left unresolved because nothing was ever resolved. **Reproduced on
+> this tree** (indented include → rendered as text, every existing gate passed
+> it), then fixed and red-greened. IFE shipped six value tables that way before
+> anyone noticed.
+>
+> **Still worth taking from IFE's script, not yet adopted:**
+> - Regenerate the fragments *before* rendering, so a stale table cannot ship.
+>   Not applicable until FastFHIR has a doc generator (I1.7/I1.9).
+> - A PDF theme that left-aligns body text: the default justifies, which spaces
+>   words badly around long identifiers — and this document is made of them
+>   (`ife-pdf-theme.yml` is 677 bytes; copying the approach is cheap).
+> - Treat the PDF as optional and HTML as the gate, so a machine without
+>   `asciidoctor-pdf` still runs the checks. Mine currently hard-fails on both.
+>
+> > **Review of `docs/api.adoc` (2026-08-21).** Checked claim-by-claim against
 > `include/FastFHIR.hpp`. Corrections applied to the doc; two findings are
 > **code/build defects, not documentation defects**, and are listed below.
 >
@@ -4666,18 +4779,18 @@ keeping the docs honest.
 the `FF_*` block of `include/FastFHIR.hpp`. The header is the source of truth
 and the two WILL drift.
 
-1. Add a generator module (e.g. `generator/emit/api_doc.py`) that parses
+- [ ] 1. Add a generator module (e.g. `generator/emit/api_doc.py`) that parses
    `include/FastFHIR.hpp` (the `FF_*` free functions, `FF_*Info` structs with
    defaulted members, enums, handle typedefs) and emits the asciidoc sections
    of `docs/api.adoc`.
-2. The generator must be deterministic and idempotent; run it in the same
+- [ ] 2. The generator must be deterministic and idempotent; run it in the same
    configure-time step as the main generator (or as a ctest wire-gate-style
    check that fails if `docs/api.adoc` is stale — see the golden-file pattern
    in `tests/generator/`).
-3. Keep the hand-written prose (design conventions, lifecycle diagram,
+- [ ] 3. Keep the hand-written prose (design conventions, lifecycle diagram,
    "intentionally not part of this surface") above a marker like
    `// GENERATED-FROM include/FastFHIR.hpp — do not edit below this line`.
-4. Do not use Doxygen/Breathe unless already in the toolchain — a small
+- [ ] 4. Do not use Doxygen/Breathe unless already in the toolchain — a small
    dedicated parser keeps the build dependency-free.
 
 ## WO-B — README.md API-example sweep
@@ -4688,13 +4801,215 @@ and the two WILL drift.
 for those examples — already migrated to the FF_* surface; the README prose
 must follow so the docs and the test agree.
 
-1. Replace every code block that constructs `Builder`/`Parser`/`Ingestor`
+- [ ] 1. Replace every code block that constructs `Builder`/`Parser`/`Ingestor`
    directly with the `FF_*` equivalent (mirror `tests/cpp/test_readme.cpp`,
    which now compiles the exact FF_* spellings).
-2. Update the "Memory / Stream / Ingestor" API tables to the FF_* names and
+- [ ] 2. Update the "Memory / Stream / Ingestor" API tables to the FF_* names and
    point readers at `docs/api.adoc` for the reference.
-3. Add a note that the mutation path (`handle["field"] = value`) is unchanged.
+- [ ] 3. Add a note that the mutation path (`handle["field"] = value`) is unchanged.
 
 **Rules:** do not commit; do not edit `generated_src/`; verify with
 `cmake --build --preset ninja && ctest --preset ninja` (py_roundtrip is a
 pre-existing failure — see the profile/allowlist note in that test).
+
+---
+
+# ▶ WORK ORDER — FF_* out-params are not cleared on the argument-check path
+
+Written 2026-08-21, found from the Iris side: `Iris::create_memory_arena`
+(`Iris-Headers/priv/IrisMemory.hpp`) was written by copying `FF_CreateMemory`'s
+shape, inherited this ordering with it, and a probe over the new function's
+branches caught it there. The same probe run against these would fail the same
+way. Iris fixed it by clearing first; this is the same fix upstream.
+
+**The defect.** Every out-param entry point promises the handle is emptied when
+the call fails — `@p out_memory is null on failure` (`FastFHIR.hpp:187`),
+`@p out_stream is null on failure` (`:211`), `@p out_parser is invalid (bool
+false) on failure` (`:269`). The clear happens *after* the argument checks, so
+the `FF_Invalid` early return skips it. A caller reusing a handle across calls
+keeps the object it believes was just replaced, and `FF_INVALID_ARGUMENT` is
+precisely the case where a caller is already confused about what it passed.
+
+Nothing is corrupted and nothing leaks — the handles are `shared_ptr` and value
+types. It is a contract the header states and the code does not keep.
+
+**Affected — seven, in two files.** `src/FF_API.cpp`: `FF_CreateMemory` (54
+before 55), `FF_CreateStream` (88/90 before 91), `FF_StreamFinalize` (116
+before 117), `FF_StreamQuery` (126 before 127), `FF_Parse` (137 before 138),
+`FF_Compact` (148 before 149). `src/FF_Ingestor.cpp`: `FF_Ingest` (1446–1449
+before 1450–1451, both out-params).
+
+**Not affected.** `FF_CreateIngestor` (`FF_Ingestor.cpp:1433`) already clears
+first — **it is the precedent, so this is a consistency fix rather than a new
+convention**. `FF_MemoryReset`, `FF_StreamSetRoot` and `FF_IngestInsertAtField`
+take no out-param.
+
+### Precheck
+
+```bash
+cd /Users/ryanlandvater/GitHub/FastFHIR
+awk '/^FF_Result FF_CreateMemory/,/^}/' src/FF_API.cpp
+awk '/^FF_Result FF_CreateIngestor/,/^}/' src/FF_Ingestor.cpp
+```
+
+**Expect:** in the first, `return FF_Invalid(...)` *above* `out_memory.reset();`.
+In the second, `out_ingestor.reset();` as the **first** statement of the body.
+If they already agree, the fix has landed — stop and say so.
+
+### The edit
+
+Move the clear above the argument checks in all seven, so it is the first thing
+every one of them does. One line moved per function; no logic changes, and
+`FF_Guard` is untouched.
+
+- [x] `FF_CreateMemory` — clear first (src/FF_API.cpp)
+- [x] `FF_CreateStream` — clear first (src/FF_API.cpp)
+- [x] `FF_StreamFinalize` — clear first (src/FF_API.cpp)
+- [x] `FF_StreamQuery` — clear first (src/FF_API.cpp)
+- [x] `FF_Parse` — clear first (src/FF_API.cpp)
+- [x] `FF_Compact` — clear first (src/FF_API.cpp)
+- [x] `FF_Ingest` — clear both out-params first (src/FF_Ingestor.cpp)
+- [x] Contract test — `tests/cpp/test_api.cpp` (`ff_test_api` ctest target):
+  passes an already-populated handle into each of the seven with deliberately
+  invalid arguments and asserts the handle is empty afterwards. **All DONE
+  2026-08-21** — verified by `ctest -R ff_test_api`.
+
+**Done when:** a test passes an already-populated handle into each of the seven
+with deliberately invalid arguments — `FF_CreateMemory` with both `shm_name`
+and `filepath` set, `FF_Parse` with a null buffer, and so on — and asserts the
+handle is empty afterwards. **Red before the move, green after**; a test that
+passes both ways is testing nothing, which is how this survived review three
+times (the `docs/api.adoc` sweep above went claim-by-claim over these same
+functions and did not catch it, because the header and the doc agree — it is
+only the code that disagrees with both).
+
+**Rules:** do not commit; do not edit `generated_src/`; verify with
+`cmake --build --preset ninja && ctest --preset ninja` (py_roundtrip is a
+pre-existing failure).
+
+---
+
+# ▶ WORK ORDER — TEST REGISTRATION EXTRACTED TO tests/tests.cmake + tests/tests.bzl
+
+Written 2026-08-21. All test registration lived inline in `CMakeLists.txt`
+(~200 lines: executables, CTest entries, dependency chains, resource locks, the
+Python suite), making the root build file long and hard to read. The Bazel side
+(`BUILD.bazel`) had the same problem in miniature — and only 4 of the 10 C++
+unit suites.
+
+## Done (2026-08-21)
+
+- [x] `tests/tests.cmake` — the entire `if(FASTFHIR_BUILD_TESTS)` block moved
+  verbatim (self-gating include): `add_ff_cpp_test` helper, ASIO FetchContent,
+  Synthea download, `ff_test_readme` + `ff_roundtrip` executables, the 10 unit
+  suites, all CTest entries (standalone foreach, `_add_cpp_test` README
+  sub-tests, dependency chains, resource locks), and the full Python suite
+  (`py_setup`, `py_test_1..10`, `py_roundtrip`, PYTHONPATH, locks).
+- [x] `CMakeLists.txt` — the block replaced with `include(tests/tests.cmake)`;
+  457 lines (was ~700).
+- [x] `tests/tests.bzl` — `fastfhir_tests(copts)` defines all 10 C++ unit
+  suites + `test_readme` + the `ff_roundtrip` cc_binary. Labels are
+  root-package forms (`//:fastfhir`, `//:tests/cpp/test_x.cpp`) — `tests/` has
+  no BUILD file, so `//tests:...` labels are invalid, and .bzl labels resolve
+  against the containing package (`//tests`) anyway.
+- [x] `BUILD.bazel` — inline `cc_test` block replaced with
+  `load("//:tests/tests.bzl", "fastfhir_tests")` + `fastfhir_tests(copts =
+  _COPTS)`; test set completed (added the 6 missing suites: test_amend,
+  test_cc, test_bundle, test_compactor, test_graph_bounds, test_datetime,
+  test_api).
+
+## Verified
+
+- CMake: `cmake --preset ninja && cmake --build --preset ninja` clean; spot
+  `ctest` runs pass (ff_test_api, ff_test_graph_bounds, cpp_test_1,
+  py_getting_started).
+- Bazel: `bazel query 'kind(cc_test, //:*)'` resolves all 11 suites;
+  `bazel build //:test_primitives` compiles.
+
+## Open follow-ups
+
+- [ ] Wire the Python suites into Bazel (py_* tests currently run under CTest
+  only; they need the staged `_core` extension and pytest).
+- [ ] `ff_test_readme` under Bazel runs as one test; CTest splits it into 13
+  filtered sub-tests. If Bazel parallelism matters, mirror the `--filter`
+  split there.
+
+---
+
+# ▶ WORK ORDER — py_roundtrip DOM parity failure: diagnosis + defect list
+
+**Status: diagnosed 2026-08-21; NOT fixed.** `py_roundtrip` fails on every
+Synthea fixture (≈4,200 diffs per fixture). The failure is **not a regression
+from the FF_* / FF_Result / DT-2 work** — the Aug-19 committed baseline
+reproduces it identically.
+
+## Debugging findings (evidence trail — do not re-litigate)
+
+1. **The committed baseline fails too.** Built commit `9f86069` (2026-08-19)
+   in a git worktree with the same Aug-18 Synthea fixtures and the same diff
+   tool: identical 4,213 diffs, same kinds, same paths. `generated_src/` is
+   gitignored, so "diff vs HEAD" on generated files proves nothing — the
+   regenerated tree is the DT-2 output either way.
+2. **Why "it didn't fail before" is misleading.** `test_roundtrip.py` returns
+   `0` (PASS) when `discover_fixtures()` finds nothing. The Synthea fixtures
+   landed Aug 18; any run before that (or with a failed download) passed
+   vacuously without testing anything.
+3. **The diff tool is not the cause.** `roundtrip_diff.py` is unchanged since
+   `eb008e2` (Aug 19). It demands **zero** diffs after an **empty** allowlist
+   (`ALLOWED_DIFFS` contains only commented examples).
+4. **Wrong-fixture trap.** The harness runs the sorted-first fixture
+   (`ls | head -1`) but Python `glob.glob(...)[0]` returns readdir order —
+   comparing them mixes fixtures (Adrian111 output vs Newton741 source). Early
+   "diff counts" (4213 vs 1063, "zero datetime diffs") were artifacts of this
+   and are discarded. Always pin the fixture explicitly.
+5. **FF_RECOVER_UNDEFINED is the error/absent sentinel by design.** It is
+   never emitted as a real field's `child_recovery`. The reader fix below
+   derives choice `target_recovery` from the **runtime tag in the slot**
+   instead — the sentinel stays reserved.
+
+## Already fixed (2026-08-21)
+
+- **Choice `value[x]` mislabeling** (`valueString` for `valueDecimal`): both
+  `standard_node_lookup_field` and `compact_node_lookup_field` now read the
+  runtime variant tag from the slot (`slot + DATA_BLOCK::RECOVERY`) for
+  `FF_FIELD_CHOICE`, so `get_choice_suffix` labels correctly. Verified:
+  extension `value[x]` now emits `"valueDecimal": 42.1426`; fixture diffs
+  4,213 → 4,189. (The earlier proposal to emit `FF_RECOVER_UNDEFINED` as the
+  choice `child_recovery` was wrong — see finding 5.)
+
+## Remaining defects (≈4,189 diffs per fixture)
+
+| # | Defect | Diffs | Evidence | Fix location |
+|---|---|---|---|---|
+| 1 | Bundle entry `fullUrl`/`request` never emitted | 1,444 | `BundleentryData.fullurl` is `std::string_view` (FF_Bundle.hpp:75), ingest fills it, `STORE_FF_BUNDLE_ENTRY` never writes it | Wire into the URL trie (see below) |
+| 2 | Choice **datetime** variants written as strings (`effectiveDateTime` → `effectiveString`, `onset`, `performedPeriod`) | ~934 | `FF_IngestMappings.cpp`: `data.effective.tag = RECOVER_FF_STRING` for the DateTime suffix — pre-DT-2 emitter | `generator/emit/ingest_mappings.py`: datetime choice variants must write the packed-datetime variant (per-type tag + encoded value); the choice store must encode it |
+| 3 | Complex choice variants emit bare `value` (`valueQuantity`, `valueCodeableConcept`) | ~578 | `get_choice_suffix` default returns `reflected_resource_type(tag)`, empty for data types (Quantity, CodeableConcept, Period) | `src/FF_Parser.cpp` `get_choice_suffix`: add data-type tag→suffix map |
+| 4 | Extension `url` = 0 | 14 TYPE_MISMATCH | Ingest skips the url write entirely (`"requires Builder context; skipping."`); reader treats url as `FF_FIELD_UINT32` (prints raw code) | Same URL-trie wiring as #1 (below) |
+| 5 | Double precision truncated in JSON output (`42.142567166419695` → `42.1426`) | 11 | `print_json` streams doubles at the ostream default precision (6 sig figs); the stored double is exact | `out << std::setprecision(std::numeric_limits<double>::max_digits10)` in the FLOAT64 print path |
+| 6 | Out-of-profile resources dropped (Claim/EOB/SupplyDelivery vs `us` profile) | 135 DROPPED_RESOURCE | By design (profile filtering) | Policy call: allowlist entry or broader profile |
+
+## Design intent for #1 + #4: URLs through the trie
+
+`fullUrl` and extension `url` were designed to go through the **FF_URL_DIRECTORY
+radix trie** (prefix-sharing — `urn:uuid:`, `http://hl7.org/fhir/...` share
+prefixes; `cpp_test_11` proves shared segments collapse onto one entry). The
+trie machinery works (`FF_PredigestExtensionURLs` runs before ingest,
+`get_url(idx)` reconstructs by walking the prior-chain). The gap is that
+neither URL was ever wired in:
+
+- [ ] Intern `fullUrl` (and write extension urls) into the URL directory
+  during predigestion.
+- [ ] Store the directory ref: `BundleentryData.fullurl` becomes a ref slot;
+  `STORE_FF_BUNDLE_ENTRY` + the extension store emit it.
+- [ ] Reconstruct at export: `print_json` resolves the ref via `get_url()`.
+
+**Wire-format note:** #1/#4 change the stream (fullUrl goes from absent to a
+URL-directory ref) — a witness-visible change like DT-2; re-baseline
+`tests/generator/golden/wire_witness.json` in the same change. Suggested
+start: the extension `url` write (the ref slot already exists there) to
+validate intern→store→reconstruct against the roundtrip, then mirror for
+`fullUrl`.
+
+**Priority order:** #2 + #3 are the largest correctable chunk (~1,500 diffs);
+#5 is a one-liner; #1/#4 are the URL-trie feature; #6 is a policy call.
+Verify with `ctest --preset ninja -R py_roundtrip` after each.

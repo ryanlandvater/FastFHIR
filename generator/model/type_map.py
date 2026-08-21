@@ -252,6 +252,23 @@ TYPE_MAP: dict[str, dict] = {
         "size_const": "TYPE_SIZE_CHOICE",
         "macro": "LOAD_VARIANT",
     },
+    # DT-2 — packed date/time. `cpp` is the 8-byte slot, `data_type` is the
+    # author-facing TEXT: the slot stores a packed civil value, and the text is
+    # SYNTHESISED on read by FF_FORMAT_DATETIME, so the data struct owns a
+    # std::string rather than viewing arena bytes like a real string field does.
+    # That is the one place a date/time field differs from every other scalar:
+    # its `cpp` and `data_type` are not the same shape, so it needs a codec
+    # rather than a LOAD/STORE macro pair.
+    "date": {
+        "cpp": "uint64_t",
+        "data_type": "std::string",
+        "null": "FF_DATETIME_NULL",
+        "size": 8,
+        "size_const": "TYPE_SIZE_UINT64",
+        "macro": "LOAD_U64",
+        "encode": "ENCODE_FF_DATETIME",
+        "decode": "FF_FORMAT_DATETIME",
+    },
     "DEFAULT": {
         "cpp": "Offset",
         "data_type": "Offset",
@@ -273,6 +290,12 @@ SCALAR_PRIMITIVE_TYPES: set[str] = {
 }
 
 # FHIR types that collapse to 'string' in the layout model.
+#
+# date/dateTime/instant/time were removed from this set by DT-2: they are no
+# longer an offset to an FF_STRING but an 8-byte inline packed value (see
+# DATETIME_TYPES below and architecture.md 6.3). The slot WIDTH is unchanged --
+# 8 bytes either way -- so no V-Table offset moves; only the interpretation of
+# those 8 bytes does.
 STRING_TYPES: set[str] = {
     "string",
     "id",
@@ -282,12 +305,34 @@ STRING_TYPES: set[str] = {
     "canonical",
     "oid",
     "base64Binary",
-    "date",
-    "dateTime",
-    "instant",
-    "time",
     "xhtml",
 }
+
+# The four FHIR date/time types and the permanent RECOVERY_TAG each one carries.
+#
+# One packed layout, four tags: the tag names which FHIR type a slot holds and
+# is the ONLY thing that can, because a choice ([x]) slot has nothing else to
+# distinguish valueDate from valueDateTime. The single FF_FIELD_DATETIME kind
+# says only "inline 8 bytes"; it deliberately cannot be mapped back to a tag.
+#
+# Membership must be tested with `fhir_type in DATETIME_TYPES`, never against
+# individual names -- the same rule CLAUDE.md states for STRING_TYPES, and for
+# the same reason: an ad-hoc `== "dateTime"` silently drops `date`.
+DATETIME_TYPES: dict[str, str] = {
+    "date": "RECOVER_FF_DATE",
+    "dateTime": "RECOVER_FF_DATETIME",
+    "instant": "RECOVER_FF_INSTANT",
+    "time": "RECOVER_FF_TIME",
+}
+
+# The remaining three share `date`'s descriptor exactly -- same width, same
+# codec, same null -- and differ only in the RECOVERY_TAG, which lives in
+# DATETIME_TYPES. Projected rather than copy-pasted so a change to the packed
+# representation cannot be applied to three of the four by accident.
+for _dt_type in DATETIME_TYPES:
+    if _dt_type not in TYPE_MAP:
+        TYPE_MAP[_dt_type] = dict(TYPE_MAP["date"])
+
 
 # ---------------------------------------------------------------------------
 # Code-enum unset sentinel
@@ -347,6 +392,10 @@ def _scalar_recovery_tag(fhir_type: str) -> str:
         "positiveInt": "RECOVER_FF_UINT32",
         "integer64": "RECOVER_FF_UINT64",
         "decimal": "RECOVER_FF_FLOAT64",
+        # DT-2: one packed layout, four tags. The tag is what the exporter reads
+        # to choose valueDate vs valueDateTime, so it must survive per type --
+        # FF_FIELD_DATETIME alone cannot express which of the four this is.
+        **DATETIME_TYPES,
     }
     return tag_map.get(fhir_type, "FF_RECOVER_UNDEFINED")
 

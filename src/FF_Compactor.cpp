@@ -21,6 +21,7 @@ enum class PendingWriteKind {
     NodePointer,
     ResourcePointer,
     Code32,
+    Datetime64,
     ChoiceNode,
     ResolvedOffset,
 };
@@ -211,6 +212,34 @@ static void write_compact_code_slot(const Reflective::Entry& entry, Memory& dest
     STORE_U32(base + dense_off, static_cast<uint32_t>(relative_off) | FF_CODEABLE_CONCEPT_FLAG);
 }
 
+static void write_compact_datetime_slot(const Reflective::Entry& entry, Memory& destination,
+                                        Offset compact_parent_off, Offset dense_off) {
+    BYTE* base = destination.base();
+    const uint64_t raw = LOAD_U64(entry.base + entry.absolute_offset());
+    // Packed values and the null sentinel are inline 8 bytes — copy as-is.
+    if (raw == FF_DATETIME_NULL || !FF_DATETIME_IS_FALLBACK(raw)) {
+        STORE_U64(base + dense_off, raw);
+        return;
+    }
+
+    // Flagged fallback: an FF_STRING holding the ORIGINAL text (byte-exact
+    // round trip for values that do not pack). Copy the block verbatim and
+    // re-encode the relative offset against the compact parent, exactly like
+    // write_compact_code_slot does for FF_CODEABLE_CONCEPT.
+    const Offset src_str_off = FF_ResolveDateTimeOffset(raw, entry.parent_offset);
+    const BYTE* src = entry.base;
+    const uint32_t len = LOAD_U32(src + src_str_off + FF_STRING::LENGTH);
+    const Size total_bytes = FF_STRING::HEADER_SIZE + len;
+    const Offset dst_str_off = destination.claim_space(total_bytes);
+    std::memcpy(base + dst_str_off, src + src_str_off, total_bytes);
+
+    const int64_t relative_off = dst_str_off - compact_parent_off;
+    if (relative_off > 0x7FFFFFFFFFFFFFFF) {
+        throw std::runtime_error("FastFHIR Compactor Error: datetime fallback relative offset exceeds 63-bit signed range.");
+    }
+    STORE_U64(base + dense_off, static_cast<uint64_t>(relative_off) | FF_DATETIME_FALLBACK_FLAG);
+}
+
 static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& context,
                               Offset compact_parent_off, Offset dense_off, std::size_t depth) {
     BYTE* base = context.destination.base();
@@ -378,6 +407,25 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                     });
                 }
                 break;
+            case FF_FIELD_DATETIME: {
+                // DT-2: the same shape as CODE one width up — packed/null
+                // values are inline 8 bytes; a flagged fallback offset defers
+                // to a verbatim FF_STRING copy.
+                const uint64_t raw_dt = LOAD_U64(entry.base + entry.absolute_offset());
+                if (raw_dt == FF_DATETIME_NULL || !FF_DATETIME_IS_FALLBACK(raw_dt)) {
+                    STORE_U64(base + dense_off, raw_dt);
+                } else {
+                    write_pending_slot(context, base, dense_off);
+                    enqueue_pending_write(context, PendingWrite{
+                        PendingWriteKind::Datetime64,
+                        {},
+                        entry,
+                        dense_off,
+                        object_off,
+                    });
+                }
+                break;
+            }
             case FF_FIELD_STRING: {
                 write_pending_slot(context, base, dense_off);
                 enqueue_pending_write(context, PendingWrite{
@@ -573,6 +621,9 @@ static void process_pending_write(ArchiveContext& context, const PendingWrite& p
         }
         case PendingWriteKind::Code32:
             write_compact_code_slot(pending.entry, context.destination, pending.parent_anchor, pending.slot_offset);
+            break;
+        case PendingWriteKind::Datetime64:
+            write_compact_datetime_slot(pending.entry, context.destination, pending.parent_anchor, pending.slot_offset);
             break;
         case PendingWriteKind::ResolvedOffset: {
             STORE_U64(base + pending.slot_offset, pending.resolved_offset);

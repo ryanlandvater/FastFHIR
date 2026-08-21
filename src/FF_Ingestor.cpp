@@ -1443,12 +1443,12 @@ FF_Result FF_CreateIngestor(const FF_IngestorCreateInfo& info, FF_Ingestor& out_
 
 FF_Result FF_Ingest(const FF_IngestInfo& info, Reflective::ObjectHandle& out_root, Size& out_parsed_count) noexcept
 {
+    out_root = Reflective::ObjectHandle();
+    out_parsed_count = 0;
     if (!info.ingestor)
         return FF_Result{FF_INVALID_ARGUMENT, "FF_Ingest: null ingestor"};
     if (!info.stream)
         return FF_Result{FF_INVALID_ARGUMENT, "FF_Ingest: null destination stream"};
-    out_root = Reflective::ObjectHandle();
-    out_parsed_count = 0;
     try {
         Ingest::IngestRequest request{*info.stream, info.source_type, info.payload, info.payload_capacity};
         // size_t vs Size (uint64_t) are distinct types on LP64; bridge via a local.

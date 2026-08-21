@@ -195,6 +195,23 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
             }
             return py::str(node.as<std::string_view>());
         }
+        case FF_FIELD_DATETIME: {
+            // DT-2: packed values format canonically; a flagged fallback
+            // returns the ORIGINAL text byte-exact.
+            const Offset abs_off = entry.absolute_offset();
+            const uint64_t raw = LOAD_U64(entry.base + abs_off);
+            if (raw == FF_DATETIME_NULL) {
+                return py::none();
+            }
+            std::string dt_text;
+            if (FF_DATETIME_IS_FALLBACK(raw)) {
+                FF_STRING s(FF_ResolveDateTimeOffset(raw, entry.parent_offset), 0, version);
+                dt_text = std::string(s.read_view(entry.base));
+            } else {
+                dt_text = FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(raw), entry.target_recovery);
+            }
+            return py::str(dt_text);
+        }
         case FF_FIELD_BLOCK:
         case FF_FIELD_RESOURCE:
         case FF_FIELD_ARRAY: {

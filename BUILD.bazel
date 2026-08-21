@@ -1,5 +1,6 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("//:tests/tests.bzl", "fastfhir_tests")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -68,30 +69,6 @@ pybind_extension(
 )
 
 # ── Tests ──────────────────────────────────────────────────────────
-cc_test(
-    name = "test_readme",
-    srcs = ["tests/cpp/test_readme.cpp"],
-    copts = _COPTS,
-    deps = [":fastfhir_ingestor", "@asio//:asio", "@boringssl//:crypto"],
-)
-
-cc_test(
-    name = "test_primitives",
-    srcs = ["tests/cpp/test_primitives.cpp"],
-    copts = _COPTS,
-    deps = [":fastfhir"],
-)
-
-cc_test(
-    name = "test_memory",
-    srcs = ["tests/cpp/test_memory.cpp"],
-    copts = _COPTS,
-    deps = [":fastfhir"],
-)
-
-cc_test(
-    name = "test_simd",
-    srcs = ["tests/cpp/test_simd.cpp"],
-    copts = _COPTS,
-    deps = [":fastfhir"],
-)
+# All test definitions (C++ unit suites, README suite, round-trip harness)
+# live in tests/tests.bzl so this file stays a readable build definition.
+fastfhir_tests(copts = _COPTS)

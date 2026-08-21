@@ -50,9 +50,9 @@ FF_Result FF_Invalid(const char* op, const char* why) noexcept
 // =====================================================================
 FF_Result FF_CreateMemory(const FF_MemoryCreateInfo& info, FF_Memory& out_memory) noexcept
 {
+    out_memory.reset();
     if (info.shm_name && info.filepath)
         return FF_Invalid("FF_CreateMemory", "shm_name and filepath are mutually exclusive");
-    out_memory.reset();
     return FF_Guard("FF_CreateMemory", [&] {
         if (info.filepath)
             out_memory = std::make_shared<Memory>(Memory::createFromFile(info.filepath, info.capacity));
@@ -83,12 +83,12 @@ Size FF_MemoryCapacity(const FF_Memory& memory) noexcept
 // =====================================================================
 FF_Result FF_CreateStream(const FF_StreamCreateInfo& info, FF_Stream& out_stream) noexcept
 {
+    out_stream.reset();
     const bool has_backing = info.filepath != nullptr || info.shm_name != nullptr;
     if (info.arena && has_backing)
         return FF_Invalid("FF_CreateStream", "arena is exclusive with filepath/shm_name");
     if (info.shm_name && info.filepath)
         return FF_Invalid("FF_CreateStream", "shm_name and filepath are mutually exclusive");
-    out_stream.reset();
     return FF_Guard("FF_CreateStream", [&] {
         Memory arena;
         if (info.arena)
@@ -112,9 +112,9 @@ FF_Result FF_StreamSetRoot(const FF_StreamSetRootInfo& info) noexcept
 
 FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo& info, Memory::View& out_view) noexcept
 {
+    out_view = Memory::View();
     if (!info.stream)
         return FF_Invalid("FF_StreamFinalize", "null stream handle");
-    out_view = Memory::View();
     return FF_Guard("FF_StreamFinalize", [&] {
         out_view = info.stream->finalize(info.algorithm, info.hasher);
     });
@@ -122,9 +122,9 @@ FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo& info, Memory::View& out
 
 FF_Result FF_StreamQuery(const FF_StreamQueryInfo& info, Parser& out_parser) noexcept
 {
+    out_parser = Parser();
     if (!info.stream)
         return FF_Invalid("FF_StreamQuery", "null stream handle");
-    out_parser = Parser();
     return FF_Guard("FF_StreamQuery", [&] { out_parser = info.stream->query(); });
 }
 
@@ -133,9 +133,9 @@ FF_Result FF_StreamQuery(const FF_StreamQueryInfo& info, Parser& out_parser) noe
 // =====================================================================
 FF_Result FF_Parse(const FF_ParseInfo& info, Parser& out_parser) noexcept
 {
+    out_parser = Parser();
     if (!info.buffer && info.size != 0)
         return FF_Invalid("FF_Parse", "null buffer");
-    out_parser = Parser();
     return FF_Guard("FF_Parse", [&] { out_parser = Parser(info.buffer, info.size); });
 }
 
@@ -144,9 +144,9 @@ FF_Result FF_Parse(const FF_ParseInfo& info, Parser& out_parser) noexcept
 // =====================================================================
 FF_Result FF_Compact(const FF_CompactInfo& info, Memory::View& out_view) noexcept
 {
+    out_view = Memory::View();
     if (!info.source)
         return FF_Invalid("FF_Compact", "invalid source parser");
-    out_view = Memory::View();
     return FF_Guard("FF_Compact", [&] {
         // The compacted stream is strictly smaller than the source, so the
         // source size is a safe arena bound; the archive allocates it.
