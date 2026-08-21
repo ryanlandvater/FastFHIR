@@ -30,6 +30,16 @@ namespace FastFHIR
         class ObjectHandle;
     }
 
+    // FF_* external API (declared fully in FastFHIR.hpp). Forward declarations
+    // live here so the sealed-stream lifecycle methods can be private and
+    // reachable only from the FF_* wrapper layer in src/FF_API.cpp.
+    struct FF_StreamSetRootInfo;
+    struct FF_StreamFinalizeInfo;
+    struct FF_StreamQueryInfo;
+    FF_Result FF_StreamSetRoot(const FF_StreamSetRootInfo&) noexcept;
+    FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo&, Memory::View&) noexcept;
+    FF_Result FF_StreamQuery(const FF_StreamQueryInfo&, Parser&) noexcept;
+
     // =====================================================================
     // BUILDER
     // =====================================================================
@@ -44,6 +54,9 @@ namespace FastFHIR
     class Builder
     {
         friend class FastFHIR::AdvancedBuilderAccess;
+        friend FF_Result FF_StreamSetRoot(const FF_StreamSetRootInfo&) noexcept;
+        friend FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo&, Memory::View&) noexcept;
+        friend FF_Result FF_StreamQuery(const FF_StreamQueryInfo&, Parser&) noexcept;
 
         Memory m_memory;
         BYTE *const m_base;
@@ -173,18 +186,6 @@ namespace FastFHIR
         explicit Builder(const Memory &memory, FHIR_VERSION fhir_revision = FHIR_VERSION_R5);
         ~Builder();
 
-        /**
-         * @brief Generates a lightweight, snapshot of the current stream.
-         * Creating this is nearly zero-cost as it only populates CPU registers.
-         *
-         * @return A new Parser instance that can be used to read the current state of the stream without
-         * interfering with ongoing mutations.
-         */
-        Parser query() const
-        {
-            return Parser(m_memory);
-        }
-
         // --- Lock-Free Concurrent Appending ---
 
         /**
@@ -238,6 +239,11 @@ namespace FastFHIR
         Reflective::ObjectHandle append_obj(const T_Data &data);
 
         /**
+         * @brief Overload for appending offset arrays and returning a proxy handle.
+         */
+        Reflective::ObjectHandle append_obj(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag);
+
+        /**
          * @brief Overload for strongly-typed Offset Arrays.
          * Bypasses TypeTraits to dynamically inject the semantic array tag.
          */
@@ -280,11 +286,6 @@ namespace FastFHIR
         }
 
         /**
-         * @brief Overload for appending offset arrays and returning a proxy handle.
-         */
-        Reflective::ObjectHandle append_obj(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag);
-
-        /**
          * @brief Instantiates a read-only Node directly from a known offset mid-stream.
          */
         Reflective::Node view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind = FF_FIELD_BLOCK) const;
@@ -314,25 +315,19 @@ namespace FastFHIR
         // --- Finalization & Checksums ---
 
         /**
-         * @brief Sets the root resource pointer and recovery tag in the header.
-         * [NOTE] This function must be called before finalize().
-         */
-        void set_root(const Reflective::ObjectHandle &handle);
-
-        /**
          * @brief Get the current mutable root handle, if one is set.
          * @return A valid ObjectHandle when root metadata is populated, otherwise a null handle.
          */
         Reflective::ObjectHandle root_handle() const;
 
+    private:
+        // Sealed-stream lifecycle. Private: the only entry points are the
+        // friend FF_* functions (FF_StreamSetRoot / FF_StreamFinalize /
+        // FF_StreamQuery) declared above — see FastFHIR.hpp.
         using HashCallback = std::function<std::vector<BYTE>(const unsigned char *byte_start, Size bytes_to_hash)>;
-        /**
-         * @brief Bakes the File Header, and executes the provided hashing callback to seal the file.
-         * @param algo The cryptographic algorithm tag to write into the metadata.
-         * @param hasher A callback that takes the payload and returns the raw hash bytes.
-         * @return A view of the complete, sealed file (including the checksum footer) ready for network transmission.
-         */
+        void set_root(const Reflective::ObjectHandle &handle);
         Memory::View finalize(FF_Checksum_Algorithm algo = FF_CHECKSUM_NONE, const HashCallback &hasher = nullptr);
+        Parser query() const { return Parser(m_memory); }
 
     protected:
         Offset allocate_raw(Size size);

@@ -7,6 +7,7 @@
 // Main Thread Ingestion Routing & Bundle Parsing
 // ============================================================
 #include "FF_Ingestor.hpp"
+#include "FastFHIR.hpp"
 #include "FF_Queue.hpp"
 #include "FF_SIMD.hpp"
 #include "FF_Utilities.hpp"
@@ -1013,26 +1014,26 @@ namespace FastFHIR::Ingest
     {
         switch (request.source_type)
         {
-        case SourceType::FHIR_JSON:
+        case FF_SOURCE_FHIR_JSON:
             return ingest_fhir_json(request, out_root, out_parsed_count);
-        case SourceType::HL7_V2:
+        case FF_SOURCE_HL7_V2:
             return FF_Result{FF_FAILURE, "HL7 v2 ingestion not implemented."};
-        case SourceType::HL7_V3:
+        case FF_SOURCE_HL7_V3:
             return FF_Result{FF_FAILURE, "HL7 v3 ingestion not implemented."};
         default:
             return FF_Result{FF_FAILURE, "Unknown source type."};
         }
     }
 
-    FF_Result Ingestor::insert_at_field(Reflective::ObjectHandle &parent_object, const FF_FieldKey &key, std::string_view payload, SourceType fmt)
+    FF_Result Ingestor::insert_at_field(Reflective::ObjectHandle &parent_object, const FF_FieldKey &key, std::string_view payload, FF_SourceType fmt)
     {
         switch (fmt)
         {
-        case SourceType::FHIR_JSON:
+        case FF_SOURCE_FHIR_JSON:
             return insert_at_field_json(parent_object, key, payload);
-        case SourceType::HL7_V2:
+        case FF_SOURCE_HL7_V2:
             return FF_Result{FF_FAILURE, "HL7 v2 field ingestion not implemented."};
-        case SourceType::HL7_V3:
+        case FF_SOURCE_HL7_V3:
             return FF_Result{FF_FAILURE, "HL7 v3 field ingestion not implemented."};
         default:
             return FF_Result{FF_FAILURE, "Unknown source type."};
@@ -1388,3 +1389,64 @@ namespace FastFHIR::Ingest
         return FF_SUCCESS;
     }
 } // namespace FastFHIR::Ingest
+
+// =====================================================================
+// FF_* INGEST SURFACE (declared in FastFHIR.hpp)
+//
+// Kept in this translation unit (and therefore in the ingestor target, not
+// the core library) because it is the only FF_* surface that needs simdjson.
+// FF_Ingestor_t itself is defined in FF_Ingestor.hpp.
+// =====================================================================
+namespace FastFHIR {
+
+FF_Result FF_CreateIngestor(const FF_IngestorCreateInfo& info, FF_Ingestor& out_ingestor) noexcept
+{
+    out_ingestor.reset();
+    try {
+        out_ingestor = std::make_shared<FF_Ingestor_t>(info.logger_capacity, info.concurrency);
+        return FF_Result{FF_SUCCESS};
+    } catch (const std::exception& e) {
+        return FF_Result{FF_FAILURE, std::string("FF_CreateIngestor: ") + e.what()};
+    } catch (...) {
+        return FF_Result{FF_FAILURE, "FF_CreateIngestor: unknown non-std exception"};
+    }
+}
+
+FF_Result FF_Ingest(const FF_IngestInfo& info, Reflective::ObjectHandle& out_root, Size& out_parsed_count) noexcept
+{
+    if (!info.ingestor)
+        return FF_Result{FF_VALIDATION_FAILURE, "FF_Ingest: null ingestor"};
+    if (!info.stream)
+        return FF_Result{FF_VALIDATION_FAILURE, "FF_Ingest: null destination stream"};
+    out_root = Reflective::ObjectHandle();
+    out_parsed_count = 0;
+    try {
+        Ingest::IngestRequest request{*info.stream, info.source_type, info.payload, info.payload_capacity};
+        // size_t vs Size (uint64_t) are distinct types on LP64; bridge via a local.
+        size_t parsed_count = 0;
+        FF_Result result = info.ingestor->impl.ingest(request, out_root, parsed_count);
+        out_parsed_count = parsed_count;
+        return result;
+    } catch (const std::exception& e) {
+        return FF_Result{FF_FAILURE, std::string("FF_Ingest: ") + e.what()};
+    } catch (...) {
+        return FF_Result{FF_FAILURE, "FF_Ingest: unknown non-std exception"};
+    }
+}
+
+FF_Result FF_IngestInsertAtField(const FF_IngestInsertInfo& info) noexcept
+{
+    if (!info.ingestor)
+        return FF_Result{FF_VALIDATION_FAILURE, "FF_IngestInsertAtField: null ingestor"};
+    try {
+        // Copy the handle: the engine's insert path takes a mutable reference.
+        Reflective::ObjectHandle parent = info.parent;
+        return info.ingestor->impl.insert_at_field(parent, info.key, info.payload, info.source_type);
+    } catch (const std::exception& e) {
+        return FF_Result{FF_FAILURE, std::string("FF_IngestInsertAtField: ") + e.what()};
+    } catch (...) {
+        return FF_Result{FF_FAILURE, "FF_IngestInsertAtField: unknown non-std exception"};
+    }
+}
+
+} // namespace FastFHIR

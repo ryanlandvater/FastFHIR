@@ -72,18 +72,34 @@ int main(int argc, char** argv) {
         // 1. Load fixture
         const std::string json_str = slurp(fixture_path);
 
-        // 2. Allocate arena
+        // 2. Allocate arena + stream
         auto mem = Memory::create(arena_size);
-        Builder builder(mem, FHIR_VERSION_R5);
+        FF_StreamCreateInfo stream_info;
+        stream_info.arena = std::make_shared<Memory>(mem);
+        stream_info.version = FHIR_VERSION_R5;
+        FF_Stream stream;
+        if (!FF_CreateStream(stream_info, stream)) {
+            std::cerr << "create stream failed\n";
+            return 1;
+        }
         // A23 diagnostic: force a single worker to test the concurrency hypothesis.
-        Ingest::Ingestor ingestor(64 * 1024 * 1024, 1);
+        FF_IngestorCreateInfo ingestor_info;
+        ingestor_info.concurrency = 1;
+        FF_Ingestor ingestor;
+        if (!FF_CreateIngestor(ingestor_info, ingestor)) {
+            std::cerr << "create ingestor failed\n";
+            return 1;
+        }
 
         // 3. Ingest
         Reflective::ObjectHandle root_handle;
-        size_t resource_count = 0;
-        auto result = ingestor.ingest(
-            {builder, Ingest::SourceType::FHIR_JSON, json_str},
-            root_handle, resource_count);
+        Size resource_count = 0;
+        auto result = FF_Ingest(FF_IngestInfo{
+            .ingestor = ingestor,
+            .stream = stream,
+            .source_type = FF_SOURCE_FHIR_JSON,
+            .payload = json_str,
+        }, root_handle, resource_count);
         if (result.code != FF_SUCCESS) {
             std::cerr << "Ingest failed: " << result.message << "\n";
             return 1;
@@ -96,8 +112,22 @@ int main(int argc, char** argv) {
         }
 
         // 4. Seal
-        builder.set_root(root_handle);
-        auto view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+        if (!FF_StreamSetRoot(FF_StreamSetRootInfo{
+                .stream = stream,
+                .root = root_handle,
+            })) {
+            std::cerr << "set_root failed\n";
+            return 1;
+        }
+        Memory::View view;
+        if (!FF_StreamFinalize(FF_StreamFinalizeInfo{
+                .stream = stream,
+                .algorithm = FF_CHECKSUM_SHA256,
+                .hasher = sha256,
+            }, view)) {
+            std::cerr << "finalize failed\n";
+            return 1;
+        }
         if (view.empty()) {
             std::cerr << "finalize returned empty view\n";
             return 1;

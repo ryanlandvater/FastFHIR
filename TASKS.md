@@ -626,7 +626,7 @@ helpers, mirror their naming, and have `ENCODE_FF_DATETIME` take the same
 `(base, block_offset, child_offset, ...)` shape as `ENCODE_FF_CODE` so the
 relative-offset arithmetic is written once in each and reads identically.
 
-> **DONE (2026-08-20, working tree, uncommitted).** `FF_Primitives.hpp` gained
+> **DONE (2026-08-20, `d9fc00a`).** `FF_Primitives.hpp` gained
 > the slot-contract table against `FF_CODE`, `FF_DATETIME_FALLBACK_FLAG` /
 > `_PAYLOAD_MASK` / `_NULL`, the `FF_DateTimeBits` symbolic-sum enum
 > (`static_assert(FF_DT_FLAG == 63)`), `FF_DateTimePrecision`, the
@@ -680,8 +680,10 @@ relative-offset arithmetic is written once in each and reads identically.
 > an ABI/source choice, so it appends rather than renumbers for ABI stability,
 > not for wire permanence.
 
-> **DONE (2026-08-20, working tree, uncommitted).** `FF_FIELD_DATETIME = 13`
-> appended to `FF_FieldKind`, plus the five places that decide *what a kind is*
+> **DONE (2026-08-20, `dc72669`).** `FF_FIELD_DATETIME` appended to
+> `FF_FieldKind` — value 13 by append position, not written as an explicit
+> initialiser; the `[Layout]` test asserts the 13 so the ABI value is pinned
+> somewhere that fails loudly. Plus the five places that decide *what a kind is*
 > — leaving any of them inconsistent is what turns a new enumerator into a
 > silent hole:
 > - `ff_slot_width` → `TYPE_SIZE_UINT64`. The compact slot tables and the
@@ -735,7 +737,7 @@ a 6-digit fraction taking the fallback. Assert **text in == text out**.
 **Done when:** the pack/unpack pair is byte-exact for every case above, and the
 fallback triggers only for the cases listed.
 
-> **DONE (2026-08-20, working tree, uncommitted).** `tests/cpp/test_datetime.cpp`,
+> **DONE (2026-08-20, `d9fc00a`).** `tests/cpp/test_datetime.cpp`,
 > registered as `cpp_ff_test_datetime` in all four `CMakeLists.txt` lists (the
 > `add_ff_cpp_test` call, the ctest `foreach`, `_BUILD_ALL`, and the two IDE
 > folder/scheme lists — omitting `_BUILD_ALL` is what produced A20's silent
@@ -784,7 +786,7 @@ prevent.
 **Done when:** each of the four documents describes the date/time slot in the
 same terms it uses for the code slot, and names the other.
 
-> **DONE (2026-08-20, working tree, uncommitted).** All four, each written to
+> **DONE (2026-08-20, `dc72669`).** All four, each written to
 > the shape that document already uses for the code slot and naming it:
 > - **`architecture.md` §6.3** — new subsection *"MSB-discriminated value slots
 >   — `FF_CODE` and `FF_DATETIME`"*, placed beside the other primitives (§6.1
@@ -807,10 +809,14 @@ same terms it uses for the code slot, and names the other.
 > gained a **Date/time** bullet beside **Codes**, the four-places C++ test
 > registration rule (the A20 trap), and the seeded-randomised-suite convention.
 >
-> **Every document carries a status banner**: the primitives exist and are
-> tested, `FF_FieldKind` still has no `FF_FIELD_DATETIME`, and the generator
-> still routes these types through `STRING_TYPES` — so no stream contains a
-> packed date/time yet. Without that, README would advertise a working feature.
+> **Every document carries a status banner** naming exactly what does and does
+> not exist yet, so README cannot advertise a working feature. The banners were
+> **refreshed when DT-1.2 landed** (2026-08-20): they had said `FF_FieldKind` has
+> no `FF_FIELD_DATETIME`, which stopped being true the moment the kind shipped.
+> They now say the slot, the kind and the tests exist, the generator still routes
+> these types through `STRING_TYPES`, and no stream contains a packed date/time.
+> **A status banner is a dated claim about the tree, so it goes stale silently —
+> re-read all four whenever a DT task lands.**
 > The README examples were corrected during review: they originally named
 > `OBSERVATION::EFFECTIVE_DATE_TIME`, which **does not exist** (the real key is
 > `OBSERVATION::EFFECTIVE`, an `FF_FIELD_CHOICE`). They now use
@@ -845,13 +851,135 @@ validator.
   whose fallback offset points out of bounds, and one pointing at a block whose
   tag is not `RECOVER_FF_STRING`. Both must fail validation naming the field.
 
-**UNBLOCKED 2026-08-20** — DT-1.2 landed `FF_FIELD_DATETIME`, so this is ready
-to claim. Not urgent while nothing emits the kind (the generator still routes
-these types through `STRING_TYPES`), but it **must land before DT-2**, which is
-the commit that first puts a flagged date/time offset on the wire.
+> **DONE (2026-08-20, working tree, uncommitted).** DT-1.5.1 and DT-1.5.2 as
+> written: `FF_FIELD_DATETIME` added to `slot_carries_offset`, and a
+> `case FF_FIELD_DATETIME:` in `walk_fields` mirroring `case FF_FIELD_CODE:`
+> line for line — null first, then the flag; a packed value breaks out (the
+> `_deep()` pass range-checks it with `ff_datetime_fits`), a flagged one
+> sign-extends through `FF_ResolveDateTimeOffset` and walks against
+> `RECOVER_FF_STRING`.
+>
+> **DT-1.5.3 could not be written as specified, and the reason is worth
+> keeping.** The branch is unreachable from any stream, corrupt or not: a scan
+> of all 141 generated block field tables finds **1,611 slots, 0 of kind
+> `FF_FIELD_DATETIME`** (102 are `FF_FIELD_CODE`), because the generator still
+> routes these types through `STRING_TYPES`. There is no byte you can corrupt to
+> reach it until DT-2. What landed instead:
+> - **The same two corruption cases against `FF_FIELD_CODE`**, which is the
+>   reachable half of the identical mechanism: a flagged offset pointing past
+>   the end of the stream, and one pointing at a real block that is not an
+>   `FF_CODEABLE_CONCEPT`. Plus a **control** — the same slot with the flag
+>   clear must still validate — which is what proves the discriminator rather
+>   than the slot kind is what makes it an edge. **This path had no regression
+>   test at all before now**, for codes either.
+> - **A tripwire** that scans every field table and fails the moment any block
+>   declares an `FF_FIELD_DATETIME` slot, with a message naming the two cases to
+>   write and instructing that the tripwire be deleted in the same commit. It
+>   converts "we forgot" into a red build at exactly the right moment.
+>
+> ### A pre-existing validator defect, found by the code test and fixed here
+>
+> Case (b) failed on first run, and not because the test was wrong:
+> `if (seen(off)) return true;` sat **above** the recovery-tag check, so a block
+> already validated under one expected tag was accepted under **any** tag on
+> every later edge. Only the first edge to each block was ever type-checked.
+> `include/FF_Parser.hpp` claimed the opposite in its contract.
+>
+> Impact: **type confusion, not memory unsafety** — bounds are checked before
+> the memo, so nothing reads out of the stream, but a crafted file could aim a
+> code slot at any already-visited block and have the reader decode an
+> `Identifier` as an `FF_CODEABLE_CONCEPT`. Fix: hoist the self-offset and tag
+> checks above the memo. The memo is a claim about a **block's subtree**; the
+> expected tag is a claim about the **edge**, and a block has many edges.
+>
+> Cost, measured because this is the hot loop (A/B on the 50.8 MiB Synthea
+> fixture, Release `-O3`, each figure a min of 7): **pre-fix 10.30 ms, post-fix
+> 10.24 / 10.35 / 10.36 / 10.40 / 10.51 ms across five runs.** The pre-fix
+> number sits inside the post-fix build's own spread, so the correction is free
+> at the resolution this fixture can measure.
+>
+> Verified: `ff_test_graph_bounds` all pass (was 2 failures before the fix),
+> `ctest --preset ninja` 34/35 with `py_roundtrip` the same known red, no new
+> warnings. The `Parser` docstring now states the per-edge property and the
+> flagged-slot rule explicitly.
 **Done when:** a corrupted date/time fallback offset is rejected by
 `validate_FFHR_stream()` with the offending offset and field named, exactly as a
 corrupted CodeableConcept offset already is.
+
+### DT-1.6 — The same rule inside a choice (`[x]`) slot — ✅ DONE 2026-08-20
+
+**Found while writing DT-1.5's tests.** A choice slot is 8 raw bytes plus a
+2-byte tag naming the active variant. `walk_fields` decided inertness by band
+membership alone — `if (tgt == FF_RECOVER_UNDEFINED || FF_IsScalarBlockTag(tgt))
+break;` — but band membership does not imply inline: `RECOVER_FF_CODE` is in the
+scalar band (`0x010B`) and carries the same MSB discriminator as a dedicated
+code slot, so those 8 bytes may be a **fallback offset**. Every such variant was
+skipped by the validator while `Node::print_json` still dereferenced it.
+
+Fixed: the choice case now routes a `RECOVER_FF_CODE` variant and any
+date/time-tagged variant through the same checks the dedicated slots use.
+Because each of those types is now reachable through **two** slot shapes, the
+bodies were extracted to `DeepValidator::check_code_value` /
+`check_datetime_value` and both shapes call them — writing the check twice is
+how the choice path came to be unvalidated in the first place.
+
+Tests (`ff_test_graph_bounds` section 6b): a flagged code variant with an
+out-of-bounds offset is rejected, plus **two controls** — an unflagged
+(dictionary-id) code variant must still validate, and a genuinely inert
+`RECOVER_FF_FLOAT64` variant must still be skipped — so the first case cannot
+pass merely because the validator started rejecting all code variants.
+Red-green: reverting the one-line band test fails exactly the two new
+assertions and leaves both controls passing.
+
+Cost: none measurable. `validate_FFHR_stream()` on the 50.8 MiB fixture at
+`-O3` reads 10.46 ms, inside the 10.24–10.51 ms spread of the DT-1.5 build.
+
+### DT-1.7 — ⚠ `Node::as<string_view>()` resolves a choice-embedded code against the wrong base (P1, OPEN)
+
+**Four sites resolve a code's fallback offset; three agree and one does not.**
+
+| Site | Base used |
+|---|---|
+| `ENCODE_FF_CODE` (writer) | containing block |
+| `write_choice_slot` (compactor, `src/FF_Compactor.cpp:230`) | containing block (`entry.parent_offset`) |
+| `Entry::operator std::string_view()` (`FF_Parser.hpp:567`) | containing block (`parent_offset`) |
+| **`Node::as<std::string_view>()`** (`FF_Parser.hpp:505`) | **`m_node_offset`** |
+
+For an ordinary code field the two coincide, so nothing has ever shown. For a
+**choice** variant they do not: `resolve_choice` sets `m_node_offset` to the
+*slot* (`FF_Parser.cpp:886`), so `Node::as` resolves relative to the slot while
+everything else resolves relative to the block — they differ by the field's
+V-Table offset. `print_json`'s `case FF_FIELD_CODE` is annotated "only reachable
+for choice[x] nodes", so the export path is exactly what hits it.
+
+Consequences: (1) a legitimately written choice-embedded fallback code would
+decode from the wrong address; (2) DT-1.6 validates the block-relative address
+— the correct one — so the address `Node::as` actually dereferences is still
+unchecked, bounded to within a V-Table's width of a validated location but not
+guaranteed inside the stream.
+
+**This is urgent before DT-3, not after.** `Observation.effective[x]` admits
+`effectiveDateTime`, so once DT-2 lands, choice slots will routinely hold
+date/time variants whose unfittable values take an `FF_STRING` fallback — the
+same shape, on a field that appears in nearly every Observation.
+
+⚠ **The fix is Ryan's call because the obvious one has a measured cost.**
+`Reflective::Node` is **48 bytes** (verified) and carries no parent offset;
+adding one takes it to 56 (+17%) on a struct the read path materialises per
+element — `entries()` is 36 µs for 31,042 elements at `-O3`, and a one-shot-fill
+rewrite of that same loop already regressed 36→58 µs once. Options:
+1. Add `m_parent_offset` to `Node`. Correct and general; measure `entries()`
+   before and after rather than assuming the 8 bytes are free.
+2. Have `resolve_choice` resolve the fallback eagerly and hand back a node that
+   already points at the `FF_CODEABLE_CONCEPT`, leaving `Node::as` with nothing
+   to compute. No size change; moves work to construction.
+3. Make `Node::as` throw for a flagged code it cannot resolve, and keep choice
+   variants restricted to non-fallback codes. Cheapest, but it forbids a value
+   FHIR permits, so it is only defensible if ingest never produces one — which
+   has not been established.
+
+Recommend **2**, then re-measure `entries()`. Do not pick **3** without first
+checking whether the ingestor emits a fallback code into a choice slot.
 
 ---
 
@@ -4463,3 +4591,50 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
 
 | JSON path pattern | Class | Rationale | Disposition |
 |---|---|---|---|
+
+---
+
+# ▶ WORK ORDER — FF_* EXTERNAL API: asciidoc generation + README sweep
+
+Written 2026-08-21 after the FF_* external API landed (see `include/FastFHIR.hpp`,
+`src/FF_API.cpp`, `docs/api.adoc`). The API itself is done; what remains is
+keeping the docs honest.
+
+## WO-A — Generate `docs/api.adoc` from source
+
+**Status: open.** `docs/api.adoc` is currently hand-written to mirror
+the `FF_*` block of `include/FastFHIR.hpp`. The header is the source of truth
+and the two WILL drift.
+
+1. Add a generator module (e.g. `generator/emit/api_doc.py`) that parses
+   `include/FastFHIR.hpp` (the `FF_*` free functions, `FF_*Info` structs with
+   defaulted members, enums, handle typedefs) and emits the asciidoc sections
+   of `docs/api.adoc`.
+2. The generator must be deterministic and idempotent; run it in the same
+   configure-time step as the main generator (or as a ctest wire-gate-style
+   check that fails if `docs/api.adoc` is stale — see the golden-file pattern
+   in `tests/generator/`).
+3. Keep the hand-written prose (design conventions, lifecycle diagram,
+   "intentionally not part of this surface") above a marker like
+   `// GENERATED-FROM include/FastFHIR.hpp — do not edit below this line`.
+4. Do not use Doxygen/Breathe unless already in the toolchain — a small
+   dedicated parser keeps the build dependency-free.
+
+## WO-B — README.md API-example sweep
+
+**Status: open.** `README.md` (61 sections) still shows the pre-FF_* usage
+(`FastFHIR::Builder`, `builder.finalize(...)`, `Compactor::archive(...)`,
+`Ingestor.ingest(...)`). `tests/cpp/test_readme.cpp` — the compiled contract
+for those examples — already migrated to the FF_* surface; the README prose
+must follow so the docs and the test agree.
+
+1. Replace every code block that constructs `Builder`/`Parser`/`Ingestor`
+   directly with the `FF_*` equivalent (mirror `tests/cpp/test_readme.cpp`,
+   which now compiles the exact FF_* spellings).
+2. Update the "Memory / Stream / Ingestor" API tables to the FF_* names and
+   point readers at `docs/api.adoc` for the reference.
+3. Add a note that the mutation path (`handle["field"] = value`) is unchanged.
+
+**Rules:** do not commit; do not edit `generated_src/`; verify with
+`cmake --build --preset ninja && ctest --preset ninja` (py_roundtrip is a
+pre-existing failure — see the profile/allowlist note in that test).

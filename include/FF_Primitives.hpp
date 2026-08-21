@@ -542,6 +542,16 @@ enum FF_Checksum_Algorithm : uint16_t
 constexpr uint32_t FF_MAX_HASH_BYTES = 32;
 
 // =====================================================================
+// SOURCE FORMAT (ingestion)
+// =====================================================================
+enum FF_SourceType : uint8_t
+{
+    FF_SOURCE_FHIR_JSON = 0, // Standard FHIR JSON (R4/R5)
+    FF_SOURCE_HL7_V2    = 1, // Pipe-delimited (ER7)
+    FF_SOURCE_HL7_V3    = 2, // XML-based (CDA)
+};
+
+// =====================================================================
 // FORWARD DECLARATIONS FOR DATA TYPES
 // =====================================================================
 enum FF_FieldKind : uint16_t

@@ -20,6 +20,7 @@
 
 #include <FastFHIR.hpp>
 #include "FF_AllTypes.hpp"
+#include "FF_Reflection.hpp"   // reflected_fields_view, for the DT-1.5 tripwire
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -33,16 +34,19 @@ static void CHECK(bool ok, const char* what) {
 }
 
 // Wire a Patient root to a list of Identifier blocks through identifier[].
-static void wire_root(Builder& b, const std::vector<Offset>& ids, std::string_view id) {
-    auto harr = b.append_obj(ids, RECOVER_FF_IDENTIFIER);
+static void wire_root(FF_Stream stream, const std::vector<Offset>& ids, std::string_view id) {
+    auto harr = stream->append_obj(ids, RECOVER_FF_IDENTIFIER);
     // Assign the view directly. `p.id = std::string(id)` would bind the view to
     // a temporary that dies at the semicolon, so append_obj below would copy
     // freed memory into the arena (-Wdangling-assignment-gsl). Every caller
     // passes a string literal, so the view outlives the append that reads it.
     PatientData p; p.id = id;
-    auto hp = b.append_obj(p);
-    b.amend_pointer(hp.offset(), FF_PATIENT::IDENTIFIER, harr.offset());
-    b.set_root(hp);
+    auto hp = FF_StreamAppendObject(stream, p);
+    stream->amend_pointer(hp.offset(), FF_PATIENT::IDENTIFIER, harr.offset());
+    FF_StreamSetRoot(FF_StreamSetRootInfo{
+        .stream = stream,
+        .root = hp,
+    });
 }
 
 int main() {
@@ -51,22 +55,32 @@ int main() {
     // must see X again while X is still an ancestor of the node enqueuing it.
     {
         Memory mem = Memory::create(1ull << 22);
-        Builder b(mem);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
         IdentifierData ix, iy;
-        auto hx = b.append_obj(ix);
-        auto hy = b.append_obj(iy);
-        b.amend_pointer(hx.offset(), FF_IDENTIFIER::TYPE, hy.offset());
-        b.amend_pointer(hy.offset(), FF_IDENTIFIER::TYPE, hx.offset());
-        wire_root(b, {hx.offset(), hy.offset()}, "cycle");
-        auto view = b.finalize();
-        Parser source(view.data(), view.size());
-        Memory dst = Memory::create(1ull << 22);
-        std::string msg;
-        bool threw = false;
-        try { Compactor::archive(source, dst); }
-        catch (const std::runtime_error& e) { threw = true; msg = e.what(); }
-        CHECK(threw, "cycle in the stored graph is rejected");
-        CHECK(msg.find("cycle") != std::string::npos, "error message names the cycle");
+        auto hx = FF_StreamAppendObject(stream, ix);
+        auto hy = FF_StreamAppendObject(stream, iy);
+        stream->amend_pointer(hx.offset(), FF_IDENTIFIER::TYPE, hy.offset());
+        stream->amend_pointer(hy.offset(), FF_IDENTIFIER::TYPE, hx.offset());
+        wire_root(stream, {hx.offset(), hy.offset()}, "cycle");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
+        Parser source;
+        CHECK(FF_Parse(FF_ParseInfo{
+            .buffer = view.data(),
+            .size = view.size(),
+        }, source), "parse");
+        Memory::View compact_view;
+        FF_Result compact_result = FF_Compact(FF_CompactInfo{
+            .source = source,
+        }, compact_view);
+        CHECK(!compact_result, "cycle in the stored graph is rejected");
+        CHECK(compact_result.message.find("cycle") != std::string::npos,
+              "error message names the cycle");
     }
 
     // ── 2. Chain past MAX_NODE_DEPTH -> rejected, message names the depth ───
@@ -75,26 +89,36 @@ int main() {
     // ArchiveContext::MAX_NODE_DEPTH (64).
     {
         Memory mem = Memory::create(1ull << 22);
-        Builder b(mem);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
         constexpr int CHAIN = 70;
         std::vector<Reflective::ObjectHandle> ids;
         for (int i = 0; i < CHAIN; ++i) {
             IdentifierData d;
-            ids.push_back(b.append_obj(d));
+            ids.push_back(FF_StreamAppendObject(stream, d));
         }
         for (int i = 0; i + 1 < CHAIN; ++i) {
-            b.amend_pointer(ids[i].offset(), FF_IDENTIFIER::TYPE, ids[i + 1].offset());
+            stream->amend_pointer(ids[i].offset(), FF_IDENTIFIER::TYPE, ids[i + 1].offset());
         }
-        wire_root(b, {ids[0].offset()}, "deep");
-        auto view = b.finalize();
-        Parser source(view.data(), view.size());
-        Memory dst = Memory::create(1ull << 22);
-        std::string msg;
-        bool threw = false;
-        try { Compactor::archive(source, dst); }
-        catch (const std::runtime_error& e) { threw = true; msg = e.what(); }
-        CHECK(threw, "chain past MAX_NODE_DEPTH is rejected");
-        CHECK(msg.find("depth") != std::string::npos, "error message names the depth");
+        wire_root(stream, {ids[0].offset()}, "deep");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
+        Parser source;
+        CHECK(FF_Parse(FF_ParseInfo{
+            .buffer = view.data(),
+            .size = view.size(),
+        }, source), "parse");
+        Memory::View compact_view;
+        FF_Result compact_result = FF_Compact(FF_CompactInfo{
+            .source = source,
+        }, compact_view);
+        CHECK(!compact_result, "chain past MAX_NODE_DEPTH is rejected");
+        CHECK(compact_result.message.find("depth") != std::string::npos,
+              "error message names the depth");
     }
 
     // ── 3. Legal DAG with heavy sharing -> accepted, and fast ───────────────
@@ -105,27 +129,36 @@ int main() {
     // the ctest TIMEOUT catches.
     {
         Memory mem = Memory::create(1ull << 22);
-        Builder b(mem);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
         CodeableConceptData cc;                       // the shared subtree
-        auto hcc = b.append_obj(cc);
+        auto hcc = FF_StreamAppendObject(stream, cc);
         constexpr int N = 200;
         std::vector<Offset> ids;
         for (int i = 0; i < N; ++i) {
             IdentifierData d;
-            auto h = b.append_obj(d);
-            b.amend_pointer(h.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
+            auto h = FF_StreamAppendObject(stream, d);
+            stream->amend_pointer(h.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
             ids.push_back(h.offset());
         }
-        wire_root(b, ids, "dag");
-        auto view = b.finalize();
-        Parser source(view.data(), view.size());
-        Memory dst = Memory::create(1ull << 22);
-        bool ok = true;
-        std::string msg;
-        try { Compactor::archive(source, dst); }
-        catch (const std::runtime_error& e) { ok = false; msg = e.what(); }
-        CHECK(ok, "legal DAG with heavy sharing is accepted");
-        if (!ok) printf("      unexpected rejection: %s\n", msg.c_str());
+        wire_root(stream, ids, "dag");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
+        Parser source;
+        CHECK(FF_Parse(FF_ParseInfo{
+            .buffer = view.data(),
+            .size = view.size(),
+        }, source), "parse");
+        Memory::View compact_view;
+        FF_Result compact_result = FF_Compact(FF_CompactInfo{
+            .source = source,
+        }, compact_view);
+        CHECK(static_cast<bool>(compact_result), "legal DAG with heavy sharing is accepted");
+        if (!compact_result) printf("      unexpected rejection: %s\n", compact_result.message.c_str());
     }
 
     // ── 4. XP-2.1: the root offset is bounds-checked before it is stored ────
@@ -135,11 +168,17 @@ int main() {
     // "validate file structure" (XP-2.2).
     {
         Memory mem = Memory::create(1ull << 22);
-        Builder b(mem);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
         IdentifierData id;
-        auto hid = b.append_obj(id);
-        wire_root(b, {hid.offset()}, "root-bounds");
-        auto view = b.finalize();
+        auto hid = FF_StreamAppendObject(stream, id);
+        wire_root(stream, {hid.offset()}, "root-bounds");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
 
         // A well-formed stream still parses.
         bool ok = true;
@@ -171,15 +210,21 @@ int main() {
     // constructs a Parser successfully and only then asks for the walk.
     {
         Memory mem = Memory::create(1ull << 22);
-        Builder b(mem);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
         IdentifierData ix, iy;
-        auto hx = b.append_obj(ix);
-        auto hy = b.append_obj(iy);
+        auto hx = FF_StreamAppendObject(stream, ix);
+        auto hy = FF_StreamAppendObject(stream, iy);
         CodeableConceptData cc;
-        auto hcc = b.append_obj(cc);
-        b.amend_pointer(hx.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
-        wire_root(b, {hx.offset(), hy.offset()}, "deep");
-        auto view = b.finalize();
+        auto hcc = FF_StreamAppendObject(stream, cc);
+        stream->amend_pointer(hx.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
+        wire_root(stream, {hx.offset(), hy.offset()}, "deep");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
 
         FastFHIR::Parser good(view.data(), view.size());
         CHECK(static_cast<bool>(good.validate_FFHR_stream()), "clean stream passes validate_FFHR_stream");
@@ -237,14 +282,23 @@ int main() {
     // accepted there, however well-formed it is in isolation.
     {
         Memory mem = Memory::create(1ull << 22);
-        Builder b(mem);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
         MetaData meta;
-        auto hmeta = b.append_obj(meta);
+        auto hmeta = FF_StreamAppendObject(stream, meta);
         PatientData p; p.id = "meta-case";
-        auto hp = b.append_obj(p);
-        b.amend_pointer(hp.offset(), FF_PATIENT::META, hmeta.offset());
-        b.set_root(hp);
-        auto view = b.finalize();
+        auto hp = FF_StreamAppendObject(stream, p);
+        stream->amend_pointer(hp.offset(), FF_PATIENT::META, hmeta.offset());
+        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
+            .stream = stream,
+            .root = hp,
+        }), "set root");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
 
         FastFHIR::Parser good(view.data(), view.size());
         CHECK(static_cast<bool>(good.validate_FFHR_stream()),
@@ -268,11 +322,20 @@ int main() {
     // validate_FFHR_stream_deep() is the pass that looks.
     {
         Memory mem = Memory::create(1ull << 22);
-        Builder b(mem);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
         PatientData p; p.id = "scalar-split"; p.active = true;
-        auto hp = b.append_obj(p);
-        b.set_root(hp);
-        auto view = b.finalize();
+        auto hp = FF_StreamAppendObject(stream, p);
+        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
+            .stream = stream,
+            .root = hp,
+        }), "set root");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
 
         std::vector<BYTE> bytes(view.data(), view.data() + view.size());
         bytes[hp.offset() + FF_PATIENT::ACTIVE] = 7;   // not 0, 1 or the sentinel
@@ -284,6 +347,192 @@ int main() {
         CHECK(!d, "deep pass rejects a nonsense scalar");
         CHECK(d.message.find("bool") != std::string::npos,
               "deep message names the offending slot kind");
+    }
+
+    // ── 6. A FLAGGED VALUE SLOT IS AN EDGE, AND MUST BE WALKED (DT-1.5) ─────
+    // FF_FIELD_CODE and FF_FIELD_DATETIME hold their value inline *most* of the
+    // time and degrade to a signed relative offset when the MSB is set. The
+    // structural pass skips inline scalars -- they cannot aim the reader
+    // anywhere -- but a flagged slot is not inline data, and skipping it would
+    // leave an attacker-controlled offset unchecked.
+    //
+    // These cases corrupt a CODE slot because it is the half of the mechanism
+    // that is reachable today: 102 code slots are declared across the generated
+    // blocks and ZERO date/time slots are, until DT-2 routes those types off
+    // STRING_TYPES. Section 7 below is the tripwire for that.
+    {
+        Memory mem = Memory::create(1ull << 22);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
+        IdentifierData idd;
+        auto hid = FF_StreamAppendObject(stream, idd);
+        auto harr = stream->append_obj(std::vector<Offset>{hid.offset()}, RECOVER_FF_IDENTIFIER);
+        PatientData p; p.id = "flagged-slot";
+        auto hp = FF_StreamAppendObject(stream, p);
+        stream->amend_pointer(hp.offset(), FF_PATIENT::IDENTIFIER, harr.offset());
+        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
+            .stream = stream,
+            .root = hp,
+        }), "set root");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
+
+        const Offset pat = hp.offset();
+        const Offset gender = pat + FF_PATIENT::GENDER;   // FF_FIELD_CODE, 4 bytes
+
+        FastFHIR::Parser good(view.data(), view.size());
+        CHECK(static_cast<bool>(good.validate_FFHR_stream()),
+              "baseline stream with an unset code slot passes");
+
+        // Pack a signed relative offset the way ENCODE_FF_CODE does.
+        auto flagged = [](int64_t rel) {
+            return (static_cast<uint32_t>(static_cast<int32_t>(rel)) & FF_CODE_PAYLOAD_MASK)
+                   | FF_CODEABLE_CONCEPT_FLAG;
+        };
+
+        // (a) flagged offset pointing past the end of the stream.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            const int64_t rel = static_cast<int64_t>(bytes.size() + 4096) -
+                                static_cast<int64_t>(pat);
+            STORE_U32(bytes.data() + gender, flagged(rel));
+            FastFHIR::Parser px(bytes.data(), bytes.size());
+            auto r = px.validate_FFHR_stream();
+            CHECK(!r, "out-of-bounds flagged code offset is rejected");
+            CHECK(r.message.find("out of bounds") != std::string::npos,
+                  "message names the bounds failure");
+            CHECK(r.message.find("gender") != std::string::npos,
+                  "message names the offending field");
+        }
+
+        // (b) flagged offset pointing at a real block that is not a
+        //     CodeableConcept. In bounds and self-consistent, so only the
+        //     expected-tag check can catch it.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            const int64_t rel = static_cast<int64_t>(hid.offset()) - static_cast<int64_t>(pat);
+            STORE_U32(bytes.data() + gender, flagged(rel));
+            FastFHIR::Parser px(bytes.data(), bytes.size());
+            auto r = px.validate_FFHR_stream();
+            CHECK(!r, "flagged code offset to a non-CodeableConcept block is rejected");
+            CHECK(r.message.find("recovery tag") != std::string::npos,
+                  "message names the recovery tag mismatch");
+        }
+
+        // (c) CONTROL: the same slot with the flag CLEAR is a dictionary id --
+        //     inline data, no edge, nothing to walk. This is what proves the
+        //     discriminator (not the slot kind) is what makes it an edge; if
+        //     this failed, the two cases above would be proving nothing.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            STORE_U32(bytes.data() + gender, 4082u);   // any plain dictionary id
+            FastFHIR::Parser px(bytes.data(), bytes.size());
+            CHECK(static_cast<bool>(px.validate_FFHR_stream()),
+                  "an unflagged code slot is inline data and is not walked");
+        }
+    }
+
+    // ── 6b. THE SAME RULE INSIDE A CHOICE ([x]) SLOT ───────────────────────
+    // A choice slot is 8 raw bytes + a 2-byte tag naming the active variant.
+    // For most scalar variants the raw bytes ARE the value and there is nothing
+    // to follow -- but a RECOVER_FF_CODE variant carries the same MSB
+    // discriminator as a dedicated code slot, so those bytes may be a fallback
+    // offset instead. The validator used to skip every scalar-band variant on
+    // band membership alone, which left that offset unchecked while
+    // Node::print_json still dereferenced it.
+    {
+        Memory mem = Memory::create(1ull << 22);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
+        ObservationData o; o.id = "choice-variant";
+        auto ho = FF_StreamAppendObject(stream, o);
+        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
+            .stream = stream,
+            .root = ho,
+        }), "set root");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
+
+        const Offset obs = ho.offset();
+        const Offset choice = obs + FF_OBSERVATION::EFFECTIVE;   // FF_FIELD_CHOICE
+
+        FastFHIR::Parser good(view.data(), view.size());
+        CHECK(static_cast<bool>(good.validate_FFHR_stream()),
+              "baseline Observation with an unset choice slot passes");
+
+        // (a) choice variant = code, flagged, pointing past the end.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            const int64_t rel = static_cast<int64_t>(bytes.size() + 4096) -
+                                static_cast<int64_t>(obs);
+            STORE_U64(bytes.data() + choice,
+                      static_cast<uint64_t>(
+                          (static_cast<uint32_t>(static_cast<int32_t>(rel)) & FF_CODE_PAYLOAD_MASK)
+                          | FF_CODEABLE_CONCEPT_FLAG));
+            STORE_U16(bytes.data() + choice + DATA_BLOCK::RECOVERY,
+                      static_cast<uint16_t>(RECOVER_FF_CODE));
+            FastFHIR::Parser px(bytes.data(), bytes.size());
+            auto r = px.validate_FFHR_stream();
+            CHECK(!r, "flagged code variant in a choice slot is walked, not skipped");
+            CHECK(r.message.find("out of bounds") != std::string::npos,
+                  "choice-variant message names the bounds failure");
+        }
+
+        // (b) CONTROL: an unflagged (dictionary id) code variant is inline data
+        //     and must still validate -- otherwise (a) would just be proving
+        //     that the validator rejects every code variant.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            STORE_U64(bytes.data() + choice, uint64_t{4082});
+            STORE_U16(bytes.data() + choice + DATA_BLOCK::RECOVERY,
+                      static_cast<uint16_t>(RECOVER_FF_CODE));
+            FastFHIR::Parser px(bytes.data(), bytes.size());
+            CHECK(static_cast<bool>(px.validate_FFHR_stream()),
+                  "unflagged code variant in a choice slot stays inline");
+        }
+
+        // (c) CONTROL: a genuinely inert scalar variant is still skipped.
+        {
+            std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+            STORE_U64(bytes.data() + choice, uint64_t{0x4059000000000000ull});  // a double
+            STORE_U16(bytes.data() + choice + DATA_BLOCK::RECOVERY,
+                      static_cast<uint16_t>(RECOVER_FF_FLOAT64));
+            FastFHIR::Parser px(bytes.data(), bytes.size());
+            CHECK(static_cast<bool>(px.validate_FFHR_stream()),
+                  "an inert scalar variant is still treated as inline");
+        }
+    }
+
+    // ── 7. TRIPWIRE: the date/time half of DT-1.5 (see section 6) ──────────
+    // validate_FFHR_stream() handles FF_FIELD_DATETIME exactly as it handles
+    // FF_FIELD_CODE, but that branch is UNREACHABLE from any stream today
+    // because no generated block declares such a slot -- so it has no
+    // corruption test, and cannot have one yet.
+    //
+    // This check fails the moment that stops being true. When it does, DT-2 has
+    // landed and the two corruption cases in section 6 must be duplicated for a
+    // date/time slot: bit 63 set with (a) an out-of-bounds relative offset and
+    // (b) an offset to a block whose tag is not RECOVER_FF_STRING. Delete this
+    // tripwire in the same commit that adds them.
+    {
+        size_t datetime_slots = 0;
+        for (uint32_t tag = 0; tag <= 0xFFFF; ++tag) {
+            for (const FF_FieldInfo& f :
+                 FastFHIR::reflected_fields_view(static_cast<uint16_t>(tag))) {
+                if (f.kind == FF_FIELD_DATETIME) ++datetime_slots;
+            }
+        }
+        CHECK(datetime_slots == 0,
+              "TRIPWIRE: a block now declares an FF_FIELD_DATETIME slot -- write the "
+              "two flagged-offset corruption cases for it (see section 7 comment)");
     }
 
     printf("%s\n", failures ? "FAILURES" : "all graph-bounds checks pass");

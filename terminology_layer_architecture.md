@@ -145,7 +145,7 @@ constexpr uint32_t FF_CODE_PAYLOAD_MASK     = 0x7FFFFFFF;  // Lower 31 bits
 constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x7FFFFFFF;
 ```
 
-### 3.1 The 8-byte sibling: `FF_DATETIME` (primitives implemented, not yet wired)
+### 3.1 The 8-byte sibling: `FF_DATETIME` (slot + kind implemented, generator pending)
 
 The packed date/time slot is the same mechanism one width up, and belongs beside
 this table so the two are read together rather than discovered separately:
@@ -171,7 +171,7 @@ Read path — the same binary branch as the code slot, testing the null sentinel
 first because all-ones has the flag bit set in both:
 
 ```cpp
-case FF_FIELD_DATETIME: {                       // kind pending, TASKS.md DT-1.2
+case FF_FIELD_DATETIME: {                       // one kind, all four date/time tags
     uint64_t raw = LOAD_U64(base + slot);
     if (raw == FF_DATETIME_NULL) { /* absent */ }
     if (FF_DATETIME_IS_FALLBACK(raw)) {

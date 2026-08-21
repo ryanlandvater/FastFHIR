@@ -323,7 +323,7 @@ uses kind to decode and recovery to dispatch.
 
 ### 3.1 `FF_FieldKind` — Physical Discriminant
 
-`FF_Primitives.hpp:156–171`.
+`FF_Primitives.hpp:547–565`.
 
 ```
 enum FF_FieldKind : uint16_t {
@@ -334,8 +334,13 @@ enum FF_FieldKind : uint16_t {
     FF_FIELD_INT64,     FF_FIELD_UINT64,
     FF_FIELD_FLOAT64,
     FF_FIELD_RESOURCE,  FF_FIELD_CHOICE,
+    FF_FIELD_DATETIME,                      // 13 — one kind, four tags (§6.3)
 };
 ```
+
+Members **append and never renumber**: the enum is part of the ABI — `FF_FieldInfo`
+and `FF_FieldKey` both carry it — even though it is not a wire constant (nothing
+serialises a kind; it is derived from the recovery tag by `Recovery_to_Kind`).
 
 Kind tells the parser the **storage class** of a slot, not its meaning:
 
@@ -346,6 +351,7 @@ Kind tells the parser the **storage class** of a slot, not its meaning:
 | `FF_FIELD_INT64` / `_UINT64` | 8 B            | LE integer                                       |
 | `FF_FIELD_FLOAT64`           | 8 B            | LE IEEE-754                                      |
 | `FF_FIELD_CODE`              | 4 B            | Code dictionary index (top bit = custom string)  |
+| `FF_FIELD_DATETIME`          | 8 B            | Packed civil date/time (top bit = original text) |
 | `FF_FIELD_STRING`            | 8 B            | `Offset` to `FF_STRING` block                    |
 | `FF_FIELD_BLOCK`             | 8 B            | `Offset` to nested block                         |
 | `FF_FIELD_ARRAY`             | 8 B            | `Offset` to `FF_ARRAY` block                     |
@@ -353,15 +359,21 @@ Kind tells the parser the **storage class** of a slot, not its meaning:
 | `FF_FIELD_CHOICE`            | 10 B           | `ChoiceEntry` raw 8 B + 2 B recovery tag         |
 
 Slot widths are exactly the values in `TYPE_SIZE`
-(`FF_Primitives.hpp:124–137`). Note in particular that resource and choice
+(`FF_Primitives.hpp:515–528`). Note in particular that resource and choice
 slots are **10 bytes**, not 8 — they carry an inline recovery tag because
 their concrete type is not statically determinable from the parent V-Table.
 
-`FF_FIELD_CODE` is the one kind above whose interpretation depends on the value
-rather than the kind: its top bit selects between a dictionary ID and a pointer.
-The packed date/time slot added in DT-1 is the same mechanism at 8 bytes; both
-are described together in §6.3. Its kind (`FF_FIELD_DATETIME`) is not yet a
-member of the enum above — see the status note at the end of that section.
+`FF_FIELD_CODE` and `FF_FIELD_DATETIME` are the two kinds above whose
+interpretation depends on the *value* rather than the kind: the top bit selects
+between an inline value and a pointer. They are one mechanism at two widths and
+are described together in §6.3.
+
+`FF_FIELD_DATETIME` is deliberately **one kind for four recovery tags**
+(`RECOVER_FF_DATE`/`DATETIME`/`TIME`/`INSTANT`). The kind answers "how is this
+slot stored", which is identical for all four; the tag answers "which FHIR type
+is this", which the exporter needs and the kind cannot express. That asymmetry is
+why `Recovery_to_Kind` maps four tags onto one kind while `Kind_to_Recovery` has
+**no** entry for it — a single answer there would be wrong three times in four.
 
 ### 3.2 `RECOVERY_TAG` — Semantic Identifier
 
@@ -842,13 +854,37 @@ flowchart TD
     RD -- "MSB = 1" --> SX["sign-extend, add to block offset,<br/>read the child block"]
 ```
 
-**A flagged slot is an edge, and the validator must follow it.**
+**A flagged slot is an edge, and the validator follows it.**
 `validate_FFHR_stream()` skips inline scalars because they cannot aim the reader
 at memory it does not own — but when the MSB is set the slot is not inline data,
-and it is walked like any other offset. `FF_FIELD_CODE` already is
-(`src/FF_Parser.cpp:573–590`, checked against `RECOVER_FF_CODEABLE_CONCEPT`); the
-date/time half is TASKS.md DT-1.5. A slot kind that can point somewhere and is
-absent from `slot_carries_offset` is a hole in the validator.
+and it is walked like any other offset. Both halves are wired: `FF_FIELD_CODE`
+against `RECOVER_FF_CODEABLE_CONCEPT`, and `FF_FIELD_DATETIME` against
+`RECOVER_FF_STRING`. A slot kind that can point somewhere and is absent from
+`slot_carries_offset` is a hole in the validator.
+
+**Each of these types is reachable through two slot shapes**, and both must
+apply the rule: the type's own V-Table slot, and a choice (`[x]`) slot whose
+active variant happens to be that type. The second is easy to miss — a choice
+slot's 8 raw bytes are usually the value outright, so the validator once decided
+inertness from the variant's recovery band alone. That is wrong for exactly
+these two types: `RECOVER_FF_CODE` sits in the scalar band and still carries the
+MSB discriminator, so a flagged code inside a choice slot went unwalked while
+the export path dereferenced it. The checks therefore live in one place
+(`DeepValidator::check_code_value` / `check_datetime_value`) and both shapes
+call them; duplicating them is what let the two drift apart.
+
+**The tag check is per edge, not per block.** The visited set memoises "this
+block's subtree is structurally sound", which is a property of the *block*;
+"the referring slot said this would be a CodeableConcept" is a property of the
+*edge*, and a block can be reached by many edges. The two must not be conflated:
+until DT-1.5 the memo short-circuited ahead of the tag check, so only the first
+edge to a block was type-checked and every later one was waved through — a
+crafted stream could aim a code slot at any already-visited block and have the
+reader decode an `Identifier` as an `FF_CODEABLE_CONCEPT`. Bounds were never at
+risk; the type was. Checking the tag before consulting the memo costs nothing
+measurable: A/B on the 50.8 MiB Synthea fixture at `-O3`, min of 7, gave
+10.30 ms before and 10.24–10.51 ms across five runs after — the before figure
+sits inside the after build's own spread.
 
 #### The packed date/time payload
 
@@ -900,14 +936,34 @@ exception: it takes the same fallback a non-dictionary code takes, because
 preserving the bytes that arrived is always defensible and judging FHIR legality
 belongs to ingest.
 
+**How the kind and the tag divide the work.** `FF_FIELD_DATETIME` is one kind for
+all four tags, and every place that asks *what a slot is* now answers
+consistently: `ff_slot_width` gives 8 bytes (so the compact tables and the
+generated V-Table asserts, which are emitted as calls to it, follow for free);
+`Recovery_to_Kind` and its compile-time twin `RecoveryTraits<>` map all four tags
+to the single kind, pinned equal by `static_assert`; `FF_IsFieldEmpty` treats the
+slot as 8 inline bytes with an all-ones null; and `Node::is_scalar()` reports it
+as a scalar, because a packed date/time is an inline value exactly as a code is —
+that a flagged one can point at an `FF_STRING` no more makes it a string than a
+fallback CodeableConcept makes a code a block.
+
+`Kind_to_Recovery` is the one mapping that stays silent: it returns
+`FF_RECOVER_UNDEFINED`, because one kind naming four tags is not a function. Its
+three callers use it only as a fallback when `FF_FieldKey::child_recovery` is
+`UNDEFINED`, and a generated date/time key always carries its specific tag, so
+the fallback must never fire for one.
+
 > **Status (2026-08-20).** The representation, the pack/unpack pair, the text
-> codec and the emitter triple exist and are unit-tested (`ff_test_datetime`,
-> TASKS.md DT-1.1/DT-1.3). **Nothing calls them yet**: `FF_FieldKind` has no
-> `FF_FIELD_DATETIME` member (DT-1.2, decided as `13`) and the generator still
-> routes `date`/`dateTime`/`instant`/`time` through `STRING_TYPES`
-> (`generator/model/type_map.py`), so no stream contains a packed date/time.
-> DT-2 and DT-3 wire it up; DT-4 re-baselines the wire witness in the same
-> commit.
+> codec, the emitter triple and the `FF_FieldKind` member all exist and are
+> unit-tested (`ff_test_datetime`, TASKS.md DT-1.1/DT-1.2/DT-1.3). **Nothing
+> emits the kind yet**: the generator still routes `date`/`dateTime`/`instant`/
+> `time` through `STRING_TYPES` (`generator/model/type_map.py`), so no stream
+> contains a packed date/time and `FF_FIELD_DATETIME` is unreachable at runtime.
+> Two things must follow before that changes: **DT-1.5** adds the flagged slot to
+> `slot_carries_offset` and `walk_fields` — it has to land *before* DT-2, which
+> is the commit that first puts a flagged date/time offset on the wire — and
+> DT-3 wires ingest and export. DT-4 re-baselines the wire witness in the same
+> commit as the generator change.
 
 ---
 

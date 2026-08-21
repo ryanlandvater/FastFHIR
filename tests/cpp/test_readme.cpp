@@ -2,7 +2,7 @@
  * @file test_readme.cpp
  * @brief Validates all six C++ API examples from README.md.
  *
- * Build with FASTFHIR_BUILD_INGESTOR=ON (required for Ingest::Ingestor).
+ * Build with FASTFHIR_BUILD_INGESTOR=ON (required for FF_Ingest).
  * The test writes temporary *.ffhr files adjacent to this source file and
  * removes them on exit.
  *
@@ -10,7 +10,6 @@
  */
 
 #include <FastFHIR.hpp>
-#include <FF_Ingestor.hpp>
 #include "FF_AllTypes.hpp" // PatientData, BundleData, ObservationData, …
 
 #include <openssl/evp.h>
@@ -49,7 +48,7 @@ using namespace FastFHIR;
     } while (false)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SHA-256 hasher — passed as the Builder::finalize() callback
+// SHA-256 hasher — passed as the FF_StreamFinalize hasher callback
 // ─────────────────────────────────────────────────────────────────────────────
 
 static std::vector<uint8_t> sha256(const unsigned char *data, size_t len)
@@ -448,8 +447,14 @@ static void test_getting_started_231()
     auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
 
     // Step 3: Build from inline FHIR JSON, enrich with typed field keys, and seal.
-    Builder builder(mem, FHIR_VERSION_R5);
-    Ingest::Ingestor ingestor;
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena = std::make_shared<Memory>(mem);
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+    FF_IngestorCreateInfo ingestor_info;
+    FF_Ingestor ingestor;
+    REQUIRE(FF_CreateIngestor(ingestor_info, ingestor), "create ingestor");
 
     const std::string json = R"({
         "resourceType": "Patient",
@@ -460,11 +465,13 @@ static void test_getting_started_231()
     })";
 
     Reflective::ObjectHandle patient_handle;
-    size_t parsed_count = 0;
-    auto result = ingestor.ingest(
-        {builder, Ingest::SourceType::FHIR_JSON, json},
-        patient_handle,
-        parsed_count);
+    Size parsed_count = 0;
+    auto result = FF_Ingest(FF_IngestInfo{
+        .ingestor = ingestor,
+        .stream = stream,
+        .source_type = FF_SOURCE_FHIR_JSON,
+        .payload = json,
+    }, patient_handle, parsed_count);
 
     REQUIRE(result.code == FF_SUCCESS, "getting-started ingest failed: " + result.message);
     REQUIRE(parsed_count > 0, "getting-started ingest parsed 0 resources");
@@ -474,8 +481,14 @@ static void test_getting_started_231()
     patient_handle[FastFHIR::Fields::PATIENT::ACTIVE] = true;
     patient_handle[FastFHIR::Fields::PATIENT::BIRTH_DATE] = std::string_view("1990-03-21");
 
-    builder.set_root(patient_handle);
-    auto view = builder.finalize();
+    REQUIRE(FF_StreamSetRoot(FF_StreamSetRootInfo{
+        .stream = stream,
+        .root = patient_handle,
+    }), "set root");
+    Memory::View view;
+    REQUIRE(FF_StreamFinalize(FF_StreamFinalizeInfo{
+        .stream = stream,
+    }, view), "finalize");
     REQUIRE(!view.empty(), "getting-started finalize returned empty view");
 
     // Step 1: Open patient.ffhr read-only, parse bytes, and read fields only if present.
@@ -567,14 +580,23 @@ static void test_10()
     // Re-open the sealed patient.ffhr from previous tests and apply a second
     // surgical mutation without going through JSON — set deceased to false.
     auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
-    Builder builder(mem, FHIR_VERSION_R5);
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena = std::make_shared<Memory>(mem);
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
 
-    auto patient = builder.root_handle();
+    auto patient = stream->root_handle();
     REQUIRE(patient, "root_handle is null — archive must be sealed before second edit");
 
     patient[FastFHIR::Fields::PATIENT::DECEASED] = false;
 
-    builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    Memory::View view;
+    REQUIRE(FF_StreamFinalize(FF_StreamFinalizeInfo{
+        .stream = stream,
+        .algorithm = FF_CHECKSUM_SHA256,
+        .hasher = sha256,
+    }, view), "finalize");
 
     // Re-open and verify the mutation persisted
     auto mem2 = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
@@ -596,14 +618,23 @@ static void test_1(const fs::path &patient_json)
 
     // Map the arena straight to a file — every write goes directly to disk
     auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
-    Builder builder(mem, FHIR_VERSION_R5);
-    Ingest::Ingestor ingestor;
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena = std::make_shared<Memory>(mem);
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+    FF_IngestorCreateInfo ingestor_info;
+    FF_Ingestor ingestor;
+    REQUIRE(FF_CreateIngestor(ingestor_info, ingestor), "create ingestor");
 
     Reflective::ObjectHandle patient_handle;
-    size_t count = 0;
-    auto result = ingestor.ingest(
-        {builder, Ingest::SourceType::FHIR_JSON, json_str},
-        patient_handle, count);
+    Size count = 0;
+    auto result = FF_Ingest(FF_IngestInfo{
+        .ingestor = ingestor,
+        .stream = stream,
+        .source_type = FF_SOURCE_FHIR_JSON,
+        .payload = json_str,
+    }, patient_handle, count);
 
     REQUIRE(result.code == FF_SUCCESS, "ingest failed: " + result.message);
     REQUIRE(count > 0, "ingest parsed 0 resources");
@@ -629,8 +660,16 @@ static void test_1(const fs::path &patient_json)
     REQUIRE(first_name.family == "Landvater", "unexpected family name");
 
     // Seal with a SHA-256 footer — writes header + hash into the mapped pages
-    builder.set_root(patient_handle);
-    auto view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(FF_StreamSetRoot(FF_StreamSetRootInfo{
+        .stream = stream,
+        .root = patient_handle,
+    }), "set root");
+    Memory::View view;
+    REQUIRE(FF_StreamFinalize(FF_StreamFinalizeInfo{
+        .stream = stream,
+        .algorithm = FF_CHECKSUM_SHA256,
+        .hasher = sha256,
+    }, view), "finalize");
     REQUIRE(!view.empty(), "finalize returned empty view");
     std::cout << "  sealed : " << view.size() << " bytes\n";
 }
@@ -688,9 +727,13 @@ static void test_3()
 {
     // Mount the existing archive — stays mapped to the same file
     auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
-    Builder builder(mem, FHIR_VERSION_R5);
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena = std::make_shared<Memory>(mem);
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
 
-    auto patient = builder.root_handle();
+    auto patient = stream->root_handle();
     REQUIRE(patient, "root_handle is null — archive must be sealed before enrichment");
 
     // Amend a string field — appends a new FF_STRING block and patches the pointer slot.
@@ -699,7 +742,12 @@ static void test_3()
     patient[FastFHIR::Fields::PATIENT::BIRTH_DATE] = std::string_view("1990-03-21");
 
     // Re-seal — old data untouched, new tail written
-    builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    Memory::View view;
+    REQUIRE(FF_StreamFinalize(FF_StreamFinalizeInfo{
+        .stream = stream,
+        .algorithm = FF_CHECKSUM_SHA256,
+        .hasher = sha256,
+    }, view), "finalize");
 
     // Re-open and verify the enriched record
     auto mem2 = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
@@ -730,14 +778,23 @@ static void test_4(const fs::path &patient_json)
 
     // Anonymous arena — no file backing
     auto mem = Memory::create(64 * 1024 * 1024);
-    Builder builder(mem, FHIR_VERSION_R5);
-    Ingest::Ingestor ingestor;
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena = std::make_shared<Memory>(mem);
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+    FF_IngestorCreateInfo ingestor_info;
+    FF_Ingestor ingestor;
+    REQUIRE(FF_CreateIngestor(ingestor_info, ingestor), "create ingestor");
 
     Reflective::ObjectHandle patient_handle;
-    size_t count = 0;
-    auto result = ingestor.ingest(
-        {builder, Ingest::SourceType::FHIR_JSON, json_str},
-        patient_handle, count);
+    Size count = 0;
+    auto result = FF_Ingest(FF_IngestInfo{
+        .ingestor = ingestor,
+        .stream = stream,
+        .source_type = FF_SOURCE_FHIR_JSON,
+        .payload = json_str,
+    }, patient_handle, count);
     REQUIRE(result.code == FF_SUCCESS, "ingest failed: " + result.message);
 
     // Enrich in place — amend the birthDate (null after ingest; appends an FF_STRING block)
@@ -745,8 +802,16 @@ static void test_4(const fs::path &patient_json)
 
     // Seal the stream and expose a zero-copy egress view.
     // This is exactly what a network layer would write to a socket.
-    builder.set_root(patient_handle);
-    auto view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(FF_StreamSetRoot(FF_StreamSetRootInfo{
+        .stream = stream,
+        .root = patient_handle,
+    }), "set root");
+    Memory::View view;
+    REQUIRE(FF_StreamFinalize(FF_StreamFinalizeInfo{
+        .stream = stream,
+        .algorithm = FF_CHECKSUM_SHA256,
+        .hasher = sha256,
+    }, view), "finalize");
     REQUIRE(!view.empty(), "finalize returned empty view");
     std::cout << "  sealed view : " << view.size() << " bytes\n";
 
@@ -796,25 +861,46 @@ static void test_5()
 {
     // ── Step A: ingest the bundle ──
     auto mem = Memory::createFromFile(BUNDLE_FFHR, 64 * 1024 * 1024);
-    Builder builder(mem, FHIR_VERSION_R5);
-    Ingest::Ingestor ingestor;
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena = std::make_shared<Memory>(mem);
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+    FF_IngestorCreateInfo ingestor_info;
+    FF_Ingestor ingestor;
+    REQUIRE(FF_CreateIngestor(ingestor_info, ingestor), "create ingestor");
 
     Reflective::ObjectHandle bundle_handle;
-    size_t count = 0;
-    auto result = ingestor.ingest(
-        {builder, Ingest::SourceType::FHIR_JSON, BUNDLE_JSON},
-        bundle_handle, count);
+    Size count = 0;
+    auto result = FF_Ingest(FF_IngestInfo{
+        .ingestor = ingestor,
+        .stream = stream,
+        .source_type = FF_SOURCE_FHIR_JSON,
+        .payload = BUNDLE_JSON,
+    }, bundle_handle, count);
     REQUIRE(result.code == FF_SUCCESS, "bundle ingest failed: " + result.message);
     REQUIRE(count >= 2, "expected at least 2 resources in bundle");
     std::cout << "  bundle ingested : " << count << " resources\n";
 
     // Seal the initial bundle
-    builder.set_root(bundle_handle);
-    builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(FF_StreamSetRoot(FF_StreamSetRootInfo{
+        .stream = stream,
+        .root = bundle_handle,
+    }), "set root");
+    Memory::View sealed_view;
+    REQUIRE(FF_StreamFinalize(FF_StreamFinalizeInfo{
+        .stream = stream,
+        .algorithm = FF_CHECKSUM_SHA256,
+        .hasher = sha256,
+    }, sealed_view), "finalize");
 
     // ── Step B: re-open and find patient-1 ──
     auto mem2 = Memory::createFromFile(BUNDLE_FFHR, 64 * 1024 * 1024);
-    Builder builder2(mem2, FHIR_VERSION_R5);
+    FF_StreamCreateInfo stream_info2;
+    stream_info2.arena = std::make_shared<Memory>(mem2);
+    stream_info2.version = FHIR_VERSION_R5;
+    FF_Stream stream2;
+    REQUIRE(FF_CreateStream(stream_info2, stream2), "create stream (re-open)");
     auto root2 = Parser(mem2).root();
     REQUIRE(root2, "bundle root is null after seal");
 
@@ -838,7 +924,7 @@ static void test_5()
         if (patient_data.id == "patient-1")
         {
             target_patient = Reflective::ObjectHandle(
-                &builder2,
+                stream2.get(),
                 entry.resource.offset,
                 entry.resource.recovery);
             break;
@@ -849,15 +935,23 @@ static void test_5()
 
     // ── Step C: surgically enrich patient-1 only ──
     // Insert telecom via inline-array field ingestion.
-    auto res = ingestor.insert_at_field(
-        target_patient, FastFHIR::Fields::PATIENT::TELECOM,
-        R"({"system":"phone","value":"555-0199","use":"mobile"})");
+    auto res = FF_IngestInsertAtField(FF_IngestInsertInfo{
+        .ingestor = ingestor,
+        .parent = target_patient,
+        .key = FastFHIR::Fields::PATIENT::TELECOM,
+        .payload = R"({"system":"phone","value":"555-0199","use":"mobile"})",
+    });
     REQUIRE(res.code == FF_SUCCESS, "surgical enrich failed: " + res.message);
 
     // ── Step D: reseal — only the header + new tail pages are rewritten ──
-    auto bundle_root = builder2.root_handle();
+    auto bundle_root = stream2->root_handle();
     REQUIRE(bundle_root, "bundle root handle is null after enrichment");
-    builder2.finalize(FF_CHECKSUM_SHA256, sha256);
+    Memory::View resealed;
+    REQUIRE(FF_StreamFinalize(FF_StreamFinalizeInfo{
+        .stream = stream2,
+        .algorithm = FF_CHECKSUM_SHA256,
+        .hasher = sha256,
+    }, resealed), "finalize");
 
     // ── Step E: verify ──
     auto mem3 = Memory::createFromFile(BUNDLE_FFHR, 64 * 1024 * 1024);
@@ -906,14 +1000,18 @@ static void test_6()
     }
 
     auto mem = Memory::create(256 * 1024 * 1024);
-    Builder builder(mem, FHIR_VERSION_R5);
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena = std::make_shared<Memory>(mem);
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
 
     // 1) Parallel append into one shared lock-free arena.
     std::vector<BundleentryData> entries(raw_observations.size());
-    auto to_bundle_entry = [&builder](const ObservationData &obs) -> BundleentryData
+    auto to_bundle_entry = [stream](const ObservationData &obs) -> BundleentryData
     {
         BundleentryData entry{};
-        entry.resource = static_cast<ResourceReference>(builder.append_obj(obs));
+        entry.resource = static_cast<ResourceReference>(FF_StreamAppendObject(stream, obs));
         return entry;
     };
 
@@ -937,8 +1035,16 @@ static void test_6()
     bundle.type = FF_BundleType::Collection;
     bundle.entry = std::move(entries);
 
-    builder.set_root(builder.append_obj(bundle));
-    auto view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(FF_StreamSetRoot(FF_StreamSetRootInfo{
+        .stream = stream,
+        .root = FF_StreamAppendObject(stream, bundle),
+    }), "set root");
+    Memory::View view;
+    REQUIRE(FF_StreamFinalize(FF_StreamFinalizeInfo{
+        .stream = stream,
+        .algorithm = FF_CHECKSUM_SHA256,
+        .hasher = sha256,
+    }, view), "finalize");
     REQUIRE(!view.empty(), "parallel bundle finalize returned empty view");
 
     Parser parser(view.data(), view.size());
@@ -979,11 +1085,19 @@ static void test_7()
     auto src_mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
     Parser src_parser(src_mem);
 
-    auto compact_mem = Memory::createFromFile(PATIENT_COMPACT_FFHR, 64 * 1024 * 1024);
-    auto compact_view = Compactor::archive(src_parser, compact_mem);
+    Memory::View compact_view;
+    REQUIRE(FF_Compact(FF_CompactInfo{
+        .source = src_parser,
+    }, compact_view), "compact");
     REQUIRE(!compact_view.empty(), "compact archive view is empty");
 
-    Parser compact_parser(compact_mem);
+    // Persist the golden compact fixture (FF_Compact allocates its own arena).
+    std::FILE* golden = std::fopen(PATIENT_COMPACT_FFHR.string().c_str(), "wb");
+    REQUIRE(golden != nullptr, "fopen(PATIENT_COMPACT_FFHR, wb) failed");
+    std::fwrite(compact_view.data(), 1, compact_view.size(), golden);
+    std::fclose(golden);
+
+    Parser compact_parser(compact_view.data(), compact_view.size());
     auto root = compact_parser.root();
     REQUIRE(root, "compact root is null");
 
@@ -1054,19 +1168,36 @@ static void test_8()
 static void test_9()
 {
     auto mem = Memory::createFromFile(BUNDLE_COMPLEX_FFHR, 64 * 1024 * 1024);
-    Builder builder(mem, FHIR_VERSION_R5);
-    Ingest::Ingestor ingestor;
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena = std::make_shared<Memory>(mem);
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+    FF_IngestorCreateInfo ingestor_info;
+    FF_Ingestor ingestor;
+    REQUIRE(FF_CreateIngestor(ingestor_info, ingestor), "create ingestor");
 
     Reflective::ObjectHandle bundle_handle;
-    size_t count = 0;
-    auto result = ingestor.ingest(
-        {builder, Ingest::SourceType::FHIR_JSON, BUNDLE_COMPLEX_JSON},
-        bundle_handle, count);
+    Size count = 0;
+    auto result = FF_Ingest(FF_IngestInfo{
+        .ingestor = ingestor,
+        .stream = stream,
+        .source_type = FF_SOURCE_FHIR_JSON,
+        .payload = BUNDLE_COMPLEX_JSON,
+    }, bundle_handle, count);
     REQUIRE(result.code == FF_SUCCESS, "complex bundle ingest failed: " + result.message);
     REQUIRE(bundle_handle, "complex bundle handle is null");
 
-    builder.set_root(bundle_handle);
-    auto source_view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(FF_StreamSetRoot(FF_StreamSetRootInfo{
+        .stream = stream,
+        .root = bundle_handle,
+    }), "set root");
+    Memory::View source_view;
+    REQUIRE(FF_StreamFinalize(FF_StreamFinalizeInfo{
+        .stream = stream,
+        .algorithm = FF_CHECKSUM_SHA256,
+        .hasher = sha256,
+    }, source_view), "finalize");
     REQUIRE(!source_view.empty(), "complex bundle finalize returned empty view");
 
     Parser source_parser(mem);
@@ -1107,11 +1238,19 @@ static void test_9()
     }
     REQUIRE(found_observation_source, "source complex bundle observation not found");
 
-    auto compact_mem = Memory::createFromFile(BUNDLE_COMPLEX_COMPACT_FFHR, 64 * 1024 * 1024);
-    auto compact_view = Compactor::archive(source_parser, compact_mem);
+    Memory::View compact_view;
+    REQUIRE(FF_Compact(FF_CompactInfo{
+        .source = source_parser,
+    }, compact_view), "compact");
     REQUIRE(!compact_view.empty(), "complex compact archive view is empty");
 
-    Parser compact_parser(compact_mem);
+    // Persist the golden compact fixture (FF_Compact allocates its own arena).
+    std::FILE* golden = std::fopen(BUNDLE_COMPLEX_COMPACT_FFHR.string().c_str(), "wb");
+    REQUIRE(golden != nullptr, "fopen(BUNDLE_COMPLEX_COMPACT_FFHR, wb) failed");
+    std::fwrite(compact_view.data(), 1, compact_view.size(), golden);
+    std::fclose(golden);
+
+    Parser compact_parser(compact_view.data(), compact_view.size());
     auto compact_root = compact_parser.root();
     REQUIRE(compact_root, "complex compact root is null");
 
@@ -1167,21 +1306,38 @@ static void test_11()
         "http://hl7.org/fhir/StructureDefinition/data-absent-reason";
 
     auto mem = Memory::create(64 * 1024 * 1024);
-    Builder builder(mem, FHIR_VERSION_R5);
-    Ingest::Ingestor ingestor;
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena = std::make_shared<Memory>(mem);
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+    FF_IngestorCreateInfo ingestor_info;
+    FF_Ingestor ingestor;
+    REQUIRE(FF_CreateIngestor(ingestor_info, ingestor), "create ingestor");
 
     Reflective::ObjectHandle bundle_handle;
-    size_t count = 0;
-    auto result = ingestor.ingest(
-        {builder, Ingest::SourceType::FHIR_JSON, BUNDLE_EXTENSION_URLS_JSON},
-        bundle_handle, count);
+    Size count = 0;
+    auto result = FF_Ingest(FF_IngestInfo{
+        .ingestor = ingestor,
+        .stream = stream,
+        .source_type = FF_SOURCE_FHIR_JSON,
+        .payload = BUNDLE_EXTENSION_URLS_JSON,
+    }, bundle_handle, count);
 
     REQUIRE(result.code == FF_SUCCESS, "extension bundle ingest failed: " + result.message);
     REQUIRE(bundle_handle, "extension bundle handle is null");
     REQUIRE(count >= 2, "expected at least two resources in extension bundle");
 
-    builder.set_root(bundle_handle);
-    auto view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(FF_StreamSetRoot(FF_StreamSetRootInfo{
+        .stream = stream,
+        .root = bundle_handle,
+    }), "set root");
+    Memory::View view;
+    REQUIRE(FF_StreamFinalize(FF_StreamFinalizeInfo{
+        .stream = stream,
+        .algorithm = FF_CHECKSUM_SHA256,
+        .hasher = sha256,
+    }, view), "finalize");
     REQUIRE(!view.empty(), "extension bundle finalize returned empty view");
 
     Parser parser(mem);
@@ -1260,22 +1416,39 @@ static void test_synthea_bundle()
     const std::string json_str = slurp(synthea_json);
     // Synthea bundles can be large (>10 MB of FHIR JSON); 256 MB arena is ample.
     auto mem = Memory::create(256 * 1024 * 1024);
-    Builder builder(mem, FHIR_VERSION_R5);
-    Ingest::Ingestor ingestor;
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena = std::make_shared<Memory>(mem);
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+    FF_IngestorCreateInfo ingestor_info;
+    FF_Ingestor ingestor;
+    REQUIRE(FF_CreateIngestor(ingestor_info, ingestor), "create ingestor");
 
     Reflective::ObjectHandle root_handle;
-    size_t count = 0;
-    auto result = ingestor.ingest(
-        {builder, Ingest::SourceType::FHIR_JSON, json_str},
-        root_handle, count);
+    Size count = 0;
+    auto result = FF_Ingest(FF_IngestInfo{
+        .ingestor = ingestor,
+        .stream = stream,
+        .source_type = FF_SOURCE_FHIR_JSON,
+        .payload = json_str,
+    }, root_handle, count);
     REQUIRE(result.code == FF_SUCCESS, "Synthea ingest failed: " + result.message);
     REQUIRE(root_handle, "root handle is null after Synthea ingest");
     REQUIRE(count > 1, "expected multiple resources in Synthea bundle");
     std::cout << "  ingested resources : " << count << "\n";
 
     // Seal and round-trip through the parser.
-    builder.set_root(root_handle);
-    auto view = builder.finalize(FF_CHECKSUM_SHA256, sha256);
+    REQUIRE(FF_StreamSetRoot(FF_StreamSetRootInfo{
+        .stream = stream,
+        .root = root_handle,
+    }), "set root");
+    Memory::View view;
+    REQUIRE(FF_StreamFinalize(FF_StreamFinalizeInfo{
+        .stream = stream,
+        .algorithm = FF_CHECKSUM_SHA256,
+        .hasher = sha256,
+    }, view), "finalize");
     REQUIRE(!view.empty(), "finalize returned empty view");
     std::cout << "  sealed bytes       : " << view.size() << "\n";
 

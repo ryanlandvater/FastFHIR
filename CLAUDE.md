@@ -202,9 +202,13 @@ it there (see its README, "the Debug trap").
   instant** — `"2024"` must not round-trip as `"2024-01-01T00:00:00Z"`, `date` has no
   timezone, `time` has no date, and `:60` is a legal leap second. One layout, four tags
   (`RECOVER_FF_DATE`/`DATETIME`/`TIME`/`INSTANT`) — the tag names the FHIR type, the
-  precision field says how much is populated. Primitives are implemented and tested
-  (`ff_test_datetime`); the generator still routes these types through `STRING_TYPES`
-  until TASKS.md DT-2. Full layout: architecture.md §6.3.
+  precision field says how much is populated, and the single `FF_FIELD_DATETIME` kind
+  says only "inline 8 bytes". `Recovery_to_Kind` maps all four tags onto that kind;
+  `Kind_to_Recovery` deliberately maps it back to **nothing**, because one kind naming
+  four tags is not a function and a guess there exports a `date` as `valueDateTime`.
+  Primitives, the kind, and the tests are in (`ff_test_datetime`); the generator still
+  routes these types through `STRING_TYPES`, so nothing emits the kind yet — DT-1.5
+  (validator) must land before DT-2 (generator). Full layout: architecture.md §6.3.
 - **Extensions** — per-extension `EXT_REF` word routes to a registered WASM codec module
   (MSB=1), a retained URL in `FF_URL_DIRECTORY` (MSB=0), or suppression (`0xFFFFFFFF`).
 - **Compactor** — post-finalize rewrite of a sealed stream into a presence-bitmask compact

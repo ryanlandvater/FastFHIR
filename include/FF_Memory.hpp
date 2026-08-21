@@ -186,9 +186,14 @@ namespace FastFHIR
              */
             bool empty() const noexcept;
 
+            /** @brief Null view; required for FF_* out-parameter patterns. */
+            View() = default;
+
         private:
             friend class Memory;
-            const std::shared_ptr<FF_Memory_t> m_vma_ref;
+            // Non-const so View stays copy-assignable (FF_* out-parameter
+            // pattern, e.g. FF_StreamFinalize(..., Memory::View& out)).
+            std::shared_ptr<FF_Memory_t> m_vma_ref = nullptr;
             explicit View(std::shared_ptr<FF_Memory_t> vma_ref) : m_vma_ref(std::move(vma_ref)) {}
         };
 
@@ -341,10 +346,11 @@ namespace FastFHIR
     }
     inline const char *Memory::View::data() const noexcept
     {
-        return reinterpret_cast<const char *>(m_vma_ref->m_base);
+        return m_vma_ref ? reinterpret_cast<const char *>(m_vma_ref->m_base) : nullptr;
     }
     inline size_t Memory::View::size() const noexcept
     {
+        if (!m_vma_ref) return 0;
         return std::atomic_ref<uint64_t>(*m_vma_ref->m_head_ptr).load(std::memory_order_acquire) & OFFSET_MASK;
     }
     inline Memory::View::operator std::string_view() const noexcept

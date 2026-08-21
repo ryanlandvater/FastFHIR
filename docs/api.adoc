@@ -1,0 +1,264 @@
+= FastFHIR — External API Reference
+
+:toc: macro
+:source-highlighter: highlight.js
+
+This document is the reference for the FastFHIR *external* C++ API — the `FF_*`
+surface declared in `include/FastFHIR.hpp`. Every entry point below is a
+free function that returns an `FF_Result` (or a lightweight value), is `noexcept`,
+and — except for the one templated append — takes a single `const FF_XxxInfo&`
+argument so the surface can grow by adding struct fields instead of changing
+signatures.
+
+> **Source of truth.** `include/FastFHIR.hpp` is the canonical declaration of
+> everything on this page. Keeping the two in sync by hand is tracked in
+> TASKS.md (WO — "API asciidoc generation"); the goal is to generate this
+> document from the header so it can never drift.
+
+toc::[]
+
+== Design conventions
+
+The surface follows the Iris/Vulkan shape:
+
+* **Handles** are shared-ownership value types: `FF_Memory`, `FF_Stream`,
+  `FF_Ingestor`. Copy them freely; they all refer to one underlying object.
+* **Create/lifecycle functions** follow the Vulkan pattern: an Info struct in,
+  a `T& out` parameter, an `FF_Result` out. Errors never throw — the
+  implementation catches everything below this boundary.
+* **Read/query returns** (`Parser`, `Memory::View`) are cheap value types.
+  `Parser` is deliberately *not* a handle: it is a zero-copy, copyable value
+  over a buffer, returned by value from `FF_Parse`.
+* **The mutation path is unchanged**: once an object is appended, fields are
+  written with the reflective handle (`handle["field"] = value`), exactly as
+  before.
+
+== Version
+
+```cpp
+struct FF_Version { uint32_t major, minor, build; };
+FF_Version FF_GetVersion() noexcept;
+```
+
+`FF_GetVersion()` is header-inline and resolves the compile-time
+`FASTFHIR_VERSION_*` macros.
+
+== Handles
+
+```cpp
+using FF_Memory   = std::shared_ptr<Memory>;      // virtual memory arena
+using FF_Stream   = std::shared_ptr<Builder>;     // buildable FastFHIR stream
+class FF_Ingestor_t;                              // opaque; hides simdjson
+using FF_Ingestor = std::shared_ptr<FF_Ingestor_t>; // concurrent ingestion engine
+```
+
+`FF_Ingestor_t` is deliberately opaque in the installed header — its definition
+lives in the internal `FF_Ingestor.hpp` so consumers never see simdjson/WAMR.
+
+```mermaid
+classDiagram
+    class FF_Memory { }
+    class FF_Stream { }
+    class FF_Ingestor { }
+    class Memory { }
+    class Builder { }
+    class FF_Ingestor_t { }
+    FF_Memory --> Memory : shared_ptr
+    FF_Stream --> Builder : shared_ptr
+    FF_Ingestor --> FF_Ingestor_t : shared_ptr (opaque)
+    class FF_Result { }
+    class FF_StreamCreateInfo { }
+    class FF_ParseInfo { }
+    class FF_IngestInfo { }
+    FF_StreamCreateInfo --> FF_Memory : arena (optional)
+    FF_IngestInfo --> FF_Stream : stream
+    FF_IngestInfo --> FF_Ingestor : ingestor
+```
+
+== Result type
+
+```cpp
+enum FF_Result_Code : uint32_t { FF_SUCCESS, FF_FAILURE, FF_VALIDATION_FAILURE, FF_WARNING };
+struct FF_Result { FF_Result_Code code; std::string message; /* bool-convertible */ };
+```
+
+Every `FF_*` function returns `FF_SUCCESS` on success. Input errors (null
+handles, mutually exclusive fields) return `FF_VALIDATION_FAILURE`; engine
+failures return `FF_FAILURE` with a descriptive `message`. `FF_Result`
+converts to `bool` (`true` == success).
+
+== Callback
+
+```cpp
+using FF_HashCallback = std::function<std::vector<BYTE>(const unsigned char* byte_start, Size bytes_to_hash)>;
+```
+
+Optional checksum callback used by `FF_StreamFinalize` and `FF_Compact`.
+Required when the chosen algorithm is not `FF_CHECKSUM_NONE`.
+
+== Memory (arena) API
+
+```cpp
+struct FF_MemoryCreateInfo {
+    Size        capacity = 4 GiB;   // sparse virtual reservation
+    const char* shm_name = nullptr; // cross-process SHM name; null = anonymous RAM
+    const char* filepath = nullptr; // file-backed arena; exclusive with shm_name
+};
+
+FF_Result FF_CreateMemory(const FF_MemoryCreateInfo& info, FF_Memory& out_memory) noexcept;
+FF_Result FF_MemoryReset(const FF_Memory& memory, Size committed_size) noexcept;
+Size      FF_MemorySize(const FF_Memory& memory) noexcept;
+Size      FF_MemoryCapacity(const FF_Memory& memory) noexcept;
+```
+
+* `FF_MemoryReset` with `committed_size = 0` before streaming raw serialized
+  bytes into the arena so the first byte lands at offset 0.
+* Raw-arena access (network `StreamHead`, `claim_space`) remains available
+  through the underlying `Memory` value type.
+
+== Stream API
+
+```cpp
+struct FF_StreamCreateInfo {
+    Size        capacity = 4 GiB;   // sparse virtual reservation
+    FHIR_VERSION version  = FHIR_VERSION_R5;
+    FF_Memory   arena    = nullptr; // existing arena to build into; exclusive with filepath/shm_name
+    const char* filepath = nullptr; // file-backed arena; exclusive with arena/shm_name
+    const char* shm_name = nullptr; // cross-process SHM arena; exclusive with arena/filepath
+};
+
+FF_Result FF_CreateStream(const FF_StreamCreateInfo& info, FF_Stream& out_stream) noexcept;
+
+template <typename T_Data>
+Reflective::ObjectHandle FF_StreamAppendObject(FF_Stream stream, const T_Data& data) noexcept;
+
+struct FF_StreamSetRootInfo {
+    FF_Stream               stream = nullptr;
+    Reflective::ObjectHandle root;   // handle returned by FF_StreamAppendObject
+};
+
+FF_Result FF_StreamSetRoot(const FF_StreamSetRootInfo& info) noexcept;
+
+struct FF_StreamFinalizeInfo {
+    FF_Stream             stream    = nullptr;
+    FF_Checksum_Algorithm algorithm = FF_CHECKSUM_NONE;
+    FF_HashCallback       hasher    = nullptr;  // required when algorithm != NONE
+};
+
+FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo& info, Memory::View& out_view) noexcept;
+
+struct FF_StreamQueryInfo { FF_Stream stream = nullptr; };
+FF_Result FF_StreamQuery(const FF_StreamQueryInfo& info, Parser& out_parser) noexcept;
+```
+
+`FF_StreamAppendObject` is the one two-argument entry point: the payload is a
+template parameter, so it cannot live in an Info struct without forcing a copy.
+It returns a valid `ObjectHandle`, or a **null handle on failure** (never
+throws). Once you have the handle, mutate fields with the reflective path:
+
+```cpp
+auto root = FastFHIR::FF_StreamAppendObject(stream, obs);
+root["status"] = "final";                       // MutableEntry operator=
+root[FastFHIR::Fields::PATIENT::ACTIVE] = true; // typed field key
+```
+
+== Parse API
+
+```cpp
+struct FF_ParseInfo {
+    const void* buffer = nullptr; // first byte of a sealed FastFHIR stream
+    Size        size   = 0;       // total bytes available at buffer
+};
+
+FF_Result FF_Parse(const FF_ParseInfo& info, Parser& out_parser) noexcept;
+```
+
+`Parser` is a cheap value type; `FF_Parse` validates the header and root
+offset only (see `FF_Parser.hpp` for the trust model). `out_parser` is invalid
+(`bool` false) on failure.
+
+== Compact API
+
+```cpp
+struct FF_CompactInfo {
+    Parser                source;    // parsed stream to archive
+    FF_Checksum_Algorithm algorithm = FF_CHECKSUM_NONE;
+    FF_HashCallback       hasher    = nullptr;
+};
+
+FF_Result FF_Compact(const FF_CompactInfo& info, Memory::View& out_view) noexcept;
+```
+
+The compact archive is written into a fresh arena sized from the source (a
+compact archive is always <= the source size). The source stream is never
+modified.
+
+== Ingest API
+
+```cpp
+enum FF_SourceType : uint8_t { FF_SOURCE_FHIR_JSON, FF_SOURCE_HL7_V2, FF_SOURCE_HL7_V3 };
+
+struct FF_IngestorCreateInfo {
+    Size     logger_capacity = 64 MiB; // lock-free warning buffer bytes
+    uint32_t concurrency     = 0;      // worker threads; 0 = hardware concurrency
+};
+
+FF_Result FF_CreateIngestor(const FF_IngestorCreateInfo& info, FF_Ingestor& out_ingestor) noexcept;
+
+struct FF_IngestInfo {
+    FF_Ingestor           ingestor  = nullptr;
+    FF_Stream             stream    = nullptr;  // destination stream
+    FF_SourceType         source_type = FF_SOURCE_FHIR_JSON;
+    const std::string_view payload;             // raw source document — never modified
+    Size                  payload_capacity = 0; // allocated bytes incl. simdjson slack; 0 = safe copy
+};
+
+FF_Result FF_Ingest(const FF_IngestInfo& info,
+                    Reflective::ObjectHandle& out_root,
+                    Size& out_parsed_count) noexcept;
+
+struct FF_IngestInsertInfo {
+    FF_Ingestor              ingestor    = nullptr;
+    Reflective::ObjectHandle parent;      // object being amended
+    FF_FieldKey              key;         // target field within parent
+    const std::string_view   payload;     // raw source document — never modified
+    FF_SourceType            source_type = FF_SOURCE_FHIR_JSON;
+};
+
+FF_Result FF_IngestInsertAtField(const FF_IngestInsertInfo& info) noexcept;
+```
+
+* `payload` is a `const` view: the ingestor can never modify the caller's
+  source bytes.
+* Set `payload_capacity` to the real allocated size of your buffer (including
+  `simdjson::SIMDJSON_PADDING` slack) to parse **in place with no copy**;
+  leave 0 for a safe padded copy.
+* `FF_Ingest` returns the inserted root as `out_root` and the number of
+  top-level resources parsed as `out_parsed_count`.
+
+== Lifecycle overview
+
+```mermaid
+flowchart LR
+    A[FF_CreateMemory] --> B[FF_CreateStream]
+    C[FF_IngestorCreateInfo] --> D[FF_Ingest]
+    B --> D
+    D --> E[FF_StreamAppendObject + handle path]
+    E --> F[FF_StreamSetRoot]
+    F --> G[FF_StreamFinalize]
+    G --> H[FF_Parse]
+    H --> I[read path: Node / Entry / print_json]
+    H --> J[FF_Compact]
+```
+
+== What is intentionally *not* part of this surface
+
+* **`Builder::set_root` / `finalize` / `query`** — private; reachable only
+  through the FF_* functions above.
+* **Raw append variants** — removed (`append(offsets, tag)` remains as the
+  implementation behind `MutableEntry::operator=(vector<Offset>)`).
+* **`Compactor::archive`** — internal; external callers use `FF_Compact`.
+* **`Ingest::Ingestor` / `IngestRequest`** — internal; external callers use
+  the FF_Ingest surface.
+* **`FF_Queue`, `FF_SIMD`, `FF_Extensions`, `FF_Ops`** — internal helpers, not
+  installed.

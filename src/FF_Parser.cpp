@@ -348,6 +348,7 @@ static inline bool slot_carries_offset(FF_FieldKind k) {
         case FF_FIELD_RESOURCE:
         case FF_FIELD_CHOICE:
         case FF_FIELD_CODE:      // only when FF_CODEABLE_CONCEPT_FLAG is set
+        case FF_FIELD_DATETIME:  // only when FF_DATETIME_FALLBACK_FLAG is set
             return true;
         default:
             return false;
@@ -416,7 +417,54 @@ struct DeepValidator {
               FF_Result& out);
     bool walk_array(Offset off, RECOVERY_TAG array_tag, std::size_t depth, FF_Result& out);
     bool walk_fields(Offset off, RECOVERY_TAG tag, std::size_t depth, FF_Result& out);
+
+    // The two MSB-discriminated value types, factored out because each is
+    // reachable through TWO slot shapes: its own dedicated V-Table slot, and a
+    // choice ([x]) slot whose active variant happens to be that type. Writing
+    // the check twice would mean a fix to one shape silently missing the other,
+    // which is exactly how the choice path came to be unvalidated in the first
+    // place. `block` is the containing block: the fallback offset is signed and
+    // relative to it in both shapes, which is the convention ENCODE_FF_CODE,
+    // the compactor and Entry all use.
+    bool check_code_value(Offset block, uint32_t raw, std::size_t depth, const char* via,
+                          FF_Result& out);
+    bool check_datetime_value(Offset block, uint64_t raw, std::size_t depth, const char* via,
+                              FF_Result& out);
 };
+
+bool DeepValidator::check_code_value(Offset block, uint32_t raw, std::size_t depth,
+                                     const char* via, FF_Result& out) {
+    if (raw == FF_CODE_NULL) return true;
+    if ((raw & FF_CODEABLE_CONCEPT_FLAG) == 0) {
+        // Plain dictionary id: structurally inert, so only _deep() checks that
+        // it actually resolves to a code.
+        const char* resolved = FF_ResolveCode(raw, version);
+        if (check_scalars && (resolved == nullptr || *resolved == 0)) {
+            return fail(out, "code slot '" + std::string(via) + "' holds dictionary id " +
+                        std::to_string(raw) + ", which resolves to nothing");
+        }
+        return true;
+    }
+    const int32_t rel = static_cast<int32_t>(raw << 1) >> 1;
+    const Offset cc = block + static_cast<Offset>(static_cast<int64_t>(rel));
+    return walk(cc, RECOVER_FF_CODEABLE_CONCEPT, depth + 1, via, out);
+}
+
+bool DeepValidator::check_datetime_value(Offset block, uint64_t raw, std::size_t depth,
+                                         const char* via, FF_Result& out) {
+    if (raw == FF_DATETIME_NULL) return true;
+    if (!FF_DATETIME_IS_FALLBACK(raw)) {
+        // Packed value: inline bytes inside a V-Table this walk has already
+        // bounds-checked, so it cannot aim the reader anywhere. Only _deep()
+        // looks, and only to reject a value no writer of ours would emit.
+        if (check_scalars && !ff_datetime_fits(FF_UNPACK_DATETIME(raw))) {
+            return fail(out, "date/time slot '" + std::string(via) +
+                        "' holds a packed value outside the legal ranges");
+        }
+        return true;
+    }
+    return walk(FF_ResolveDateTimeOffset(raw, block), RECOVER_FF_STRING, depth + 1, via, out);
+}
 
 bool DeepValidator::walk(Offset off, RECOVERY_TAG expected, std::size_t depth,
                               const char* via, FF_Result& out) {
@@ -441,8 +489,17 @@ bool DeepValidator::walk(Offset off, RECOVERY_TAG expected, std::size_t depth,
         return fail(out, "cycle in the stored graph at offset " + std::to_string(off) +
                     " (via " + via + "); a block references one of its own ancestors");
     }
-    if (seen(off)) return true;
-
+    // THE TAG CHECK RUNS PER EDGE, NOT PER BLOCK, so it must sit ABOVE the
+    // visited short-circuit. `done` memoises "this block and its subtree are
+    // structurally sound", which is a property of the block; "the referring
+    // slot said this would be a Foo" is a property of the EDGE, and a block can
+    // be reached by many edges. With `seen()` first, only the first edge to a
+    // block was type-checked and every later one was waved through -- so a
+    // crafted stream could aim a code slot (or any typed slot) at any block the
+    // walk had already passed, and the reader would then decode an Identifier
+    // as a CodeableConcept. Bounds were never at risk, but type confusion was.
+    // Found by the DT-1.5 flagged-offset test; the contract in the header
+    // always claimed this check was per edge.
     const Offset stored = LOAD_U64(base + off + DATA_BLOCK::VALIDATION);
     if (stored != off) {
         return fail(out, "block at offset " + std::to_string(off) + " (via " + via +
@@ -456,6 +513,10 @@ bool DeepValidator::walk(Offset off, RECOVERY_TAG expected, std::size_t depth,
                     ") has recovery tag " + std::to_string(actual) + ", expected " +
                     std::to_string(expected));
     }
+
+    // Only now is the memo safe: the subtree below is unchanged since it was
+    // proven, so re-walking it would re-derive the same answer.
+    if (seen(off)) return true;
 
     path.push_back(off);
     bool r = true;
@@ -561,35 +622,40 @@ bool DeepValidator::walk_fields(Offset off, RECOVERY_TAG tag,
             }
             case FF_FIELD_CHOICE: {
                 // 8 raw bytes + 2-byte tag. For a scalar variant the raw bytes
-                // ARE the value, so there is no offset to follow.
+                // ARE the value -- EXCEPT for the two MSB-discriminated types,
+                // where the same bytes may instead be a fallback offset. Band
+                // membership alone is therefore not enough to call a variant
+                // inert: `FF_IsScalarBlockTag(tgt) -> break` used to skip a
+                // flagged code here, leaving an attacker-controlled offset that
+                // the export path then dereferenced.
                 const auto tgt = static_cast<RECOVERY_TAG>(
                     LOAD_U16(base + slot + DATA_BLOCK::RECOVERY));
-                if (tgt == FF_RECOVER_UNDEFINED || FF_IsScalarBlockTag(tgt)) break;
-                if (!walk(LOAD_U64(base + slot), tgt, depth + 1, f.name, out)) return false;
-                break;
-            }
-            case FF_FIELD_CODE: {
-                // MSB set => signed relative offset to an FF_CODEABLE_CONCEPT.
-                const uint32_t raw = LOAD_U32(base + slot);
-                if (raw == FF_CODE_NULL) break;
-                if ((raw & FF_CODEABLE_CONCEPT_FLAG) == 0) {
-                    // Plain dictionary id: structurally inert, so only _deep()
-                    // checks that it actually resolves to a code.
-                    const char* resolved = FF_ResolveCode(raw, version);
-                    if (check_scalars && (resolved == nullptr || *resolved == 0)) {
-                        return fail(out, "code slot '" + std::string(f.name) +
-                                    "' at offset " + std::to_string(slot) +
-                                    " holds dictionary id " + std::to_string(raw) +
-                                    ", which resolves to nothing");
+                if (tgt == FF_RECOVER_UNDEFINED) break;
+                if (FF_IsScalarBlockTag(tgt)) {
+                    if (tgt == RECOVER_FF_CODE) {
+                        // The code occupies the low 4 bytes of the 8 raw ones.
+                        if (!check_code_value(off, LOAD_U32(base + slot), depth, f.name, out))
+                            return false;
+                    } else if (Recovery_to_Kind(tgt) == FF_FIELD_DATETIME) {
+                        if (!check_datetime_value(off, LOAD_U64(base + slot), depth, f.name, out))
+                            return false;
                     }
                     break;
                 }
-                const int32_t rel = static_cast<int32_t>(raw << 1) >> 1;
-                const Offset cc = off + static_cast<Offset>(static_cast<int64_t>(rel));
-                if (!walk(cc, RECOVER_FF_CODEABLE_CONCEPT, depth + 1, f.name, out))
-                    return false;
+                if (!walk(LOAD_U64(base + slot), tgt, depth + 1, f.name, out)) return false;
                 break;
             }
+            case FF_FIELD_CODE:
+                // MSB set => signed relative offset to an FF_CODEABLE_CONCEPT.
+                if (!check_code_value(off, LOAD_U32(base + slot), depth, f.name, out))
+                    return false;
+                break;
+            case FF_FIELD_DATETIME:
+                // The same shape one width up: MSB set => signed relative
+                // offset, this time to an FF_STRING holding the original text.
+                if (!check_datetime_value(off, LOAD_U64(base + slot), depth, f.name, out))
+                    return false;
+                break;
             case FF_FIELD_BOOL:
                 // Structurally inert, so only the _deep() pass looks. A bool
                 // outside {0,1} is not an attack -- the byte is inside a

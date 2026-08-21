@@ -66,7 +66,10 @@ struct Entry;
  */
 class Parser {
     friend class Builder;
-    const Memory m_memory;
+    // Non-const so Parser stays copy-assignable (FF_* out-parameter pattern).
+    // The handle is never rebound after construction; the const-ness was
+    // stylistic and blocked Parser& out params.
+    Memory m_memory;
     const BYTE*     m_base = nullptr;
     Size            m_size = 0;
     uint32_t        m_version = 0;         // FHIR revision extracted from FF_HEADER::FHIR_REV
@@ -79,6 +82,12 @@ class Parser {
     Offset          m_module_reg_offset = FF_NULL_OFFSET; // FF_NULL_OFFSET if absent
 
 public:
+    /** @brief Null/invalid parser; required for FF_* out-parameter patterns. */
+    Parser() = default;
+
+    /** @brief Total bytes of the parsed buffer. */
+    Size size() const noexcept { return m_size; }
+
     /**
     * @brief Create a parser from a raw in-memory byte buffer.
     * @param buffer Pointer to the beginning of a FastFHIR file in memory.
@@ -109,6 +118,16 @@ public:
      * bounds, that the block's `VALIDATION` word equals its own offset, and
      * that its `RECOVERY` tag is what the referring slot said it would be.
      * Cycles and excessive nesting are rejected rather than followed.
+     *
+     * "Every reachable offset" means every EDGE, not every block: a block
+     * reached by several slots is type-checked once per slot, because the
+     * expected tag belongs to the referring slot rather than to the target.
+     * Only the subtree walk below a block is memoised.
+     *
+     * A slot whose MSB flags a fallback offset — `FF_FIELD_CODE` with
+     * `FF_CODEABLE_CONCEPT_FLAG`, `FF_FIELD_DATETIME` with
+     * `FF_DATETIME_FALLBACK_FLAG` — is an edge and is walked like any other.
+     * Only genuinely inline slots are skipped.
      *
      * @return `FF_SUCCESS`, or a failure whose message names the offending
      *         offset and the field it was reached through.
