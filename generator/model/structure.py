@@ -231,6 +231,11 @@ def _field_kind_expr(f: dict) -> str:
         return "FF_FIELD_BLOCK"
     if f["fhir_type"] == "code":
         return "FF_FIELD_CODE"
+    if f.get("url_idx"):
+        # A 4-byte FF_URL_DIRECTORY ref (Extension.url, Bundle.entry.fullUrl):
+        # the reader reconstructs the URL text via get_url(). Distinct from
+        # CODE so the read path resolves it, never prints the raw index.
+        return "FF_FIELD_URL"
     if f["fhir_type"] == "boolean":
         return "FF_FIELD_BOOL"
     if f.get("data_type") == "double":

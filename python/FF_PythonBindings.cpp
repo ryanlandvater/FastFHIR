@@ -195,6 +195,16 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
             }
             return py::str(node.as<std::string_view>());
         }
+        case FF_FIELD_URL: {
+            const Offset abs_off = entry.absolute_offset();
+            const uint32_t ref = LOAD_U32(entry.base + abs_off);
+            if (ref == FF_NULL_UINT32) return py::none();
+            // Reconstruct the URL text from the stream's FF_URL_DIRECTORY.
+            const Offset dir_off = LOAD_U64(entry.base + FF_HEADER::URL_DIR_OFFSET);
+            if (dir_off == FF_NULL_OFFSET || dir_off >= arena_size) return py::none();
+            std::string url = FF_URL_DIRECTORY(dir_off, arena_size, version).get_url(entry.base, ref);
+            return py::str(url);
+        }
         case FF_FIELD_DATETIME: {
             // DT-2: packed values format canonically; a flagged fallback
             // returns the ORIGINAL text byte-exact.

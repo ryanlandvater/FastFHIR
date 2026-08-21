@@ -40,6 +40,30 @@ _STRING_LIKE_TYPES: frozenset = frozenset(
     }
 )
 
+# How each scalar primitive is pulled out of simdjson: the accessor, the type of
+# the staging local, and the expression stored into the POD member.
+#
+# ONE table for both the 0..1 and the 0..* emitters, which previously carried
+# separate three-arm if/elif chains ending in a `get_uint64()` catch-all. That
+# catch-all silently swallowed `decimal`: every Quantity.value, Timing.repeat.*
+# and Attachment.duration in a bundle hit get_uint64() on a fractional literal,
+# failed INCORRECT_TYPE, and left the slot at its null sentinel -- 302 warnings
+# and 302 dropped values on a single Synthea fixture, because a catch-all cannot
+# tell "type I planned for" from "type nobody wired up".
+#
+# Keyed on SCALAR_PRIMITIVE_TYPES exactly: a type added there without an entry
+# here raises KeyError at generate time instead of quietly emitting the wrong
+# accessor again.
+_SCALAR_INGEST: dict[str, tuple[str, str, str]] = {
+    # fhir_type: (simdjson accessor, staging type, expression stored)
+    "boolean": ("get_bool", "bool", "v"),
+    "integer": ("get_uint64", "uint64_t", "static_cast<uint32_t>(v)"),
+    "unsignedInt": ("get_uint64", "uint64_t", "static_cast<uint32_t>(v)"),
+    "positiveInt": ("get_uint64", "uint64_t", "static_cast<uint32_t>(v)"),
+    "integer64": ("get_uint64", "uint64_t", "v"),
+    "decimal": ("get_double", "double", "v"),
+}
+
 
 def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src"):
     hpp = (
@@ -245,27 +269,13 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         cpp += f"data.{cpp_name}.emplace_back(c);\n"
                     cpp += f"                else {{ {err_log_line} }}\n"
                 elif fhir_type in _tm.SCALAR_PRIMITIVE_TYPES:
-                    if fhir_type == "boolean":
-                        cpp += (
-                            f"                bool v;\n"
-                            f"                if (elem.get_bool().get(v) == simdjson::SUCCESS) "
-                            f"data.{cpp_name}.push_back(v);\n"
-                            f"                else {{ {err_log_line} }}\n"
-                        )
-                    elif fhir_type in ("integer64",):
-                        cpp += (
-                            f"                uint64_t v;\n"
-                            f"                if (elem.get_uint64().get(v) == simdjson::SUCCESS) "
-                            f"data.{cpp_name}.push_back(v);\n"
-                            f"                else {{ {err_log_line} }}\n"
-                        )
-                    else:
-                        cpp += (
-                            f"                uint64_t v;\n"
-                            f"                if (elem.get_uint64().get(v) == simdjson::SUCCESS) "
-                            f"data.{cpp_name}.push_back(static_cast<uint32_t>(v));\n"
-                            f"                else {{ {err_log_line} }}\n"
-                        )
+                    accessor, staging, stored = _SCALAR_INGEST[fhir_type]
+                    cpp += (
+                        f"                {staging} v;\n"
+                        f"                if (elem.{accessor}().get(v) == simdjson::SUCCESS) "
+                        f"data.{cpp_name}.push_back({stored});\n"
+                        f"                else {{ {err_log_line} }}\n"
+                    )
                 elif fhir_type in _STRING_LIKE_TYPES:
                     # Array of string-like primitives (e.g. dateTime[])
                     cpp += (
@@ -340,27 +350,13 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                     f"            }} else {{\n" f"                {err_log}\n" f"            }}\n"
                 )
             elif f["fhir_type"] in _tm.SCALAR_PRIMITIVE_TYPES:
-                if f["fhir_type"] == "boolean":
-                    cpp += (
-                        f"            bool v;\n"
-                        f"            if (field.value().get_bool().get(v) == simdjson::SUCCESS) "
-                        f"data.{cpp_name} = v;\n"
-                        f"            else {{ {err_log} }}\n"
-                    )
-                elif f["fhir_type"] in ("integer64",):
-                    cpp += (
-                        f"            uint64_t v;\n"
-                        f"            if (field.value().get_uint64().get(v) == simdjson::SUCCESS) "
-                        f"data.{cpp_name} = v;\n"
-                        f"            else {{ {err_log} }}\n"
-                    )
-                else:
-                    cpp += (
-                        f"            uint64_t v;\n"
-                        f"            if (field.value().get_uint64().get(v) == simdjson::SUCCESS) "
-                        f"data.{cpp_name} = static_cast<uint32_t>(v);\n"
-                        f"            else {{ {err_log} }}\n"
-                    )
+                accessor, staging, stored = _SCALAR_INGEST[f["fhir_type"]]
+                cpp += (
+                    f"            {staging} v;\n"
+                    f"            if (field.value().{accessor}().get(v) == simdjson::SUCCESS) "
+                    f"data.{cpp_name} = {stored};\n"
+                    f"            else {{ {err_log} }}\n"
+                )
             elif f["fhir_type"] == "Resource":
                 cpp += (
                     f"            auto ref_obj = field.value().get_object();\n"
@@ -395,9 +391,20 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         f"                data.{cpp_name} = std::make_unique<std::string_view>(sv);\n"
                         f"            else {{ {err_log} }}\n"
                     )
+                elif f.get("url_idx"):
+                    # URL-directory ref: resolve the URL string through the
+                    # Builder's interned registry (populated by predigestion
+                    # before the workers run). Unknown/absent stays
+                    # FF_NULL_UINT32 — the reader prints null.
+                    cpp += (
+                        f"            std::string_view sv;\n"
+                        f"            if (field.value().get_string().get(sv) == simdjson::SUCCESS)\n"
+                        f"                data.{cpp_name} = builder ? builder->resolve_extension_url(sv) : FF_NULL_UINT32;\n"
+                        f"            else {{ {err_log} }}\n"
+                    )
                 else:
-                    # url_idx (uint32_t) or other non-string storage — needs
-                    # Builder context for the conversion; warn and skip.
+                    # other non-string storage — needs Builder context for the
+                    # conversion; warn and skip.
                     cpp += (
                         f'            if (logger) logger->log("[Warning] FastFHIR Ingestion: '
                         f"Field {f['orig_name']} ({f['fhir_type']}) requires Builder context; skipping.\");\n"

@@ -189,6 +189,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
         case FF_FIELD_INT64:
         case FF_FIELD_UINT64:
         case FF_FIELD_FLOAT64:
+        case FF_FIELD_URL:
             return Node(e.base, size, version, slot_offset, expected_tag, schema_kind,
                         FF_RECOVER_UNDEFINED, false, compact_ops, e.m_engine_version);
 
@@ -809,9 +810,7 @@ static void escape_json_string(std::ostream& out, std::string_view str) {
     }
 }
 
-static std::string_view get_choice_suffix(RECOVERY_TAG tag) {
-    switch (tag) {
-        case RECOVER_FF_BOOL:    return "Boolean";
+static std::string_view get_choice_suffix(RECOVERY_TAG tag) {    switch (tag) {        case RECOVER_FF_BOOL:    return "Boolean";
         case RECOVER_FF_FLOAT64: return "Decimal";
         case RECOVER_FF_INT32:   return "Integer";
         case RECOVER_FF_UINT32:  return "UnsignedInt";
@@ -822,6 +821,17 @@ static std::string_view get_choice_suffix(RECOVERY_TAG tag) {
             // For complex types, pull the capitalized resource/data type name
             return FastFHIR::reflected_resource_type(tag);
     }
+}
+
+// Resolve an FF_FIELD_URL ref (an FF_URL_DIRECTORY entry index) back to its
+// URL text. The directory offset lives in the stream header; a missing
+// directory or an all-ones ref (absent/unknown URL) yields an empty string.
+static std::string resolve_url_ref(const BYTE* base, Size size, uint32_t version,
+                                   uint32_t ref) {
+    if (ref == FF_NULL_UINT32) return {};
+    const Offset dir_off = LOAD_U64(base + FF_HEADER::URL_DIR_OFFSET);
+    if (dir_off == FF_NULL_OFFSET || dir_off >= size) return {};
+    return FF_URL_DIRECTORY(dir_off, size, version).get_url(base, ref);
 }
 
 void Reflective::Node::print_json(std::ostream& out) const {
@@ -851,6 +861,19 @@ void Reflective::Node::print_json(std::ostream& out) const {
                 auto child_entry = (*this)[key];
                 if (!child_entry) continue;
 
+                // A present slot is not the same as a renderable value. An
+                // inline scalar always emits exactly one token, but a slot
+                // pointing at a DATA_BLOCK can reach a block whose every field
+                // is absent, and Node::print_json emits NOTHING for that. The
+                // emptiness has to be discovered before the key is written, or
+                // the key lands in the document with nothing behind it:
+                // "dose":} is not JSON, and a whole bundle stops parsing on it.
+                // (Node::is_empty's FF_FIELD_CODE case guards the same hazard
+                // one level down; this is its block-shaped half.)
+                const bool inline_scalar = ff_kind_is_inline_scalar(f.kind);
+                const Node child_node = inline_scalar ? Node() : child_entry.as_node();
+                if (!inline_scalar && child_node.is_empty()) continue;
+
                 if (!first) out << ",";
                 out << "\"" << f.name;
 
@@ -859,22 +882,8 @@ void Reflective::Node::print_json(std::ostream& out) const {
                 out << "\":";
 
                 // Scalars are inline values, not DATA_BLOCKs — serialize directly from Entry.
-                // Everything else is a DATA_BLOCK and goes through Node.
-                switch (f.kind) {
-                    case FF_FIELD_BOOL:
-                    case FF_FIELD_INT32:
-                    case FF_FIELD_UINT32:
-                    case FF_FIELD_INT64:
-                    case FF_FIELD_UINT64:
-                    case FF_FIELD_FLOAT64:
-                    case FF_FIELD_CODE:
-                    case FF_FIELD_DATETIME:
-                        child_entry.print_scalar_json(out, m_version);
-                        break;
-                    default:
-                        child_entry.as_node().print_json(out);
-                        break;
-                }
+                if (inline_scalar) child_entry.print_scalar_json(out, m_version);
+                else               child_node.print_json(out);
                 first = false;
             }
             out << "}";
@@ -921,6 +930,13 @@ void Reflective::Node::print_json(std::ostream& out) const {
                                       : FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(raw), m_recovery);
             out << "\"";
             escape_json_string(out, dt_text);
+            out << "\"";
+            break;
+        }
+        case FF_FIELD_URL: {
+            const uint32_t ref = LOAD_U32(m_base + m_node_offset);
+            out << "\"";
+            escape_json_string(out, resolve_url_ref(m_base, m_size, m_version, ref));
             out << "\"";
             break;
         }
@@ -997,6 +1013,15 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
             }
             out << '"';
             escape_json_string(out, dt_text);
+            out << '"';
+            break;
+        }
+        case FF_FIELD_URL: {
+            const uint32_t ref = LOAD_U32(base + slot);
+            const std::string url = resolve_url_ref(base, m_size, version, ref);
+            if (url.empty()) { out << "null"; break; }
+            out << '"';
+            escape_json_string(out, url);
             out << '"';
             break;
         }
@@ -1136,7 +1161,7 @@ bool Node::is_string() const { return m_kind == FF_FIELD_STRING; }
 // V-Table slot, exactly like FF_FIELD_CODE. That a flagged one can point at an
 // FF_STRING no more makes it a string than a fallback CodeableConcept makes a
 // code a block -- the slot is still the value's home.
-bool Node::is_scalar() const { return m_kind == FF_FIELD_BOOL || m_kind == FF_FIELD_INT32 || m_kind == FF_FIELD_UINT32 || m_kind == FF_FIELD_INT64 || m_kind == FF_FIELD_UINT64 || m_kind == FF_FIELD_FLOAT64 || m_kind == FF_FIELD_CODE || m_kind == FF_FIELD_DATETIME; }
+bool Node::is_scalar() const { return ff_kind_is_inline_scalar(m_kind); }
 
 FF_FieldKind Node::kind()     const { return m_kind; }
 RECOVERY_TAG Node::recovery() const { return m_recovery; }
@@ -1345,6 +1370,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
         case FF_FIELD_INT64:
         case FF_FIELD_UINT64:
         case FF_FIELD_FLOAT64:
+        case FF_FIELD_URL:
             // Scalar slots are inline values at slot_offset.
             return Node(e.base, size, version, slot_offset, expected_tag, schema_kind,
                         FF_RECOVER_UNDEFINED, false, ops, e.m_engine_version);

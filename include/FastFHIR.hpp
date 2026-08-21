@@ -299,6 +299,7 @@ struct FF_IngestInfo {
     FF_Ingestor    ingestor  = nullptr;
     FF_Stream      stream    = nullptr;  ///< Destination stream.
     FF_SourceType  source_type = FF_SOURCE_FHIR_JSON;
+    FF_ExtensionFilterMode extension_filter = FF_ExtensionFilterMode::FILTER_ALL_KNOWN; ///< URL-directory suppression policy.
     const std::string_view payload;      ///< Raw source document — never modified.
     Size           payload_capacity = 0; ///< Allocated bytes at payload.data() incl. simdjson slack; 0 = safe copy.
 };

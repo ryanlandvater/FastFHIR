@@ -114,6 +114,7 @@ inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_of
             return LOAD_U64(base + field_absolute_offset) == FF_NULL_OFFSET;
             
         case FF_FIELD_CODE:
+        case FF_FIELD_URL:
         case FF_FIELD_UINT32:
             return LOAD_U32(base + field_absolute_offset) == FF_NULL_UINT32;
             

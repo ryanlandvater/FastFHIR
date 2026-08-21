@@ -51,6 +51,14 @@ emit/                model -> C++ strings.
   codesystems.py       Bounded code enums (FF_CodeSystems.hpp)
   store.py             size_fields / store_fields
   deserialize.py       Eager struct deserializers
+  ingest_mappings.py   simdjson _from_json deserializers (the heaviest emitter).
+                       Which simdjson accessor a scalar primitive gets is the
+                       _SCALAR_INGEST table, keyed on SCALAR_PRIMITIVE_TYPES and
+                       shared by the 0..1 and 0..* paths -- never an if/elif
+                       chain with a catch-all arm. A catch-all cannot tell a type
+                       it planned for from one nobody wired up, which is how
+                       every `decimal` in the spec spent its life being read with
+                       get_uint64() and discarded.
   views.py             Lazy view structs, reflection dispatch
   traits.py            Resource trait headers
   header.py            auto_header banner, write_if_changed

@@ -280,7 +280,12 @@ def generate_cxx_for_blocks(master_blocks, versions):
                 null_val = _tm.TYPE_MAP[f["fhir_type"]]["null"]
                 public_hpp += f"    {f['data_type']} {f['cpp_name']} = {null_val};\n"
             else:
-                public_hpp += f"    {f['data_type']} {f['cpp_name']}{{}};\n"
+                if f.get("url_idx"):
+                    # Absent URLs must store FF_NULL_UINT32 (all-ones), never 0:
+                    # index 0 is a valid URL-directory ref.
+                    public_hpp += f"    {f['data_type']} {f['cpp_name']} = FF_NULL_UINT32;\n"
+                else:
+                    public_hpp += f"    {f['data_type']} {f['cpp_name']}{{}};\n"
         public_hpp += "};\n\n"
 
         # ── INTERNAL: Data Block Sentinel (vtable enums) ───────

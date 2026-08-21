@@ -380,6 +380,12 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
             case FF_FIELD_UINT32:
                 STORE_U32(base + dense_off, entry.as<uint32_t>());
                 break;
+            case FF_FIELD_URL:
+                // Inline 4-byte URL-directory ref — copied verbatim; the ref's
+                // meaning (the directory) lives at stream level, so there is
+                // nothing to defer or re-encode.
+                STORE_U32(base + dense_off, LOAD_U32(entry.base + entry.absolute_offset()));
+                break;
             case FF_FIELD_INT64:
                 STORE_U64(base + dense_off, static_cast<uint64_t>(entry.as<int64_t>()));
                 break;

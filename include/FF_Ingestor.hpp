@@ -21,12 +21,6 @@
 
 namespace FastFHIR::Ingest {
 
-enum class FF_ExtensionFilterMode {
-    FILTER_ALL_KNOWN,   // Suppress profile-native + HL7-known-safe (default)
-    FILTER_NATIVE_ONLY, // Suppress only profile-native extensions
-    FILTER_NONE,        // Store all extensions; dispatch everything to WASM
-};
-
 // =====================================================================
 // PREDIGESTION
 // Single-threaded consumer in a producer/consumer pipeline.
@@ -43,6 +37,7 @@ void FF_PredigestExtensionURLs(
 struct IngestRequest {
     FastFHIR::Builder& builder;
     FF_SourceType source_type = FF_SOURCE_FHIR_JSON;
+    FF_ExtensionFilterMode extension_filter = FF_ExtensionFilterMode::FILTER_ALL_KNOWN;
     std::string_view json_string;
 
     /**

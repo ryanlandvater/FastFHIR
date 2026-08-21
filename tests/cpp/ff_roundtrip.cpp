@@ -98,6 +98,7 @@ int main(int argc, char** argv) {
             .ingestor = ingestor,
             .stream = stream,
             .source_type = FF_SOURCE_FHIR_JSON,
+            .extension_filter = FF_ExtensionFilterMode::FILTER_NONE,
             .payload = json_str,
         }, root_handle, resource_count);
         if (result.failed()) {

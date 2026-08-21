@@ -97,6 +97,14 @@ inline float F32_CONVERT_NON_IEEE(uint32_t val) {
     constexpr uint32_t EXP_MASK     = 0x7F800000;
     constexpr uint32_t MANTISSA_MASK = 0x007FFFFF;
     constexpr double   IEEE_BASE    = 8388608.0; // 2^23
+    // The null sentinel is defined in BITS (FF_NULL_F32 == bit_cast of all-ones),
+    // and FF_IsFieldEmpty tests the slot's raw bytes against all-ones. On an
+    // IEEE-754 host bit_cast makes those two spellings the same object; here the
+    // conversion is arithmetic, so the sentinel has to be carried across by hand
+    // at both ends or an absent decimal decodes as a huge finite number and
+    // exports as data. Sentinel first: all-ones is a NaN encoding the general
+    // path below would happily turn into 3.4e38.
+    if (val == FF_NULL_UINT32) return FF_NULL_F32;
     if ((val & ~SIGN_BIT) == 0) return 0.0f;
     float result = std::ldexp(1.0 + static_cast<double>(val & MANTISSA_MASK) / IEEE_BASE,
                               static_cast<int>((val & EXP_MASK) >> 23) - 127);
@@ -108,7 +116,12 @@ inline uint32_t F32_CONVERT_NON_IEEE(float val) {
     constexpr uint32_t MANTISSA_MASK = 0x007FFFFF;
     if (val == 0.0f)    return std::signbit(val) ? SIGN_BIT : 0;
     if (std::isinf(val)) return std::signbit(val) ? (SIGN_BIT | 0x7F800000) : 0x7F800000;
-    if (std::isnan(val)) return 0x7FC00000;
+    // Every NaN folds onto the null sentinel, not a canonical quiet NaN. JSON
+    // has no NaN literal, so a NaN in a decimal slot cannot round-trip as a
+    // value -- "absent" is the only export that survives, and folding here is
+    // what makes FF_NULL_F32 itself store as the all-ones bytes the empty test
+    // looks for.
+    if (std::isnan(val)) return FF_NULL_UINT32;
     uint32_t neg = std::signbit(val) ? SIGN_BIT : 0;
     int exp = 0;
     uint32_t mantissa = static_cast<uint32_t>(
@@ -120,6 +133,7 @@ inline double F64_CONVERT_NON_IEEE(uint64_t val) {
     constexpr uint64_t EXP_MASK      = 0x7FF0000000000000ULL;
     constexpr uint64_t MANTISSA_MASK = 0x000FFFFFFFFFFFFFULL;
     constexpr double   IEEE_BASE     = 4503599627370496.0; // 2^52
+    if (val == FF_NULL_UINT64) return FF_NULL_F64;  // sentinel first -- see F32 above
     if ((val & ~SIGN_BIT) == 0) return 0.0;
     double result = std::ldexp(1.0 + static_cast<double>(val & MANTISSA_MASK) / IEEE_BASE,
                                static_cast<int>((val & EXP_MASK) >> 52) - 1023);
@@ -131,7 +145,7 @@ inline uint64_t F64_CONVERT_NON_IEEE(double val) {
     constexpr uint64_t MANTISSA_MASK = 0x000FFFFFFFFFFFFFULL;
     if (val == 0.0)      return std::signbit(val) ? SIGN_BIT : 0;
     if (std::isinf(val)) return std::signbit(val) ? (SIGN_BIT | 0x7FF0000000000000ULL) : 0x7FF0000000000000ULL;
-    if (std::isnan(val)) return 0x7FF8000000000000ULL;
+    if (std::isnan(val)) return FF_NULL_UINT64;  // see F32 above
     uint64_t neg = std::signbit(val) ? SIGN_BIT : 0;
     int exp = 0;
     uint64_t mantissa = static_cast<uint64_t>(

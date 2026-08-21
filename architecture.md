@@ -545,7 +545,18 @@ Field slots come in **fixed sizes** drawn from `TYPE_SIZE` (§3.1).
 fields.** A field that is absent in a particular instance is encoded as the
 canonical null sentinel (`FF_NULL_OFFSET = 0xFFFFFFFFFFFFFFFF` for offset
 fields; `FF_NULL_UINT32` for codes; `FF_CODE_NULL` for code-typed primitives;
-etc., enumerated in `FF_Primitives.hpp:45–57`).
+etc., enumerated in `FF_Primitives.hpp:59–88`).
+
+**The sentinel is a bit pattern, not a value.** Every null in that family is
+all-ones *bytes*, and `FF_IsFieldEmpty` tests a slot by loading its raw width
+and comparing against all-ones — one rule, every fixed-width kind. Float slots
+are where the distinction bites: `FF_NULL_F64` must be `std::bit_cast` from
+`FF_NULL_UINT64`, never assigned from it. The numeric conversion yields the
+double `1.8446744073709552e19`, encoded `0x43F0000000000000`, which never
+equals all-ones — so a decimal slot spelled that way is never empty, and every
+absent `Quantity.value` exports as a literal `1.84467e+19`. The all-ones double
+is a quiet NaN and therefore unordered under `==`; absence is tested on the
+bytes (`FF_IsFieldEmpty`), never by comparing against the constant.
 
 **Why fixed-stride slots.** Two reasons, both in service of §1.1:
 
@@ -954,10 +965,18 @@ consistently: `ff_slot_width` gives 8 bytes (so the compact tables and the
 generated V-Table asserts, which are emitted as calls to it, follow for free);
 `Recovery_to_Kind` and its compile-time twin `RecoveryTraits<>` map all four tags
 to the single kind, pinned equal by `static_assert`; `FF_IsFieldEmpty` treats the
-slot as 8 inline bytes with an all-ones null; and `Node::is_scalar()` reports it
-as a scalar, because a packed date/time is an inline value exactly as a code is —
-that a flagged one can point at an `FF_STRING` no more makes it a string than a
-fallback CodeableConcept makes a code a block.
+slot as 8 inline bytes with an all-ones null; and `ff_kind_is_inline_scalar` —
+the single list `Node::is_scalar()` and the `print_json` field dispatch both
+project from — reports it as a scalar, because a packed date/time is an inline
+value exactly as a code is — that a flagged one can point at an `FF_STRING` no
+more makes it a string than a fallback CodeableConcept makes a code a block.
+
+That predicate carries a second obligation on the export path: an inline scalar
+always renders exactly one JSON token, whereas a slot that resolves to a
+`DATA_BLOCK` may reach a block whose every field is absent and render *nothing*.
+`Node::print_json` therefore resolves the child and tests it **before** writing
+the key — a key committed ahead of its value produces `"dose":}` and kills the
+parse for the whole document.
 
 `Kind_to_Recovery` is the one mapping that stays silent: it returns
 `FF_RECOVER_UNDEFINED`, because one kind naming four tags is not a function. Its

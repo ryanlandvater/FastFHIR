@@ -165,20 +165,14 @@ namespace FastFHIR::Ingest
         // Zero heap allocation on the hot path.
         void push_url(std::string_view url) noexcept
         {
+            // Accept ANY non-empty url. Real-world FHIR data routinely uses
+            // relative nested extension urls (e.g. HL7's own geolocation example:
+            // "latitude"/"longitude" inside an absolute parent url), so an
+            // absolute-URI requirement here silently dropped them from the
+            // directory and broke round-tripping. The trie, FF_URL_DIRECTORY,
+            // and get_url() all handle arbitrary non-empty strings, including
+            // single-segment and scheme-less ones.
             if (url.empty())
-                return;
-            // Reject non-absolute URIs. FHIR extension URLs MUST be absolute URIs
-            // (RFC 3986 §4.3): the scheme component (letters only) must precede ':',
-            // and no '/' may appear before that ':'.
-            // Accepts: "http://…", "https://…", "urn:oid:…", "urn:uuid:…"
-            // Rejects: "/relative", "///path//", "no-scheme/path", ""
-            if (!std::isalpha(static_cast<unsigned char>(url[0])))
-                return;
-            const size_t colon = url.find(':');
-            if (colon == std::string_view::npos)
-                return;
-            const size_t slash = url.find('/');
-            if (slash != std::string_view::npos && slash < colon)
                 return;
             const uint64_t h = fnv1a(url);
             const uint64_t slot = h & (DEDUP_SLOTS - 1u);
@@ -207,6 +201,11 @@ namespace FastFHIR::Ingest
     // ─── URL collection (producer, recursive) ────────────────────────────────────
     // Mirrors collect_extension_urls() but pushes to ProducerCtx instead of a
     // vector — no std::string copies, no arena writes on the producer side.
+    static void collect_extension_object(simdjson::ondemand::object ext_obj,
+                                         ProducerCtx &ctx);
+
+    // Generic walker: find "extension"/"modifierExtension" arrays anywhere in a
+    // container (resource, contained resource, nested complex value...).
     static void collect_extension_urls_pipeline(simdjson::ondemand::object obj,
                                                 ProducerCtx &ctx)
     {
@@ -223,49 +222,7 @@ namespace FastFHIR::Ingest
                     simdjson::ondemand::object ext_obj;
                     if (item.get_object().get(ext_obj) != simdjson::SUCCESS)
                         continue;
-                    std::string_view found_url;
-                    for (auto ext_field : ext_obj)
-                    {
-                        std::string_view ext_key = ext_field.unescaped_key().value_unsafe();
-                        if (ext_key == "url")
-                        {
-                            // Take the URL from the SOURCE buffer, never from
-                            // get_string(). ondemand::get_string() unescapes into the
-                            // parser's internal string buffer, which is reused by the
-                            // very next string parsed from this document -- including
-                            // the unescaped_key() calls in the remaining iterations of
-                            // this loop -- and is destroyed when scan_chunk_producer()
-                            // returns, well before the consumer thread reads the batch.
-                            // Every URL therefore arrived blank at the right length,
-                            // so no '/' was found, no segments were interned, and the
-                            // directory held one junk row per URL.
-                            //
-                            // raw_json_token() points into the chunk, which the caller
-                            // owns for the entire FF_PredigestExtensionURLs call.
-                            std::string_view tok = ext_field.value().raw_json_token();
-                            if (tok.size() >= 2 && tok.front() == '"')
-                            {
-                                const size_t close = tok.find('"', 1);
-                                if (close != std::string_view::npos)
-                                {
-                                    const std::string_view inner = tok.substr(1, close - 1);
-                                    // A backslash-escaped URL has no zero-copy source
-                                    // representation. Leave found_url empty so the URL
-                                    // is skipped rather than interned wrong.
-                                    if (inner.find('\\') == std::string_view::npos)
-                                        found_url = inner;
-                                }
-                            }
-                        }
-                        else
-                        {
-                            simdjson::ondemand::object nested;
-                            if (ext_field.value().get_object().get(nested) == simdjson::SUCCESS)
-                                collect_extension_urls_pipeline(nested, ctx);
-                        }
-                    }
-                    if (!found_url.empty())
-                        ctx.push_url(found_url);
+                    collect_extension_object(ext_obj, ctx);
                 }
             }
             else
@@ -290,6 +247,79 @@ namespace FastFHIR::Ingest
                 }
             }
         }
+    }
+
+    // Process ONE extension object: capture its "url" field, then recurse into
+    // nested values. Nested extension-array items MUST come back here, not
+    // through the generic walker: nested extension objects (an extension's own
+    // "extension" array, e.g. HL7 geolocation's "latitude"/"longitude") carry
+    // their url in their own "url" field, which only this processor reads —
+    // the generic walker only looks for further extension arrays and would
+    // silently drop those urls.
+    static void collect_extension_object(simdjson::ondemand::object ext_obj,
+                                         ProducerCtx &ctx)
+    {
+        std::string_view found_url;
+        for (auto ext_field : ext_obj)
+        {
+            std::string_view ext_key = ext_field.unescaped_key().value_unsafe();
+            if (ext_key == "url")
+            {
+                // Take the URL from the SOURCE buffer, never from
+                // get_string(). ondemand::get_string() unescapes into the
+                // parser's internal string buffer, which is reused by the
+                // very next string parsed from this document -- including
+                // the unescaped_key() calls in the remaining iterations of
+                // this loop -- and is destroyed when scan_chunk_producer()
+                // returns, well before the consumer thread reads the batch.
+                // Every URL therefore arrived blank at the right length,
+                // so no '/' was found, no segments were interned, and the
+                // directory held one junk row per URL.
+                //
+                // raw_json_token() points into the chunk, which the caller
+                // owns for the entire FF_PredigestExtensionURLs call.
+                std::string_view tok = ext_field.value().raw_json_token();
+                if (tok.size() >= 2 && tok.front() == '"')
+                {
+                    const size_t close = tok.find('"', 1);
+                    if (close != std::string_view::npos)
+                    {
+                        const std::string_view inner = tok.substr(1, close - 1);
+                        // A backslash-escaped URL has no zero-copy source
+                        // representation. Leave found_url empty so the URL
+                        // is skipped rather than interned wrong.
+                        if (inner.find('\\') == std::string_view::npos)
+                            found_url = inner;
+                    }
+                }
+            }
+            else
+            {
+                // An object value is a plain container (e.g. valueQuantity) —
+                // scan it for extension arrays. An array value (the extension's
+                // own "extension" array) holds further extension OBJECTS.
+                simdjson::ondemand::object nested;
+                if (ext_field.value().get_object().get(nested) == simdjson::SUCCESS)
+                {
+                    collect_extension_urls_pipeline(nested, ctx);
+                }
+                else
+                {
+                    simdjson::ondemand::array nested_arr;
+                    if (ext_field.value().get_array().get(nested_arr) == simdjson::SUCCESS)
+                    {
+                        for (auto item : nested_arr)
+                        {
+                            simdjson::ondemand::object arr_obj;
+                            if (item.get_object().get(arr_obj) == simdjson::SUCCESS)
+                                collect_extension_object(arr_obj, ctx);
+                        }
+                    }
+                }
+            }
+        }
+        if (!found_url.empty())
+            ctx.push_url(found_url);
     }
 
     // Scan one padded_string chunk for extension URLs and push them to the queue.
@@ -1124,7 +1154,7 @@ namespace FastFHIR::Ingest
             FF_PredigestExtensionURLs(
                 entry_chunks,
                 m_builder,
-                FF_ExtensionFilterMode::FILTER_ALL_KNOWN);
+                request.extension_filter);
 
             // Builder now owns the URL registry; parse workers call builder->resolve_extension_url().
 
@@ -1450,7 +1480,8 @@ FF_Result FF_Ingest(const FF_IngestInfo& info, Reflective::ObjectHandle& out_roo
     if (!info.stream)
         return FF_Result{FF_INVALID_ARGUMENT, "FF_Ingest: null destination stream"};
     try {
-        Ingest::IngestRequest request{*info.stream, info.source_type, info.payload, info.payload_capacity};
+        Ingest::IngestRequest request{*info.stream, info.source_type, info.extension_filter,
+                                      info.payload, info.payload_capacity};
         // size_t vs Size (uint64_t) are distinct types on LP64; bridge via a local.
         size_t parsed_count = 0;
         FF_Result result = info.ingestor->impl.ingest(request, out_root, parsed_count);

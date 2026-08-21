@@ -20,6 +20,7 @@
 // MARK: - FastFHIR Core Primitives
 #pragma once
 
+#include <bit>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -63,9 +64,27 @@ constexpr uint64_t FF_NULL_UINT64 = 0xFFFFFFFFFFFFFFFF;
 // Code Null (Safely traps 0xFFFFFFFF before custom string masking)
 constexpr uint32_t FF_CODE_NULL = FF_NULL_UINT32;
 
-// Float Nulls (Using max to adhere to the rule, though NaN is also an option)
-constexpr float FF_NULL_F32 = FF_NULL_UINT32;
-constexpr double FF_NULL_F64 = FF_NULL_UINT64;
+// Float Nulls. BIT PATTERN, NOT VALUE -- the distinction is the whole point.
+//
+// The wire invariant every fixed-width slot obeys is "all-ones raw bytes mean
+// absent", and FF_IsFieldEmpty implements exactly that for FF_FIELD_FLOAT64:
+// LOAD_U64(slot) == FF_NULL_UINT64. A float sentinel therefore has to BE those
+// bytes, which only bit_cast produces.
+//
+// These were previously written `= FF_NULL_UINT64`, a numeric conversion: it
+// yields the double 1.8446744073709552e19, whose IEEE-754 encoding is
+// 0x43F0000000000000. That never equals all-ones, so no decimal slot ever
+// reported empty -- every absent Quantity.value, Timing.repeat.period and
+// Attachment.duration exported as the literal 1.84467e+19 instead of being
+// omitted. The sentinel and the test for it must be spelled in the same
+// domain; here that domain is bits.
+//
+// The all-ones double is a quiet NaN, so it is unordered under == by design:
+// nothing may test a decimal for absence by comparing against this constant.
+// Read the slot's raw bytes (FF_IsFieldEmpty) -- the same rule the offset,
+// code and datetime sentinels already follow.
+constexpr float FF_NULL_F32 = std::bit_cast<float>(FF_NULL_UINT32);
+constexpr double FF_NULL_F64 = std::bit_cast<double>(FF_NULL_UINT64);
 constexpr Offset FF_NULL_OFFSET = FF_NULL_UINT64;
 // ── Reserved In-Flight Sentinels ──────────────────────────────────────
 // PERMANENT AND RESERVED. These differ from the FF_NULL_* family above in
@@ -645,6 +664,16 @@ enum FF_SourceType : uint8_t
 };
 
 // =====================================================================
+// EXTENSION URL FILTER (predigestion)
+// =====================================================================
+enum class FF_ExtensionFilterMode : uint8_t
+{
+    FILTER_ALL_KNOWN = 0,   // Suppress profile-native + HL7-known-safe (default)
+    FILTER_NATIVE_ONLY = 1, // Suppress only profile-native extensions
+    FILTER_NONE = 2,        // Store all extension URLs in the FF_URL_DIRECTORY
+};
+
+// =====================================================================
 // FORWARD DECLARATIONS FOR DATA TYPES
 // =====================================================================
 enum FF_FieldKind : uint16_t
@@ -665,6 +694,11 @@ enum FF_FieldKind : uint16_t
     // ONE kind for all four date/time tags. Which of date/dateTime/time/instant
     // a slot holds is the RECOVERY_TAG's job;
     FF_FIELD_DATETIME,
+    // A 4-byte URL-directory ref: the FF_URL_DIRECTORY entry index for a URL
+    // interned during predigestion (Extension.url, Bundle.entry.fullUrl). The
+    // reader resolves the ref back to the full URL string via get_url();
+    // FF_EXT_REF_NULL (all ones) is the absent marker.
+    FF_FIELD_URL,
 };
 
 // =====================================================================
@@ -694,11 +728,45 @@ constexpr uint8_t ff_slot_width(const FF_FieldKind kind)
     case FF_FIELD_UINT64:   return TYPE_SIZE_UINT64;
     case FF_FIELD_FLOAT64:  return TYPE_SIZE_FLOAT64;
     case FF_FIELD_CODE:     return TYPE_SIZE_UINT32;
+    case FF_FIELD_URL:      return TYPE_SIZE_UINT32;
     case FF_FIELD_DATETIME: return TYPE_SIZE_UINT64;
     case FF_FIELD_RESOURCE: return TYPE_SIZE_RESOURCE;
     case FF_FIELD_CHOICE:   return TYPE_SIZE_CHOICE;
     // STRING, ARRAY, BLOCK and UNKNOWN hold an arena offset.
     default:                return TYPE_SIZE_OFFSET;
+    }
+}
+
+// =====================================================================
+// INLINE SCALAR vs DATA_BLOCK — the other half of the slot contract
+// =====================================================================
+// True when a slot of this kind holds its value IN the slot, false when the
+// slot points at a DATA_BLOCK. Serialization turns on the distinction: an
+// inline scalar always renders exactly one JSON token, whereas a block child
+// can be vacuous -- every field absent -- and render nothing at all.
+//
+// Single source of truth, for the same reason ff_slot_width above is one:
+// Reflective::Node::is_scalar() and the JSON field dispatch in
+// Node::print_json used to carry independent copies of this list, and a kind
+// missing from either one silently changed how a field printed.
+constexpr bool ff_kind_is_inline_scalar(const FF_FieldKind kind)
+{
+    switch (kind)
+    {
+    case FF_FIELD_BOOL:
+    case FF_FIELD_INT32:
+    case FF_FIELD_UINT32:
+    case FF_FIELD_INT64:
+    case FF_FIELD_UINT64:
+    case FF_FIELD_FLOAT64:
+    case FF_FIELD_CODE:
+    case FF_FIELD_DATETIME:
+    case FF_FIELD_URL:
+        return true;
+    // STRING, ARRAY, BLOCK, RESOURCE, CHOICE and UNKNOWN all resolve through
+    // an offset to a block.
+    default:
+        return false;
     }
 }
 
@@ -722,6 +790,9 @@ inline RECOVERY_TAG Kind_to_Recovery(const FF_FieldKind kind)
         return RECOVER_FF_FLOAT64;
     case FF_FIELD_CODE:
         return RECOVER_FF_CODE;
+    case FF_FIELD_URL:
+        // A URL-directory ref reads as its URL string.
+        return RECOVER_FF_STRING;
     // FF_FIELD_DATETIME is deliberately ABSENT. This mapping is a function only
     // where a kind names exactly one tag, and the date/time kind names four
     // (DATE, DATETIME, TIME, INSTANT). Guessing DATETIME would be wrong three
