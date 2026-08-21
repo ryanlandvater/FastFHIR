@@ -1324,7 +1324,9 @@ static void test_11()
         .payload = BUNDLE_EXTENSION_URLS_JSON,
     }, bundle_handle, count);
 
-    REQUIRE(result.code == FF_SUCCESS, "extension bundle ingest failed: " + result.message);
+    REQUIRE(result, "extension bundle ingest failed: " + result.message);
+    if (result.is_warning())
+        std::cout << "  warning : " << result.message << "\n";
     REQUIRE(bundle_handle, "extension bundle handle is null");
     REQUIRE(count >= 2, "expected at least two resources in extension bundle");
 
@@ -1433,7 +1435,9 @@ static void test_synthea_bundle()
         .source_type = FF_SOURCE_FHIR_JSON,
         .payload = json_str,
     }, root_handle, count);
-    REQUIRE(result.code == FF_SUCCESS, "Synthea ingest failed: " + result.message);
+    REQUIRE(result, "Synthea ingest failed: " + result.message);
+    if (result.is_warning())
+        std::cout << "  warning : " << result.message << "\n";
     REQUIRE(root_handle, "root handle is null after Synthea ingest");
     REQUIRE(count > 1, "expected multiple resources in Synthea bundle");
     std::cout << "  ingested resources : " << count << "\n";

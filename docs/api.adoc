@@ -12,8 +12,10 @@ signatures.
 
 > **Source of truth.** `include/FastFHIR.hpp` is the canonical declaration of
 > everything on this page. Keeping the two in sync by hand is tracked in
-> TASKS.md (WO — "API asciidoc generation"); the goal is to generate this
-> document from the header so it can never drift.
+> TASKS.md, *"WORK ORDER — FF_* EXTERNAL API: asciidoc generation + README
+> sweep"*; the goal is to generate this document from the header so it can never
+> drift. Until then every claim here is hand-checked against the header, and the
+> checks that were run are noted where they are not obvious.
 
 toc::[]
 
@@ -30,8 +32,8 @@ The surface follows the Iris/Vulkan shape:
   `Parser` is deliberately *not* a handle: it is a zero-copy, copyable value
   over a buffer, returned by value from `FF_Parse`.
 * **The mutation path is unchanged**: once an object is appended, fields are
-  written with the reflective handle (`handle["field"] = value`), exactly as
-  before.
+  written with the reflective handle (`handle[key] = value`), exactly as before.
+  String values are assigned as `std::string_view`; see the Stream API section.
 
 == Version
 
@@ -78,14 +80,67 @@ classDiagram
 == Result type
 
 ```cpp
-enum FF_Result_Code : uint32_t { FF_SUCCESS, FF_FAILURE, FF_VALIDATION_FAILURE, FF_WARNING };
-struct FF_Result { FF_Result_Code code; std::string message; /* bool-convertible */ };
+enum class FF_Result_Severity : uint8_t { SUCCESS, WARNING, FAILURE };
+
+enum FF_Result_Code : uint32_t {
+    // success
+    FF_SUCCESS = 0,
+    // warnings — operator bool is TRUE; inspect code/message to see them
+    FF_WARNING_PARTIAL_INGEST  = 1,  // some resources discarded (out-of-profile)
+    FF_WARNING_LOGGER_OVERFLOW = 2,  // warning buffer truncated
+    FF_WARNING_EMPTY_RESULT    = 3,  // succeeded but produced no output
+    // failures — operator bool is FALSE. Banded at 0x100 so severity is legible
+    // from the value alone, and so a warning can be added later without
+    // renumbering any failure.
+    FF_FAILURE            = 0x100, // generic engine failure
+    FF_VALIDATION_FAILURE = 0x101, // stream/offset/type validation failed
+    FF_INVALID_ARGUMENT   = 0x102, // null handle, mutually exclusive fields
+    FF_CAPACITY_EXCEEDED  = 0x103, // arena or buffer capacity exceeded
+    FF_IO_FAILURE         = 0x104, // file/network I/O failure
+    FF_NOT_IMPLEMENTED    = 0x105, // HL7 v2/v3 ingestion, etc.
+    FF_EXTENSION_FAILURE  = 0x106, // WASM extension codec failure
+};
+
+struct FF_Result {
+    FF_Result_Code code;
+    std::string message;   // newline-stacked, severity-tagged entries
+    // Construction. The one-argument form is NOT explicit, so `return
+    // FF_SUCCESS;` compiles. There is no default constructor.
+    FF_Result(FF_Result_Code c, std::string msg); // tags msg by severity
+    FF_Result(FF_Result_Code c);                  // empty message
+    // severity_of(code) is the single classification source
+    bool succeeded() const noexcept;  // true for SUCCESS and WARNING
+    bool is_warning() const noexcept; // true only for WARNING codes
+    bool failed() const noexcept;     // true only for FAILURE codes
+    operator bool() const noexcept;   // == succeeded()
+    // message construction
+    FF_Result& append(FF_Result_Code c, std::string msg); // one tagged entry per line
+    FF_Result& append(const FF_Result& other);            // merge; most severe code wins
+};
 ```
 
-Every `FF_*` function returns `FF_SUCCESS` on success. Input errors (null
-handles, mutually exclusive fields) return `FF_VALIDATION_FAILURE`; engine
-failures return `FF_FAILURE` with a descriptive `message`. `FF_Result`
-converts to `bool` (`true` == success).
+Every `FF_*` function returns an `FF_Result`. The severity model is:
+
+* **`succeeded()` / `operator bool`** is true for *both* success and warnings —
+  a run that produced usable output but dropped something along the way is
+  not a failure, and a caller that only cares about go/no-go can write
+  `if (!result) return;` and ignore warnings entirely.
+* **Warnings still exist — they stack.** `FF_Result::message` is a
+  newline-separated stack of tagged entries: `[WARNING] ...` for warning codes
+  and `[FATAL] ...` for failure codes. Every entry point prefixes its first
+  entry with the code's tag; producers accumulate more entries with
+  `append()`. `FF_Ingest`, for example, stacks one `[WARNING]` entry for the
+  aggregated out-of-profile discard summary plus one per engine `[Warning]`
+  log line (malformed data, skipped fields) — none of it is lost.
+* **Errors are `[FATAL]`.** Failure results tag their message
+  `[FATAL] ...`; when a fatal lands after warnings, `append()` promotes the
+  code (failure > warning > success) and both kinds of entries stay in the
+  message.
+* **Failures** (`failed()`) are the only results that convert to `false`.
+  Input errors return `FF_INVALID_ARGUMENT`; stream/offset/type checks return
+  `FF_VALIDATION_FAILURE`.
+
+Unknown codes classify as `FAILURE` — a stale or typo'd code fails safe.
 
 == Callback
 
@@ -158,9 +213,23 @@ throws). Once you have the handle, mutate fields with the reflective path:
 
 ```cpp
 auto root = FastFHIR::FF_StreamAppendObject(stream, obs);
-root["status"] = "final";                       // MutableEntry operator=
-root[FastFHIR::Fields::PATIENT::ACTIVE] = true; // typed field key
+root["status"] = std::string_view("final");                 // string key
+root[FastFHIR::Fields::OBSERVATION::STATUS]                 // typed key, same field
+    = std::string_view("final");
 ```
+
+A string value must be a `std::string_view`, not a bare literal:
+`MutableEntry::operator=` is a template over `T_Data` and instantiates
+`TypeTraits<T_Data>`, which is undefined for `char[N]` — so `= "final"` fails to
+compile with an *"implicit instantiation of undefined template
+`TypeTraits<char[6]>`"* error rather than converting. Non-string values (`bool`,
+arithmetic types, generated structs) need no wrapper.
+
+The string key `"status"` works because `FF_FieldKey` has a non-explicit
+constructor from a string literal, so it converts implicitly. It is the slower
+path — it resolves by name — and it is unchecked against the owning resource:
+the typed key carries its owner's `RECOVERY_TAG` and so cannot be pointed at the
+wrong resource type by mistake. Prefer the typed key.
 
 == Parse API
 
@@ -189,9 +258,13 @@ struct FF_CompactInfo {
 FF_Result FF_Compact(const FF_CompactInfo& info, Memory::View& out_view) noexcept;
 ```
 
-The compact archive is written into a fresh arena sized from the source (a
-compact archive is always <= the source size). The source stream is never
-modified.
+The compact archive is written into a fresh arena sized from the source. That
+sizing rests on the assumption that compaction never grows a stream — the dense
+layout drops absent slots but adds a presence bitmask per block, so the
+assumption is not self-evident and is not asserted anywhere. It fails **safely**
+rather than silently: exceeding the arena throws inside `claim_space`, which
+`FF_Compact` catches and returns as `FF_CAPACITY_EXCEEDED`. The source stream is
+never modified.
 
 == Ingest API
 
@@ -241,7 +314,7 @@ FF_Result FF_IngestInsertAtField(const FF_IngestInsertInfo& info) noexcept;
 ```mermaid
 flowchart LR
     A[FF_CreateMemory] --> B[FF_CreateStream]
-    C[FF_IngestorCreateInfo] --> D[FF_Ingest]
+    C[FF_CreateIngestor] --> D[FF_Ingest]
     B --> D
     D --> E[FF_StreamAppendObject + handle path]
     E --> F[FF_StreamSetRoot]
@@ -255,10 +328,29 @@ flowchart LR
 
 * **`Builder::set_root` / `finalize` / `query`** — private; reachable only
   through the FF_* functions above.
-* **Raw append variants** — removed (`append(offsets, tag)` remains as the
-  implementation behind `MutableEntry::operator=(vector<Offset>)`).
+* **`Builder::append_obj(const std::vector<Offset>&, RECOVERY_TAG)`** — still
+  public on the `Builder` behind `FF_Stream`, and callable as
+  `stream->append_obj(offsets, tag)`; it is what backs
+  `MutableEntry::operator=(vector<Offset>)`. It has no `FF_*` wrapper, so it is
+  outside the covered surface without being unreachable.
 * **`Compactor::archive`** — internal; external callers use `FF_Compact`.
 * **`Ingest::Ingestor` / `IngestRequest`** — internal; external callers use
   the FF_Ingest surface.
-* **`FF_Queue`, `FF_SIMD`, `FF_Extensions`, `FF_Ops`** — internal helpers, not
-  installed.
+* **`FF_Queue`, `FF_SIMD`, `FF_Extensions`, `FF_Logger`, `FF_Compactor`,
+  `FF_Ingestor`** — internal helpers, not in the install set.
+
+=== Installed headers
+
+`install(FILES ...)` in `CMakeLists.txt` ships exactly seven headers:
+`FastFHIR.hpp`, `FF_Parser.hpp`, `FF_Builder.hpp`, `FF_Primitives.hpp`, and the
+generated `FF_FieldKeys.hpp`, `FF_Recovery.hpp`, `FF_ResourceTypes.hpp`.
+
+WARNING: That set is **not self-contained**, so `#include <FastFHIR.hpp>` does
+not compile against an installed prefix today. `FastFHIR.hpp` includes
+`FF_Version.hpp`, and `FF_Parser.hpp` includes `FF_Dictionary.hpp`,
+`FF_Memory.hpp`, `FF_Ops.hpp` and `FF_Utilities.hpp` — none of the five are
+installed. Those five are therefore neither public nor safely private: they are
+implementation headers that an installed header depends on. This is a packaging
+defect, not a documentation one; it is recorded in TASKS.md, and the open
+question is which of them become public versus having their public parts hoisted
+into `FF_Primitives.hpp`.

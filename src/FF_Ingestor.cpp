@@ -984,30 +984,60 @@ namespace FastFHIR::Ingest
         return out;
     }
 
-    /// Pull the "[Fatal]" lines out of a logger buffer for an error message.
-    ///
-    /// Workers cannot propagate an exception across the thread boundary, so they
-    /// log it and raise m_engine_faulted. This lifts the cause back into the
-    /// FF_Result the caller actually reads. Only the fatal lines: the buffer also
-    /// holds [Info]/[Warning] chatter that would bury the diagnosis.
-    static std::string fatal_log_lines(const ConcurrentLogger &logger)
+    /// Strip the engine's own "[Tag] " prefix from a log line so the
+    /// FF_Result severity tag is the single source of labelling in the message.
+    static std::string_view strip_log_tag(std::string_view line)
+    {
+        if (!line.empty() && line.front() == '[')
+        {
+            const size_t close = line.find(']');
+            if (close != std::string_view::npos)
+            {
+                line.remove_prefix(close + 1);
+                if (!line.empty() && line.front() == ' ') line.remove_prefix(1);
+            }
+        }
+        return line;
+    }
+
+    /// Stack every warning-class logger line into @p out as tagged entries:
+    /// the [Skipped] discard lines aggregated by resource type first, then each
+    /// [Warning] line verbatim. All entries get the [WARNING] tag from
+    /// FF_Result::append; the logger's own tag is stripped first.
+    static void stack_logger_warnings(const ConcurrentLogger &logger, FF_Result &out)
+    {
+        if (std::string skipped = skipped_summary(logger); !skipped.empty())
+            out.append(FF_WARNING_PARTIAL_INGEST, std::move(skipped));
+        const std::string all = logger.to_string();
+        for (size_t pos = 0; pos < all.size();)
+        {
+            const size_t eol = all.find('\n', pos);
+            const size_t end = (eol == std::string::npos) ? all.size() : eol;
+            const std::string_view line(all.data() + pos, end - pos);
+            if (line.find("[Warning]") != std::string_view::npos)
+                out.append(FF_WARNING_PARTIAL_INGEST, std::string(strip_log_tag(line)));
+            if (eol == std::string::npos) break;
+            pos = eol + 1;
+        }
+    }
+
+    /// Stack every [Fatal] line into @p out as tagged [FATAL] entries.
+    /// Workers cannot propagate an exception across the thread boundary, so
+    /// they log it and raise m_engine_faulted; this lifts the cause back into
+    /// the FF_Result the caller actually reads.
+    static void stack_logger_fatals(const ConcurrentLogger &logger, FF_Result &out)
     {
         const std::string all = logger.to_string();
-        std::string out;
         for (size_t pos = 0; pos < all.size();)
         {
             const size_t eol = all.find('\n', pos);
             const size_t end = (eol == std::string::npos) ? all.size() : eol;
             const std::string_view line(all.data() + pos, end - pos);
             if (line.find("[Fatal]") != std::string_view::npos)
-            {
-                if (!out.empty()) out += " | ";
-                out.append(line);
-            }
+                out.append(FF_FAILURE, std::string(strip_log_tag(line)));
             if (eol == std::string::npos) break;
             pos = eol + 1;
         }
-        return out.empty() ? std::string("No [Fatal] detail was logged.") : out;
     }
 
     FF_Result Ingestor::ingest(const IngestRequest &request, Reflective::ObjectHandle &out_root, size_t &out_parsed_count)
@@ -1017,11 +1047,11 @@ namespace FastFHIR::Ingest
         case FF_SOURCE_FHIR_JSON:
             return ingest_fhir_json(request, out_root, out_parsed_count);
         case FF_SOURCE_HL7_V2:
-            return FF_Result{FF_FAILURE, "HL7 v2 ingestion not implemented."};
+            return FF_Result{FF_NOT_IMPLEMENTED, "HL7 v2 ingestion not implemented."};
         case FF_SOURCE_HL7_V3:
-            return FF_Result{FF_FAILURE, "HL7 v3 ingestion not implemented."};
+            return FF_Result{FF_NOT_IMPLEMENTED, "HL7 v3 ingestion not implemented."};
         default:
-            return FF_Result{FF_FAILURE, "Unknown source type."};
+            return FF_Result{FF_INVALID_ARGUMENT, "Unknown source type."};
         }
     }
 
@@ -1032,11 +1062,11 @@ namespace FastFHIR::Ingest
         case FF_SOURCE_FHIR_JSON:
             return insert_at_field_json(parent_object, key, payload);
         case FF_SOURCE_HL7_V2:
-            return FF_Result{FF_FAILURE, "HL7 v2 field ingestion not implemented."};
+            return FF_Result{FF_NOT_IMPLEMENTED, "HL7 v2 field ingestion not implemented."};
         case FF_SOURCE_HL7_V3:
-            return FF_Result{FF_FAILURE, "HL7 v3 field ingestion not implemented."};
+            return FF_Result{FF_NOT_IMPLEMENTED, "HL7 v3 field ingestion not implemented."};
         default:
-            return FF_Result{FF_FAILURE, "Unknown source type."};
+            return FF_Result{FF_INVALID_ARGUMENT, "Unknown source type."};
         }
     }
 
@@ -1245,9 +1275,9 @@ namespace FastFHIR::Ingest
             // unread buffer is a fail-silent check with extra steps.
             if (m_engine_faulted.load(std::memory_order_acquire))
             {
-                return FF_Result{FF_FAILURE,
-                                 "Ingestion aborted due to worker thread crash. " +
-                                     fatal_log_lines(m_logger)};
+                FF_Result result{FF_FAILURE, "Ingestion aborted due to worker thread crash."};
+                stack_logger_fatals(m_logger, result);
+                return result;
             }
 
             // =====================================================================
@@ -1255,15 +1285,14 @@ namespace FastFHIR::Ingest
             // =====================================================================
             out_root = root_handle;
 
-            // Entries whose resource type is outside the compiled profile were
-            // discarded by dispatch_resource. The stream is well-formed, so this
-            // is not FF_FAILURE, but the caller must never learn about lost
-            // clinical records by diffing documents. Whether an out-of-profile
-            // type should instead be a hard failure is TASKS.md A26.2.
-            if (std::string skipped = skipped_summary(m_logger); !skipped.empty())
-                return FF_Result{FF_SUCCESS, std::move(skipped)};
-
-            return FF_SUCCESS;
+            // Warnings stack into the result message: [Skipped] discard lines
+            // (aggregated by resource type) plus every engine [Warning] line,
+            // each a tagged entry. The stream is well-formed, so this is not a
+            // failure — but the caller must never learn about lost clinical
+            // records by diffing documents (TASKS.md A26 / A26.2).
+            FF_Result result{FF_SUCCESS};
+            stack_logger_warnings(m_logger, result);
+            return result;
         }
         catch (const simdjson::simdjson_error &e)
         {
@@ -1415,9 +1444,9 @@ FF_Result FF_CreateIngestor(const FF_IngestorCreateInfo& info, FF_Ingestor& out_
 FF_Result FF_Ingest(const FF_IngestInfo& info, Reflective::ObjectHandle& out_root, Size& out_parsed_count) noexcept
 {
     if (!info.ingestor)
-        return FF_Result{FF_VALIDATION_FAILURE, "FF_Ingest: null ingestor"};
+        return FF_Result{FF_INVALID_ARGUMENT, "FF_Ingest: null ingestor"};
     if (!info.stream)
-        return FF_Result{FF_VALIDATION_FAILURE, "FF_Ingest: null destination stream"};
+        return FF_Result{FF_INVALID_ARGUMENT, "FF_Ingest: null destination stream"};
     out_root = Reflective::ObjectHandle();
     out_parsed_count = 0;
     try {
@@ -1437,7 +1466,7 @@ FF_Result FF_Ingest(const FF_IngestInfo& info, Reflective::ObjectHandle& out_roo
 FF_Result FF_IngestInsertAtField(const FF_IngestInsertInfo& info) noexcept
 {
     if (!info.ingestor)
-        return FF_Result{FF_VALIDATION_FAILURE, "FF_IngestInsertAtField: null ingestor"};
+        return FF_Result{FF_INVALID_ARGUMENT, "FF_IngestInsertAtField: null ingestor"};
     try {
         // Copy the handle: the engine's insert path takes a mutable reference.
         Reflective::ObjectHandle parent = info.parent;

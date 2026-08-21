@@ -824,6 +824,18 @@ constants sit adjacent in `FF_Primitives.hpp` rather than in separate blocks.
 | Null sentinel | `FF_CODE_NULL` = `0xFFFF'FFFF` | `FF_DATETIME_NULL` = `0xFFFF'FFFF'FFFF'FFFF` |
 | Emitters | `SIZE_`/`STORE_`/`ENCODE_FF_CODE` | `SIZE_`/`STORE_`/`ENCODE_FF_DATETIME` |
 
+**Resolve the offset where the containing block is still known.** Both fallback
+offsets are relative to the block, so the arithmetic has two operands — and a
+`Reflective::Node` carries only its own offset, never its parent's. Anything
+that defers the resolution past node construction has therefore already lost an
+operand and can only guess. `ParserOps::code_node()` is the single place the
+code slot's arithmetic happens; every producer of a code node calls it, and the
+node it returns already points at the `FF_CODEABLE_CONCEPT`. The alternative was
+tried and was wrong: `Node::as<string_view>()` used to resolve against the
+node's own offset, which for a choice (`[x]`) variant is the *slot*, so it
+decoded one V-Table width away from the block and returned an empty label —
+silent data loss. DT-3 owes the date/time slot the same treatment.
+
 Two properties make the parity exact rather than approximate:
 
 1. **Relative, not absolute.** Both fallback offsets are signed and relative to
@@ -1181,7 +1193,7 @@ allocates for reflection.
 
 ### 8.3 Entry → Node delegation
 
-`Reflective::Entry` (`FF_Parser.hpp:182–255`) is the V-Table-slot coordinate
+`Reflective::Entry` (`FF_Parser.hpp:260–334`) is the V-Table-slot coordinate
 returned by `Node::operator[]`. It holds:
 
 ```
@@ -1205,12 +1217,35 @@ const ParserOps* m_ops;
 - **`HasTypeTraits<T>` structs** — go through `as_node()` and dispatch to
   `TypeTraits<T>::read`.
 
-Implementations are at `FF_Parser.hpp:443–489`. The split is the
+Implementations are at `FF_Parser.hpp:575–612`. The split is the
 optimisation phase commonly referenced as "narrowed offsets and unified
 delegation chains": scalar reads short-circuit; structural reads delegate
 once and only once to `as_node()`. Per-instance overhead is therefore
 *exactly* the size of the type being read, with no Node-construction tax for
 the scalar fast paths.
+
+**What `Entry` keeps that `Node` does not: the parent.** `Entry` is a *slot*
+coordinate and holds `parent_offset` alongside `vtable_offset`; a `Node` is a
+*block* coordinate and holds one offset — its own. That asymmetry is invisible
+until a slot's value is a **block-relative** quantity, which is exactly what a
+flagged `FF_CODE` (and, after DT-2, a flagged `FF_DATETIME`) is. Resolving such
+a value needs both operands, so it must happen while the `Entry` still exists.
+
+`ParserOps::code_node()` is where it happens, and every producer of a code node
+routes through it: both `entry_as_node` implementations and `resolve_choice`.
+The node it hands back already points at the `FF_CODEABLE_CONCEPT`, tagged
+`RECOVER_FF_CODEABLE_CONCEPT` with kind `FF_FIELD_CODE`, so the read path still
+treats it as a coded leaf and `Node::as<std::string_view>()` has no arithmetic
+left to do.
+
+Doing it later does not work, and was the bug: `Node::as<std::string_view>()`
+used to resolve against the node's own offset. For an ordinary code field that
+happens to equal the slot's parent plus zero, so nothing showed; for a choice
+(`[x]`) variant the node's offset *is* the slot, so the read landed one V-Table
+width past the real block and returned an empty label — a silently dropped code
+rather than a failure. `resolve_choice`'s `parent_offset` parameter is
+load-bearing for the same reason and must be handed the containing block; both
+call sites used to pass the slot.
 
 ### 8.4 The `ParserOps` table
 

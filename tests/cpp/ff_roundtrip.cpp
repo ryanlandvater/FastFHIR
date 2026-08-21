@@ -100,13 +100,13 @@ int main(int argc, char** argv) {
             .source_type = FF_SOURCE_FHIR_JSON,
             .payload = json_str,
         }, root_handle, resource_count);
-        if (result.code != FF_SUCCESS) {
+        if (result.failed()) {
             std::cerr << "Ingest failed: " << result.message << "\n";
             return 1;
         }
-        // A successful ingest can still have discarded entries (out-of-profile
-        // resource types). stdout is the round-trip document, so this goes to
-        // stderr — but it must go somewhere, or the loss is silent again.
+        // A successful ingest can still carry warnings (out-of-profile resource
+        // types are discarded). stdout is the round-trip document, so warnings
+        // go to stderr — but they must go somewhere, or the loss is silent again.
         if (!result.message.empty()) {
             std::cerr << result.message << "\n";
         }

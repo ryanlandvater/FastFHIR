@@ -522,7 +522,7 @@ void assign_py_obj(Reflective::MutableEntry& entry, py::handle obj, Reflective::
             .payload = json_string,
         });
 
-        if (res.code != FF_SUCCESS) {
+        if (res.failed()) {
             throw std::runtime_error(res.message);
         }
         return;
@@ -973,7 +973,7 @@ PYBIND11_MODULE(_core, m) {
             Reflective::ObjectHandle root;
             Size count = 0;
             FF_Result res = FF_Ingest(info, root, count);
-            if (res.code != FF_SUCCESS) throw std::runtime_error(res.message);
+            if (res.failed()) throw std::runtime_error(res.message);
             return py::make_tuple(PyStreamNode(stream.m_builder, root), static_cast<size_t>(count));
         }, py::arg("stream"), py::arg("source_type"), py::arg("payload"))
         .def("reset", [](FF_Ingestor_t& self) { return self.impl.reset(); })

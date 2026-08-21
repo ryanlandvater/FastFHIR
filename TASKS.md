@@ -934,52 +934,62 @@ assertions and leaves both controls passing.
 Cost: none measurable. `validate_FFHR_stream()` on the 50.8 MiB fixture at
 `-O3` reads 10.46 ms, inside the 10.24–10.51 ms spread of the DT-1.5 build.
 
-### DT-1.7 — ⚠ `Node::as<string_view>()` resolves a choice-embedded code against the wrong base (P1, OPEN)
+### DT-1.7 — `Node::as<string_view>()` resolved a code against the wrong base — ✅ DONE 2026-08-20
 
-**Four sites resolve a code's fallback offset; three agree and one does not.**
+**Four sites spell the fallback-offset arithmetic; one disagreed.**
 
-| Site | Base used |
-|---|---|
-| `ENCODE_FF_CODE` (writer) | containing block |
-| `write_choice_slot` (compactor, `src/FF_Compactor.cpp:230`) | containing block (`entry.parent_offset`) |
-| `Entry::operator std::string_view()` (`FF_Parser.hpp:567`) | containing block (`parent_offset`) |
-| **`Node::as<std::string_view>()`** (`FF_Parser.hpp:505`) | **`m_node_offset`** |
+| Site | Base used | |
+|---|---|---|
+| `ENCODE_FF_CODE` (writer) | containing block | ✅ |
+| `write_choice_slot` (compactor) | containing block (`entry.parent_offset`) | ✅ |
+| `Entry::operator std::string_view()` | containing block (`parent_offset`) | ✅ |
+| `Entry::print_scalar_json()` | containing block (`parent_offset`) | ✅ |
+| **`Node::as<std::string_view>()`** | **`m_node_offset`** | ❌ |
 
-For an ordinary code field the two coincide, so nothing has ever shown. For a
-**choice** variant they do not: `resolve_choice` sets `m_node_offset` to the
-*slot* (`FF_Parser.cpp:886`), so `Node::as` resolves relative to the slot while
-everything else resolves relative to the block — they differ by the field's
-V-Table offset. `print_json`'s `case FF_FIELD_CODE` is annotated "only reachable
-for choice[x] nodes", so the export path is exactly what hits it.
+For an ordinary code field the two coincided, which is why it never showed. For
+a **choice** variant they do not: `resolve_choice` sets `m_node_offset` to the
+*slot*, so the read landed one V-Table width away from the real block. Worse,
+**both** `resolve_choice` call sites passed `slot_offset` as the `parent_offset`
+argument, so that parameter had never once carried the containing block.
 
-Consequences: (1) a legitimately written choice-embedded fallback code would
-decode from the wrong address; (2) DT-1.6 validates the block-relative address
-— the correct one — so the address `Node::as` actually dereferences is still
-unchecked, bounded to within a V-Table's width of a validated location but not
-guaranteed inside the stream.
+**Observed pre-fix**, not inferred: a choice slot holding a genuine
+`ENCODE_FF_CODE`-written fallback for `"org-local-code-91827"` decoded to
+**`''`** — silent data loss, no crash, no warning. `print_json` omitted the code
+entirely. Post-fix both return the code.
 
-**This is urgent before DT-3, not after.** `Observation.effective[x]` admits
-`effectiveDateTime`, so once DT-2 lands, choice slots will routinely hold
-date/time variants whose unfittable values take an `FF_STRING` fallback — the
-same shape, on a field that appears in nearly every Observation.
+**Fix — resolve where the operand still exists.** A `Node` carries only its own
+offset, so any arithmetic deferred past construction has already lost the block.
+`ParserOps::code_node()` now performs it at the one point where the block is
+known, and returns a node already pointing at the `FF_CODEABLE_CONCEPT` (tagged
+`RECOVER_FF_CODEABLE_CONCEPT`, kind still `FF_FIELD_CODE` so `print_json` treats
+it as a coded leaf). All three producers route through it — both
+`entry_as_node` implementations and `resolve_choice` — and both call sites now
+pass `e.parent_offset`. `Node::as<string_view>()` gains a branch for the
+already-resolved case and **throws** on the old one, which is now unreachable:
+the parent is genuinely unknown there, so any answer would be a guess, and a
+wrong address reads plausible garbage rather than failing.
 
-⚠ **The fix is Ryan's call because the obvious one has a measured cost.**
-`Reflective::Node` is **48 bytes** (verified) and carries no parent offset;
-adding one takes it to 56 (+17%) on a struct the read path materialises per
-element — `entries()` is 36 µs for 31,042 elements at `-O3`, and a one-shot-fill
-rewrite of that same loop already regressed 36→58 µs once. Options:
-1. Add `m_parent_offset` to `Node`. Correct and general; measure `entries()`
-   before and after rather than assuming the 8 bytes are free.
-2. Have `resolve_choice` resolve the fallback eagerly and hand back a node that
-   already points at the `FF_CODEABLE_CONCEPT`, leaving `Node::as` with nothing
-   to compute. No size change; moves work to construction.
-3. Make `Node::as` throw for a flagged code it cannot resolve, and keep choice
-   variants restricted to non-fallback codes. Cheapest, but it forbids a value
-   FHIR permits, so it is only defensible if ingest never produces one — which
-   has not been established.
+This is the same shape as DT-1.6's lesson: the check (or here, the arithmetic)
+belongs in **one** place that every path calls, because a value type reachable
+through several slot shapes will otherwise be handled correctly in some and not
+others.
 
-Recommend **2**, then re-measure `entries()`. Do not pick **3** without first
-checking whether the ingestor emits a fallback code into a choice slot.
+**Note for DT-3:** a date/time variant in a choice slot needs exactly this
+treatment — `Observation.effective[x]` admits `effectiveDateTime`, and an
+unfittable value takes an `FF_STRING` fallback with the same block-relative
+convention. `code_node` is the pattern to copy.
+
+Tests: `ff_test_graph_bounds` section 6c builds the fallback with the real
+`ENCODE_FF_CODE` (not a hand-packed offset, so the convention under test is the
+writer's own), then asserts both the `Node` path and `print_json` return the
+code. Red-green: reverting the reader branch *and* the eager resolution makes
+both assertions fail with `got ''`.
+
+Cost: `print_json` over the 50.8 MiB fixture is **190.8 ms** against the 197 ms
+recorded baseline — no regression on the path this touches. (`validate_FFHR_
+stream()` read 11.02–11.18 ms in the same session versus 10.24–10.51 ms earlier;
+DT-1.7 changes no code that walk executes, so that shift is code layout or
+machine drift and was **not** isolated.)
 
 ---
 
@@ -4595,6 +4605,56 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
 ---
 
 # ▶ WORK ORDER — FF_* EXTERNAL API: asciidoc generation + README sweep
+
+> **Review of `docs/api.adoc` (2026-08-21).** Checked claim-by-claim against
+> `include/FastFHIR.hpp`. Corrections applied to the doc; two findings are
+> **code/build defects, not documentation defects**, and are listed below.
+>
+> **1. The installed header set does not compile.** `install(FILES ...)` ships
+> seven headers, but the closure is missing five: `FastFHIR.hpp` includes
+> `FF_Version.hpp`, and `FF_Parser.hpp` includes `FF_Dictionary.hpp`,
+> `FF_Memory.hpp`, `FF_Ops.hpp` and `FF_Utilities.hpp`. So `#include
+> <FastFHIR.hpp>` against an installed prefix fails. `FF_Ops.hpp` was
+> additionally documented as "internal, not installed" while being a hard
+> dependency of an installed header. **Belongs in Block H (packaging).** The
+> decision is which of the five become public headers versus getting their
+> public parts hoisted into `FF_Primitives.hpp`; that is a design call, so it is
+> recorded rather than fixed.
+>
+> **2. `FF_Compact` sizes its destination arena from the source** on the
+> assumption that compaction never grows a stream. The dense layout drops absent
+> slots but adds a presence bitmask per block, so a fully-populated resource is
+> not obviously smaller, and nothing asserts it. It fails safely —
+> `claim_space` throws, `FF_Compact` returns `FF_CAPACITY_EXCEEDED` — so this is
+> a documentation-and-assertion gap, not a corruption risk. Worth a test that
+> compacts a fully-dense resource and pins the outcome.
+>
+> **3. The two Mermaid diagrams do not render as diagrams.** `asciidoctor
+> docs/api.adoc` exits 0 with no warnings, but both blocks emit as
+> `<code class="language-mermaid">` — highlighted source, not a picture. The
+> Markdown-style ``` fences are fine (Asciidoctor accepts them), and so is the
+> rest of the Markdown-in-AsciiDoc the file uses; what is missing is a diagram
+> toolchain. I1.9 pins `asciidoctor` + `asciidoctor-pdf` but not
+> `asciidoctor-diagram`, which is what turns a `[mermaid]` block into an image
+> (and needs mermaid-cli, or Kroki to avoid the Node dependency). Since the
+> style guide requires diagrams in architecture docs, whichever route is chosen
+> has to be pinned in I1.9 before this document is generated rather than
+> hand-written. Not changed here — it is a pipeline decision.
+>
+> Doc corrections made: the mutation example did not compile (`= "final"`
+> instantiates `TypeTraits<char[6]>`; a string value must be a
+> `std::string_view`) and applied a `Fields::PATIENT` key to an `Observation`
+> handle; `FF_Result_Code`'s explicit `0x100` failure banding was missing;
+> `FF_Result`'s non-explicit one-argument constructor was undocumented; the
+> "single Info struct" convention has four exceptions, not one; the
+> `append_obj(offsets, tag)` overload is public, not removed; the lifecycle
+> diagram named a struct where a function belongs.
+>
+> **Method note:** `.arbiter/` was used as the map. It is partly stale — it
+> still indexes `include/FF_API.hpp` and `src/FF_API.cpp` as separate files,
+> and that header no longer exists (its contents were folded into
+> `FastFHIR.hpp`). Every claim was therefore re-derived from source, and the two
+> examples were compiled rather than read.
 
 Written 2026-08-21 after the FF_* external API landed (see `include/FastFHIR.hpp`,
 `src/FF_API.cpp`, `docs/api.adoc`). The API itself is done; what remains is

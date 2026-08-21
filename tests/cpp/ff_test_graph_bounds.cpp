@@ -22,6 +22,7 @@
 #include "FF_AllTypes.hpp"
 #include "FF_Reflection.hpp"   // reflected_fields_view, for the DT-1.5 tripwire
 #include <cstdio>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -509,6 +510,72 @@ int main() {
             CHECK(static_cast<bool>(px.validate_FFHR_stream()),
                   "an inert scalar variant is still treated as inline");
         }
+    }
+
+    // ── 6c. A FLAGGED CODE DECODES FROM THE RIGHT ADDRESS (DT-1.7) ─────────
+    // The fallback offset is relative to the CONTAINING BLOCK. Four sites spell
+    // that arithmetic; Node::as<string_view>() used to resolve against the
+    // node's own offset instead, which for a choice variant is the SLOT -- a
+    // V-Table width away from the real block. It never showed on the ordinary
+    // field path because Entry reads the code itself, without building a Node.
+    //
+    // This lives here rather than in test_codeable_concept.cpp because it needs
+    // a parsed stream, which that file has no machinery for.
+    {
+        Memory mem = Memory::create(1ull << 22);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
+        ObservationData o; o.id = "flagged-code-decode";
+        auto ho = FF_StreamAppendObject(stream, o);
+        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
+            .stream = stream,
+            .root = ho,
+        }), "set root");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
+
+        const Offset obs = ho.offset();
+        const char* LOCAL_CODE = "org-local-code-91827";
+        CHECK(FF_GetDictionaryCode(LOCAL_CODE, FHIR_VERSION_R5) == FF_CODE_NULL,
+              "fixture code must NOT be a dictionary entry, or no block is written");
+
+        // Grow the buffer and let ENCODE_FF_CODE write a genuine
+        // FF_CODEABLE_CONCEPT into the tail -- the same call the writer makes,
+        // so the offset convention under test is the real one, not a guess.
+        std::vector<BYTE> bytes(view.data(), view.data() + view.size());
+        const Offset cc_at = bytes.size();
+        bytes.resize(bytes.size() + 256, BYTE{0});
+        Offset child = cc_at;
+        const uint32_t packed = ENCODE_FF_CODE(bytes.data(), obs, child,
+                                               std::string(LOCAL_CODE), FHIR_VERSION_R5,
+                                               FF_CodeableConceptSystem::UNKNOWN);
+        CHECK((packed & FF_CODEABLE_CONCEPT_FLAG) != 0, "fixture slot is flagged");
+
+        // Put it in the choice slot as an active RECOVER_FF_CODE variant.
+        const Offset choice = obs + FF_OBSERVATION::EFFECTIVE;
+        STORE_U64(bytes.data() + choice, static_cast<uint64_t>(packed));
+        STORE_U16(bytes.data() + choice + DATA_BLOCK::RECOVERY,
+                  static_cast<uint16_t>(RECOVER_FF_CODE));
+
+        FastFHIR::Parser px(bytes.data(), bytes.size());
+        CHECK(static_cast<bool>(px.validate_FFHR_stream()),
+              "a correctly-based flagged code variant validates");
+
+        auto entry = px.root()[FastFHIR::Fields::OBSERVATION::EFFECTIVE];
+        const std::string decoded(entry.as_node().as<std::string_view>());
+        const std::string msg = "choice-embedded flagged code decodes (got '" + decoded + "')";
+        CHECK(decoded == LOCAL_CODE, msg.c_str());
+
+        // And the ordinary field path must agree with it -- the two readers
+        // disagreeing by a V-Table width is the whole defect.
+        std::ostringstream js;
+        px.root().print_json(js);
+        CHECK(js.str().find(LOCAL_CODE) != std::string::npos,
+              "print_json renders the same code");
     }
 
     // ── 7. TRIPWIRE: the date/time half of DT-1.5 (see section 6) ──────────

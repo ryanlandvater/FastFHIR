@@ -221,11 +221,14 @@ int main(int argc, char *argv[])
 
         result = FF_Ingest(ingest_info, root_handle, parsed_count);
 
-        if (result.code != FF_SUCCESS)
+        if (result.failed())
         {
             std::cerr << "[FastFHIR Injest CLI] Fatal Ingestion Error: " << result.message << "\n";
             return 1;
         }
+        // Warnings (e.g. out-of-profile resources discarded) keep the run alive.
+        if (result.is_warning())
+            std::cerr << "[FastFHIR Injest CLI] Warning: " << result.message << "\n";
 
         std::cerr << "[FastFHIR Injest CLI] Successfully parsed " << parsed_count << " resources.\n";
 

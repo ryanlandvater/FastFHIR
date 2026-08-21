@@ -242,6 +242,18 @@ containing block, and walked against `RECOVER_FF_CODEABLE_CONCEPT`
 `FF_STRING` (TASKS.md DT-1.5). A slot kind that can point somewhere and is not in
 `slot_carries_offset` is a hole in the validator.
 
+**A block-relative offset must be resolved while the parent is still in hand.** Both
+fallback offsets are signed and relative to the *containing block*, so resolving one takes
+two operands — and `Reflective::Node` carries only its own offset, never its parent's.
+`Reflective::Entry` is the type that still has both (`parent_offset` + `vtable_offset`), so
+the arithmetic belongs there or at node construction, never later. `ParserOps::code_node()`
+is that single place for code slots; every producer of a code node calls it, and the node
+it returns already points at the `FF_CODEABLE_CONCEPT`. Deferring it is not a style
+preference — `Node::as<std::string_view>()` used to resolve against the node's own offset,
+which for a choice (`[x]`) variant is the *slot*, and so read one V-Table width past the
+block and returned an empty label: a silently dropped code, no crash, no warning. DT-3 owes
+the date/time slot the same treatment.
+
 The residue that remains genuinely unchecked is narrow: a slot holding *only* inline bytes
 (bit 63 clear), reinterpreted by a later format change. The `Parser` reads `engine_version`
 but never rejects on it, so such a stream reads back *successfully and wrongly* rather than

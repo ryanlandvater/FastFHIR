@@ -208,6 +208,18 @@ which bit was the sign bit. The shift-based approach works uniformly:
 left-shift by 1 puts bit 30 in the sign position of `int32_t`, arithmetic
 right-shift sign-extends the full 31-bit signed range (±1 GB).
 
+**`parent_offset` above is the containing block, and that is not negotiable.**
+The offset is block-relative, so resolving it needs an operand the value itself
+does not carry. `Reflective::Entry` still has it (`parent_offset` +
+`vtable_offset`); `Reflective::Node` does not — a node knows only its own
+offset. Every path that turns a code slot into a node therefore resolves through
+`ParserOps::code_node()`, which does the arithmetic at construction and returns
+a node already pointing at the `FF_CODEABLE_CONCEPT`. Code that defers it has
+already lost the operand: `Node::as<std::string_view>()` used to resolve against
+the node's own offset, which for a choice (`[x]`) variant is the *slot*, and
+returned an empty label instead of the code — silently. The same rule will apply
+to a date/time variant once DT-2 emits them.
+
 ---
 
 ## 4. `FF_CODEABLE_CONCEPT` — Block Specification

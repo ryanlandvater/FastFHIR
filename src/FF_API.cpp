@@ -40,7 +40,7 @@ FF_Result FF_Guard(const char* op, Fn&& fn) noexcept
 
 FF_Result FF_Invalid(const char* op, const char* why) noexcept
 {
-    return FF_Result{FF_VALIDATION_FAILURE, std::string(op) + ": " + why};
+    return FF_Result{FF_INVALID_ARGUMENT, std::string(op) + ": " + why};
 }
 
 } // namespace

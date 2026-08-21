@@ -389,14 +389,20 @@ public:
 
     /**
      * @brief Resolve a choice node to its concrete type based on the schema kind.
-     * 
+     *
      * @param base Pointer to the base of the FastFHIR data.
      * @param size Size of the FastFHIR data.
      * @param version Version of the FastFHIR data.
-     * @param parent_offset Offset of the parent node.
+     * @param parent_offset Offset of the **containing block** — NOT the slot.
+     *        Load-bearing: a flagged `RECOVER_FF_CODE` variant stores a signed
+     *        offset relative to the block, and this is the only operand that
+     *        can resolve it (a `Node` keeps no parent). Both call sites once
+     *        passed `value_offset` here, which read one V-Table width past the
+     *        real block and returned an empty code.
      * @param value_offset Offset of the value within the parent node.
      * @param schema_kind The schema kind to resolve the choice against.
-     * @return Node representing the resolved choice.
+     * @return Node representing the resolved choice. For a flagged code variant
+     *         this already points at the `FF_CODEABLE_CONCEPT` block.
      */
     static Node resolve_choice(const BYTE* base, Size size, uint32_t version, 
                        Offset parent_offset, Offset value_offset, FF_FieldKind schema_kind,
@@ -502,11 +508,27 @@ public:
                 }
 
                 if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
-                    Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, m_node_offset);
-                    return FF_DECODE_CODEABLE_CONCEPT(m_base, abs_off, m_version).label;
+                    // Unreachable: every producer of a code Node resolves the
+                    // flagged case eagerly (ParserOps::code_node), because the
+                    // offset is relative to the CONTAINING BLOCK and a Node no
+                    // longer knows it. This used to resolve against
+                    // m_node_offset -- the slot for a choice variant -- and so
+                    // decoded a V-Table width away from the real block. Loud,
+                    // not silent: a wrong address here reads plausible garbage.
+                    throw std::runtime_error(
+                        "FastFHIR: code Node carries an unresolved CodeableConcept "
+                        "offset; the containing block is no longer known. Build it "
+                        "through ParserOps::code_node.");
                 }
 
                 return "";
+            }
+
+            // A flagged code, already resolved to its block by code_node(). No
+            // arithmetic left to do -- that is the entire point of resolving at
+            // construction.
+            if (m_recovery == RECOVER_FF_CODEABLE_CONCEPT) {
+                return FF_DECODE_CODEABLE_CONCEPT(m_base, m_node_offset, m_version).label;
             }
 
             if (m_recovery != RECOVER_FF_STRING) {

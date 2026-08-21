@@ -922,12 +922,18 @@ patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "";
 
 #### Read path (inverse operation)
 
-On read, `Node::as<std::string_view>()` performs the inverse resolution order:
+On read, converting a code field to `std::string_view` performs the inverse
+resolution order:
 
 1. Try dictionary resolution via `FF_ResolveCode`
-2. If unresolved, check `FF_CODEABLE_CONCEPT_FLAG` and follow the relative pointer
-   to the `FF_CODEABLE_CONCEPT` block, then decode per system discriminator
-3. Return the referenced custom `FF_STRING` payload
+2. If unresolved, check `FF_CODEABLE_CONCEPT_FLAG` and follow the pointer — signed
+   and **relative to the containing block** — to the `FF_CODEABLE_CONCEPT` block
+3. Decode that block per its system discriminator and return the label
+
+The relative pointer is resolved while the containing block is still known: on
+the fast path by `Entry`, which holds both coordinates, and otherwise at node
+construction. A `Node` keeps only its own offset, so nothing downstream of that
+point can redo the arithmetic.
 
 This is why code fields can be assigned with normal strings while still keeping
 fast dictionary-backed storage for known values.

@@ -46,6 +46,12 @@ struct ParserOps {
                                        RECOVERY_TAG expected_tag, FF_FieldKind schema_kind,
                                        const ParserOps* ops);
 
+    // Shared by every path that turns a CODE slot into a Node -- the two
+    // entry_as_node implementations and resolve_choice. See the definition.
+    static Node code_node(const BYTE* base, Size size, uint32_t version,
+                          Offset block_offset, Offset slot_offset,
+                          const ParserOps* ops, uint32_t engine_ver);
+
     static size_t compact_node_size(const Node& n);
     static std::vector<Node> compact_node_entries(const Node& n);
     static Entry compact_node_lookup_field(const Node& n, FF_FieldKey key);
@@ -134,6 +140,33 @@ Entry ParserOps::compact_node_lookup_field(const Node& n, FF_FieldKey key) {
     );
 }
 
+// A code slot holds either an inline dictionary id or, when
+// FF_CODEABLE_CONCEPT_FLAG is set, a signed relative offset to an
+// FF_CODEABLE_CONCEPT block -- relative to the CONTAINING BLOCK, the convention
+// ENCODE_FF_CODE writes and the compactor and both Entry readers already use.
+//
+// The flagged case is resolved HERE, at the last point where the containing
+// block is known: a Node carries only its own offset, so any caller that defers
+// this arithmetic has already lost an operand. Deferring it is precisely what
+// went wrong -- Node::as<string_view>() resolved against the node's own offset,
+// which for a choice variant is the SLOT, landing a V-Table width away from the
+// real block and decoding whatever happened to sit there.
+Node ParserOps::code_node(const BYTE* base, Size size, uint32_t version,
+                          Offset block_offset, Offset slot_offset,
+                          const ParserOps* ops, uint32_t engine_ver) {
+    const uint32_t raw = LOAD_U32(base + slot_offset);
+    if (raw != FF_CODE_NULL && (raw & FF_CODEABLE_CONCEPT_FLAG)) {
+        // Kind stays FF_FIELD_CODE so print_json still treats this as a coded
+        // leaf; the RECOVERY tag is what tells as<>() the arithmetic is done.
+        return Node(base, size, version,
+                    FF_ResolveCodeableConceptOffset(raw, block_offset),
+                    RECOVER_FF_CODEABLE_CONCEPT, FF_FIELD_CODE,
+                    FF_RECOVER_UNDEFINED, false, ops, engine_ver);
+    }
+    return Node(base, size, version, slot_offset, RECOVER_FF_CODE, FF_FIELD_CODE,
+                FF_RECOVER_UNDEFINED, false, ops, engine_ver);
+}
+
 Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t version,
                                       RECOVERY_TAG expected_tag, FF_FieldKind schema_kind,
                                       const ParserOps* ops) {
@@ -149,12 +182,18 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
         case FF_FIELD_INT64:
         case FF_FIELD_UINT64:
         case FF_FIELD_FLOAT64:
-        case FF_FIELD_CODE:
             return Node(e.base, size, version, slot_offset, expected_tag, schema_kind,
                         FF_RECOVER_UNDEFINED, false, compact_ops, e.m_engine_version);
 
+        case FF_FIELD_CODE:
+            return code_node(e.base, size, version, e.parent_offset, slot_offset,
+                             compact_ops, e.m_engine_version);
+
         case FF_FIELD_CHOICE:
-            return Node::resolve_choice(e.base, size, version, slot_offset, slot_offset, schema_kind, compact_ops);
+            // parent_offset, not slot_offset: the fallback offset inside a
+            // choice variant is relative to the containing block (see
+            // resolve_choice). Passing the slot made it self-relative.
+            return Node::resolve_choice(e.base, size, version, e.parent_offset, slot_offset, schema_kind, compact_ops);
 
         case FF_FIELD_RESOURCE: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
@@ -949,7 +988,24 @@ Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version,
     assert(schema_kind == FF_FIELD_CHOICE && "resolve_choice called on non-choice V-Table slot");
     RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + value_offset + DATA_BLOCK::RECOVERY));
     
-    if ((tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) { 
+    if ((tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) {
+        // A FLAGGED CODE VARIANT IS NOT INLINE. Its low 4 bytes are a signed
+        // relative offset to an FF_CODEABLE_CONCEPT, and -- like every other
+        // spelling of this offset (ENCODE_FF_CODE, the compactor's
+        // write_choice_slot, Entry's two readers) -- it is relative to the
+        // CONTAINING BLOCK, not to the slot.
+        //
+        // It has to be resolved HERE because this is the last point at which
+        // the containing block is known: the Node that comes out carries only
+        // its own offset, so arithmetic deferred past this line has already
+        // lost an operand. Deferring it is exactly what went wrong before --
+        // Node::as<string_view>() resolved against the node's own offset, which
+        // for a choice variant is the slot, and so read the containing block's
+        // V-Table width away from the real block.
+        if (tag == RECOVER_FF_CODE) {
+            return ParserOps::code_node(base, size, version, parent_offset, value_offset,
+                                        ops, /*engine_ver=*/0);
+        }
         Node n(base, size, version, parent_offset, tag, Recovery_to_Kind(tag),
                FF_RECOVER_UNDEFINED, false, ops);
         n.m_node_offset = value_offset;
@@ -1229,13 +1285,18 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
         case FF_FIELD_INT64:
         case FF_FIELD_UINT64:
         case FF_FIELD_FLOAT64:
-        case FF_FIELD_CODE:
             // Scalar slots are inline values at slot_offset.
             return Node(e.base, size, version, slot_offset, expected_tag, schema_kind,
                         FF_RECOVER_UNDEFINED, false, ops, e.m_engine_version);
 
+        case FF_FIELD_CODE:
+            // A code is inline ONLY while its flag is clear; see code_node.
+            return code_node(e.base, size, version, e.parent_offset, slot_offset,
+                             ops, e.m_engine_version);
+
         case FF_FIELD_CHOICE: 
-            return Node::resolve_choice(e.base, size, version, slot_offset, slot_offset, schema_kind, ops);
+            // parent_offset, not slot_offset -- see the compact path above.
+            return Node::resolve_choice(e.base, size, version, e.parent_offset, slot_offset, schema_kind, ops);
 
         case FF_FIELD_RESOURCE: {
             Offset actual_off = LOAD_U64(e.base + slot_offset);
