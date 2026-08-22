@@ -480,10 +480,20 @@ template<> struct TypeTraits<std::vector<uint32_t>> {
 
 template<> struct TypeTraits<std::vector<double>> {
     static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_FLOAT64 | RECOVER_ARRAY_BIT);
-    static Size size(const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_FLOAT64); }
+    // A decimal entry is TYPE_SIZE_DECIMAL wide, not TYPE_SIZE_FLOAT64: the 9th
+    // byte is the source digit count. std::vector<double> has nowhere to keep a
+    // per-element count, so every entry writes the sentinel and exports
+    // shortest-round-trip -- but the STRIDE must still match what
+    // generate_store_fields emits for the same array, or the two writers
+    // disagree by one byte per element and the reader walks off the entries.
+    static Size size(const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_DECIMAL); }
     static Offset store(BYTE* const base, Offset off, const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) {
-        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_FLOAT64, static_cast<uint32_t>(d.size()), recovery);
-        for (const auto& v : d) { STORE_F64(base + off, v); off += TYPE_SIZE_FLOAT64; }
+        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_DECIMAL, static_cast<uint32_t>(d.size()), recovery);
+        for (const auto& v : d) {
+            STORE_F64(base + off, v);
+            STORE_U8(base + off + TYPE_SIZE_UINT64, FF_DECIMAL_SIGFIGS_UNSPECIFIED);
+            off += TYPE_SIZE_DECIMAL;
+        }
         return off;
     }
 };

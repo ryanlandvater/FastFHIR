@@ -560,10 +560,17 @@ bytes (`FF_IsFieldEmpty`), never by comparing against the constant.
 
 **Decimals carry their source precision in a 9th byte.** `decimal` is the only
 FHIR type that reaches an `FF_FIELD_FLOAT64` slot, and the slot is
-`[ double (8) | sigfigs (1) ]`. The double at `+0` is the value, numerically
-exact and readable with a plain `LOAD_F64` — a downstream consumer maps those
-eight bytes as a `DOUBLE` and sorts and filters on them natively, so nothing may
-be encoded into them. The byte at `+8` records how many digits followed the `.`
+`[ double (8) | sigfigs (1) ]`. The kind keeps the `FLOAT64` name deliberately:
+it is named for the slot's *primary view*, not for the FHIR type. Reading the
+first eight bytes as a plain IEEE-754 double and ignoring the ninth is a
+supported, complete way to consume the slot — a column store, an index, or any
+floating-point arithmetic that does not care how the value was typed gets what
+it needs with no decode. Precision is the addendum, wanted by exactly one
+consumer: the JSON exporter. Nothing may be encoded into the value bytes.
+
+A consequence worth stating: `100.0` and `100` produce **identical** first eight
+bytes and differ only at `+8`. Equal as numbers, distinguishable as text — which
+is what lets one slot serve both audiences. The byte at `+8` records how many digits followed the `.`
 in the source document, because FHIR counts trailing zeros as significant
 (`62.00` asserts hundredths, `62` does not) and no bit pattern of a binary64 is
 free to say so. It is the decimal *scale* — what `%.*f` consumes — not a count

@@ -64,7 +64,11 @@ constexpr uint64_t FF_NULL_UINT64 = 0xFFFFFFFFFFFFFFFF;
 // Code Null (Safely traps 0xFFFFFFFF before custom string masking)
 constexpr uint32_t FF_CODE_NULL = FF_NULL_UINT32;
 
-// Float Nulls. BIT PATTERN, NOT VALUE -- the distinction is the whole point.
+// Decimal Null. BIT PATTERN, NOT VALUE -- the distinction is the whole point.
+//
+// One constant, not a float/double pair: `decimal` is the only FHIR type that
+// reaches a floating-point slot and it is always a binary64, so the 32-bit
+// sentinel had no user and is gone.
 //
 // The wire invariant every fixed-width slot obeys is "all-ones raw bytes mean
 // absent", and FF_IsFieldEmpty implements exactly that for FF_FIELD_FLOAT64:
@@ -83,7 +87,6 @@ constexpr uint32_t FF_CODE_NULL = FF_NULL_UINT32;
 // nothing may test a decimal for absence by comparing against this constant.
 // Read the slot's raw bytes (FF_IsFieldEmpty) -- the same rule the offset,
 // code and datetime sentinels already follow.
-constexpr float FF_NULL_F32 = std::bit_cast<float>(FF_NULL_UINT32);
 constexpr double FF_NULL_F64 = std::bit_cast<double>(FF_NULL_UINT64);
 constexpr Offset FF_NULL_OFFSET = FF_NULL_UINT64;
 // ── Reserved In-Flight Sentinels ──────────────────────────────────────
@@ -632,8 +635,6 @@ enum TYPE_SIZE : uint8_t
     TYPE_SIZE_UINT32 = 4,
     TYPE_SIZE_INT32 = 4,
     TYPE_SIZE_UINT64 = 8,
-    TYPE_SIZE_FLOAT32 = 4,
-    TYPE_SIZE_FLOAT64 = 8,
     TYPE_SIZE_OFFSET = 8,
     TYPE_SIZE_DECIMAL = 9,
     TYPE_SIZE_RESOURCE = 10,
@@ -741,8 +742,20 @@ constexpr uint8_t ff_slot_width(const FF_FieldKind kind)
 // =====================================================================
 // DECIMAL SLOT — [ double (8) | sigfigs (1) ]
 // =====================================================================
-// FHIR `decimal` is the only type that lands in an FF_FIELD_FLOAT64 slot, and
-// the slot carries two things that cannot be derived from one another:
+// The kind is FF_FIELD_FLOAT64 and stays that way on purpose. FHIR `decimal`
+// is its only occupant, but the slot's PRIMARY view -- the one most consumers
+// want -- is a plain IEEE-754 double, and the kind is named for the view, not
+// for the FHIR type. Reading the slot as a float64 and ignoring the 9th byte
+// is a supported, complete way to consume it: a column store, an index, or any
+// arithmetic that does not care how the number was typed gets exactly what it
+// needs from the first 8 bytes with no decode. Sigfigs is an addendum for the
+// one consumer that needs lexical fidelity -- the JSON exporter.
+//
+// Two values that are numerically equal but were written differently (`100.0`
+// and `100`) therefore have IDENTICAL first 8 bytes and differ only at +8.
+// That is the intended semantics: equal as numbers, distinguishable as text.
+//
+// The slot carries two things that cannot be derived from one another:
 //
 //   +0  IEEE-754 binary64, the VALUE. Numerically exact and readable with a
 //       plain LOAD_F64 -- a downstream consumer (a column store, an index)
