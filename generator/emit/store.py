@@ -37,7 +37,19 @@ def generate_size_fields(layout, block_struct_name, data_name):
             # one still costs a 14-byte FF_STRING header. Guarding here and not
             # there is the SIZE/STORE asymmetry that produced A23 Bug B. An
             # absent choice is std::monostate, not an empty string.
-            cpp += f"            __total += SIZE_FF_STRING(arg);\n"
+            #
+            # A date/time variant holds its text in the SAME std::string_view,
+            # so the branch above cannot tell it apart -- only the tag can. It
+            # needs child space only when the text will not pack into 63 bits,
+            # which is what SIZE_FF_DATETIME answers (0 when it packs). This
+            # must mirror the STORE branch below exactly or the claim and the
+            # write disagree.
+            cpp += (
+                f"            if (FF_IsDateTimeTag({data_name}.{f['cpp_name']}.tag))\n"
+                f"                __total += SIZE_FF_DATETIME(arg, {data_name}.{f['cpp_name']}.tag);\n"
+                f"            else\n"
+                f"                __total += SIZE_FF_STRING(arg);\n"
+            )
             cpp += f"        }}\n"
             cpp += f"    }}, {data_name}.{f['cpp_name']}.value);\n"
         elif kind == "FF_FIELD_ARRAY":
@@ -153,11 +165,26 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             cpp += f"            STORE_U16({vtable_off} + 8, {data_name}.{f['cpp_name']}.tag);\n"
             cpp += f"        }}\n"
 
-            # 3. Variable-Length String Primitives
+            # 3. Variable-Length String Primitives — and date/time, which
+            #    arrives in the same std::string_view and is separated only by
+            #    the tag. ENCODE_FF_DATETIME returns the 8-byte slot word
+            #    directly (packed civil value, or a flagged relative offset to
+            #    an FF_STRING it writes into child space) and advances child_off
+            #    itself, so there is no STORE_U64(slot, child_off) here: writing
+            #    an absolute FF_STRING offset into a date/time slot is what the
+            #    reader would unpack as a garbage civil date.
             cpp += f"        else if constexpr (std::is_same_v<T, std::string_view>) {{\n"
-            cpp += f"            STORE_U64({vtable_off}, child_off);\n"
-            cpp += f"            child_off += STORE_FF_STRING(__base, child_off, arg);\n"
-            cpp += f"            STORE_U16({vtable_off} + 8, {data_name}.{f['cpp_name']}.tag);\n"
+            cpp += f"            const RECOVERY_TAG __ct = {data_name}.{f['cpp_name']}.tag;\n"
+            cpp += f"            if (FF_IsDateTimeTag(__ct)) {{\n"
+            cpp += (
+                f"                STORE_U64({vtable_off}, ENCODE_FF_DATETIME("
+                f"__base, hdr_off, child_off, arg, __ct));\n"
+            )
+            cpp += f"            }} else {{\n"
+            cpp += f"                STORE_U64({vtable_off}, child_off);\n"
+            cpp += f"                child_off += STORE_FF_STRING(__base, child_off, arg);\n"
+            cpp += f"            }}\n"
+            cpp += f"            STORE_U16({vtable_off} + 8, __ct);\n"
             cpp += f"        }}\n"
 
             # 4. Immediate Serialization Offsets (Quantity, CodeableConcept, etc.)

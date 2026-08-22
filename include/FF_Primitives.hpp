@@ -1742,3 +1742,30 @@ Offset STORE_FF_DATETIME(BYTE *const __base, Offset start_offset,
                           std::string_view text, RECOVERY_TAG tag);
 uint64_t ENCODE_FF_DATETIME(BYTE *const __base, Offset block_offset, Offset &child_off,
                              std::string_view text, RECOVERY_TAG tag);
+
+// Is this tag one of the four date/time types?
+//
+// A choice ([x]) slot needs this at runtime and cannot get it from the field
+// kind: the POD holds the text as a std::string_view exactly like `string`
+// does, so the C++ type the store dispatches on is identical for both, and the
+// TAG is the only thing that separates valueDateTime from valueString. Writing
+// a date/time variant as a plain FF_STRING offset is not merely a wrong label
+// -- the reader unpacks those 8 bytes as a packed civil value and produces a
+// garbage date.
+//
+// The four are contiguous by construction; the static_asserts hold the range
+// to the enum so a fifth date/time tag cannot be appended past the end and
+// silently fall outside.
+constexpr bool FF_IsDateTimeTag(RECOVERY_TAG tag)
+{
+    return tag >= RECOVER_FF_DATE && tag <= RECOVER_FF_INSTANT;
+}
+static_assert(RECOVER_FF_DATE < RECOVER_FF_DATETIME &&
+                  RECOVER_FF_DATETIME < RECOVER_FF_TIME &&
+                  RECOVER_FF_TIME < RECOVER_FF_INSTANT,
+              "FF_IsDateTimeTag assumes the four date/time tags are contiguous and ordered");
+static_assert(FF_IsDateTimeTag(RECOVER_FF_DATE) && FF_IsDateTimeTag(RECOVER_FF_DATETIME) &&
+                  FF_IsDateTimeTag(RECOVER_FF_TIME) && FF_IsDateTimeTag(RECOVER_FF_INSTANT),
+              "every date/time tag must satisfy FF_IsDateTimeTag");
+static_assert(!FF_IsDateTimeTag(RECOVER_FF_STRING) && !FF_IsDateTimeTag(RECOVER_FF_CODE),
+              "FF_IsDateTimeTag must not claim the string or code tags");

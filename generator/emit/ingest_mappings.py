@@ -208,10 +208,28 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                             f"                    }}\n"
                             f"                }}\n"
                         )
+                    elif c_type in _tm.DATETIME_TYPES:
+                        # DT-2: the four date/time types carry their OWN tag,
+                        # never RECOVER_FF_STRING. In a choice slot the tag is
+                        # the only thing naming the active variant, so tagging a
+                        # dateTime as a string exported it as `effectiveString`
+                        # -- 1,072 diffs on one Synthea fixture. The POD value
+                        # stays the raw text; the STORE side packs it (or falls
+                        # back to an FF_STRING) via ENCODE_FF_DATETIME, keyed on
+                        # this tag.
+                        cpp += (
+                            f"                std::string_view s_val;\n"
+                            f"                if (field.value().get_string().get(s_val) == simdjson::SUCCESS) {{\n"
+                            f"                    if (!s_val.empty()) {{\n"
+                            f"                        data.{cpp_name}.tag = {_tm.DATETIME_TYPES[c_type]};\n"
+                            f"                        data.{cpp_name}.value = s_val;\n"
+                            f"                    }}\n"
+                            f"                }}\n"
+                        )
                     elif c_type in _STRING_LIKE_TYPES:
-                        # String-like primitives (url, dateTime, base64Binary,
-                        # canonical, etc.) have no _from_json function and no
-                        # vtable — they're stored as string_view with the
+                        # String-like primitives (url, base64Binary, canonical,
+                        # etc.) have no _from_json function and no vtable —
+                        # they're stored as string_view with the
                         # RECOVER_FF_STRING tag, exactly like "string".
                         cpp += (
                             f"                std::string_view s_val;\n"

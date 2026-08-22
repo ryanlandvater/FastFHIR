@@ -1141,6 +1141,22 @@ Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version,
             return ParserOps::code_node(base, size, version, parent_offset, value_offset,
                                         ops, /*engine_ver=*/0);
         }
+        // DT-3: the date/time slot owes the identical treatment one width up.
+        // A flagged date/time variant is not inline either -- bit 63 set means
+        // the low 63 bits are a signed offset, relative to the CONTAINING
+        // BLOCK, to an FF_STRING holding the original text. parent_offset is
+        // live here and gone from the Node that comes out, so resolving it
+        // later is not possible, and skipping it hands print_json a fallback
+        // word to FF_UNPACK_DATETIME as if it were a packed civil value.
+        if (FF_IsDateTimeTag(tag)) {
+            const uint64_t raw = LOAD_U64(base + value_offset);
+            if (raw != FF_DATETIME_NULL && FF_DATETIME_IS_FALLBACK(raw)) {
+                return Node(base, size, version,
+                            FF_ResolveDateTimeOffset(raw, parent_offset),
+                            RECOVER_FF_STRING, FF_FIELD_STRING,
+                            FF_RECOVER_UNDEFINED, false, ops);
+            }
+        }
         Node n(base, size, version, parent_offset, tag, Recovery_to_Kind(tag),
                FF_RECOVER_UNDEFINED, false, ops);
         n.m_node_offset = value_offset;
@@ -1177,12 +1193,26 @@ bool Node::is_empty() const {
             // invalid key/value pairs like "type":,
             return FF_IsFieldEmpty(m_base, m_node_offset, FF_FIELD_CODE);
 
+        // Every inline-scalar kind must be listed. The `default` below returns
+        // true, so an omission does not fail loudly -- it silently reports the
+        // field absent and print_json drops it. FF_IsFieldEmpty carries the
+        // same warning about the same two kinds; this switch is its mirror and
+        // has to stay in step with it.
+        //
+        // FF_FIELD_DATETIME and FF_FIELD_URL were missing here. It stayed
+        // invisible only because nothing produced a Node of either kind: URL
+        // slots print through Entry, and date/time choice variants were still
+        // mis-tagged RECOVER_FF_STRING, so resolve_choice handed back a STRING
+        // node. Tagging them correctly (DT-2) made resolve_choice return a real
+        // FF_FIELD_DATETIME node, and all 536 of them vanished from the export.
         case FF_FIELD_BOOL:
         case FF_FIELD_INT32:
         case FF_FIELD_UINT32:
         case FF_FIELD_INT64:
         case FF_FIELD_UINT64:
         case FF_FIELD_FLOAT64:
+        case FF_FIELD_DATETIME:
+        case FF_FIELD_URL:
             return FF_IsFieldEmpty(m_base, m_node_offset, m_kind);
 
         case FF_FIELD_BLOCK: {
