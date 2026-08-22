@@ -93,13 +93,22 @@ if(FASTFHIR_BUILD_TESTS)
     add_ff_cpp_test(ff_test_datetime   tests/cpp/test_datetime.cpp)
     add_ff_cpp_test(ff_test_api        tests/cpp/test_api.cpp)
     add_ff_cpp_test(ff_test_dictionary tests/cpp/test_dictionary.cpp)
+    # COV-1.1: validates streams the WRITER produced, so unlike the other
+    # standalone suites it drives the ingestor, needs the checksum hasher, and
+    # needs the fixture path -- it is deliberately fed real documents. Without
+    # FASTFHIR_SYNTHEA_DIR it reports SKIP rather than passing on zero coverage.
+    add_ff_cpp_test(ff_test_roundtrip_validate tests/cpp/ff_test_roundtrip_validate.cpp)
+    target_link_libraries(ff_test_roundtrip_validate
+        PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
+    target_compile_definitions(ff_test_roundtrip_validate PRIVATE
+        $<$<BOOL:${FASTFHIR_DOWNLOAD_SYNTHEA}>:FASTFHIR_SYNTHEA_DIR="${_SYNTHEA_DIR}">)
     # WO-1 out-param contract test drives FF_Ingest, so it needs the ingestor.
     target_link_libraries(ff_test_api PRIVATE fastfhir_ingestor simdjson::simdjson)
 
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary)
+    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate)
         add_test(NAME "cpp_${_standalone}" COMMAND ${_standalone})
     endforeach()
 
@@ -180,10 +189,18 @@ if(FASTFHIR_BUILD_TESTS)
         set_tests_properties(py_test_9          PROPERTIES DEPENDS "py_test_3;py_test_6")
         set_tests_properties(py_test_10         PROPERTIES DEPENDS py_setup)
         # Round-trip DOM parity test (Synthea fixtures)
+        # --debug-on-failure re-runs a FAILING fixture through to_debug_json, so
+        # the report names the recovery tag, field kind and byte offset behind
+        # each difference instead of only the JSON path. Costs nothing while the
+        # suite is green; running every fixture that way (--debug) took 249s
+        # against 90s, which is not a tax worth paying forever for diagnostics
+        # nobody reads on a pass. Needs a Debug build -- every preset is one, and
+        # under NDEBUG the harness exits 2 with a clear message.
         add_test(NAME py_roundtrip
             COMMAND "${_PY}" "${_PY_DIR}/test_roundtrip.py"
                 --synthea-dir "${_SYNTHEA_DIR}"
                 --harness "${CMAKE_CURRENT_BINARY_DIR}/ff_roundtrip"
+                --debug-on-failure
         )
         set_tests_properties(py_roundtrip PROPERTIES
             DEPENDS "py_setup;ff_roundtrip"

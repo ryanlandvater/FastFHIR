@@ -123,6 +123,20 @@ pytest tests/generator -q
 ruff check generator tests/generator && black --check generator tests/generator
 ```
 
+**A green suite here has meant less than it looks (2026-08-22).** Three defects landed in
+one day inside code the suite covers, and `ctest` stayed at 36/37 throughout. The worst:
+`validate_FFHR_stream()` was **rejecting all 342 Synthea bundles** with "the offset chain is
+broken", while `ff_test_graph_bounds` — the test that exists for that function — passed. It
+builds streams by hand, so it only validates byte patterns someone thought to write, never
+a stream the writer actually produced.
+
+The structural hole is that **no test feeds writer output to the reader and asserts on the
+bytes**: `ff_roundtrip` never validates, and the unit tests never ingest. So the
+writer → validator → reader path, where all three bugs lived, was covered by nothing. When
+you add a test here, prefer one that goes through the real pipeline over one that
+hand-builds a buffer; a synthetic fixture proves the reader agrees with your idea of the
+format, not with the writer. TASKS.md **COV-1**.
+
 **A new C++ test needs registering in FOUR places in `CMakeLists.txt`**, not one:
 `add_ff_cpp_test(...)`, the ctest `foreach(_standalone ...)`, the `_BUILD_ALL` list, and
 the two IDE folder/scheme lists. `add_ff_cpp_test` only creates the target — a test
@@ -315,6 +329,20 @@ decide whether a version gate is wanted.
 6. **Concurrency contract:** `claim_space()` appends are lock-free and thread-safe;
    pointer amendments and finalize are not concurrency-protected (see TASKS.md Q9). Don't
    introduce mutexes into the append hot path.
+   **A `FIFO::Queue` consumer must be created before the first push, on the spawning
+   thread, and moved into its worker.** `get_consumer()` latches the current head node;
+   once a node fills (`NODE_ENTRIES` = 2000) the producer advances and the retirement path
+   moves `_weak_head` past it, so a consumer that latches late starts mid-stream and
+   silently loses every earlier node. That cost 2,000 bundle entries per affected ingest —
+   `FF_SUCCESS`, no warning, a valid but truncated document — and only ever reproduced
+   under CPU contention, because that is what delays the worker's first instruction past
+   the producer's first node advance (TASKS.md AR-3). The predigest pool has always done
+   this correctly and says so at `FF_Ingestor.cpp:666`; copy that pattern. The queue does
+   not merely fail to enforce this — it **deletes nodes that still hold PENDING
+   tasks**, retiring on reference count without asking whether the work is done
+   (proven: a node freed with 2,000 un-consumed entries; TASKS.md **AR-4**, P1).
+   Until that is fixed the ordering is the caller's duty, and no `FIFO::Queue`
+   call site may assume the type protects it.
 7. **The two SHA-256 roles in the WASM registry are never conflated:** `sha256(url)` is a
    disk metadata filename only; `sha256(wasm_bytes)` is module identity on the wire.
 
@@ -327,9 +355,17 @@ decide whether a version gate is wanted.
 5. Check the box in TASKS.md with the commit hash, commit both together.
 
 Common pitfalls for agents: `generated_src/` won't exist until you configure with network;
-`ctest` Python tests use `.venv/bin/python` if present, else the system interpreter. The
-generator is deterministic — two runs produce byte-identical trees, so any diff between
-runs is a real change, not set-iteration noise.
+`ctest` Python tests use `.venv/bin/python` if present, else the system interpreter.
+
+⚠ **The generator is *usually* deterministic, but not reliably (TASKS.md GEN-1,
+2026-08-22).** It used to say flatly that two runs produce byte-identical trees. One
+configure emitted `FF_CodeSystems.hpp` with 72 `enum class` definitions instead of 77 —
+`FF_NoteType` missing while three headers still referenced it — and the build failed with
+`unknown type name` in generated code that had not been regenerated. The next configure
+produced the full 77 and four more were identical. So a mysterious compile error inside
+`generated_src/` may be this, and re-running the configure "fixes" it without explaining
+anything. Until GEN-1 lands, a diff between two runs is **not** automatically a real
+change — confirm it reproduces before acting on it.
 
 ## Portability lessons (paid for on MSVC and Xcode — don't relearn them)
 

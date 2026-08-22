@@ -259,8 +259,11 @@ DT-4.4, 2026-08-20 — see each task). Nothing gates DT-1.
 | DT-4 | P1 | Tests, then re-baseline the wire witness | the gate must move deliberately, in the same commit | open |
 | AR-1 | P1 | Array readers dispatch on the header tag, not the kind bits | every scalar array exports as `[]` — 136,006 of the 195,708 remaining round-trip diffs | open |
 | AR-2 | P2 | `FF_FieldKeys.hpp` disagrees with the wire on 6 `code` array fields | a consumer navigating by the public constant mis-reads those arrays | open |
-| AR-3 | **P1** | Ingest is load-sensitive: same fixture, different resources kept | silent, nondeterministic data loss; blocks any exact round-trip number | open |
+| AR-3 | **P1** | Ingest is load-sensitive: same fixture, different resources kept | silent, nondeterministic data loss; blocks any exact round-trip number | **DONE 2026-08-22** (working tree) |
+| AR-4 | **P1** | `FIFO::Queue` deletes nodes still holding PENDING tasks | proven: a node is freed with 2,000 un-consumed entries; AR-3's fix only avoids triggering it | open |
 | DBG-1 | P2 | `Node::to_debug_json()` — round-trip JSON annotated with wire metadata | JSON diffing cannot see a right value under a wrong tag | **DONE 2026-08-22** (working tree) |
+| GEN-1 | **P1** | Generator occasionally emits an incomplete tree | observed once: `FF_CodeSystems.hpp` short 5 enums, build broke on a missing type | open |
+| COV-1 | **P1** | No test feeds writer output to the reader/validator | 3 defects in one day inside "covered" code; validator rejected all 342 bundles while its own test passed | open |
 
 ---
 
@@ -1264,22 +1267,283 @@ packs successfully and none fall back to text. **DT-2's scalar path is confirmed
 correct on real data** — which also isolates DT-2.4 (arrays) as the only
 remaining date/time gap, since `Timing` never appears in this corpus.
 
+### DBG-1.4 — wired into `py_roundtrip` (DONE 2026-08-22)
+
+`ctest`'s `py_roundtrip` now runs `--debug`, so a failure names the wire cause
+rather than only the JSON path. New module `tests/python/roundtrip_debug.py`:
+
+- **`strip_debug`** — debug DOM -> (plain DOM, `{path: metadata}`). The plain DOM
+  is shaped exactly like `print_json` output and goes through the **same**
+  `diff_doms`, so the two modes cannot drift apart into different comparisons.
+- **`drop_debug_artifacts`** — the containment rule, applied precisely. What
+  matters is that every source field survives, so keys the envelope adds must not
+  count; but dropping `EXTRA_KEY` **wholesale would be wrong** — it would also
+  silence fabricated fields, which is a real defect this gate exists to catch,
+  and would make the debug run a *weaker* check than the plain one. Only keys
+  whose metadata carries `_empty` are suppressed, identified from the data rather
+  than assumed. **Verified equal: 86 diffs in both modes** on the first fixture.
+- **`_find_siblings`** — pairs a missing `valueInteger` with an emitted
+  `valueUnsignedInt`. A plain diff shows a missing key and an extra key and reads
+  as two unrelated defects; this reports one renamed choice and names the tag
+  that renamed it.
+
+**One `to_debug_json` fix was required for this to work at all:** the dump was
+emitting a choice field under its base name (`value`) where `print_json` emits
+`valueInteger`, so diff paths could not resolve against it — precisely for the
+fields most worth inspecting. It now emits the same key `print_json` does, suffix
+included, and keeps `_suffix` as metadata.
+
+Live output on handoff.md §1c, diagnosed automatically instead of by hand:
+
+```
+[MISSING_KEY     ] /entry/0/resource/extension/0/valueInteger
+    expected: 107
+    ** emitted as 'valueUnsignedInt' instead — tag=RECOVER_FF_UINT32 kind=FF_FIELD_UINT32 off=48850 **
+```
+
+It also confirmed a standing question from handoff.md §1b: a dropped
+out-of-profile resource **does** leave an entry shell on the wire —
+`RECOVER_FF_BUNDLE_ENTRY kind=FF_FIELD_BLOCK off=3040` sits under each
+`DROPPED_RESOURCE`, so the entry is written and only the resource is missing.
+
+⚠ `py_roundtrip` now requires a Debug build. Every preset is Debug, and under
+`NDEBUG` the harness exits 2 with a clear message, so this degrades loudly.
+
 ### Follow-ups (not done)
-- **DBG-1.1** No test covers `to_debug_json`. A `ff_test_debug_json` asserting
-  that a known fixture's dump contains an expected `_tag`/`_off` would keep it
-  honest; registering it needs the FOUR CMake registrations.
+- **DBG-1.1** No *unit* test covers `to_debug_json`; `py_roundtrip` now exercises
+  it across 342 fixtures, which is coverage but not a targeted assertion. A
+  `ff_test_debug_json` checking a known fixture's `_tag`/`_off` would pin the
+  format; registering it needs the FOUR CMake registrations.
 - **DBG-1.2** Not wired into the Python bindings. `fastfhir` users debugging a
-  stream currently have to shell out to `ff_roundtrip`.
-- **DBG-1.3** Output is large (a 3 MB document becomes ~10 MB minified). A
-  `--debug-filter <tag|field>` would make whole-corpus audits cheaper than the
-  current grep-the-firehose approach.
+  stream still shell out to `ff_roundtrip`.
+- **DBG-1.3** Output is large (a 3 MB document becomes ~10 MB minified) and
+  `py_roundtrip` got slower for it — see the timing note in handoff.md. A
+  `--debug-filter <tag|field>` would make whole-corpus audits cheaper.
+- **DBG-1.5** `tag_census()` exists in `roundtrip_debug.py` and nothing calls it.
+  It answers "is anything date-shaped still stored as a string?" in one pass
+  instead of a grep per fixture; wire it into `roundtrip_aggregate.py`.
+
+---
+
+## COV-1 — Nothing tests the writer against the reader (P1)
+
+**36/37 green while three defects shipped in one day.** The suite does not cover
+the path the defects live on, and its greenness actively misled triage.
+
+| Defect (2026-08-22) | Test that should have caught it | Why it did not |
+|---|---|---|
+| `validate_FFHR_stream()` rejected **all 342** Synthea bundles | `ff_test_graph_bounds` | builds streams by hand; never validates writer output |
+| Every scalar array exported `[]` (136,006 diffs) | `py_roundtrip` | the signal was there; nobody ran the aggregate |
+| `node[i]` read 8 bytes into a 4-byte element | none | no test indexes a scalar array |
+
+**The structural hole: no test feeds writer output to the reader and asserts on
+the bytes.** `ff_roundtrip` ingests and re-parses but never validates; the C++
+unit tests validate but never ingest. The writer -> validator -> reader path is
+covered by nothing, and a hand-built fixture only proves the reader agrees with
+the *test author's* idea of the format, not with the writer.
+
+- **COV-1.1** **DONE 2026-08-22** (working tree). `tests/cpp/ff_test_roundtrip_validate.cpp`:
+  ingests 8 real Synthea bundles, seals, calls `validate_FFHR_stream()`, re-parses.
+  All four CMake registrations done; it also needs `OpenSSL::Crypto` (checksum
+  hasher) and `FASTFHIR_SYNTHEA_DIR`, which `add_ff_cpp_test` does not supply.
+  Without fixtures it prints **SKIP** rather than passing on zero coverage.
+
+  **Verified to catch the defect it was written for**: with the `walk_array` fix
+  reverted, all 8 fixtures fail with
+  `[FATAL] ... (via inline array entry) has self-offset ...; the offset chain is
+  broken`. Restored, all 8 pass. ctest is now 37/38 — this is the first test in
+  the suite that would have gone red on day one of the validator bug.
+- **COV-1.2** Extend it to `validate_FFHR_stream_deep()` (inline scalar slots),
+  which nothing exercises against writer output at all.
+- **COV-1.3** Add a scalar-array case to the reader tests: `node[i]` on a
+  `Claim.item.diagnosisSequence` and the element's value, so the O(1) index path
+  is covered independently of `entries()`.
+- **COV-1.4** Audit the rest of `tests/cpp/` for the same shape — tests that
+  hand-build a buffer where they could round-trip one. Convert where cheap; the
+  synthetic ones keep value for hostile/corrupt input, which a writer cannot
+  produce.
+
+**Done when:** a test fails if the validator rejects a stream this project's own
+writer produced.
+
+---
+
+## AR-4 — `FIFO::Queue` deletes nodes that still hold un-consumed tasks (P1)
+
+**This is the real defect. AR-3's call-site fix only stops the ingestor from
+triggering it.** Raised by Ryan: a node should be impossible to drop with
+unfinished work, because the chain is pinned from both ends — consumers hold the
+head, each node holds its successor, the queue holds the tail. That invariant does
+not hold in code.
+
+### Proven, not inferred (2026-08-22)
+
+Instrumenting `decrement_node` to count entry flags on the node it is about to
+`delete`, 24 concurrent ingests of a 2,836-entry bundle:
+
+```
+16 runs, output 2836 entries | RETIRE idx=0 uses_before=1 PENDING=0    complete=2000
+ 8 runs, output  836 entries | RETIRE idx=0 uses_before=1 PENDING=2000 complete=0
+```
+
+The losing runs **`delete` a node holding 2,000 `ENTRY_PENDING` tasks.** Not a
+visibility or ordering subtlety — the node and its work are freed outright, then
+`_weak_head` advances past it (`FF_Queue.hpp:191-199`) so a consumer created
+afterwards latches the *second* node and starts mid-stream. No error, no
+`FF_SUCCESS` change, no way for the caller to notice.
+
+### Why the pin fails
+
+`decrement_node` retires on **reference count alone** and never consults whether
+the node's entries were consumed. Reference count tracks *who is looking at the
+node*, not *whether its work is done*, so a node with a full complement of
+PENDING entries and no live handle is indistinguishable from a drained one.
+
+The `Queue` constructor does establish what looks like a permanent head
+reference — node 0 starts at `make_state(gen 1, …, uses 1)` (`FF_Queue.hpp:348`)
+— but the observed `uses_before=1` proves that reference is gone by retirement
+time: something drives node 0 from 1 to 0 before any consumer latches it. **Where
+that decrement comes from is not yet identified** and is the first thing to find.
+`NodeRef` is strict RAII (`~NodeRef` decrements, `advance()` increments-then-
+decrements), and the `Injector` holds node 1 by the time it is destroyed, so the
+extra release is elsewhere — a candidate is the FREE-slot claim path setting
+`uses = 2` (`FF_Queue.hpp:145`) against a different number of releases.
+
+### Work
+
+- **AR-4.1** Find the unbalanced decrement on node 0. The instrumentation that
+  produced the table above is the tool: log `uses` at every
+  `increment_node`/`decrement_node` with a queue tag and node index, run under
+  24-way contention, and read the sequence.
+- **AR-4.2** Make retirement conditional on completion, not just on refcount —
+  a node with any `ENTRY_PENDING`/`ENTRY_WRITING` entry must not be freed.
+  Scanning `NODE_ENTRIES` flags per retirement is O(2000) on a path that should
+  be cheap, so prefer a per-node consumed counter compared against written count
+  (`Node::front_idx` is already there and may be intended for this).
+- **AR-4.3** ⚠ Decide the ownership rule explicitly and write it in the header:
+  Ryan's stated model is that the queue pins the tail, each node pins its
+  successor, and consumers pin the head. Today only the middle one is true. This
+  is a design decision about memory bounds vs. safety and is **Ryan's alone**.
+- **AR-4.4** A unit test for the queue itself: push > `NODE_ENTRIES` items with
+  a consumer created late, assert every item is delivered. **Nothing tests
+  `FIFO::Queue` directly**, which is why a lock-free primitive shipped with a
+  silent task-dropping bug (see COV-1 — same root cause as the validator gap).
+
+**Done when:** a node holding un-consumed entries cannot be freed, and AR-4.4
+fails without the fix.
+
+---
+
+## GEN-1 — The generator emitted an incomplete tree once (P1)
+
+**Observed 2026-08-22 and not reproduced since.** A `cmake --preset ninja`
+produced a `generated_src/FF_CodeSystems.hpp` holding **72** `enum class FF_*`
+definitions instead of 77. `FF_NoteType` was among the missing five, while
+`FF_ClaimResponse.hpp`, `FF_ExplanationOfBenefit.hpp` and
+`FF_PaymentReconciliation.hpp` all still referenced it — so the build failed
+with `unknown type name 'FF_NoteType'` in generated code that had not itself
+been regenerated (its mtime was an hour older).
+
+The next configure produced 77 enums and a different md5; four further
+configures were byte-identical at 77. So the bad tree was a one-off, and the
+build recovered on its own — which is the dangerous part: it presents as a
+mysterious compile error in generated code, and re-running the configure "fixes"
+it without explaining anything.
+
+⚠ **This contradicts CLAUDE.md**, which states the generator is deterministic and
+that any diff between two runs is a real change rather than set-iteration noise.
+That claim is the basis for "regenerate and diff" being a trustworthy review
+step, so it needs to be either restored or amended.
+
+**Not diagnosed.** Nothing was being edited between the two configures. Candidate
+causes, none confirmed:
+- set/dict iteration order in codesystem discovery, though `PYTHONHASHSEED`
+  variance should then have shown up across the four stable runs;
+- a partial or interrupted `write_if_changed`, leaving a truncated file;
+- profile-dependent enum collection interacting with a cached/stale input.
+
+- **GEN-1.1** Add a determinism check to `pytest tests/generator`: generate twice
+  into scratch trees and assert byte-identical output. That converts a rare
+  build break into a reproducible test failure.
+- **GEN-1.2** If it reproduces, bisect codesystem emission for unordered
+  iteration (`set`, `dict.values()`, `glob` without `sorted`).
+- **GEN-1.3** Consider making `write_if_changed` atomic (write temp + rename) so
+  an interrupted run cannot leave a partial header behind.
+
+**Done when:** two consecutive generator runs are byte-identical under a test
+that would have caught the 72/77 divergence.
 
 ---
 
 ## AR-3 — Ingest keeps a different set of resources under load (P1)
 
+> ## FIXED 2026-08-22 (working tree, uncommitted)
+>
+> **Cause: a task-queue consumer was created inside the worker thread instead of
+> before the producer started pushing.**
+>
+> `FIFO::Queue::get_consumer()` latches the queue's current head node.
+> `NODE_ENTRIES` is 2000, so once the producer fills a node it advances, and the
+> retirement path (`decrement_node`, `FF_Queue.hpp:191-199`) moves `_weak_head`
+> past the full one. The bundle workers called `get_consumer()` in the thread
+> body, so a worker the OS scheduled late latched the *second* node and never saw
+> the first 2000 tasks. Those entries stayed default-constructed and `print_json`
+> then dropped them as empty, so the loss was completely silent — `FF_SUCCESS`,
+> no warning, a valid but truncated document.
+>
+> **Measured on `Angel97_Mraz590` (2,836 entries), 16 concurrent processes:**
+>
+> | | before | after |
+> |---|---|---|
+> | chunked / pushed | 2,836 / 2,836 | 2,836 / 2,836 |
+> | processed | **836** in 4 of 16 runs | 2,836 in 16 of 16 |
+> | output entries | 836 or 2,836 | 2,836 always |
+> | 32-way stress | — | 32/32 identical md5 |
+>
+> Exactly 2,000 lost — one node — which is what identified the queue as the
+> culprit rather than the profile filter the warning pointed at.
+>
+> **Fix:** create every `Consumer` on the spawning thread before the first push,
+> and move it into its worker. That also pins the head node, since each consumer
+> holds a `NodeRef`. The invariant was already known and documented — the
+> predigest pool does exactly this, with the comment *"Acquire Consumer before
+> any Injectors (gets head node reference)"* (`FF_Ingestor.cpp:666`). The bundle
+> pool simply did not follow it, and serial runs always won the race, which is
+> why it never showed up outside a loaded machine.
+>
+> **Verified:** three consecutive `roundtrip_aggregate.py` runs now give an
+> identical total (38,876, was 52,232 / 55,302 / 63,272), and the failure report
+> drops from 9 signatures with 5 unstable to **6, all stable**.
+>
+> ⚠ **The call-site fix avoids the trigger; it does not fix the defect.** The
+> queue **deletes a node holding 2,000 `ENTRY_PENDING` tasks** — proven by
+> instrumenting `decrement_node` (see **AR-4**, now P1). Retirement is driven by
+> reference count alone and never asks whether the node's work is done. Until
+> AR-4 lands, every `get_consumer()` call site owes this ordering, but that is a
+> convention standing in for an invariant the type should enforce.
+
+> ### Historical: why this had to be fixed before any round-trip work.
+>
+> AR-3 does not merely add noise to the total — it **manufactures failure
+> signatures that do not exist**, and they are the largest ones. Grouping all
+> 328 failing fixtures by signature (2026-08-22, `tests/python/roundtrip_failure_report.py`)
+> gives 9 rows, and running the corpus twice shows most of them are not defects:
+>
+> | Rows | Diffs | Reproduces? |
+> |---|---:|---|
+> | `/entry/N/{resource,fullUrl,request}` missing | 68,367 | **PHANTOM** — 4 of 11 fixtures in common between passes |
+> | `DROPPED`/`ADDED_RESOURCE` | 23,850 | real (out-of-profile), 306/311 fixtures stable |
+> | `valueInteger` -> `valueUnsignedInt` | 8,792 | **fully reproducible** — the only clean signature |
+> | `multipleBirthInteger` | 18 | same cause as above |
+>
+> The first single-pass report ranked those phantom rows as the top three work
+> items at 105,536 diffs; a re-run found **zero** of them. Anyone triaging from a
+> one-pass measurement will spend the day on a bug at a path where nothing is
+> wrong. Every number in handoff.md §1 inherits this contamination.
+
 **Silent, nondeterministic data loss.** Found while measuring AR-1; it is why the
-342-fixture aggregate cannot yet produce a repeatable total.
+342-fixture aggregate cannot produce a repeatable total, and why the failure
+report has to run the corpus twice and label each signature.
 
 ### Reproduce
 ```bash

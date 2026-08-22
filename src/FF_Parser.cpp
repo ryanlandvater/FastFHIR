@@ -1167,7 +1167,14 @@ void Reflective::Node::to_debug_json(std::ostream& out, int indent) const {
 
                     out << ",";
                     inner.nl(out);
-                    out << "\"" << f.name << "\":";
+                    // The SAME key print_json emits, choice suffix included.
+                    // Path parity is the point: a diff reported at
+                    // .../valueInteger has to resolve to this node, and it
+                    // cannot if the debug dump calls the field `value`.
+                    out << "\"" << f.name;
+                    if (f.kind == FF_FIELD_CHOICE)
+                        out << get_choice_suffix(child_entry.target_recovery);
+                    out << "\":";
                     emit_entry(n, child_entry, f, inner, self);
                 }
                 fmt.nl(out);

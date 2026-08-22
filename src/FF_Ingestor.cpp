@@ -1243,12 +1243,36 @@ namespace FastFHIR::Ingest
             std::vector<std::thread> workers;
             auto *shared_chunks = &entry_chunks;
             workers.reserve(m_num_threads);
+
+            // Consumers are created HERE, on this thread, before a single task is
+            // pushed -- not inside the worker body. get_consumer() latches the
+            // queue's current head node, and a consumer that latches late misses
+            // every node retired before it ran: the producer fills a node
+            // (NODE_ENTRIES = 2000), advances to the next, and the retirement path
+            // moves _weak_head past the full one. A worker scheduled after that
+            // point starts at the SECOND node and silently never sees the first
+            // 2000 tasks.
+            //
+            // That is exactly the observed failure: 2,836 bundle entries chunked
+            // and pushed, 836 processed, the other 2,000 left default-constructed
+            // and then dropped by print_json as empty. It only reproduces under CPU
+            // contention, because that is what delays the worker's first
+            // instruction past the producer's first node advance -- serially the
+            // worker always won the race, which is why every serial run looked
+            // clean (TASKS.md AR-3).
+            //
+            // Creating them here also pins the head node: each consumer holds a
+            // NodeRef, so the node cannot be retired out from under the workers.
+            std::vector<BundleQueue::Consumer> consumers;
+            consumers.reserve(m_num_threads);
+            for (unsigned int i = 0; i < m_num_threads; ++i)
+                consumers.emplace_back(task_queue.get_consumer());
+
             for (unsigned int i = 0; i < m_num_threads; ++i)
             {
-                workers.emplace_back([this, i, &producer_done, shared_chunks, entry_array, &m_builder, &task_queue]() mutable
+                workers.emplace_back([this, i, &producer_done, shared_chunks, entry_array, &m_builder, consumer = std::move(consumers[i])]() mutable
                                      {
                 auto& local_parser = m_parser_pool[i];
-                auto consumer = task_queue.get_consumer();
                 BundleTask task;
                 while (true) {
                     if (!consumer.pop(task)) {
