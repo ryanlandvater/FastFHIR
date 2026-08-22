@@ -56,17 +56,31 @@ static std::vector<BYTE> sha256(const unsigned char *data, Size len)
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: ff_roundtrip <fixture.json> [--arena-size N]\n";
+        std::cerr << "Usage: ff_roundtrip <fixture.json> [--arena-size N] [--debug] [--debug-indent N]\n";
         return 1;
     }
 
     const std::string fixture_path = argv[1];
     size_t arena_size = 256 * 1024 * 1024; // 256 MB default
+    bool debug_json = false;
+    int debug_indent = 0;
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "--arena-size") == 0 && i + 1 < argc) {
             arena_size = static_cast<size_t>(std::stoul(argv[++i]));
+        } else if (std::strcmp(argv[i], "--debug") == 0) {
+            debug_json = true;
+        } else if (std::strcmp(argv[i], "--debug-indent") == 0 && i + 1 < argc) {
+            debug_json = true;
+            debug_indent = std::stoi(argv[++i]);
         }
     }
+#ifdef NDEBUG
+    if (debug_json) {
+        std::cerr << "--debug requires a Debug build (to_debug_json is compiled out under NDEBUG)\n";
+        return 2;
+    }
+#endif
+    (void)debug_indent;
 
     try {
         // 1. Load fixture
@@ -148,6 +162,15 @@ int main(int argc, char** argv) {
         }
 
         // 6. Serialise to JSON on stdout
+#ifndef NDEBUG
+        if (debug_json) {
+            // Not FHIR and not round-trip input -- a lens on the bytes. See
+            // Node::to_debug_json.
+            reparse_root.to_debug_json(std::cout, debug_indent);
+            std::cout << "\n";
+            return 0;
+        }
+#endif
         reparse_root.print_json(std::cout);
         std::cout << "\n";
 

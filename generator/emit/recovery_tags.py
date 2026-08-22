@@ -172,6 +172,18 @@ def _enum_body(ledger: dict) -> str:
     return out
 
 
+def _name_table_body(ledger: dict) -> str:
+    """`case` arms mapping every assigned tag to its own spelling.
+
+    Debug-only: this is the difference between reading `0x0102` and reading
+    `RECOVER_FF_INT32` in to_debug_json output, which is the whole point of that
+    dump. Guarded by NDEBUG at the emission site so release builds carry none of
+    the ~1k string literals.
+    """
+    entries = sorted((int(entry["value"], 16), name) for name, entry in ledger["tags"].items())
+    return "".join(f'    case {name}: return "{name}";\n' for _, name in entries)
+
+
 def _band_map_comment(ledger: dict) -> str:
     counts: dict[str, int] = {b: 0 for b in ledger["_bands"]}
     for entry in ledger["tags"].values():
@@ -197,6 +209,7 @@ def generate_recovery_header(ledger: dict, header_path: str = HEADER_PATH) -> No
     counts: dict[str, int] = {name: 0 for name in bands}
     for entry in ledger["tags"].values():
         counts[entry["band"]] += 1
+    name_table = _name_table_body(ledger)
 
     hpp = f"""/**
  * @file FF_Recovery.hpp
@@ -296,6 +309,27 @@ static_assert(RECOVER_BAND_BACKBONE_LAST - RECOVER_BAND_BACKBONE_FIRST + 1 >= {c
 inline constexpr bool IsArrayTag(RECOVERY_TAG tag) {{return(tag & RECOVER_ARRAY_BIT)!= 0;}}
 inline constexpr RECOVERY_TAG GetTypeFromTag(RECOVERY_TAG tag) {{return static_cast<RECOVERY_TAG>(tag & RECOVER_TYPE_MASK);}}
 inline constexpr RECOVERY_TAG ToArrayTag(RECOVERY_TAG base_tag) {{return static_cast<RECOVERY_TAG>(base_tag | RECOVER_ARRAY_BIT);}}
+
+#ifndef NDEBUG
+// ---------------------------------------------------------------------------
+// Debug-only: tag -> its own spelling.
+//
+// Exists for Node::to_debug_json, where the whole value of the dump is seeing
+// RECOVER_FF_STRING sitting on a field that should read RECOVER_FF_DATETIME.
+// Hex would technically carry the same information and would be useless for
+// scanning a 50 MB document by eye or by grep.
+//
+// The array bit is stripped first, so an array's header tag names its ELEMENT
+// type; callers that care print the arrayness separately. Unassigned values
+// return "RECOVER_?" rather than "" -- an empty string in a dump reads as a
+// missing field, which is exactly the confusion this is meant to remove.
+// ---------------------------------------------------------------------------
+inline const char* FF_RecoveryName(RECOVERY_TAG tag) {{
+    switch (GetTypeFromTag(tag)) {{
+{name_table}    default: return "RECOVER_?";
+    }}
+}}
+#endif // NDEBUG
 """
     write_if_changed(header_path, hpp)
 

@@ -267,9 +267,14 @@ do *not* force indirection. The element type comes from the array header's `RECO
 (`GetTypeFromTag`, bit 15 = `RECOVER_ARRAY_BIT`) — that is the copy written by the same call
 that laid out the bytes, so it cannot drift from the layout. **Never derive array layout
 from a schema-side copy**: `FF_FieldKeys.hpp` disagrees with the wire on 6 `code` array
-fields, and `FF_ARRAY::EntryKind`'s bits are a coarser re-encoding of the tag whose
-`SCALAR` value no emitter has ever written. Trusting the kind bits over the tag is what
-made every scalar array export as `[]`. Full contract: architecture.md §5.
+fields. `FF_ARRAY::EntryKind` answers only *whether the entry is a pointer*
+(`entries_are_pointers`) — never *what the element is*: `INLINE_BLOCK` is stamped on
+scalars, block headers and resource tuples alike, and its `SCALAR` value no emitter has
+ever written. Asking the kind bits for element shape made every scalar array export as
+`[]` **and** made `validate_FFHR_stream()` reject every valid stream holding one. A
+resource tuple is `{offset(8), tag(2)}` — the same field positions as a `DATA_BLOCK`
+header, but +0 is the *target's* offset, so it must be followed, never walked in place.
+Full contract: architecture.md §5.
 
 The residue that remains genuinely unchecked is narrow: a slot holding *only* inline bytes
 (bit 63 clear), reinterpreted by a later format change. The `Parser` reads `engine_version`

@@ -54,6 +54,13 @@ struct ParserOps {
                           Offset block_offset, Offset slot_offset,
                           const ParserOps* ops, uint32_t engine_ver);
 
+    // The single decision point for "what is array element i?" -- both
+    // standard_node_entries and standard_node_lookup_index route through it.
+    // See the definition.
+    static Node array_element(const Node& n, const FF_ARRAY& arr,
+                              RECOVERY_TAG elem, uint32_t index);
+    static RECOVERY_TAG array_element_tag(const Node& n);
+
     static size_t compact_node_size(const Node& n);
     static std::vector<Node> compact_node_entries(const Node& n);
     static Entry compact_node_lookup_field(const Node& n, FF_FieldKey key);
@@ -627,14 +634,45 @@ bool DeepValidator::walk_array(Offset off, RECOVERY_TAG array_tag,
             const Offset child = LOAD_U64(base + entries + static_cast<Size>(i) * step);
             if (!walk(child, element, depth + 1, "array entry", out)) return false;
         }
-    } else if (kind == FF_ARRAY::INLINE_BLOCK) {
-        // Each entry is a complete block at its own offset, so the same checks apply.
-        for (uint32_t i = 0; i < count; ++i) {
-            const Offset child = entries + static_cast<Size>(i) * step;
-            if (!walk(child, element, depth + 1, "inline array entry", out)) return false;
-        }
+        return true;
     }
-    // SCALAR entries carry no offsets; the span check above is the whole check.
+    // Inline entries that are VALUES carry no offsets, so the span check above
+    // is the whole check -- and walking them as blocks is not merely wasteful,
+    // it rejects the stream: a uint32 element has no self-offset at +0 and no
+    // recovery tag at +8, so `walk` reads adjacent entry bytes and reports a
+    // broken offset chain. Every stream holding a populated scalar array failed
+    // validation that way (TASKS.md AR-1).
+    //
+    // The element TAG decides this, never EntryKind: the writer stamps
+    // INLINE_BLOCK on scalars and block headers alike, so the kind bits cannot
+    // tell a value from a block. Recovery_to_Kind resolves the scalar band to
+    // an inline-scalar kind and every block band to FF_FIELD_BLOCK.
+    if (kind != FF_ARRAY::INLINE_BLOCK) return true;
+
+    if (ff_kind_is_inline_scalar(Recovery_to_Kind(element))) return true;
+
+    // An inline polymorphic tuple is 10 bytes of {offset, concrete tag} -- it is
+    // not a block either. Its first 8 bytes are the TARGET's offset, so walking
+    // the tuple itself reports a broken offset chain (the self-offset check sees
+    // the target's offset, not its own). Same shape as walk_fields'
+    // FF_FIELD_RESOURCE case: follow the offset, and take the concrete type from
+    // the tag beside it rather than from the array header.
+    if (element == RECOVER_FF_RESOURCE) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const Offset slot = entries + static_cast<Size>(i) * step;
+            const auto tgt = static_cast<RECOVERY_TAG>(
+                LOAD_U16(base + slot + DATA_BLOCK::RECOVERY));
+            if (!walk(LOAD_U64(base + slot), tgt, depth + 1, "resource array entry", out))
+                return false;
+        }
+        return true;
+    }
+
+    // Each entry is a complete block at its own offset, so the same checks apply.
+    for (uint32_t i = 0; i < count; ++i) {
+        const Offset child = entries + static_cast<Size>(i) * step;
+        if (!walk(child, element, depth + 1, "inline array entry", out)) return false;
+    }
     return true;
 }
 
@@ -1000,6 +1038,190 @@ void Reflective::Node::print_json(std::ostream& out) const {
     }
 }
 
+#ifndef NDEBUG
+// ===========================================================================
+// to_debug_json -- print_json plus what the reader believed about each value
+// ===========================================================================
+// Every defect in this file's history has been a value that decoded to
+// plausible JSON under a wrong belief: a date/time tagged RECOVER_FF_STRING, a
+// choice variant labelled from the wrong tag, a scalar array element labelled a
+// block. Comparing output JSON to input JSON cannot see any of them -- the text
+// matches, or the field is simply absent with nothing to compare. This dump
+// prints the belief alongside the value so the mismatch is visible.
+//
+// It deliberately does NOT skip values print_json would drop. A field whose
+// Entry exists but whose is_empty() says "absent" is emitted with
+// "_empty":true, because "present on the wire, dropped on export" is precisely
+// the failure this is meant to catch (it was 136,006 diffs, and an
+// empty-skipping dump would have hidden it exactly as print_json did).
+
+static const char* ff_kind_name(FF_FieldKind k) {
+    switch (k) {
+        case FF_FIELD_UNKNOWN:  return "FF_FIELD_UNKNOWN";
+        case FF_FIELD_STRING:   return "FF_FIELD_STRING";
+        case FF_FIELD_ARRAY:    return "FF_FIELD_ARRAY";
+        case FF_FIELD_BLOCK:    return "FF_FIELD_BLOCK";
+        case FF_FIELD_CODE:     return "FF_FIELD_CODE";
+        case FF_FIELD_BOOL:     return "FF_FIELD_BOOL";
+        case FF_FIELD_INT32:    return "FF_FIELD_INT32";
+        case FF_FIELD_UINT32:   return "FF_FIELD_UINT32";
+        case FF_FIELD_INT64:    return "FF_FIELD_INT64";
+        case FF_FIELD_UINT64:   return "FF_FIELD_UINT64";
+        case FF_FIELD_FLOAT64:  return "FF_FIELD_FLOAT64";
+        case FF_FIELD_RESOURCE: return "FF_FIELD_RESOURCE";
+        case FF_FIELD_CHOICE:   return "FF_FIELD_CHOICE";
+        case FF_FIELD_DATETIME: return "FF_FIELD_DATETIME";
+        case FF_FIELD_URL:      return "FF_FIELD_URL";
+    }
+    return "FF_FIELD_?";
+}
+
+namespace {
+// Indentation state threaded through the recursion. depth < 0 means minified,
+// which keeps the common grep-the-whole-corpus case on one line per value.
+struct DebugFmt {
+    int step;
+    int depth;
+    bool pretty() const { return step > 0; }
+    void nl(std::ostream& o) const {
+        if (!pretty()) return;
+        o << "\n";
+        for (int i = 0; i < depth * step; ++i) o << ' ';
+    }
+    DebugFmt in() const { return {step, depth + 1}; }
+};
+
+void debug_meta(std::ostream& o, Offset off, RECOVERY_TAG tag, FF_FieldKind kind) {
+    o << "\"_off\":" << off
+      << ",\"_tag\":\"" << FF_RecoveryName(tag) << "\""
+      << ",\"_hex\":\"0x" << std::hex << std::uppercase << tag << std::dec << std::nouppercase << "\""
+      << ",\"_kind\":\"" << ff_kind_name(kind) << "\"";
+}
+} // namespace
+
+// The recursion lives inside the member function on purpose: access to Node's
+// protected state is granted per-CLASS, so a lambda declared here reaches every
+// Node it visits, and no debug-only helper has to be declared in the public
+// header to get at m_base/m_recovery/m_kind.
+void Reflective::Node::to_debug_json(std::ostream& out, int indent) const {
+
+    // A block field: the value, plus the slot metadata only the Entry holds.
+    const auto emit_entry = [&out](const Node& parent, const Entry& e,
+                                   const FF_FieldInfo& f, DebugFmt fmt,
+                                   const auto& emit_node) -> void {
+        const Offset slot = e.absolute_offset();
+        out << "{";
+        debug_meta(out, slot, e.target_recovery, f.kind);
+
+        // The schema's claim about this field kept beside the runtime one:
+        // where they differ, the difference IS the bug (six code arrays declare
+        // RECOVER_FF_CODE and store strings -- TASKS.md AR-2).
+        if (f.child_recovery != FF_RECOVER_UNDEFINED &&
+            GetTypeFromTag(f.child_recovery) != GetTypeFromTag(e.target_recovery))
+            out << ",\"_schema_tag\":\"" << FF_RecoveryName(f.child_recovery) << "\"";
+
+        if (f.kind == FF_FIELD_CHOICE)
+            out << ",\"_suffix\":\"" << get_choice_suffix(e.target_recovery) << "\"";
+
+        // A code slot is inline unless its flag routes it to a CodeableConcept.
+        if (f.kind == FF_FIELD_CODE) {
+            const uint32_t raw = LOAD_U32(parent.m_base + slot);
+            out << ",\"_code\":" << (raw & ~FF_CODEABLE_CONCEPT_FLAG)
+                << ",\"_cc_fallback\":" << ((raw & FF_CODEABLE_CONCEPT_FLAG) ? "true" : "false");
+        }
+        // A date/time slot is 8 inline bytes unless bit 63 routes it to a string.
+        if (f.kind == FF_FIELD_DATETIME) {
+            const uint64_t raw = LOAD_U64(parent.m_base + slot);
+            out << ",\"_dt_fallback\":"
+                << ((raw != FF_DATETIME_NULL && FF_DATETIME_IS_FALLBACK(raw)) ? "true" : "false");
+        }
+
+        const bool inline_scalar = ff_kind_is_inline_scalar(f.kind);
+        const Node child = inline_scalar ? Node() : e.as_node();
+        if (!inline_scalar && child.is_empty()) out << ",\"_empty\":true";
+
+        out << ",\"_v\":";
+        if (inline_scalar) e.print_scalar_json(out, parent.m_version);
+        else               emit_node(child, fmt, emit_node);
+        out << "}";
+    };
+
+    const auto emit_node = [&out, &emit_entry](const Node& n, DebugFmt fmt,
+                                               const auto& self) -> void {
+        if (!n) { out << "null"; return; }
+
+        switch (n.m_kind) {
+            case FF_FIELD_BLOCK: {
+                out << "{";
+                debug_meta(out, n.m_node_offset, n.m_recovery, n.m_kind);
+                if (FF_IsResourceTag(n.m_recovery))
+                    out << ",\"resourceType\":\"" << reflected_resource_type(n.m_recovery) << "\"";
+
+                const DebugFmt inner = fmt.in();
+                for (const FF_FieldInfo& f : n.fields()) {
+                    const FF_FieldKey key = FF_FieldKey::from_cstr(
+                        n.m_recovery, f.kind, f.field_offset,
+                        f.child_recovery, f.array_entries_are_offsets, f.name);
+                    const Entry child_entry = n[key];
+                    if (!child_entry) continue;   // slot genuinely absent
+
+                    out << ",";
+                    inner.nl(out);
+                    out << "\"" << f.name << "\":";
+                    emit_entry(n, child_entry, f, inner, self);
+                }
+                fmt.nl(out);
+                out << "}";
+                break;
+            }
+            case FF_FIELD_ARRAY: {
+                const FF_ARRAY arr(n.m_node_offset, n.m_size, n.m_version, n.m_engine_version);
+                const uint16_t packed =
+                    LOAD_U16(n.m_base + n.m_node_offset + FF_ARRAY::KIND_AND_STEP);
+                const auto ekind = static_cast<FF_ARRAY::EntryKind>(packed & FF_ARRAY::KIND_MASK);
+                const RECOVERY_TAG elem = GetTypeFromTag(static_cast<RECOVERY_TAG>(
+                    LOAD_U16(n.m_base + n.m_node_offset + DATA_BLOCK::RECOVERY)));
+
+                out << "{";
+                debug_meta(out, n.m_node_offset, n.m_recovery, n.m_kind);
+                out << ",\"_entry_kind\":\""
+                    << (ekind == FF_ARRAY::OFFSET         ? "OFFSET"
+                        : ekind == FF_ARRAY::INLINE_BLOCK ? "INLINE_BLOCK"
+                        : ekind == FF_ARRAY::SCALAR       ? "SCALAR(unwritten)"
+                                                          : "?")
+                    << "\",\"_stride\":" << (packed & FF_ARRAY::STEP_MASK)
+                    << ",\"_count\":" << arr.entry_count(n.m_base)
+                    << ",\"_elem\":\"" << FF_RecoveryName(elem) << "\"";
+
+                out << ",\"_v\":[";
+                const DebugFmt inner = fmt.in();
+                const auto items = n.entries();
+                for (size_t i = 0; i < items.size(); ++i) {
+                    if (i) out << ",";
+                    inner.nl(out);
+                    self(items[i], inner, self);
+                }
+                fmt.nl(out);
+                out << "]}";
+                break;
+            }
+            default:
+                // Leaves: metadata plus exactly the token print_json emits, so
+                // the two dumps stay comparable value-for-value.
+                out << "{";
+                debug_meta(out, n.m_node_offset, n.m_recovery, n.m_kind);
+                if (n.is_empty()) out << ",\"_empty\":true";
+                out << ",\"_v\":";
+                n.print_json(out);
+                out << "}";
+                break;
+        }
+    };
+
+    emit_node(*this, DebugFmt{indent, 0}, emit_node);
+}
+#endif // NDEBUG
+
 void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) const {
     const Offset slot = absolute_offset();
     if (slot == FF_NULL_OFFSET) { out << "null"; return; }
@@ -1288,71 +1510,90 @@ size_t ParserOps::standard_node_size(const Node& n) {
     return 0;
 }
 
+// An array's own header is the only description of its entries that cannot
+// drift from them: the call that laid out the entries wrote it. So element
+// identity is decided HERE, from that header, and both readers -- entries()
+// and node[i] -- route through this one function rather than each deciding for
+// itself. When they decided independently they disagreed, and the disagreement
+// was silent (TASKS.md AR-1).
+//
+// Two header fields answer two separate questions, and neither substitutes for
+// the other:
+//   RECOVERY tag       -- WHAT the element is. Authoritative. Schema-side
+//                         copies are not: FF_FieldKeys.hpp names six `code`
+//                         arrays that are stored as strings (AR-2).
+//   entries_are_pointers -- WHETHER the entry is the value or a pointer to it.
+//                         The tag cannot answer this while date/time arrays
+//                         are still written as FF_STRING blocks under a
+//                         RECOVER_FF_DATETIME header tag (TASKS.md DT-2.4).
+//
+// EntryKind's three-way split is NOT consulted for element shape: the writer
+// stamps INLINE_BLOCK on scalars, block headers and resource tuples alike, so
+// reading it as "these are blocks" is what made every scalar array export as
+// an empty list.
+Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
+                              RECOVERY_TAG elem, uint32_t index) {
+    const Offset item_ptr = n.m_node_offset + arr.get_header_size() +
+                            static_cast<Offset>(index) * arr.entry_step(n.m_base);
+
+    // --- POINTER TABLE (variable-length elements: every FF_STRING-backed field) ---
+    if (arr.entries_are_pointers(n.m_base)) {
+        const Offset child_off = LOAD_U64(n.m_base + item_ptr);
+        if (child_off == FF_NULL_OFFSET) return {};
+        // The pointed-to block's own tag outranks even the array header here:
+        // a `code` array declares RECOVER_FF_STRING and stores FF_STRINGs, and
+        // a dateTime array declares RECOVER_FF_DATETIME and stores them too.
+        const RECOVERY_TAG actual = static_cast<RECOVERY_TAG>(
+            LOAD_U16(n.m_base + child_off + DATA_BLOCK::RECOVERY));
+        return Node(n.m_base, n.m_size, n.m_version, child_off, actual,
+                    Recovery_to_Kind(actual), FF_RECOVER_UNDEFINED, false,
+                    n.m_ops, n.m_engine_version);
+    }
+
+    // --- INLINE POLYMORPHIC TUPLE (10 bytes: offset + concrete tag) ---
+    if (elem == RECOVER_FF_RESOURCE) {
+        const Offset actual_off = LOAD_U64(n.m_base + item_ptr);
+        if (actual_off == FF_NULL_OFFSET) return {};
+
+        const RECOVERY_TAG tuple_tag = static_cast<RECOVERY_TAG>(
+            LOAD_U16(n.m_base + item_ptr + DATA_BLOCK::RECOVERY));
+        const RECOVERY_TAG block_tag = static_cast<RECOVERY_TAG>(
+            LOAD_U16(n.m_base + actual_off + DATA_BLOCK::RECOVERY));
+        if (tuple_tag != block_tag) throw std::runtime_error(
+            "FastFHIR: inline polymorphic tuple array (RECOVER_FF_RESOURCE) declares tag " +
+            std::to_string(tuple_tag) + " but the block it points at carries " +
+            std::to_string(block_tag));
+
+        return Node(n.m_base, n.m_size, n.m_version, actual_off, tuple_tag, FF_FIELD_BLOCK,
+                    FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
+    }
+
+    // --- INLINE ENTRY: the value itself, or a block header, per the tag ---
+    // Recovery_to_Kind resolves the scalar band (0x0100-0x01FF) to the concrete
+    // scalar kind and every block band to FF_FIELD_BLOCK, so one call covers
+    // both remaining layouts.
+    return Node(n.m_base, n.m_size, n.m_version, item_ptr, elem, Recovery_to_Kind(elem),
+                FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
+}
+
+// The element type is read from the array header once, not per entry.
+RECOVERY_TAG ParserOps::array_element_tag(const Node& n) {
+    return GetTypeFromTag(static_cast<RECOVERY_TAG>(
+        LOAD_U16(n.m_base + n.m_node_offset + DATA_BLOCK::RECOVERY)));
+}
+
 std::vector<Node> ParserOps::standard_node_entries(const Node& n) {
     std::vector<Node> out;
     if (!n.is_array()) return out;
 
     FF_ARRAY array(n.m_node_offset, n.m_size, n.m_version, n.m_engine_version);
-    uint32_t count = array.entry_count(n.m_base);
-    uint16_t step  = array.entry_step(n.m_base);
+    const uint32_t count = array.entry_count(n.m_base);
+    const RECOVERY_TAG elem = array_element_tag(n);
 
     out.reserve(count);
-    Offset entries_start = n.m_node_offset + array.get_header_size();
+    for (uint32_t i = 0; i < count; ++i)
+        out.push_back(array_element(n, array, elem, i));
 
-    for (uint32_t i = 0; i < count; ++i) {
-        Offset item_ptr = entries_start + (i * step);
-
-        // --- INLINE POLYMORPHIC TUPLE ARRAY ---
-        if (n.m_child_recovery == RECOVER_FF_RESOURCE && !n.m_array_entries_are_offsets) {
-            Offset actual_off = LOAD_U64(n.m_base + item_ptr);
-            
-            if (actual_off == FF_NULL_OFFSET) {
-                out.push_back(Node());
-                continue;
-            }
-            
-            RECOVERY_TAG tuple_tag = static_cast<RECOVERY_TAG>(LOAD_U16(n.m_base + item_ptr + DATA_BLOCK::RECOVERY));
-            RECOVERY_TAG block_tag = static_cast<RECOVERY_TAG>(LOAD_U16(n.m_base + actual_off + DATA_BLOCK::RECOVERY));
-            
-            if (tuple_tag != block_tag) throw std::runtime_error
-                ("Node::entries() Inline polymorphic tuple array (RECOVERY_FF_RESOURCE) mismatch with actual type");
-            
-            out.push_back(Node(n.m_base, n.m_size, n.m_version, actual_off, tuple_tag, FF_FIELD_BLOCK,
-                               FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version));
-            continue;
-        }
-
-        // --- STANDARD POINTER ARRAY (e.g., Bundle.entry, Patient.name) ---
-        if (n.m_array_entries_are_offsets) {
-            Offset child_off = LOAD_U64(n.m_base + item_ptr);
-            if (child_off == FF_NULL_OFFSET) {
-                out.push_back(Node());
-                continue;
-            }
-
-            // Use the actual recovery tag stored in the block — the schema's child_recovery
-            // may differ (e.g., code arrays store FF_STRING blocks with RECOVER_FF_STRING,
-            // even though the schema marks child_recovery as RECOVER_FF_CODE).
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
-                LOAD_U16(n.m_base + child_off + DATA_BLOCK::RECOVERY)
-            );
-
-            FF_FieldKind child_kind = FF_FIELD_BLOCK;
-            switch (actual_tag) {
-            case RECOVER_FF_STRING: child_kind = FF_FIELD_STRING; break;
-            default: break;
-            }
-
-            out.push_back(Node(n.m_base, n.m_size, n.m_version, child_off, actual_tag, child_kind,
-                               FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version));
-            continue;
-        }
-        
-        // --- FAST PATH: INLINE ARRAY (Structs) ---
-        out.push_back(Node(n.m_base, n.m_size, n.m_version, item_ptr, n.m_child_recovery, FF_FIELD_BLOCK,
-                           FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version));
-    }
-    
     return out;
 }
 // =====================================================================
@@ -1403,39 +1644,9 @@ Node ParserOps::standard_node_lookup_index(const Node& n, size_t index) {
     if (!n.is_array()) return {};
 
     FF_ARRAY arr(n.m_node_offset, n.m_size, n.m_version, n.m_engine_version);
-    uint32_t count = arr.entry_count(n.m_base);
-    if (index >= count) return {};
+    if (index >= arr.entry_count(n.m_base)) return {};
 
-    const BYTE* entries_start = arr.entries(n.m_base);
-    uint16_t step = arr.entry_step(n.m_base);
-    FF_ARRAY::EntryKind ekind = arr.entry_kind(n.m_base);
-
-    switch (ekind) {
-        case FF_ARRAY::SCALAR: {
-            Offset item_off = n.m_node_offset + arr.get_header_size() + index * step;
-            return Node(n.m_base, n.m_size, n.m_version, item_off, n.m_child_recovery, n.m_kind,
-                        FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
-        }
-        case FF_ARRAY::OFFSET: {
-            Offset ptr_off = static_cast<Offset>(entries_start - n.m_base) + index * step;
-            Offset item_off = LOAD_U64(n.m_base + ptr_off);
-            if (item_off == FF_NULL_OFFSET) return {};
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(n.m_base + item_off + DATA_BLOCK::RECOVERY));
-            // Same ground-truth kind re-derivation as standard_entry_as_node (Bug C).
-            FF_FieldKind item_kind = (actual_tag == RECOVER_FF_STRING) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
-            return Node(n.m_base, n.m_size, n.m_version, item_off, actual_tag, item_kind,
-                        FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
-        }
-        case FF_ARRAY::INLINE_BLOCK: {
-            Offset item_off = static_cast<Offset>(entries_start - n.m_base) + index * step;
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(n.m_base + item_off + DATA_BLOCK::RECOVERY));
-            // Same ground-truth kind re-derivation as standard_entry_as_node (Bug C).
-            FF_FieldKind item_kind = (actual_tag == RECOVER_FF_STRING) ? FF_FIELD_STRING : FF_FIELD_BLOCK;
-            return Node(n.m_base, n.m_size, n.m_version, item_off, actual_tag, item_kind,
-                        FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
-        }
-    }
-    return {};
+    return array_element(n, arr, array_element_tag(n), static_cast<uint32_t>(index));
 }
 
 Node Entry::as_node(Size size, uint32_t version, RECOVERY_TAG expected_tag, FF_FieldKind schema_kind,

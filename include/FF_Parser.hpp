@@ -569,6 +569,41 @@ public:
      * @param out The output stream.
      */
     void print_json(std::ostream& out) const;
+
+#ifndef NDEBUG
+    /**
+     * @brief `print_json` with the wire metadata each value was decoded from.
+     *
+     * Debug builds only. Every value becomes an object carrying what the reader
+     * believed about it, so a wrong belief is visible instead of merely wrong:
+     *
+     * ```json
+     * "effectiveDateTime": {"_off":40184,"_tag":"RECOVER_FF_STRING",
+     *                       "_kind":"FF_FIELD_STRING","_v":"2019-04-01"}
+     * ```
+     *
+     * That line is the motivating case: the value round-trips correctly and the
+     * tag is still wrong, which no amount of JSON diffing can surface. Auditing
+     * a corpus for it is a grep:
+     *
+     *     ff_roundtrip fixture.json --debug | grep -o '"[A-Za-z]*":{[^}]*RECOVER_FF_STRING' \
+     *       | grep -i 'date\\|time\\|instant\\|period'
+     *
+     * Emitted per value: `_off` (absolute byte offset of the block or slot the
+     * value was read from -- paste it straight into a hex dump), `_tag`
+     * (RECOVERY_TAG spelling via FF_RecoveryName), `_kind` (the FF_FieldKind the
+     * reader dispatched on), `_v` (the value print_json would have emitted).
+     * Arrays add `_entry_kind` / `_stride` / `_count` / `_elem`; code slots add
+     * `_code` and whether the CodeableConcept fallback flag is set; date/time
+     * slots add whether the slot is packed or a fallback offset.
+     *
+     * NOT valid FHIR and never round-trip input -- it is a lens on the bytes.
+     *
+     * @param out    The output stream.
+     * @param indent Spaces per level; 0 (default) minifies.
+     */
+    void to_debug_json(std::ostream& out, int indent = 0) const;
+#endif // NDEBUG
 };
 
 // ── Entry methods requiring the complete Node definition ─────────────────────

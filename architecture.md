@@ -796,11 +796,25 @@ it as "entries are inline," not as "entries are blocks."
 arrays are written as `INLINE_BLOCK` with `stride = sizeof(T)`, and the header
 tag (`ToArrayTag(RECOVER_FF_UINT32)`) is what identifies them.
 
-Because the kind bits are derivable from the tag — scalar band means inline
-values, `RECOVER_FF_STRING` means an offset table, everything else means inline
-— they are a second encoding of a fact the tag already carries. Where the two
-disagree, **the tag wins.** Trusting the kind bits over the tag is what made
-every scalar array export as `[]` (§5.5).
+**The header answers two separate questions, and neither field substitutes for
+the other:**
+
+| Question | Field |
+|---|---|
+| *What* is the element? | the `RECOVERY` tag — always |
+| *Is the entry the value, or a pointer to it?* | `entries_are_pointers()` (kind bits) |
+
+The kind bits would be derivable from the tag if the tag were always honest
+about storage — scalar band means values, `FF_STRING` means a table. It is not,
+yet: date/time arrays declare `RECOVER_FF_DATETIME` and store `FF_STRING`
+blocks behind offsets (DT-2.4), so the tag says "packed 8-byte value" while the
+entry is an 8-byte pointer. Until that closes, indirection must be read from
+the kind bits.
+
+What the kind bits must **never** be asked is *element shape*. `INLINE_BLOCK`
+is stamped on scalars, block headers and resource tuples alike, so reading it
+as "these are blocks" is what made every scalar array export as `[]`, and what
+made the validator reject valid streams (§5.5).
 
 The generator emits:
 
@@ -820,32 +834,53 @@ the entry region). `entry_step` and `entry_kind` decode the packed
 (`FF_ARRAY::validate_full`) checks that `HEADER_SIZE + entry_count *
 entry_step == VALIDATION` and that `RECOVERY` has the array bit set.
 
-Two readers walk arrays, and they must agree:
+**Three** readers walk arrays, and all three must agree:
 
-- `ParserOps::standard_node_entries` (`src/FF_Parser.cpp`) — materialises all
-  entries; this is what `print_json` and the Python bindings use.
-- `ParserOps::standard_node_lookup_index` (`src/FF_Parser.cpp`) — the O(1)
-  `node[i]` path. `compact_node_lookup_index` delegates to it, so there is one
-  implementation for both layouts.
+- `ParserOps::array_element` (`src/FF_Parser.cpp`) — the single decision point
+  for "what is element *i*". Both `standard_node_entries` (which materialises
+  every entry, used by `print_json` and the Python bindings) and
+  `standard_node_lookup_index` (the O(1) `node[i]` path) route through it, so
+  they cannot disagree. `compact_node_entries` / `compact_node_lookup_index`
+  delegate to the standard pair, giving one implementation for both layouts.
+- `DeepValidator::walk_array` (`src/FF_Parser.cpp`) — the structural pass behind
+  `validate_FFHR_stream()`. It is a separate walker with its own dispatch, so it
+  needs the same rule stated separately.
 
-Each element `Node` must be constructed with **the element's own kind**,
-derived from `GetTypeFromTag(header RECOVERY)` via `Recovery_to_Kind`. Two
-failure modes follow from getting this wrong, and both have occurred:
+`array_element` decides in three branches, in this order: pointer table
+(`entries_are_pointers`, element tag re-read from the pointed-to block),
+polymorphic tuple (`RECOVER_FF_RESOURCE`), then inline entry, whose kind is
+`Recovery_to_Kind(elem)` — that one call resolves the scalar band to a concrete
+scalar kind and every block band to `FF_FIELD_BLOCK`.
+
+Three failure modes follow from getting this wrong. All three were live, and all
+three were silent:
 
 - **Labelling a scalar element a block.** `Node::is_empty()` takes its
   `FF_FIELD_BLOCK` branch, calls `fields()`, and gets `{}` back — a scalar tag
   has no entry in `reflected_fields_view`. An empty field list reads as "no
   members present," so the element reports itself absent and `print_json`'s
-  array loop skips it. Every scalar array exported as `[]`, silently, with no
-  warning on either path.
-- **Reading a per-element recovery tag that isn't there.** The `INLINE_BLOCK`
-  branch loads `LOAD_U16(base + item_off + DATA_BLOCK::RECOVERY)` — 8 bytes
-  into an element that, for a scalar array, is 4 bytes wide. That reads into
-  the following element or past the end of the entry region.
+  array loop skips it. Every scalar array exported as `[]`, with no warning on
+  either path.
+- **Reading a per-element recovery tag that isn't there.** The old
+  `INLINE_BLOCK` branch of `node[i]` loaded `LOAD_U16(base + item_off +
+  DATA_BLOCK::RECOVERY)` — 8 bytes into an element that, for a scalar array, is
+  4 bytes wide, reading into the next element or past the entry region.
+- **Validating a non-block as a block.** `walk_array` walked every inline entry
+  through `walk()`, which requires a self-offset at +0. A `uint32` has none, and
+  a resource tuple's +0 is the *target's* offset — so `validate_FFHR_stream()`
+  reported "the offset chain is broken" and **rejected every valid stream
+  containing a populated scalar or resource array.** Nothing caught it because
+  `ff_roundtrip` does not validate and no test fed the validator a `Claim`.
 
-Both are the same root cause: the reader inferring element structure from the
-kind bits instead of the tag. §5.3's rule is the fix — dispatch on the header
-tag, and let stride follow from it.
+All three are one root cause: inferring element structure from the kind bits
+instead of the tag. §5.3's rule is the fix.
+
+A resource tuple deserves its own note, because it looks like a block and is
+not. Its 10 bytes are `{ offset(8), concrete tag(2) }` — the same field
+positions as a `DATA_BLOCK` header, which is why walking it type-checks and then
+fails at runtime. The offset at +0 is the **target's**, not its own, so a tuple
+must be *followed* (`walk(LOAD_U64(slot), tag_beside_it)`), exactly as
+`walk_fields` treats an `FF_FIELD_RESOURCE` slot — never walked in place.
 
 ---
 

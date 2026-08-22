@@ -259,6 +259,8 @@ DT-4.4, 2026-08-20 — see each task). Nothing gates DT-1.
 | DT-4 | P1 | Tests, then re-baseline the wire witness | the gate must move deliberately, in the same commit | open |
 | AR-1 | P1 | Array readers dispatch on the header tag, not the kind bits | every scalar array exports as `[]` — 136,006 of the 195,708 remaining round-trip diffs | open |
 | AR-2 | P2 | `FF_FieldKeys.hpp` disagrees with the wire on 6 `code` array fields | a consumer navigating by the public constant mis-reads those arrays | open |
+| AR-3 | **P1** | Ingest is load-sensitive: same fixture, different resources kept | silent, nondeterministic data loss; blocks any exact round-trip number | open |
+| DBG-1 | P2 | `Node::to_debug_json()` — round-trip JSON annotated with wire metadata | JSON diffing cannot see a right value under a wrong tag | **DONE 2026-08-22** (working tree) |
 
 ---
 
@@ -1151,6 +1153,28 @@ argument). That branch is real but is **not** this bug: `print_json` never calls
 `operator[](size_t)`, and no emitter has ever written `FF_ARRAY::SCALAR`, so the
 branch is dead. The one-line fix it proposed changes nothing. Do not re-apply it.
 
+> **DONE 2026-08-22 (working tree, uncommitted).** One shared
+> `ParserOps::array_element` now decides element identity for both readers;
+> `standard_node_lookup_index` is four lines. **A third reader was found during
+> the work and is fixed in the same change:** `DeepValidator::walk_array` walked
+> every inline entry as a block, so `validate_FFHR_stream()` **rejected every
+> valid stream containing a populated scalar or resource array** — "the offset
+> chain is broken", because a `uint32` has no self-offset at +0 and a resource
+> tuple's +0 is the *target's* offset. Verified: 342/342 fixtures now validate
+> OK (previously 0). Round-trip: all 136,006 `ARRAY_LENGTH` diffs gone, 14/342
+> fixtures fully clean (was 0/342), ctest 36/37 with only `py_roundtrip` red.
+>
+> ⚠ **The aggregate total is not yet a stable number.** Re-running it on
+> unchanged binaries gives 52,232 / 55,302 / 63,272 — the variance is entirely
+> in `DROPPED_RESOURCE`, and it is **not** in the differ (deterministic on fixed
+> input, across processes) nor in `ff_roundtrip` run serially or with 8 parallel
+> copies of one fixture (byte-identical every time). Under full aggregate load,
+> 13–17 fixtures report a different discarded-entry count run to run — e.g.
+> `Angel97_Mraz590` reports 50 discarded serially, every time, but 12 under load.
+> Separate processes, so this is load-sensitive behaviour inside a single
+> ingest. **Cause not yet found — tracked as AR-3.** `ARRAY_LENGTH` is stably 0
+> across every run, so AR-1's result is unaffected.
+
 - **AR-1.1** `standard_node_entries`: replace the hardcoded `FF_FIELD_BLOCK`
   with a dispatch on `GetTypeFromTag(array header RECOVERY)` — scalar band ->
   `Recovery_to_Kind(tag)` over the inline value, `RECOVER_FF_RESOURCE` -> the
@@ -1169,6 +1193,139 @@ branch is dead. The one-line fix it proposed changes nothing. Do not re-apply it
 
 **Done when:** the 342-fixture aggregate drops from 195,708 to ~59,700 with no
 new bucket appearing, and no new diffs on `/entry/N/resource/category`.
+
+---
+
+## DBG-1 — `to_debug_json()`: the round-trip with its wire metadata (P2)
+
+> **DONE 2026-08-22 (working tree, uncommitted).**
+
+**Why it exists.** Every defect this file has produced was a value that decoded
+to *plausible JSON under a wrong belief*: a `dateTime` tagged
+`RECOVER_FF_STRING` exporting as `effectiveString`, a choice variant labelled
+from the wrong tag, a scalar array element labelled a block. Diffing output JSON
+against input JSON cannot see any of them — either the text matches, or the
+field is simply gone with nothing to compare against. `to_debug_json` prints
+what the reader *believed* next to what it produced, so the mismatch is legible.
+
+**Shape.** Every value becomes an object; `_v` holds exactly what `print_json`
+would have emitted, so the two dumps stay comparable value-for-value.
+
+```json
+"effectiveDateTime":{"_off":40184,"_tag":"RECOVER_FF_DATETIME","_hex":"0x105",
+                     "_kind":"FF_FIELD_DATETIME","_dt_fallback":false,"_v":"2019-04-01"}
+```
+
+| Emitted | Meaning |
+|---|---|
+| `_off` | absolute byte offset of the block or slot — paste into a hex dump |
+| `_tag` / `_hex` | `RECOVERY_TAG` spelling and value (`FF_RecoveryName`) |
+| `_kind` | the `FF_FieldKind` the reader actually dispatched on |
+| `_v` | the value `print_json` would emit |
+| `_schema_tag` | **only when the schema disagrees with the runtime tag** — this is AR-2's six fields, made visible |
+| `_empty` | slot present on the wire, dropped by `is_empty()` — this is AR-1's failure shape |
+| `_suffix` | the choice (`[x]`) suffix chosen, for `valueX` mislabelling |
+| `_code` / `_cc_fallback` | dictionary code id; whether it routed to a `CodeableConcept` |
+| `_dt_fallback` | whether a date/time slot is packed or a bit-63 offset to an `FF_STRING` |
+| `_entry_kind` / `_stride` / `_count` / `_elem` | array header, verbatim |
+
+It deliberately does **not** skip values `print_json` drops — `_empty:true`
+instead. An empty-skipping dump would have hidden AR-1 exactly as `print_json`
+did.
+
+**Where it lives.** `Node::to_debug_json(std::ostream&, int indent = 0)`,
+guarded by `#ifndef NDEBUG` in both the header and the implementation, so
+release builds carry neither the function nor the ~1k tag-name literals.
+`ff_roundtrip` exposes it as `--debug` / `--debug-indent N`, and refuses with a
+clear message under `NDEBUG` rather than silently printing normal JSON.
+
+`FF_RecoveryName()` is **generated**, not hand-written — `generator/emit/recovery_tags.py`
+projects it from `dictionaries/master_tags.json` alongside the enum, so a tag
+can never exist without a name. Also `#ifndef NDEBUG`. Wire witness re-run:
+46/46, no tag moved.
+
+⚠ **ABI note:** a debug-only member function means a Debug consumer linking a
+Release `libfastfhir` gets an undefined symbol. Loud, not silent, but real — if
+that combination is ever supported, this moves behind a CMake option instead of
+`NDEBUG`.
+
+**First use, 2026-08-22 — the audit that motivated it.** Across 25 fixtures, no
+field named `date`/`time`/`instant`/`onset`/`abatement`/`issued`/`effective`/
+`authoredOn`/`recordedDate`/`occurrence` carries `RECOVER_FF_STRING`:
+
+```
+616 start RECOVER_FF_DATETIME     467 issued  RECOVER_FF_INSTANT
+612 end   RECOVER_FF_DATETIME     467 effective RECOVER_FF_DATETIME
+ 33 recordedDate RECOVER_FF_DATETIME    1 birthDate RECOVER_FF_DATE
+```
+
+`_dt_fallback` is `false` everywhere sampled, so every date/time Synthea emits
+packs successfully and none fall back to text. **DT-2's scalar path is confirmed
+correct on real data** — which also isolates DT-2.4 (arrays) as the only
+remaining date/time gap, since `Timing` never appears in this corpus.
+
+### Follow-ups (not done)
+- **DBG-1.1** No test covers `to_debug_json`. A `ff_test_debug_json` asserting
+  that a known fixture's dump contains an expected `_tag`/`_off` would keep it
+  honest; registering it needs the FOUR CMake registrations.
+- **DBG-1.2** Not wired into the Python bindings. `fastfhir` users debugging a
+  stream currently have to shell out to `ff_roundtrip`.
+- **DBG-1.3** Output is large (a 3 MB document becomes ~10 MB minified). A
+  `--debug-filter <tag|field>` would make whole-corpus audits cheaper than the
+  current grep-the-firehose approach.
+
+---
+
+## AR-3 — Ingest keeps a different set of resources under load (P1)
+
+**Silent, nondeterministic data loss.** Found while measuring AR-1; it is why the
+342-fixture aggregate cannot yet produce a repeatable total.
+
+### Reproduce
+```bash
+# serial: identical every time
+for i in 1 2 3; do ./build/ff_roundtrip build/synthea_fhir_r4/Angel97_Mraz590*.json \
+  --arena-size 2147483648 2>&1 >/dev/null | head -1; done      # 50 discarded, always
+
+python tests/python/roundtrip_aggregate.py   # run twice; totals differ by thousands
+```
+
+### What is and isn't ruled out (all observed 2026-08-22)
+| Suspect | Result |
+|---|---|
+| the Python differ | **ruled out** — deterministic on fixed input, within a process and across processes |
+| `ff_roundtrip`, serial | **ruled out** — byte-identical stdout over 5 runs |
+| `ff_roundtrip`, 8 parallel copies of one fixture | **ruled out** — byte-identical over 8 |
+| `PYTHONHASHSEED` | **ruled out** — pinning it does not stabilise the total |
+| full aggregate load (all 342, pool at CPU count) | **reproduces** — 13–17 fixtures differ between runs |
+
+`Angel97_Mraz590` reports **50** discarded entries serially and **12** under load,
+with a different stdout hash. These are separate processes with no shared state,
+so the load-sensitivity is inside one ingest.
+
+⚠ **`FF_IngestorCreateInfo::concurrency` is honoured in only one of two places.**
+`m_num_threads` gates the pool at `src/FF_Ingestor.cpp:1245`, but
+`FF_PredigestExtensionURLs` sizes its producer pool from
+`std::thread::hardware_concurrency()` directly (`src/FF_Ingestor.cpp:692`). So
+`ff_roundtrip`'s `concurrency = 1` — added as the "A23 diagnostic: force a single
+worker to test the concurrency hypothesis" — **never applied to that pool**, and
+the A23 experiment could not have proven what it was built to prove. Whether
+that pool is the source of this variance is **unverified**: changing it was tried
+and reverted, because `m_num_threads` is not in scope there (it is a free
+function, not an `Ingestor` member) and a real fix must decide whether the
+predigest pool should take the configured count at all.
+
+- **AR-3.1** Make `concurrency` reach every pool, or document why predigest is
+  exempt. Then re-run the aggregate twice with `concurrency = 1` and confirm
+  whether the variance disappears — that is the discriminating test.
+- **AR-3.2** If it persists at one worker, the race is not in the pool sizing;
+  bisect the discard path instead (the count itself varies, so the profile
+  filter or its counter is implicated).
+- **AR-3.3** Whatever the cause, a dropped resource must not be silent. The
+  discard warning already exists; it under-reports.
+
+**Done when:** `python tests/python/roundtrip_aggregate.py` produces the same
+total on two consecutive runs.
 
 ---
 
