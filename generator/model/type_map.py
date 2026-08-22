@@ -51,6 +51,7 @@ PRODUCTION_TYPES: list[str] = [
     "Signature",
     "CodeableReference",
     "VirtualServiceDetail",
+    "Money",
 ]
 
 # ---------------------------------------------------------------------------

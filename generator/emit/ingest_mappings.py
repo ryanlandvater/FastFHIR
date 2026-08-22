@@ -208,6 +208,23 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                             f"                    }}\n"
                             f"                }}\n"
                         )
+                    elif c_type == "code":
+                        # A code variant carries RECOVER_FF_CODE, not
+                        # RECOVER_FF_STRING: the tag is what routes the reader
+                        # through code_node, which resolves a dictionary ID or a
+                        # flagged FF_CODEABLE_CONCEPT fallback. Tagged as a
+                        # string it exported as `valueString` and lost the
+                        # dictionary encoding entirely. The POD value stays the
+                        # raw text; the STORE side runs ENCODE_FF_CODE on it.
+                        cpp += (
+                            f"                std::string_view s_val;\n"
+                            f"                if (field.value().get_string().get(s_val) == simdjson::SUCCESS) {{\n"
+                            f"                    if (!s_val.empty()) {{\n"
+                            f"                        data.{cpp_name}.tag = RECOVER_FF_CODE;\n"
+                            f"                        data.{cpp_name}.value = s_val;\n"
+                            f"                    }}\n"
+                            f"                }}\n"
+                        )
                     elif c_type in _tm.DATETIME_TYPES:
                         # DT-2: the four date/time types carry their OWN tag,
                         # never RECOVER_FF_STRING. In a choice slot the tag is
@@ -245,13 +262,20 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         # Only emit _from_json call when the block is actually
                         # in master_blocks (some types like TriggerDefinition,
                         # UsageContext are not in the spec bundles).
+                        # Age/Distance/Duration/Count are NOT rewritten to
+                        # Quantity here, though FHIR does define them as
+                        # profiles on it. They are in PRODUCTION_TYPES, so the
+                        # generator already emits a full block, _from_json,
+                        # SIZE/STORE and TypeTraits for each -- collapsing them
+                        # discarded all of that and stamped the slot
+                        # RECOVER_FF_QUANTITY, which is the only thing naming a
+                        # choice variant. A source `valueAge` then exported as
+                        # `valueQuantity`: the right number under a type name
+                        # the element does not permit. The four layouts are
+                        # byte-identical to Quantity's, so keeping them distinct
+                        # costs nothing on the wire and keeps block tag and slot
+                        # tag in agreement.
                         target_block = c_type
-                        # FHIR constrains Age/Distance/Duration/Count → Quantity
-                        if (
-                            target_block in ("Age", "Distance", "Duration", "Count")
-                            and "Quantity" in master_blocks
-                        ):
-                            target_block = "Quantity"
                         if target_block in master_blocks:
                             child_fn = f"{target_block}_from_json"
                             tag_name = f"RECOVER_FF_{target_block.upper()}"

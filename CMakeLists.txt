@@ -338,7 +338,7 @@ if(FASTFHIR_BUILD_TESTS)
     list(APPEND _BUILD_ALL ff_test_readme ff_roundtrip
          ff_test_primitives ff_test_memory ff_test_simd
          ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor
-         ff_test_graph_bounds ff_test_datetime)
+         ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary)
 endif()
 if(FASTFHIR_BUILD_PYTHON_BINDINGS)
     list(APPEND _BUILD_ALL fastfhir_python)
@@ -403,7 +403,8 @@ endif()
 if(FASTFHIR_BUILD_TESTS)
     foreach(_t ff_test_readme ff_roundtrip ff_test_primitives ff_test_memory
                ff_test_simd ff_test_amend ff_test_cc ff_test_bundle
-               ff_test_compactor ff_test_graph_bounds ff_test_datetime)
+               ff_test_compactor ff_test_graph_bounds ff_test_datetime
+               ff_test_api ff_test_dictionary)
         if(TARGET ${_t})
             set_target_properties(${_t} PROPERTIES FOLDER "Tests")
         endif()
@@ -447,7 +448,7 @@ endif()
 foreach(_t build_all fastfhir fastfhir_ingestor ff_ingest ff_export ff_compact ff_roundtrip ff_test_readme
            ff_test_primitives ff_test_memory ff_test_simd ff_test_amend
            ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds
-           ff_test_datetime)
+           ff_test_datetime ff_test_api ff_test_dictionary)
     if(TARGET ${_t})
         set_target_properties(${_t} PROPERTIES XCODE_GENERATE_SCHEME ON)
     endif()

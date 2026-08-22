@@ -20,7 +20,7 @@
 2. [Memory Architecture: The Virtual Memory Arena (VMA)](#2-memory-architecture-the-virtual-memory-arena-vma)
 3. [The Dual-Layer Type System](#3-the-dual-layer-type-system)
 4. [Binary Wire Format: `DATA_BLOCK` Anatomy](#4-binary-wire-format-data_block-anatomy)
-5. [The Array Subsystem: Inline vs. Offset](#5-the-array-subsystem-inline-vs-offset)
+5. [The Array Subsystem: Inline Entries and the One Indirection](#5-the-array-subsystem-inline-entries-and-the-one-indirection)
 6. [High-Performance Primitives](#6-high-performance-primitives)
 7. [Concurrent Builder Mechanics](#7-concurrent-builder-mechanics)
 8. [Zero-Copy Read Path (`Reflective::Node`)](#8-zero-copy-read-path-reflectivenode)
@@ -652,38 +652,66 @@ patch may be observed by a concurrent reader. This is acceptable because:
 
 ---
 
-## 5. The Array Subsystem: Inline vs. Offset
+## 5. The Array Subsystem: Inline Entries and the One Indirection
 
-`FF_ARRAY` is the workhorse for every list-typed field in FHIR. Its design
-hinges on a single observation, which we call the Indirection Paradox.
+`FF_ARRAY` is the workhorse for every list-typed field in FHIR. The design
+rule is simple and near-absolute: **an array holds its entries.** Exactly one
+element class cannot honour it.
 
-### 5.1 The Indirection Paradox
+### 5.1 Fixed stride is the constraint; variable length is the only thing that breaks it
 
-Random access — `array[i]` in O(1) — requires that `address(i) = base + i *
-stride` for some *constant* `stride`. If `stride` is not constant (i.e. if
-the elements are variable-length), random access is no longer O(1) without a
-side-band index.
+Random access — `array[i]` in O(1) — requires `address(i) = base + i * stride`
+for some *constant* `stride`. So the question for every element type is not
+"is it simple or complex?" but "**is it fixed-width?**"
 
-Two element classes exist:
+Three element classes are fixed-width and are therefore held inline. One is
+not, and pays for one pointer hop:
 
-- **Fixed-stride elements** (bools, doubles, fixed-layout blocks): stride is
-  trivially the element's size. Store inline.
-- **Variable-stride elements** (strings of arbitrary length, polymorphic
-  resource references where each entry could be a different concrete type
-  with a different size): stride is *not* constant. To preserve O(1), the
-  array stores **offsets** to the actual data; the offsets themselves are
-  fixed-stride (8 bytes each), and the variable-length data lives elsewhere
-  in the arena, reached by one indirection.
+| Element class | Held as | Stride | Example fields | Sites |
+|---|---|---|---|---|
+| **Inline scalar** | the raw value | `sizeof(T)` | `Claim.item.diagnosisSequence` (`uint32`) | 26 |
+| **Inline block** | the element's block header, packed | `T::HEADER_SIZE` | `Extension`, `Reference`, `CodeableConcept`, backbones | 845 |
+| **Inline polymorphic tuple** | 10-byte `{ offset(8), tag(2) }` | `TYPE_SIZE_RESOURCE` = 10 | `contained`, resource lists | 32 |
+| **Offset table** | 8-byte arena offsets | `TYPE_SIZE_OFFSET` = 8 | every `FF_STRING`-backed field | 31 |
 
-The cost of that indirection — one extra pointer chase — is unavoidable; the
-alternative is to lose O(1). The architecture is explicit that this trade
-is worth it: random access dominates iteration in FHIR consumer workloads,
-and the indirection is one cache line at most when the arena is sequentially
-allocated.
+903 of 934 array sites hold their entries directly.
+
+Two consequences are easy to get backwards, so they are stated explicitly:
+
+- **A block element is fixed-width.** A `CodeableConcept` header is a constant
+  size; its variable content (strings, codings) lives elsewhere in the arena
+  and is reached *from* the header. Complexity of the type says nothing about
+  the width of its header.
+- **Polymorphism does not force an offset table.** A resource array is
+  fixed-stride because the 10-byte tuple is fixed-width — the polymorphism
+  lives in the tag *inside* the inline entry, and the tuple's offset field
+  reaches the variable-size resource. This is indirection held inline, not an
+  offset array.
+
+That leaves **variable length** as the sole reason to abandon inline storage,
+and `FF_STRING` as the only element type in the system that has it (its
+`LENGTH` is part of its own header, so the width is not knowable from the
+schema). Every `OFFSET` array in the tree is a string array.
+
+```mermaid
+flowchart TD
+    A["FF_ARRAY header, 16 B<br/>RECOVERY = ARRAY_BIT + element tag"] --> B{"element tag<br/>GetTypeFromTag"}
+    B -->|"scalar band 0x01xx"| S["INLINE SCALAR<br/>stride = sizeof T<br/>v0 · v1 · v2"]
+    B -->|"RECOVER_FF_RESOURCE"| P["INLINE TUPLE<br/>stride = 10<br/>offset+tag · offset+tag"]
+    B -->|"RECOVER_FF_STRING"| O["OFFSET TABLE<br/>stride = 8<br/>ptr · ptr · ptr"]
+    B -->|"any block tag"| K["INLINE BLOCK<br/>stride = T::HEADER_SIZE<br/>hdr0 · hdr1"]
+    P -.->|"one hop"| PR["resource block<br/>elsewhere in arena"]
+    O -.->|"one hop"| OS["FF_STRING<br/>elsewhere in arena"]
+    K -.->|"from inside the header"| KC["variable content<br/>elsewhere in arena"]
+```
+
+The cost of the one indirection is unavoidable; the alternative is to lose
+O(1). Random access dominates iteration in FHIR consumer workloads, and the
+hop is one cache line at most when the arena is sequentially allocated.
 
 ### 5.2 `FF_ARRAY` Layout
 
-`FF_Primitives.hpp:466–508`.
+`include/FF_Primitives.hpp:1295–1346`.
 
 ```
 HEADER (16 bytes):
@@ -710,52 +738,80 @@ slot, growing it to 18 bytes and breaking 8-byte alignment of `ENTRY_COUNT`.
 Packing keeps the header at exactly 16 bytes — a power-of-two header size
 and one cache line — and exposes both fields in a single 16-bit load.
 
-### 5.3 Array Kinds
+### 5.3 The element type is the header's `RECOVERY` tag — and nothing else
 
-Defined as `FF_ARRAY::EntryKind` (`FF_Primitives.hpp:476–481`):
+The two bytes at `FF_ARRAY::RECOVERY` are the array's **single source of
+truth** for what its entries are:
 
-#### `SCALAR (0x0000)` — Packed primitives
+```cpp
+// generated_src/FF_Recovery.hpp:1094–1096
+constexpr uint16_t RECOVER_ARRAY_BIT  = 0x8000;
+constexpr uint16_t RECOVER_TYPE_MASK  = 0x7FFF;
+IsArrayTag(t)     -> (t & RECOVER_ARRAY_BIT) != 0
+GetTypeFromTag(t) -> t & RECOVER_TYPE_MASK      // the element type
+ToArrayTag(base)  -> base | RECOVER_ARRAY_BIT
+```
 
-Each entry is one of: `bool` (1 B), `int32`/`uint32`/`float32` (4 B),
-`int64`/`uint64`/`double` (8 B). Stride = `sizeof(T)`. Zero indirection;
-`array[i]` is a single dereference.
+`ToArrayTag(RECOVER_FF_STRING)` on an array of `code` says, on the wire,
+"array of string" — which is exactly what was written, because `code` values
+are serialised to `FF_STRING` blocks. Every layout decision in §5.1 follows
+from this tag: which of the four classes applies, what the stride is, and
+whether the entry is a value or a pointer. **Readers derive from the tag.**
 
-#### `INLINE_BLOCK (0x8000)` — Contiguous fixed-size blocks
+This matters because the element type is declared in three places, and they do
+not all agree:
 
-Each entry is a complete sub-block (V-Table + payload) of the element type,
-written contiguously. Stride = the element type's `HEADER_SIZE`. Used when
-the element type is a fixed-layout struct — e.g. an array of
-`HumanName`-style records.
+| Source | Authority |
+|---|---|
+| the array header's `RECOVERY` tag | **ground truth** — written by the same call that laid out the bytes, so it cannot drift from the layout |
+| `reflected_fields_view()` tables (`generated_src/FF_*.cpp`) | agrees with the wire |
+| `generated_src/FF_FieldKeys.hpp` constants | **wrong for 6 array fields** — see below |
 
-`array[i]` is a single dereference + V-Table walk, no extra indirection.
+Six `code`-typed array fields carry `RECOVER_FF_CODE` in `FF_FieldKeys.hpp`
+where the wire and the reflection tables both say `RECOVER_FF_STRING`:
+`AllergyIntolerance.category`, `daysOfWeek` on `Availability.availableTime` /
+`Location.hoursOfOperation` / `PractitionerRole.availableTime`, and
+`Timing.repeat.{dayOfWeek,when}`. The FieldKeys emitter records the
+pre-serialisation FHIR type; the other two record what is actually stored. A
+consumer navigating by the `FF_FieldKey` constant would walk those arrays as
+codes and mis-read them. **Never derive array layout from a schema-side copy
+of the element type — read the header.**
 
-The generator emits `STORE_FF_ARRAY_HEADER(__base, child_off,
-FF_ARRAY::INLINE_BLOCK, T::HEADER_SIZE, n, ToArrayTag(T::recovery))` for this
-case (see `generator/emit/store.py`).
+### 5.4 `EntryKind` — a coarser echo of the tag
 
-#### `OFFSET (0x4000)` — Mandatory indirection
+Defined as `FF_ARRAY::EntryKind` (`include/FF_Primitives.hpp:1304`):
 
-Each entry is an 8-byte arena offset (`Offset`) pointing at the actual
-element block elsewhere in the arena. Stride = 8.
+| Value | Meaning | Written by the generator |
+|---|---|---|
+| `SCALAR = 0x0000` | packed primitives, stride `sizeof(T)` | **never** |
+| `OFFSET = 0x4000` | 8-byte arena offsets | 31 sites (all string arrays) |
+| `INLINE_BLOCK = 0x8000` | entries held inline at `stride` | 903 sites |
 
-This is the **only** legal kind for:
+`INLINE_BLOCK` is emitted for **all three inline classes** — raw scalars, block
+headers, and 10-byte resource tuples — with `stride` distinguishing them. Read
+it as "entries are inline," not as "entries are blocks."
 
-- **Strings** — `FF_STRING` is variable-length by definition (its `LENGTH`
-  field is part of its header).
-- **Resources / polymorphic elements** — different elements may resolve to
-  different concrete recovery tags and therefore different sizes. (For
-  resource arrays, the generator instead emits `INLINE_BLOCK` carrying
-  fixed-size 10-byte `ResourceReference` records — see
-  `generator/emit/store.py` and the wrapper definition in §6.2 — but the
-  *target* of each reference is reached by offset indirection.)
-- **Arrays whose elements would otherwise violate the fixed-stride
-  invariant** for any other reason.
+`SCALAR` is **dead**: no emitter in the tree writes it, and the only mention of
+`FF_ARRAY::SCALAR` outside the enum is a `case` label in the reader. Scalar
+arrays are written as `INLINE_BLOCK` with `stride = sizeof(T)`, and the header
+tag (`ToArrayTag(RECOVER_FF_UINT32)`) is what identifies them.
 
-The generator emits `STORE_FF_ARRAY_HEADER(__base, child_off,
-FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, n, ToArrayTag(...))` for offset arrays
-(`generator/emit/store.py`).
+Because the kind bits are derivable from the tag — scalar band means inline
+values, `RECOVER_FF_STRING` means an offset table, everything else means inline
+— they are a second encoding of a fact the tag already carries. Where the two
+disagree, **the tag wins.** Trusting the kind bits over the tag is what made
+every scalar array export as `[]` (§5.5).
 
-### 5.4 Reading Arrays
+The generator emits:
+
+```cpp
+STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, T::HEADER_SIZE,      n, ToArrayTag(T::recovery));          // blocks
+STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_UINT32,    n, ToArrayTag(RECOVER_FF_UINT32));    // scalars
+STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_RESOURCE,  n, ToArrayTag(RECOVER_FF_RESOURCE));  // tuples
+STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::OFFSET,       TYPE_SIZE_OFFSET,    n, ToArrayTag(RECOVER_FF_STRING));    // strings
+```
+
+### 5.5 Reading Arrays
 
 `FF_ARRAY::entries(base)` returns a `const BYTE*` to byte 16 (the start of
 the entry region). `entry_step` and `entry_kind` decode the packed
@@ -763,6 +819,33 @@ the entry region). `entry_step` and `entry_kind` decode the packed
 `entry_kind == OFFSET`. The validator
 (`FF_ARRAY::validate_full`) checks that `HEADER_SIZE + entry_count *
 entry_step == VALIDATION` and that `RECOVERY` has the array bit set.
+
+Two readers walk arrays, and they must agree:
+
+- `ParserOps::standard_node_entries` (`src/FF_Parser.cpp`) — materialises all
+  entries; this is what `print_json` and the Python bindings use.
+- `ParserOps::standard_node_lookup_index` (`src/FF_Parser.cpp`) — the O(1)
+  `node[i]` path. `compact_node_lookup_index` delegates to it, so there is one
+  implementation for both layouts.
+
+Each element `Node` must be constructed with **the element's own kind**,
+derived from `GetTypeFromTag(header RECOVERY)` via `Recovery_to_Kind`. Two
+failure modes follow from getting this wrong, and both have occurred:
+
+- **Labelling a scalar element a block.** `Node::is_empty()` takes its
+  `FF_FIELD_BLOCK` branch, calls `fields()`, and gets `{}` back — a scalar tag
+  has no entry in `reflected_fields_view`. An empty field list reads as "no
+  members present," so the element reports itself absent and `print_json`'s
+  array loop skips it. Every scalar array exported as `[]`, silently, with no
+  warning on either path.
+- **Reading a per-element recovery tag that isn't there.** The `INLINE_BLOCK`
+  branch loads `LOAD_U16(base + item_off + DATA_BLOCK::RECOVERY)` — 8 bytes
+  into an element that, for a scalar array, is 4 bytes wide. That reads into
+  the following element or past the end of the entry region.
+
+Both are the same root cause: the reader inferring element structure from the
+kind bits instead of the tag. §5.3's rule is the fix — dispatch on the header
+tag, and let stride follow from it.
 
 ---
 
@@ -1013,17 +1096,31 @@ three callers use it only as a fallback when `FF_FieldKey::child_recovery` is
 `UNDEFINED`, and a generated date/time key always carries its specific tag, so
 the fallback must never fire for one.
 
-> **Status (2026-08-20).** The representation, the pack/unpack pair, the text
-> codec, the emitter triple and the `FF_FieldKind` member all exist and are
-> unit-tested (`ff_test_datetime`, TASKS.md DT-1.1/DT-1.2/DT-1.3). **Nothing
-> emits the kind yet**: the generator still routes `date`/`dateTime`/`instant`/
-> `time` through `STRING_TYPES` (`generator/model/type_map.py`), so no stream
-> contains a packed date/time and `FF_FIELD_DATETIME` is unreachable at runtime.
-> Two things must follow before that changes: **DT-1.5** adds the flagged slot to
-> `slot_carries_offset` and `walk_fields` — it has to land *before* DT-2, which
-> is the commit that first puts a flagged date/time offset on the wire — and
-> DT-3 wires ingest and export. DT-4 re-baselines the wire witness in the same
-> commit as the generator change.
+> **Status (2026-08-22). Live for scalar slots; arrays are the remaining gap.**
+> `date`/`dateTime`/`instant`/`time` are out of `STRING_TYPES` and into
+> `DATETIME_TYPES` (`generator/model/type_map.py`), and every **scalar** slot
+> now emits the packed form — `Patient.birthDate` is
+> `{FF_FIELD_DATETIME, RECOVER_FF_DATE}` in the reflection table and
+> `ENCODE_FF_DATETIME` in the store pass. Choice (`[x]`) variants carry their own
+> four tags and resolve their fallback offset through `resolve_choice`. DT-1.5's
+> validator support (`slot_carries_offset`, `walk_fields`) landed first, as
+> required.
+>
+> **Array-typed date/time fields are still written as `FF_STRING` blocks.**
+> Three emitters route `DATETIME_TYPES` back into the string-array branch —
+> `emit/store.py` (SIZE pass and STORE pass) and `emit/deserialize.py`. When
+> DT-2.1 removed the four types from `STRING_TYPES`, those branches were kept
+> compiling by appending `or f["fhir_type"] in DATETIME_TYPES` rather than being
+> ported, so they reproduce the pre-DT-2 layout. Two fields in the whole spec are
+> affected — `Timing.event` and `Timing.repeat.timeOfDay` — and they are 2 of the
+> 31 `OFFSET` arrays in §5.1's table. Tracked as TASKS.md **DT-2.4**.
+>
+> Closing that gap makes the 8-byte packed slot an **inline array element**,
+> which activates a path that is dormant today: a slot with bit 63 set holds an
+> offset relative to its containing block, and inside an array the containing
+> block is the array itself. The array reader must resolve it against the
+> array's own offset while it still holds it — the same treatment
+> `ParserOps::code_node` gives code slots (§5.5, and the invariant in CLAUDE.md).
 
 ---
 

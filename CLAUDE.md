@@ -206,9 +206,13 @@ it there (see its README, "the Debug trap").
   says only "inline 8 bytes". `Recovery_to_Kind` maps all four tags onto that kind;
   `Kind_to_Recovery` deliberately maps it back to **nothing**, because one kind naming
   four tags is not a function and a guess there exports a `date` as `valueDateTime`.
-  Primitives, the kind, and the tests are in (`ff_test_datetime`); the generator still
-  routes these types through `STRING_TYPES`, so nothing emits the kind yet — DT-1.5
-  (validator) must land before DT-2 (generator). Full layout: architecture.md §6.3.
+  Primitives, the kind, and the tests are in (`ff_test_datetime`). **Live on the wire for
+  scalar slots and choice variants** since DT-2 (`Patient.birthDate` emits
+  `ENCODE_FF_DATETIME` under `RECOVER_FF_DATE`); `DATETIME_TYPES` in
+  `generator/model/type_map.py` replaced the old `STRING_TYPES` routing. **Array-typed
+  date/time fields are the remaining gap** — three emitters still send them down the
+  string-array branch, so `Timing.event` and `Timing.repeat.timeOfDay` are stored as
+  `FF_STRING` (TASKS.md DT-2.4). Full layout: architecture.md §6.3.
 - **Extensions** — per-extension `EXT_REF` word routes to a registered WASM codec module
   (MSB=1), a retained URL in `FF_URL_DIRECTORY` (MSB=0), or suppression (`0xFFFFFFFF`).
 - **Compactor** — post-finalize rewrite of a sealed stream into a presence-bitmask compact
@@ -253,6 +257,19 @@ preference — `Node::as<std::string_view>()` used to resolve against the node's
 which for a choice (`[x]`) variant is the *slot*, and so read one V-Table width past the
 block and returned an empty label: a silently dropped code, no crash, no warning. DT-3 owes
 the date/time slot the same treatment.
+
+**An array holds its entries, and its header tag says what they are.** Fixed-width
+elements are stored inline — raw scalars at `sizeof(T)`, block headers at `T::HEADER_SIZE`,
+polymorphic resources as inline 10-byte `{offset, tag}` tuples. **Variable length is the
+only thing that forces an offset table**, and `FF_STRING` is the only element type that has
+it, so every `FF_ARRAY::OFFSET` in the tree is a string array; complexity and polymorphism
+do *not* force indirection. The element type comes from the array header's `RECOVERY` tag
+(`GetTypeFromTag`, bit 15 = `RECOVER_ARRAY_BIT`) — that is the copy written by the same call
+that laid out the bytes, so it cannot drift from the layout. **Never derive array layout
+from a schema-side copy**: `FF_FieldKeys.hpp` disagrees with the wire on 6 `code` array
+fields, and `FF_ARRAY::EntryKind`'s bits are a coarser re-encoding of the tag whose
+`SCALAR` value no emitter has ever written. Trusting the kind bits over the tag is what
+made every scalar array export as `[]`. Full contract: architecture.md §5.
 
 The residue that remains genuinely unchecked is narrow: a slot holding *only* inline bytes
 (bit 63 clear), reinterpreted by a later format change. The `Parser` reads `engine_version`

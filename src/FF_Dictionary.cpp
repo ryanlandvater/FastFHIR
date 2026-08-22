@@ -36,29 +36,42 @@ uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t version) noexcept
 
     using Map = std::unordered_map<std::string_view, uint32_t>;
 
-    // UCUM first — highest priority in dedup (UCUM > R4 > R5).
-    // Also inserts lowered keys for case-insensitive fuzzy matching.
+    // EXACT MATCHES ONLY. UCUM first (it wins dedup over R4/R5), then R4 or R5
+    // by requested version. There is deliberately no case-insensitive fallback.
+    //
+    // There used to be one: every UCUM label also inserted a lowercased alias,
+    // "for fuzzy matching". UCUM is case-SENSITIVE by specification -- 'a' is a
+    // year and 'A' an ampere, 'm' a metre and 'M' the mega prefix, 't' a tonne
+    // and 'T' a tesla -- so a lowercase spelling is not a typo to be forgiven,
+    // it is a different unit or no unit at all. Accepting it silently converts
+    // a clinical quantity into one nobody wrote.
+    //
+    // The aliases corrupted two things at once, and 640 of them were live:
+    //
+    //   * Real UCUM codes. Labels and aliases went into one map in one pass,
+    //     and unordered_map::emplace does not overwrite, so 'A' (ampere) seeded
+    //     the key 'a' before the real 'a' (year) was reached and the real entry
+    //     no-opped. Every lookup of "a" returned ampere. 55 of the 1,384 labels
+    //     differ from another only by case; which of each pair broke came down
+    //     to table order -- 'd' (day) precedes 'D' (deci-) and so looked
+    //     correct, which is most of why this survived.
+    //
+    //   * Real FHIR codes. The aliases sat in the UCUM map, consulted before
+    //     R4/R5, so a lowercased UCUM label shadowed any FHIR code spelled the
+    //     same way: 'f' resolved to farad, 'n' to newton, 'w' to watt, 'c' to
+    //     coulomb, 'v' to volt -- 11 codes unreachable, each with its own
+    //     permanent ledger ID.
+    //
+    // Nothing is lost by refusing: an unrecognised code returns FF_CODE_NULL,
+    // which sends the writer to an FF_CODEABLE_CONCEPT block holding the
+    // ORIGINAL text. A non-conformant unit round-trips verbatim instead of
+    // being silently "corrected" into a different one.
     {
         static const Map s_ucum_map = [] {
-            static std::vector<std::string> lowered;
-            // CRITICAL: reserve BEFORE the loop. `lowered` grows below, and a
-            // reallocation moves the std::string objects; short SSO labels keep
-            // their chars inside the object, so the string_view keys already
-            // emplaced into m would dangle after the move (heap-use-after-free
-            // caught by ASAN under DT-2's code-lookup volume). Pre-reserving
-            // pins every string's address for the lifetime of the map.
-            lowered.reserve(FF_UCUM_DICTIONARY_SIZE);
             Map m; m.reserve(FF_UCUM_DICTIONARY_SIZE * 2);
-            for (size_t i = 0; i < FF_UCUM_DICTIONARY_SIZE; ++i) {
-                const char* label = FF_UCUM_DICTIONARY[i].label;
-                auto code = static_cast<uint32_t>(FF_UCUM_DICTIONARY[i].code);
-                m.emplace(label, code);
-                // Lowered key for fuzzy UCUM matching
-                std::string lo(label);
-                for (auto& c : lo) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                lowered.push_back(std::move(lo));
-                m.emplace(lowered.back(), code);
-            }
+            for (size_t i = 0; i < FF_UCUM_DICTIONARY_SIZE; ++i)
+                m.emplace(FF_UCUM_DICTIONARY[i].label,
+                          static_cast<uint32_t>(FF_UCUM_DICTIONARY[i].code));
             return m;
         }();
         auto it = s_ucum_map.find(std::string_view(str));

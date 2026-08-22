@@ -92,13 +92,14 @@ if(FASTFHIR_BUILD_TESTS)
     add_ff_cpp_test(ff_test_graph_bounds tests/cpp/ff_test_graph_bounds.cpp)
     add_ff_cpp_test(ff_test_datetime   tests/cpp/test_datetime.cpp)
     add_ff_cpp_test(ff_test_api        tests/cpp/test_api.cpp)
+    add_ff_cpp_test(ff_test_dictionary tests/cpp/test_dictionary.cpp)
     # WO-1 out-param contract test drives FF_Ingest, so it needs the ingestor.
     target_link_libraries(ff_test_api PRIVATE fastfhir_ingestor simdjson::simdjson)
 
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api)
+    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary)
         add_test(NAME "cpp_${_standalone}" COMMAND ${_standalone})
     endforeach()
 

@@ -254,9 +254,11 @@ DT-4.4, 2026-08-20 — see each task). Nothing gates DT-1.
 | RT-1 | P1 | Align round-trip entries by identity before diffing | 79% of reported diffs are cascade from one dropped resource | **DONE 2026-08-19** (eb008e2) |
 | DT-0 | P1 | Band correction + header relocation (prerequisites) | `FF_CODE` was misbanded, silently disabling a compactor path | **DONE 2026-08-19** (eb008e2) |
 | DT-1 | P1 | `FF_DateTime` packed representation + primitives | 4 tags sit reserved and unused; dateTime is a string today | open |
-| DT-2 | P1 | Generator: route date/dateTime/instant/time off STRING_TYPES | 306 elements across 120 types | open |
+| DT-2 | P1 | Generator: route date/dateTime/instant/time off STRING_TYPES | 306 elements across 120 types | **scalar slots + choice variants DONE** (working tree); **DT-2.4 arrays open** |
 | DT-3 | P1 | Ingest + export paths | where the encode/decode actually happens | open |
 | DT-4 | P1 | Tests, then re-baseline the wire witness | the gate must move deliberately, in the same commit | open |
+| AR-1 | P1 | Array readers dispatch on the header tag, not the kind bits | every scalar array exports as `[]` — 136,006 of the 195,708 remaining round-trip diffs | open |
+| AR-2 | P2 | `FF_FieldKeys.hpp` disagrees with the wire on 6 `code` array fields | a consumer navigating by the public constant mis-reads those arrays | open |
 
 ---
 
@@ -1074,9 +1076,133 @@ every consumer testing membership rather than `== "string"`.
   scalar slot, no `FF_STRING` child, no offset.
 - **DT-2.3** Field keys and reflection carry the new kind so `Node::as<>` and the
   JSON exporter dispatch on it.
+- **DT-2.4** **Array-typed date/time fields — OPEN, and the reason DT-2's "done
+  when" does not yet hold.** DT-2.1 removed the four types from `STRING_TYPES`,
+  which broke three string-array branches. They were kept compiling by appending
+  `or f["fhir_type"] in DATETIME_TYPES` to the branch condition, which restores
+  the **pre-DT-2** layout verbatim instead of porting it:
+
+  | Site | Emits now | Must emit |
+  |---|---|---|
+  | `emit/store.py:62` (SIZE pass) | `SIZE_FF_STRING` per element | `SIZE_FF_DATETIME` (fallback `FF_STRING` still needs reserved space) |
+  | `emit/store.py:236` (STORE pass) | `FF_ARRAY::OFFSET` + `STORE_FF_STRING` | `FF_ARRAY::INLINE_BLOCK`, stride `TYPE_SIZE_UINT64`, `ENCODE_FF_DATETIME` per element |
+  | `emit/deserialize.py:66` | reads each element back through `FF_STRING` | `FF_FORMAT_DATETIME` off the inline slot |
+
+  The comment above `emit/store.py:236` is now false — it claims "dateTime,
+  markdown, uri and id share this layout," and dateTime has not shared it since
+  DT-2.1. `emit/deserialize.py:70` already documents the symptom: *"DT-2 datetime
+  arrays hold `std::vector<std::string>`."*
+
+  **Scope: two fields in the whole spec** — `Timing.event` (`dateTime`) and
+  `Timing.repeat.timeOfDay` (`time`). They are 2 of the 31 `FF_ARRAY::OFFSET`
+  sites; the other 29 are genuine strings.
+
+  **No effect on `py_roundtrip`** — all 342 Synthea fixtures contain zero
+  `Timing` array elements (`timeOfDay`, `dayOfWeek`, `when`, `timing.event` all
+  absent), so this is correctness work that will not move the diff count. Do it
+  as its own commit, not folded into the round-trip push.
+
+  ⚠ **This activates a dormant path.** An inline 8-byte date/time element with
+  bit 63 set holds an offset *relative to its containing block*, and inside an
+  array the containing block is the array. The array reader must resolve it
+  against the array's own offset while it still holds it — the treatment
+  `ParserOps::code_node` gives code slots. Today that is unreachable only
+  because these arrays are strings. See CLAUDE.md's two offset invariants and
+  architecture.md §5.5; the resolution must land in the **same** commit as the
+  emitter change, never after it.
 
 **Done when:** `python -m generator` is deterministic across two runs and no
-generated file mentions `FF_STRING` for a date/time field.
+generated file mentions `FF_STRING` for a date/time field. **DT-2.1–2.3 hold for
+scalar slots and choice variants as of 2026-08-22; DT-2.4 is what still fails
+the second half of that sentence.**
+
+---
+
+## AR-1 — Array readers must dispatch on the header tag (P1)
+
+**Biggest single item left in `py_roundtrip`: 136,006 of 195,708 diffs**, all
+`ARRAY_LENGTH` on `Claim.item.{information,procedure,diagnosis}Sequence`. Source
+`"diagnosisSequence": [1]` exports as `[]`. Bytes on disk are correct; the read
+path loses the elements.
+
+### Locate
+```bash
+grep -n "FAST PATH: INLINE ARRAY" src/FF_Parser.cpp          # standard_node_entries fallback
+grep -rn "FF_ARRAY::SCALAR" generator/ src/ include/ generated_src/ tools/
+```
+**Expect:** the fallback hardcodes `FF_FIELD_BLOCK`, and `FF_ARRAY::SCALAR`
+appears exactly once in the whole tree — the `case` label in
+`standard_node_lookup_index`. If either has changed, STOP.
+
+### Mechanism (verified 2026-08-22)
+`print_json` walks arrays through `entries()` -> `standard_node_entries`, which
+has three branches: polymorphic tuple (`child_recovery == RECOVER_FF_RESOURCE`),
+pointer array (`m_array_entries_are_offsets`), and an unconditional fallback
+labelled *"FAST PATH: INLINE ARRAY (Structs)"* that hardcodes `FF_FIELD_BLOCK`.
+A `uint32` array matches neither of the first two, so every element becomes a
+Node claiming to be a struct. `is_empty()` then takes its `FF_FIELD_BLOCK`
+branch, calls `fields()` -> `reflected_fields_view(RECOVER_FF_UINT32)` -> `{}`
+(that switch only has cases for block types), reads the empty field list as "no
+members present," and returns `true`. The array loop skips every element.
+
+⚠ **The 2026-08-22 handoff blamed the wrong line.** It named
+`standard_node_lookup_index`'s `case FF_ARRAY::SCALAR` (the `n.m_kind`
+argument). That branch is real but is **not** this bug: `print_json` never calls
+`operator[](size_t)`, and no emitter has ever written `FF_ARRAY::SCALAR`, so the
+branch is dead. The one-line fix it proposed changes nothing. Do not re-apply it.
+
+- **AR-1.1** `standard_node_entries`: replace the hardcoded `FF_FIELD_BLOCK`
+  with a dispatch on `GetTypeFromTag(array header RECOVERY)` — scalar band ->
+  `Recovery_to_Kind(tag)` over the inline value, `RECOVER_FF_RESOURCE` -> the
+  10-byte tuple, `RECOVER_FF_STRING` -> the pointer table, any block tag ->
+  inline block header. Read the tag from the header, **not** from
+  `m_child_recovery` (see AR-2 for why the schema copy is unsafe).
+- **AR-1.2** `standard_node_lookup_index`: same dispatch, so `node[i]` and
+  `entries()` cannot disagree. This also fixes a live over-read — the
+  `INLINE_BLOCK` branch does `LOAD_U16(base + item_off + DATA_BLOCK::RECOVERY)`,
+  8 bytes into a 4-byte element.
+- **AR-1.3** Delete `case FF_ARRAY::SCALAR`. Keep `SCALAR = 0x0000` reserved in
+  the enum (it is a wire value no stream uses) or collapse `EntryKind` to
+  `INLINE`/`OFFSET`; ⚠ that collapse is a wire decision — Ryan's alone.
+- **AR-1.4** Test: a scalar array round-trips its elements, and a `code` array
+  (`AllergyIntolerance.category`) still round-trips as strings.
+
+**Done when:** the 342-fixture aggregate drops from 195,708 to ~59,700 with no
+new bucket appearing, and no new diffs on `/entry/N/resource/category`.
+
+---
+
+## AR-2 — `FF_FieldKeys.hpp` disagrees with the wire on 6 array fields (P2)
+
+An array's element type is declared in three places. Two agree with the bytes;
+one does not.
+
+| Source | `AllergyIntolerance.category` |
+|---|---|
+| array header `RECOVERY` tag (wire) | `RECOVER_FF_STRING` ✓ |
+| `reflected_fields_view` table | `RECOVER_FF_STRING` ✓ |
+| `generated_src/FF_FieldKeys.hpp` | `RECOVER_FF_CODE` ✗ |
+
+Six fields, all `code` arrays serialised to `FF_STRING` blocks:
+`AllergyIntolerance.category`, `daysOfWeek` on `Availability.availableTime` /
+`Location.hoursOfOperation` / `PractitionerRole.availableTime`, and
+`Timing.repeat.{dayOfWeek,when}`. Counts reconcile exactly — FieldKeys has 23
+`STRING` + 6 `CODE` array fields, the reflection tables have 29 `STRING` and 0
+`CODE`.
+
+`print_json` builds its keys from the reflection tables, so the export path is
+unaffected. A consumer reaching for the public `FF_ALLERGYINTOLERANCE::CATEGORY`
+constant gets `RECOVER_FF_CODE` and would walk the array as codes.
+
+- **AR-2.1** Fix the FieldKeys emitter to record the **stored** element type,
+  matching the reflection emitter. One fact, two emitters, one of them stopping
+  a step early.
+- **AR-2.2** Add a generator test asserting the two emitters agree on
+  `child_recovery` for every array field — the divergence class, not the six
+  instances.
+
+**Done when:** the two emitters produce identical `child_recovery` for all 934
+array fields, and `pytest tests/generator` covers it.
 
 ---
 

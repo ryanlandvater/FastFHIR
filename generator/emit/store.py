@@ -38,15 +38,19 @@ def generate_size_fields(layout, block_struct_name, data_name):
             # there is the SIZE/STORE asymmetry that produced A23 Bug B. An
             # absent choice is std::monostate, not an empty string.
             #
-            # A date/time variant holds its text in the SAME std::string_view,
-            # so the branch above cannot tell it apart -- only the tag can. It
-            # needs child space only when the text will not pack into 63 bits,
-            # which is what SIZE_FF_DATETIME answers (0 when it packs). This
-            # must mirror the STORE branch below exactly or the claim and the
-            # write disagree.
+            # Three variant families share that one std::string_view and are
+            # separated only by the tag: plain strings, date/time, and code.
+            # Each reserves a different amount of child space -- a date/time
+            # that packs into 63 bits needs none, a code in the dictionary needs
+            # none, and both need an FF_STRING / FF_CODEABLE_CONCEPT when they
+            # do not fit. This must mirror the STORE branch below exactly or the
+            # claim and the write disagree.
+            _cv = f"{data_name}.{f['cpp_name']}"
             cpp += (
-                f"            if (FF_IsDateTimeTag({data_name}.{f['cpp_name']}.tag))\n"
-                f"                __total += SIZE_FF_DATETIME(arg, {data_name}.{f['cpp_name']}.tag);\n"
+                f"            if (FF_IsDateTimeTag({_cv}.tag))\n"
+                f"                __total += SIZE_FF_DATETIME(arg, {_cv}.tag);\n"
+                f"            else if ({_cv}.tag == RECOVER_FF_CODE)\n"
+                f"                __total += SIZE_FF_CODE(std::string(arg), __version);\n"
                 f"            else\n"
                 f"                __total += SIZE_FF_STRING(arg);\n"
             )
@@ -179,6 +183,33 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             cpp += (
                 f"                STORE_U64({vtable_off}, ENCODE_FF_DATETIME("
                 f"__base, hdr_off, child_off, arg, __ct));\n"
+            )
+            cpp += f"            }} else if (__ct == RECOVER_FF_CODE) {{\n"
+            # A code is 4 bytes; the choice VALUE AREA is 8 (the slot is 10 --
+            # 8 for the value, 2 for the tag at +8 -- because it must fit the
+            # widest inline variant: uint64, double, or a packed date/time).
+            # So a code occupies the low half and the upper half is padding.
+            #
+            # Fill, then overwrite: identical to the arithmetic branch above,
+            # which pre-fills FF_NULL_OFFSET before STORE_U32 for int32/uint32/
+            # bool. Two padding conventions in adjacent arms of one visitor
+            # would be a difference a reader has to explain to themselves and
+            # cannot.
+            #
+            # The padding has to be determinate at all because finalize hashes
+            # EVERY byte from base() to the hash slot (FF_StreamFinalize in
+            # FF_Memory.hpp), so an unwritten half makes two logically identical
+            # documents digest differently. It reads as zero today only because
+            # claim_space hands back untouched sparse-mmap pages -- the OS's
+            # guarantee, not the format's.
+            #
+            # No reader looks at the upper half: code_node does LOAD_U32 at the
+            # slot start, and STORE_* is little-endian on the wire, so the low
+            # four wire bytes are the word it wants on either host endianness.
+            cpp += f"                STORE_U64({vtable_off}, FF_NULL_OFFSET);\n"
+            cpp += (
+                f"                STORE_U32({vtable_off}, ENCODE_FF_CODE("
+                f"__base, hdr_off, child_off, std::string(arg), __version));\n"
             )
             cpp += f"            }} else {{\n"
             cpp += f"                STORE_U64({vtable_off}, child_off);\n"
