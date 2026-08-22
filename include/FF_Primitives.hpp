@@ -635,6 +635,7 @@ enum TYPE_SIZE : uint8_t
     TYPE_SIZE_FLOAT32 = 4,
     TYPE_SIZE_FLOAT64 = 8,
     TYPE_SIZE_OFFSET = 8,
+    TYPE_SIZE_DECIMAL = 9,
     TYPE_SIZE_RESOURCE = 10,
     TYPE_SIZE_CHOICE = 10,
 };
@@ -726,7 +727,7 @@ constexpr uint8_t ff_slot_width(const FF_FieldKind kind)
     case FF_FIELD_UINT32:   return TYPE_SIZE_UINT32;
     case FF_FIELD_INT64:    return TYPE_SIZE_UINT64;
     case FF_FIELD_UINT64:   return TYPE_SIZE_UINT64;
-    case FF_FIELD_FLOAT64:  return TYPE_SIZE_FLOAT64;
+    case FF_FIELD_FLOAT64:  return TYPE_SIZE_DECIMAL;
     case FF_FIELD_CODE:     return TYPE_SIZE_UINT32;
     case FF_FIELD_URL:      return TYPE_SIZE_UINT32;
     case FF_FIELD_DATETIME: return TYPE_SIZE_UINT64;
@@ -735,6 +736,66 @@ constexpr uint8_t ff_slot_width(const FF_FieldKind kind)
     // STRING, ARRAY, BLOCK and UNKNOWN hold an arena offset.
     default:                return TYPE_SIZE_OFFSET;
     }
+}
+
+// =====================================================================
+// DECIMAL SLOT — [ double (8) | sigfigs (1) ]
+// =====================================================================
+// FHIR `decimal` is the only type that lands in an FF_FIELD_FLOAT64 slot, and
+// the slot carries two things that cannot be derived from one another:
+//
+//   +0  IEEE-754 binary64, the VALUE. Numerically exact and readable with a
+//       plain LOAD_F64 -- a downstream consumer (a column store, an index)
+//       maps these 8 bytes as a DOUBLE and sorts and filters on them natively,
+//       with no decode step. Nothing may be smuggled into this field.
+//   +8  sigfigs: how many digits followed the '.' in the SOURCE document --
+//       the decimal SCALE, which is what `%.*f` consumes on the way out.
+//       Not the count of significant figures: `62.00` stores 2 here and has
+//       four sig figs, `0.0895` stores 4 and has three. Scale is the quantity
+//       that reproduces the source text; sig figs is not (a %g render at four
+//       sig figs gives `62`, dropping the very zeros this exists to keep).
+//
+// Why it cannot live in the double: FHIR treats trailing zeros as significant
+// (`62.00` asserts hundredths, `62` does not), and every bit pattern of a
+// binary64 is already a legal value, so there is nowhere to put the
+// information. It is metadata about the source text, not about the number --
+// the same split DT-2 made for date/time, where a 3-bit precision field is
+// what keeps "2024" from round-tripping as "2024-01-01T00:00:00Z".
+//
+// FF_DECIMAL_SIGFIGS_UNSPECIFIED means "nothing recorded" -- exponent notation
+// in the source, or more fractional digits than a double can distinguish. The
+// exporter then falls back to the shortest representation that round-trips to
+// the stored bits, which is the faithful rendering when the source form is
+// unknown. Absence of the whole field is still the all-ones double at +0
+// (FF_IsFieldEmpty); this byte says nothing about presence.
+constexpr uint8_t FF_DECIMAL_SIGFIGS_UNSPECIFIED = FF_NULL_UINT8;
+
+// Largest sigfigs a binary64 can actually distinguish. Beyond this the digits are
+// noise, and recording them would make the exporter print noise back.
+constexpr uint8_t FF_DECIMAL_SIGFIGS_MAX = 17;
+
+// Sigfigs of a JSON number token, as written. Exponent forms and over-long
+// fractions record no sigfigs rather than a wrong one -- a guess here prints
+// digits the source never had.
+constexpr uint8_t FF_DecimalSigfigsFromToken(std::string_view token)
+{
+    if (token.find('e') != std::string_view::npos ||
+        token.find('E') != std::string_view::npos)
+        return FF_DECIMAL_SIGFIGS_UNSPECIFIED;
+
+    const size_t dot = token.find('.');
+    if (dot == std::string_view::npos) return 0;  // integer literal: "100" -> "100"
+
+    // raw_json_token() may carry trailing whitespace up to the next structural
+    // character; count only the digits.
+    size_t digits = 0;
+    for (size_t i = dot + 1; i < token.size(); ++i)
+    {
+        if (token[i] < '0' || token[i] > '9') break;
+        ++digits;
+    }
+    return digits > FF_DECIMAL_SIGFIGS_MAX ? FF_DECIMAL_SIGFIGS_UNSPECIFIED
+                                         : static_cast<uint8_t>(digits);
 }
 
 // =====================================================================

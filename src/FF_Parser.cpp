@@ -17,6 +17,8 @@
 #include "FF_Reflection.hpp"
 #include <assert.h>
 #include <algorithm>
+#include <charconv>
+#include <cstdio>
 #include <unordered_set>
 
 namespace FastFHIR {
@@ -810,6 +812,34 @@ static void escape_json_string(std::ostream& out, std::string_view str) {
     }
 }
 
+// Render a decimal slot: the value at +0, the source scale at +8.
+//
+// `out << double` is not an option here and never was -- ostream's default is
+// six significant digits, which truncated 42.142567166419695 to 42.1426 on the
+// way out. With a recorded scale the source form is reproducible exactly
+// (%.*f); without one, the shortest representation that round-trips to these
+// bits is the faithful answer, because that IS what the stream stores. Both
+// paths are exact for every decimal in the R4 spec corpus.
+// The digit count is a PARAMETER, not something this reads out of the slot,
+// because a decimal reaches the exporter through two slot shapes that agree at
+// +0 and disagree at +8. A plain FF_FIELD_FLOAT64 field is the 9-byte
+// [ double | sigfigs ] slot. A decimal choice ([x]) variant lives in the
+// 10-byte [ double | RECOVERY_TAG ] slot, where +8 is the tag -- reading it
+// unconditionally turns the tag's low byte into a digit count, which rendered
+// 42.142567166419695 as 42.142567 (six decimals, because that byte was 6).
+// Choice variants pass FF_DECIMAL_SIGFIGS_UNSPECIFIED and fall to
+// shortest-round-trip; only the field path has a real count to hand over.
+static void print_decimal_json(std::ostream& out, double value, uint8_t sigfigs) {
+    char buf[512];
+    if (sigfigs != FF_DECIMAL_SIGFIGS_UNSPECIFIED && sigfigs <= FF_DECIMAL_SIGFIGS_MAX) {
+        const int n = std::snprintf(buf, sizeof buf, "%.*f", static_cast<int>(sigfigs), value);
+        if (n > 0 && static_cast<size_t>(n) < sizeof buf) { out.write(buf, n); return; }
+    }
+    const auto res = std::to_chars(buf, buf + sizeof buf, value);
+    if (res.ec == std::errc{}) out.write(buf, res.ptr - buf);
+    else                       out << value;   // unreachable for finite doubles
+}
+
 static std::string_view get_choice_suffix(RECOVERY_TAG tag) {    switch (tag) {        case RECOVER_FF_BOOL:    return "Boolean";
         case RECOVER_FF_FLOAT64: return "Decimal";
         case RECOVER_FF_INT32:   return "Integer";
@@ -914,7 +944,12 @@ void Reflective::Node::print_json(std::ostream& out) const {
         case FF_FIELD_UINT32:  out << as<uint32_t>(); break;
         case FF_FIELD_INT64:   out << as<int64_t>(); break;
         case FF_FIELD_UINT64:  out << as<uint64_t>(); break;
-        case FF_FIELD_FLOAT64: out << as<double>(); break;
+        // Reached for a decimal choice ([x]) variant, whose slot has no sigfigs
+        // byte, and for decimal array elements, which store the sentinel.
+        case FF_FIELD_FLOAT64:
+            print_decimal_json(out, LOAD_F64(m_base + m_node_offset),
+                               FF_DECIMAL_SIGFIGS_UNSPECIFIED);
+            break;
         case FF_FIELD_CODE:
             out << "\"";
             escape_json_string(out, as<std::string_view>());
@@ -965,7 +1000,9 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
             out << Decode::scalar<uint64_t>(base, slot, RECOVER_FF_UINT64);
             break;
         case FF_FIELD_FLOAT64:
-            out << Decode::scalar<double>(base, slot, RECOVER_FF_FLOAT64);
+            // The real 9-byte decimal field slot: the source digit count is at +8.
+            print_decimal_json(out, LOAD_F64(base + slot),
+                               LOAD_U8(base + slot + TYPE_SIZE_UINT64));
             break;
         case FF_FIELD_CODE: {
             uint32_t raw = LOAD_U32(base + slot);

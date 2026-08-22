@@ -349,7 +349,7 @@ Kind tells the parser the **storage class** of a slot, not its meaning:
 | `FF_FIELD_BOOL`              | 1 B            | 0/1 byte                                         |
 | `FF_FIELD_INT32` / `_UINT32` | 4 B            | LE integer                                       |
 | `FF_FIELD_INT64` / `_UINT64` | 8 B            | LE integer                                       |
-| `FF_FIELD_FLOAT64`           | 8 B            | LE IEEE-754                                      |
+| `FF_FIELD_FLOAT64`           | 9 B            | LE IEEE-754 double, then 1 B of source sigfigs   |
 | `FF_FIELD_CODE`              | 4 B            | Code dictionary index (top bit = custom string)  |
 | `FF_FIELD_DATETIME`          | 8 B            | Packed civil date/time (top bit = original text) |
 | `FF_FIELD_STRING`            | 8 B            | `Offset` to `FF_STRING` block                    |
@@ -557,6 +557,28 @@ equals all-ones — so a decimal slot spelled that way is never empty, and every
 absent `Quantity.value` exports as a literal `1.84467e+19`. The all-ones double
 is a quiet NaN and therefore unordered under `==`; absence is tested on the
 bytes (`FF_IsFieldEmpty`), never by comparing against the constant.
+
+**Decimals carry their source precision in a 9th byte.** `decimal` is the only
+FHIR type that reaches an `FF_FIELD_FLOAT64` slot, and the slot is
+`[ double (8) | sigfigs (1) ]`. The double at `+0` is the value, numerically
+exact and readable with a plain `LOAD_F64` — a downstream consumer maps those
+eight bytes as a `DOUBLE` and sorts and filters on them natively, so nothing may
+be encoded into them. The byte at `+8` records how many digits followed the `.`
+in the source document, because FHIR counts trailing zeros as significant
+(`62.00` asserts hundredths, `62` does not) and no bit pattern of a binary64 is
+free to say so. It is the decimal *scale* — what `%.*f` consumes — not a count
+of significant figures; `62.00` stores 2 and has four sig figs.
+`FF_DECIMAL_SIGFIGS_UNSPECIFIED` (all ones) means the source form was not
+recorded — exponent notation, or more fractional digits than a double
+distinguishes — and the exporter then emits the shortest representation that
+round-trips to the stored bits. The ingest reads the count off simdjson's
+`raw_json_token()`, which reports the token without advancing the cursor.
+
+This is the same split DT-2 made for date/time, where an explicit precision
+field is what keeps `"2024"` from round-tripping as `"2024-01-01T00:00:00Z"`.
+Choice (`[x]`) variants are the one gap: their 10-byte slot spends `+8` on the
+`RECOVERY_TAG`, so a `valueDecimal` has nowhere to put a count and exports
+shortest-round-trip.
 
 **Why fixed-stride slots.** Two reasons, both in service of §1.1:
 

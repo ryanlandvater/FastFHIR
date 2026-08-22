@@ -64,6 +64,19 @@ _SCALAR_INGEST: dict[str, tuple[str, str, str]] = {
     "decimal": ("get_double", "double", "v"),
 }
 
+# Scalars whose SOURCE TEXT carries something the parsed value cannot.
+#
+# Only `decimal`: FHIR counts trailing zeros as significant, and a binary64 has
+# no spare bit pattern to record how many there were, so the slot keeps the
+# scale in a 9th byte and the ingest has to read it off the raw token. Peeking
+# is safe -- raw_json_token() reports the token without advancing the on-demand
+# cursor, so the get_double() that follows still succeeds.
+#
+# Arrays are excluded: a std::vector<double> element has nowhere to put a
+# per-item scale, so those store FF_DECIMAL_SIGFIGS_UNSPECIFIED and export via
+# shortest-round-trip.
+_SCALAR_NEEDS_TOKEN: frozenset = frozenset({"decimal"})
+
 
 def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src"):
     hpp = (
@@ -351,12 +364,24 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                 )
             elif f["fhir_type"] in _tm.SCALAR_PRIMITIVE_TYPES:
                 accessor, staging, stored = _SCALAR_INGEST[f["fhir_type"]]
-                cpp += (
-                    f"            {staging} v;\n"
-                    f"            if (field.value().{accessor}().get(v) == simdjson::SUCCESS) "
-                    f"data.{cpp_name} = {stored};\n"
-                    f"            else {{ {err_log} }}\n"
-                )
+                if f["fhir_type"] in _SCALAR_NEEDS_TOKEN and not f["is_array"]:
+                    cpp += (
+                        f"            auto __val = field.value();\n"
+                        f"            std::string_view __tok = __val.raw_json_token();\n"
+                        f"            {staging} v;\n"
+                        f"            if (__val.{accessor}().get(v) == simdjson::SUCCESS) {{\n"
+                        f"                data.{cpp_name} = {stored};\n"
+                        f"                data.{cpp_name}{_tm.DECIMAL_SIGFIGS_SUFFIX}"
+                        f" = FF_DecimalSigfigsFromToken(__tok);\n"
+                        f"            }} else {{ {err_log} }}\n"
+                    )
+                else:
+                    cpp += (
+                        f"            {staging} v;\n"
+                        f"            if (field.value().{accessor}().get(v) == simdjson::SUCCESS) "
+                        f"data.{cpp_name} = {stored};\n"
+                        f"            else {{ {err_log} }}\n"
+                    )
             elif f["fhir_type"] == "Resource":
                 cpp += (
                     f"            auto ref_obj = field.value().get_object();\n"

@@ -276,6 +276,17 @@ def generate_cxx_for_blocks(master_blocks, versions):
                 public_hpp += f"    bool {f['cpp_name']} = false;\n"
             elif f["data_type"] == "std::string":
                 public_hpp += f"    std::string {f['cpp_name']};\n"
+            elif f["fhir_type"] == "decimal" and not f["is_array"]:
+                # The value stays a plain double so every consumer that only
+                # wants the number gets it without a decode. Its SOURCE scale
+                # cannot ride inside those 8 bytes -- every bit pattern is
+                # already a legal value -- so it rides as a sibling member and
+                # lands in the slot's 9th byte. See FF_Primitives "DECIMAL SLOT".
+                public_hpp += f"    double {f['cpp_name']} = FF_NULL_F64;\n"
+                public_hpp += (
+                    f"    uint8_t {f['cpp_name']}{_tm.DECIMAL_SIGFIGS_SUFFIX}"
+                    f" = FF_DECIMAL_SIGFIGS_UNSPECIFIED;\n"
+                )
             elif f["fhir_type"] in _tm.TYPE_MAP and "null" in _tm.TYPE_MAP[f["fhir_type"]]:
                 null_val = _tm.TYPE_MAP[f["fhir_type"]]["null"]
                 public_hpp += f"    {f['data_type']} {f['cpp_name']} = {null_val};\n"

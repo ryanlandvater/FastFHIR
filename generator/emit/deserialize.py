@@ -1,5 +1,6 @@
 from generator.model.type_map import (
     DATETIME_TYPES,
+    DECIMAL_SIGFIGS_SUFFIX,
     SCALAR_PRIMITIVE_TYPES,
     STRING_TYPES,
     TYPE_MAP,
@@ -59,7 +60,11 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}    auto blk_item_ptr = arr_{f['cpp_name']}.entries(__base);\n"
             cpp += f"{indent}    for (uint32_t i = 0; i < ENTRIES; ++i, blk_item_ptr += STEP) {{\n"
 
-            if f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES or f["fhir_type"] in DATETIME_TYPES:
+            if (
+                f["fhir_type"] in ("string", "code")
+                or f["fhir_type"] in STRING_TYPES
+                or f["fhir_type"] in DATETIME_TYPES
+            ):
                 code_enum = f.get("code_enum")
                 # DT-2 datetime arrays hold std::vector<std::string> (the data
                 # member became std::string); plain string arrays keep
@@ -152,7 +157,21 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}    }}\n"
             cpp += f"{indent}}}\n"
 
-        elif f["fhir_type"] in TYPE_MAP and f["fhir_type"] not in ("string", "code", "DEFAULT") and f["fhir_type"] not in DATETIME_TYPES:
+        elif f["fhir_type"] == "decimal" and not f["is_array"]:
+            # Mirror of the store: the value from +0, the source scale from +8.
+            # Dropping the scale here would make a POD round trip (deserialize
+            # -> store) silently downgrade every decimal to "no scale recorded".
+            cpp += f"{indent}data.{f['cpp_name']} = FastFHIR::Decode::scalar<double>(__base, {vtable_off}, {_child_recovery_expr(f, block_struct_name)});\n"
+            cpp += (
+                f"{indent}data.{f['cpp_name']}{DECIMAL_SIGFIGS_SUFFIX} = "
+                f"LOAD_U8(__base + {vtable_off} + TYPE_SIZE_UINT64);\n"
+            )
+
+        elif (
+            f["fhir_type"] in TYPE_MAP
+            and f["fhir_type"] not in ("string", "code", "DEFAULT")
+            and f["fhir_type"] not in DATETIME_TYPES
+        ):
             cpp += f"{indent}data.{f['cpp_name']} = FastFHIR::Decode::scalar<{f['cpp_type']}>(__base, {vtable_off}, {_child_recovery_expr(f, block_struct_name)});\n"
 
         if f["first_version_idx"] > 0:

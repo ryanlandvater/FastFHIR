@@ -6818,8 +6818,8 @@
     },
     "FF_AGE": {
       "header_sizes": {
-        "HEADER_R4_SIZE": 58,
-        "HEADER_R5_SIZE": 58
+        "HEADER_R4_SIZE": 59,
+        "HEADER_R5_SIZE": 59
       },
       "order": [
         "VALIDATION",
@@ -6841,7 +6841,7 @@
         "SYSTEM_S": "TYPE_SIZE_OFFSET",
         "UNIT_S": "TYPE_SIZE_OFFSET",
         "VALIDATION_S": "TYPE_SIZE_UINT64",
-        "VALUE_S": "TYPE_SIZE_FLOAT64"
+        "VALUE_S": "TYPE_SIZE_DECIMAL"
       }
     },
     "FF_ALLERGYINTOLERANCE": {
@@ -6992,7 +6992,7 @@
     "FF_ATTACHMENT": {
       "header_sizes": {
         "HEADER_R4_SIZE": 78,
-        "HEADER_R5_SIZE": 102
+        "HEADER_R5_SIZE": 103
       },
       "order": [
         "VALIDATION",
@@ -7017,7 +7017,7 @@
         "CONTENTTYPE_S": "TYPE_SIZE_UINT32",
         "CREATION_S": "TYPE_SIZE_UINT64",
         "DATA_S": "TYPE_SIZE_OFFSET",
-        "DURATION_S": "TYPE_SIZE_FLOAT64",
+        "DURATION_S": "TYPE_SIZE_DECIMAL",
         "EXTENSION_S": "TYPE_SIZE_OFFSET",
         "FRAMES_S": "TYPE_SIZE_UINT32",
         "HASH_S": "TYPE_SIZE_OFFSET",
@@ -7234,8 +7234,8 @@
     },
     "FF_BUNDLE_ENTRY_SEARCH": {
       "header_sizes": {
-        "HEADER_R4_SIZE": 46,
-        "HEADER_R5_SIZE": 46
+        "HEADER_R4_SIZE": 47,
+        "HEADER_R5_SIZE": 47
       },
       "order": [
         "VALIDATION",
@@ -7252,7 +7252,7 @@
         "MODE_S": "TYPE_SIZE_UINT32",
         "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
         "RECOVERY_S": "TYPE_SIZE_UINT16",
-        "SCORE_S": "TYPE_SIZE_FLOAT64",
+        "SCORE_S": "TYPE_SIZE_DECIMAL",
         "VALIDATION_S": "TYPE_SIZE_UINT64"
       }
     },
@@ -7772,8 +7772,8 @@
     },
     "FF_COUNT": {
       "header_sizes": {
-        "HEADER_R4_SIZE": 58,
-        "HEADER_R5_SIZE": 58
+        "HEADER_R4_SIZE": 59,
+        "HEADER_R5_SIZE": 59
       },
       "order": [
         "VALIDATION",
@@ -7795,7 +7795,7 @@
         "SYSTEM_S": "TYPE_SIZE_OFFSET",
         "UNIT_S": "TYPE_SIZE_OFFSET",
         "VALIDATION_S": "TYPE_SIZE_UINT64",
-        "VALUE_S": "TYPE_SIZE_FLOAT64"
+        "VALUE_S": "TYPE_SIZE_DECIMAL"
       }
     },
     "FF_COVERAGE": {
@@ -8388,8 +8388,8 @@
     },
     "FF_DISTANCE": {
       "header_sizes": {
-        "HEADER_R4_SIZE": 58,
-        "HEADER_R5_SIZE": 58
+        "HEADER_R4_SIZE": 59,
+        "HEADER_R5_SIZE": 59
       },
       "order": [
         "VALIDATION",
@@ -8411,7 +8411,7 @@
         "SYSTEM_S": "TYPE_SIZE_OFFSET",
         "UNIT_S": "TYPE_SIZE_OFFSET",
         "VALIDATION_S": "TYPE_SIZE_UINT64",
-        "VALUE_S": "TYPE_SIZE_FLOAT64"
+        "VALUE_S": "TYPE_SIZE_DECIMAL"
       }
     },
     "FF_DOCUMENTREFERENCE": {
@@ -8697,8 +8697,8 @@
     },
     "FF_DURATION": {
       "header_sizes": {
-        "HEADER_R4_SIZE": 58,
-        "HEADER_R5_SIZE": 58
+        "HEADER_R4_SIZE": 59,
+        "HEADER_R5_SIZE": 59
       },
       "order": [
         "VALIDATION",
@@ -8720,7 +8720,7 @@
         "SYSTEM_S": "TYPE_SIZE_OFFSET",
         "UNIT_S": "TYPE_SIZE_OFFSET",
         "VALIDATION_S": "TYPE_SIZE_UINT64",
-        "VALUE_S": "TYPE_SIZE_FLOAT64"
+        "VALUE_S": "TYPE_SIZE_DECIMAL"
       }
     },
     "FF_ENCOUNTER": {
@@ -9578,8 +9578,8 @@
     },
     "FF_LOCATION_POSITION": {
       "header_sizes": {
-        "HEADER_R4_SIZE": 58,
-        "HEADER_R5_SIZE": 58
+        "HEADER_R4_SIZE": 61,
+        "HEADER_R5_SIZE": 61
       },
       "order": [
         "VALIDATION",
@@ -9592,11 +9592,11 @@
         "ALTITUDE"
       ],
       "sizes": {
-        "ALTITUDE_S": "TYPE_SIZE_FLOAT64",
+        "ALTITUDE_S": "TYPE_SIZE_DECIMAL",
         "EXTENSION_S": "TYPE_SIZE_OFFSET",
         "ID_S": "TYPE_SIZE_OFFSET",
-        "LATITUDE_S": "TYPE_SIZE_FLOAT64",
-        "LONGITUDE_S": "TYPE_SIZE_FLOAT64",
+        "LATITUDE_S": "TYPE_SIZE_DECIMAL",
+        "LONGITUDE_S": "TYPE_SIZE_DECIMAL",
         "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
         "RECOVERY_S": "TYPE_SIZE_UINT16",
         "VALIDATION_S": "TYPE_SIZE_UINT64"
@@ -11123,8 +11123,8 @@
     },
     "FF_QUANTITY": {
       "header_sizes": {
-        "HEADER_R4_SIZE": 58,
-        "HEADER_R5_SIZE": 58
+        "HEADER_R4_SIZE": 59,
+        "HEADER_R5_SIZE": 59
       },
       "order": [
         "VALIDATION",
@@ -11146,7 +11146,7 @@
         "SYSTEM_S": "TYPE_SIZE_OFFSET",
         "UNIT_S": "TYPE_SIZE_OFFSET",
         "VALIDATION_S": "TYPE_SIZE_UINT64",
-        "VALUE_S": "TYPE_SIZE_FLOAT64"
+        "VALUE_S": "TYPE_SIZE_DECIMAL"
       }
     },
     "FF_QUESTIONNAIRERESPONSE": {
@@ -11405,8 +11405,8 @@
     },
     "FF_SAMPLEDDATA": {
       "header_sizes": {
-        "HEADER_R4_SIZE": 78,
-        "HEADER_R5_SIZE": 106
+        "HEADER_R4_SIZE": 82,
+        "HEADER_R5_SIZE": 111
       },
       "order": [
         "VALIDATION",
@@ -11430,16 +11430,16 @@
         "DATA_S": "TYPE_SIZE_OFFSET",
         "DIMENSIONS_S": "TYPE_SIZE_UINT32",
         "EXTENSION_S": "TYPE_SIZE_OFFSET",
-        "FACTOR_S": "TYPE_SIZE_FLOAT64",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
         "ID_S": "TYPE_SIZE_OFFSET",
         "INTERVALUNIT_S": "TYPE_SIZE_UINT32",
-        "INTERVAL_S": "TYPE_SIZE_FLOAT64",
-        "LOWERLIMIT_S": "TYPE_SIZE_FLOAT64",
+        "INTERVAL_S": "TYPE_SIZE_DECIMAL",
+        "LOWERLIMIT_S": "TYPE_SIZE_DECIMAL",
         "OFFSETS_S": "TYPE_SIZE_OFFSET",
         "ORIGIN_S": "TYPE_SIZE_OFFSET",
-        "PERIOD_S": "TYPE_SIZE_FLOAT64",
+        "PERIOD_S": "TYPE_SIZE_DECIMAL",
         "RECOVERY_S": "TYPE_SIZE_UINT16",
-        "UPPERLIMIT_S": "TYPE_SIZE_FLOAT64",
+        "UPPERLIMIT_S": "TYPE_SIZE_DECIMAL",
         "VALIDATION_S": "TYPE_SIZE_UINT64"
       }
     },
@@ -11863,8 +11863,8 @@
     },
     "FF_TIMING_REPEAT": {
       "header_sizes": {
-        "HEADER_R4_SIZE": 120,
-        "HEADER_R5_SIZE": 120
+        "HEADER_R4_SIZE": 124,
+        "HEADER_R5_SIZE": 124
       },
       "order": [
         "VALIDATION",
@@ -11892,17 +11892,17 @@
         "COUNTMAX_S": "TYPE_SIZE_UINT32",
         "COUNT_S": "TYPE_SIZE_UINT32",
         "DAYOFWEEK_S": "TYPE_SIZE_OFFSET",
-        "DURATIONMAX_S": "TYPE_SIZE_FLOAT64",
+        "DURATIONMAX_S": "TYPE_SIZE_DECIMAL",
         "DURATIONUNIT_S": "TYPE_SIZE_UINT32",
-        "DURATION_S": "TYPE_SIZE_FLOAT64",
+        "DURATION_S": "TYPE_SIZE_DECIMAL",
         "EXTENSION_S": "TYPE_SIZE_OFFSET",
         "FREQUENCYMAX_S": "TYPE_SIZE_UINT32",
         "FREQUENCY_S": "TYPE_SIZE_UINT32",
         "ID_S": "TYPE_SIZE_OFFSET",
         "OFFSET_S": "TYPE_SIZE_UINT32",
-        "PERIODMAX_S": "TYPE_SIZE_FLOAT64",
+        "PERIODMAX_S": "TYPE_SIZE_DECIMAL",
         "PERIODUNIT_S": "TYPE_SIZE_UINT32",
-        "PERIOD_S": "TYPE_SIZE_FLOAT64",
+        "PERIOD_S": "TYPE_SIZE_DECIMAL",
         "RECOVERY_S": "TYPE_SIZE_UINT16",
         "TIMEOFDAY_S": "TYPE_SIZE_OFFSET",
         "VALIDATION_S": "TYPE_SIZE_UINT64",

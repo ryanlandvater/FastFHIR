@@ -220,12 +220,18 @@ TYPE_MAP: dict[str, dict] = {
         "size_const": "TYPE_SIZE_UINT64",
         "macro": "LOAD_U64",
     },
+    # 9 bytes, not 8: [ double @ +0 | source scale @ +8 ]. The double is the
+    # value and stays natively loadable; the scale byte records how many digits
+    # followed the '.' in the source, which FHIR treats as significant and a
+    # binary64 cannot carry. Full contract in FF_Primitives.hpp, "DECIMAL SLOT".
+    # `size` and `size_const` must agree -- `size` drives the Python-side vtable
+    # offset arithmetic in merge.py, `size_const` the emitted C++ enum.
     "decimal": {
         "cpp": "double",
         "data_type": "double",
         "null": "FF_NULL_F64",
-        "size": 8,
-        "size_const": "TYPE_SIZE_FLOAT64",
+        "size": 9,
+        "size_const": "TYPE_SIZE_DECIMAL",
         "macro": "LOAD_F64",
     },
     "code": {
@@ -280,6 +286,12 @@ TYPE_MAP: dict[str, dict] = {
 }
 
 # Concrete primitive FHIR types that get an inline vtable entry.
+# Suffix of the POD sibling member holding a decimal's source digit count.
+# Defined once because four emitters have to spell it identically -- merge.py
+# declares it, ingest_mappings.py fills it, store.py writes it, deserialize.py
+# reads it. Mirrors FF_DECIMAL_SIGFIGS_* in FF_Primitives.hpp.
+DECIMAL_SIGFIGS_SUFFIX: str = "_sigfigs"
+
 SCALAR_PRIMITIVE_TYPES: set[str] = {
     "boolean",
     "integer",

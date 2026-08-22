@@ -1,5 +1,6 @@
 from generator.model.type_map import (
     DATETIME_TYPES,
+    DECIMAL_SIGFIGS_SUFFIX,
     SCALAR_PRIMITIVE_TYPES,
     STRING_TYPES,
     TYPE_MAP,
@@ -40,7 +41,11 @@ def generate_size_fields(layout, block_struct_name, data_name):
             cpp += f"        }}\n"
             cpp += f"    }}, {data_name}.{f['cpp_name']}.value);\n"
         elif kind == "FF_FIELD_ARRAY":
-            if f["fhir_type"] == "string" or f["fhir_type"] in STRING_TYPES or f["fhir_type"] in DATETIME_TYPES:
+            if (
+                f["fhir_type"] == "string"
+                or f["fhir_type"] in STRING_TYPES
+                or f["fhir_type"] in DATETIME_TYPES
+            ):
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * TYPE_SIZE_OFFSET);\n"
                 cpp += f"        for (const auto& __item : {data_name}.{f['cpp_name']}) {{\n"
@@ -169,7 +174,11 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             # `in STRING_TYPES` test, never `== "string"`: dateTime, markdown,
             # uri and id share this layout and silently take the wrong branch
             # otherwise.
-            if f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES or f["fhir_type"] in DATETIME_TYPES:
+            if (
+                f["fhir_type"] in ("string", "code")
+                or f["fhir_type"] in STRING_TYPES
+                or f["fhir_type"] in DATETIME_TYPES
+            ):
                 code_enum = f.get("code_enum")
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
@@ -221,6 +230,15 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"        child_off += static_cast<Offset>(__n) * {size_const};\n"
                 cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
                 cpp += f"            {store_mac}(__base + __entries_start + __i * {size_const}, {data_name}.{f['cpp_name']}[__i]);\n"
+                if f["fhir_type"] == "decimal":
+                    # A decimal entry is 9 bytes wide; the vector element is a
+                    # bare double, so there is no per-element source scale to
+                    # record. Write the sentinel rather than leaving the byte
+                    # unset -- the exporter falls back to shortest-round-trip.
+                    cpp += (
+                        f"            STORE_U8(__base + __entries_start + __i * {size_const}"
+                        f" + TYPE_SIZE_UINT64, FF_DECIMAL_SIGFIGS_UNSPECIFIED);\n"
+                    )
                 cpp += f"        }}\n"
                 cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             # --- PATTERN 3: ARRAY OF COMPLEX STRUCTS ---
@@ -311,6 +329,16 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             # FF_STRING fallback written by ENCODE_FF_DATETIME into child
             # space (the SIZE pass above reserves it).
             cpp += f"    STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_DATETIME(__base, hdr_off, child_off, {data_name}.{f['cpp_name']}, {_scalar_recovery_tag(f['fhir_type'])}));\n"
+        elif f["fhir_type"] == "decimal":
+            # [ double @ +0 | scale @ +8 ]. Two stores, not one -- the 9th byte
+            # is part of the slot and an unwritten one reads as arena garbage,
+            # which the exporter would take for a digit count.
+            slot = f"{ptr_name} + {block_struct_name}::{f['name']}"
+            cpp += f"    STORE_F64({slot}, {data_name}.{f['cpp_name']});\n"
+            cpp += (
+                f"    STORE_U8({slot} + TYPE_SIZE_UINT64, "
+                f"{data_name}.{f['cpp_name']}{DECIMAL_SIGFIGS_SUFFIX});\n"
+            )
         else:
             cpp += f"    {get_store_macro(f['macro'])}({ptr_name} + {block_struct_name}::{f['name']}, {data_name}.{f['cpp_name']});\n"
 

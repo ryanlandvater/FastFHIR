@@ -393,7 +393,11 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                 STORE_U64(base + dense_off, entry.as<uint64_t>());
                 break;
             case FF_FIELD_FLOAT64:
-                std::memcpy(base + dense_off, entry.base + entry.absolute_offset(), TYPE_SIZE_FLOAT64);
+                // Whole slot, value AND scale byte -- ff_slot_width, not
+                // TYPE_SIZE_FLOAT64, or the compact copy drops the 9th byte and
+                // every decimal loses its source precision on compaction.
+                std::memcpy(base + dense_off, entry.base + entry.absolute_offset(),
+                            ff_slot_width(FF_FIELD_FLOAT64));
                 break;
             case FF_FIELD_CODE:
                 if (const uint32_t raw_code = LOAD_U32(entry.base + entry.absolute_offset());
