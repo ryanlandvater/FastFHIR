@@ -286,6 +286,40 @@ namespace FastFHIR
         }
 
         /**
+         * @brief Claim arena space for the child payload of a block whose
+         *        V-Table header is ALREADY placed.
+         *
+         * `append()` claims header and payload together and writes both at one
+         * offset. An inline-block array element cannot do that: its header was
+         * allocated with the array, so only the variable-length tail still
+         * needs space, and the two offsets are then handed separately to the
+         * generated four-argument STORE_*.
+         *
+         * This exists rather than calling `memory().claim_space()` directly so
+         * the claim takes the same finalize guard every other mutation does --
+         * a worker thread claiming into a stream that has begun sealing is the
+         * one way this path can corrupt a document, and it is silent.
+         * Callers own the SIZE/STORE contract check that `append()` performs
+         * internally, because they supply both offsets.
+         */
+        Offset claim_child_space(Size bytes)
+        {
+            if (!try_begin_mutation())
+            {
+                throw std::runtime_error(
+                    "FastFHIR: Builder is finalizing; child-space claim is no longer allowed.");
+            }
+
+            struct MutationGuard
+            {
+                Builder *self;
+                ~MutationGuard() { self->end_mutation(); }
+            } guard{this};
+
+            return m_memory.claim_space(bytes);
+        }
+
+        /**
          * @brief Instantiates a read-only Node directly from a known offset mid-stream.
          */
         Reflective::Node view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind = FF_FIELD_BLOCK) const;
