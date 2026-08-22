@@ -562,7 +562,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
             f"        if (field.value().get_object().get(res_obj) != simdjson::SUCCESS) break;\n"
             f"        std::string_view child_type;\n"
             f'        if (res_obj["resourceType"].get_string().get(child_type) != simdjson::SUCCESS) break;\n'
-            f"         =\n"
+            f"        FastFHIR::Reflective::ObjectHandle child =\n"
             f"            dispatch_resource(child_type, res_obj, builder, logger);\n"
             f"        if (child.offset() != FF_NULL_OFFSET)\n"
             f"            data.resource = ResourceReference{{child.offset(), child.recovery()}};\n"

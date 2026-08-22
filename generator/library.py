@@ -383,8 +383,13 @@ def compile_fhir_library(
     emit_py_typed_marker(output_dir)
 
     # --- Reflection dispatch ---
+    # Choice [x] variants name a top-level type -- mostly data types (Quantity,
+    # CodeableConcept, Period), occasionally a resource. Dotless paths only:
+    # a backbone element like "Observation.component" is never a variant.
     reflection_hpp, reflection_cpp = generate_reflection_dispatch(
-        sorted(reflected_block_names), resources
+        sorted(reflected_block_names),
+        resources,
+        top_level_types=sorted(p for p in all_blocks if "." not in p),
     )
     write_if_changed(os.path.join(output_dir, "FF_Reflection.hpp"), reflection_hpp)
     write_if_changed(os.path.join(output_dir, "FF_Reflection.cpp"), reflection_cpp)

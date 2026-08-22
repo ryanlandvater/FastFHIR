@@ -171,8 +171,14 @@ def generate_field_info_implementation(layout, block_struct_name):
     return cpp
 
 
-def generate_reflection_dispatch(block_struct_names, resources):
-    """Reflection dispatch matching old ffc.py API."""
+def generate_reflection_dispatch(block_struct_names, resources, top_level_types=()):
+    """Reflection dispatch matching old ffc.py API.
+
+    ``top_level_types`` are the dotless FHIR paths (``Quantity``,
+    ``CodeableConcept``, ``Observation`` ...) that a choice ``[x]`` variant can
+    name. They feed ``reflected_choice_suffix``; ``resources`` alone is not
+    enough, because most choice variants are data types.
+    """
     # ── HPP: banner + includes + namespace body ────────────────────────
     hpp_banner = (
         "// ============================================================\n"
@@ -195,6 +201,12 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "std::vector<std::string_view> reflected_keys(uint16_t recovery);\n"
         "Reflective::Node reflected_child_node(const BYTE* base, Size size, uint32_t version, Offset offset, uint16_t recovery, std::string_view key);\n"
         "std::string_view reflected_resource_type(uint16_t recovery);\n"
+        "// FHIR type name for a choice ([x]) variant tag, e.g.\n"
+        '// RECOVER_FF_QUANTITY -> "Quantity", which the exporter appends to the\n'
+        "// base field name to rebuild `valueQuantity`. Covers DATA TYPES as well\n"
+        "// as resources -- reflected_resource_type above deliberately does not,\n"
+        "// and using it here printed a bare `value` for every complex variant.\n"
+        "std::string_view reflected_choice_suffix(uint16_t recovery);\n"
         "const uint8_t* compact_field_sizes(uint16_t recovery);\n"
     )
     hpp = hpp_banner + enclose_namespace("FastFHIR", hpp_body)
@@ -269,6 +281,20 @@ def generate_reflection_dispatch(block_struct_names, resources):
     )
     for res in sorted(resources):
         cpp_body += f'        case FF_{res.upper()}::recovery: return "{res}";\n'
+    cpp_body += (
+        '        default: return "";\n'
+        "    }\n"
+        "}\n\n"
+        "// Choice ([x]) variant tag -> FHIR type name. Every top-level block gets\n"
+        "// a case, data types included: a choice slot's runtime tag is the ONLY\n"
+        "// thing naming its active variant, so an unmapped tag is a field exported\n"
+        "// as bare `value` instead of `valueQuantity` -- syntactically fine JSON\n"
+        "// that no FHIR server will accept.\n"
+        "std::string_view reflected_choice_suffix(uint16_t recovery) {\n"
+        "    switch (recovery) {\n"
+    )
+    for _t in sorted(top_level_types):
+        cpp_body += f'        case FF_{_t.upper()}::recovery: return "{_t}";\n'
     cpp_body += (
         '        default: return "";\n'
         "    }\n"

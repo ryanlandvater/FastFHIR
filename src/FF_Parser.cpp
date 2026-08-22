@@ -840,16 +840,37 @@ static void print_decimal_json(std::ostream& out, double value, uint8_t sigfigs)
     else                       out << value;   // unreachable for finite doubles
 }
 
-static std::string_view get_choice_suffix(RECOVERY_TAG tag) {    switch (tag) {        case RECOVER_FF_BOOL:    return "Boolean";
-        case RECOVER_FF_FLOAT64: return "Decimal";
-        case RECOVER_FF_INT32:   return "Integer";
-        case RECOVER_FF_UINT32:  return "UnsignedInt";
+// The JSON name of a choice ([x]) field is the base name plus its ACTIVE
+// variant's FHIR type -- `value` + `Quantity`. The runtime tag in the slot is
+// the only thing that names that variant, so this mapping has to be total over
+// the tags a choice can hold. Anything it misses exports as a bare `value`:
+// well-formed JSON, wrong FHIR, and silent.
+static std::string_view get_choice_suffix(RECOVERY_TAG tag) {
+    switch (tag) {
+        // Inline scalars: the tag names a wire representation, and the FHIR
+        // spelling has to be chosen here because no block exists to ask.
+        case RECOVER_FF_BOOL:     return "Boolean";
+        case RECOVER_FF_FLOAT64:  return "Decimal";
+        case RECOVER_FF_INT32:    return "Integer";
+        case RECOVER_FF_UINT32:   return "UnsignedInt";
         case RECOVER_FF_INT64:
-        case RECOVER_FF_UINT64:  return "Integer64";
-        case RECOVER_FF_STRING:  return "String";
+        case RECOVER_FF_UINT64:   return "Integer64";
+        case RECOVER_FF_STRING:   return "String";
+        case RECOVER_FF_CODE:     return "Code";
+        // DT-2's four date/time tags share one kind and one layout, so the tag
+        // is likewise the only thing that distinguishes valueDate from
+        // valueDateTime on the way out.
+        case RECOVER_FF_DATE:     return "Date";
+        case RECOVER_FF_DATETIME: return "DateTime";
+        case RECOVER_FF_TIME:     return "Time";
+        case RECOVER_FF_INSTANT:  return "Instant";
         default:
-            // For complex types, pull the capitalized resource/data type name
-            return FastFHIR::reflected_resource_type(tag);
+            // Complex variants: the generated table knows every top-level FHIR
+            // type name. reflected_resource_type is NOT the right lookup --
+            // it enumerates resources only and returns "" for Quantity,
+            // CodeableConcept, Period and every other data type, which is how
+            // 1,416 fields came out as bare `value`.
+            return FastFHIR::reflected_choice_suffix(tag);
     }
 }
 
