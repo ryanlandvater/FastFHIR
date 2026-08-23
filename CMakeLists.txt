@@ -31,6 +31,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type (Debug|Release|RelWithDebInfo)")
 
+# Debug-only diagnostics: FF_Queue.hpp's `#if FASTFHIR_DEBUG` blocks (the Node
+# destruction canary and the double-free guard) must actually compile in debug
+# builds, or the guards are dead code. The macro is prefixed, not bare DEBUG:
+# the generated FF_Codes.hpp contains a code value literally named DEBUG
+# (FF_CODE_DEF DEBUG = 1813), so a global DEBUG macro breaks the build. The
+# generator expression covers both single-config (ninja: CMAKE_BUILD_TYPE=Debug)
+# and multi-config (Xcode) generators.
+add_compile_definitions($<$<CONFIG:Debug>:FASTFHIR_DEBUG>)
+
 # ── IDE organisation (Xcode / Visual Studio; no-op for Ninja & Make) ──
 # Targets are grouped into folders instead of one flat list, and CMake's own
 # bookkeeping targets (ALL_BUILD, ZERO_CHECK, install, RUN_TESTS) are pushed out
@@ -56,9 +65,10 @@ option(FASTFHIR_ENABLE_EXTENSIONS  "Enable WASM extension codec" OFF)
 # (permanent wire constants); the generator fails loudly and names the missing
 # ones. See TASKS.md A27.
 set(FASTFHIR_PRODUCTION_PROFILE "us-core" CACHE STRING
-    "Generator resource groupings, comma-separated: us-core,uk-core,billing (or 'all')")
+    "Generator resource groupings, comma-separated: us-core,uk-core,billing,medication-admin,supply,imaging (or 'all')")
 set_property(CACHE FASTFHIR_PRODUCTION_PROFILE PROPERTY STRINGS
-    us-core uk-core billing us-core,billing us-core,uk-core all)
+    us-core uk-core billing medication-admin supply imaging
+    us-core,billing us-core,uk-core us-core,billing,medication-admin,supply all)
 
 # ── OpenSSL (system or ExternalProject) ──────────────────────
 include(cmake/openssl.cmake)
@@ -339,7 +349,7 @@ if(FASTFHIR_BUILD_TESTS)
          ff_test_primitives ff_test_memory ff_test_simd
          ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor
          ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary
-         ff_test_roundtrip_validate)
+         ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue)
 endif()
 if(FASTFHIR_BUILD_PYTHON_BINDINGS)
     list(APPEND _BUILD_ALL fastfhir_python)
@@ -405,7 +415,7 @@ if(FASTFHIR_BUILD_TESTS)
     foreach(_t ff_test_readme ff_roundtrip ff_test_primitives ff_test_memory
                ff_test_simd ff_test_amend ff_test_cc ff_test_bundle
                ff_test_compactor ff_test_graph_bounds ff_test_datetime
-               ff_test_roundtrip_validate
+               ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue
                ff_test_api ff_test_dictionary)
         if(TARGET ${_t})
             set_target_properties(${_t} PROPERTIES FOLDER "Tests")
@@ -450,7 +460,7 @@ endif()
 foreach(_t build_all fastfhir fastfhir_ingestor ff_ingest ff_export ff_compact ff_roundtrip ff_test_readme
            ff_test_primitives ff_test_memory ff_test_simd ff_test_amend
            ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds
-           ff_test_roundtrip_validate
+           ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue
            ff_test_datetime ff_test_api ff_test_dictionary)
     if(TARGET ${_t})
         set_target_properties(${_t} PROPERTIES XCODE_GENERATE_SCHEME ON)

@@ -158,6 +158,39 @@ BILLING_RESOURCES: list[str] = [
     "PaymentReconciliation",
 ]
 
+# Medication administration -- the one link in FHIR's medication chain that US
+# Core does not profile. US Core covers Request -> Dispense -> Statement; an
+# inpatient record needs the "was it actually given" event as well, and every
+# Synthea encounter with an inpatient med emits one.
+MEDICATION_ADMIN_RESOURCES: list[str] = [
+    "MedicationAdministration",
+]
+
+# Supply / logistics. SupplyRequest is the ordering half of the same workflow and
+# is listed with it: a deployment that indexes deliveries almost always indexes
+# what was asked for, and splitting them would make the pair a two-name profile.
+SUPPLY_RESOURCES: list[str] = [
+    "SupplyDelivery",
+    "SupplyRequest",
+]
+
+# Imaging. DiagnosticReport (US Core) carries the radiologist's READ; ImagingStudy
+# carries the DICOM study/series/instance structure behind it, which US Core
+# deliberately leaves to the imaging IGs.
+#
+# ⚠ This grouping is INTENTIONALLY LEFT OUT of the presets in CMakePresets.json.
+# The Synthea corpus contains 1,444 ImagingStudy resources across the 342
+# fixtures, so with `imaging` disabled every one of them takes the out-of-profile
+# path in dispatch_resource and is retained as an opaque-JSON block. That is not
+# an omission to tidy up later: it is the only continuous, real-data coverage the
+# fallback has, and py_roundtrip demanding ZERO diffs is what proves the fallback
+# is lossless. Enabling `imaging` here would compile the type and silently retire
+# that test. If you want ImagingStudy typed in your own build, add it to your
+# profile -- do not change the preset.
+IMAGING_RESOURCES: list[str] = [
+    "ImagingStudy",
+]
+
 # The accepted grouping names. Add a grouping by adding one entry here; nothing
 # else in the generator needs to change. "all" is handled separately in
 # resolve_production_resources() because it is discovered from the packages
@@ -166,6 +199,9 @@ RESOURCE_GROUPINGS: dict[str, list[str]] = {
     "us-core": US_CORE_RESOURCES,
     "uk-core": UK_CORE_RESOURCES,
     "billing": BILLING_RESOURCES,
+    "medication-admin": MEDICATION_ADMIN_RESOURCES,
+    "supply": SUPPLY_RESOURCES,
+    "imaging": IMAGING_RESOURCES,
 }
 
 # Back-compat spellings for the pre-array profile values. "us"/"uk" were the

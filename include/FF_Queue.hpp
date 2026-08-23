@@ -10,6 +10,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <stdexcept>
+#include <string>
 
 namespace FastFHIR {
 namespace FIFO {
@@ -34,6 +35,36 @@ private:
         Entry entries[NODE_ENTRIES];
         std::atomic<uint32_t> front_idx{0};
         std::atomic<uint32_t> next_index{NULL_INDEX};
+        // Debug-canary report target (the Queue's _debug_violations). The canary
+        // RECORDS instead of throwing: a throw from ~Node runs inside the retire
+        // path AFTER the slot was exchanged, so it strands the caller's NodeRef
+        // pointing at a dead slot (the push-2001 double-free chain), and every
+        // destructor route to it (~NodeRef is implicitly noexcept) terminates
+        // anyway. A counter the owner can poll is the only reliable report (AR-4).
+        std::atomic<uint32_t> *violations;
+
+        explicit Node(std::atomic<uint32_t> *v) : violations(v) {}
+
+#if FASTFHIR_DEBUG
+        // Debug-only integrity canary (AR-4). The queue's contract is that the
+        // chain collapses when consumers leave -- "no consumers, no reason to
+        // live" -- so a node may be freed while still holding un-consumed
+        // entries. That is silent data loss when the latch/exit convention is
+        // violated (a consumer created after the first push, or one that dies
+        // mid-drain), so debug builds record the violation instead: every entry
+        // must be FREE (never claimed) or COMPLETE (drained). Release builds
+        // compile the scan out entirely -- prod collapses and leaks nothing.
+        ~Node() {
+            const uint32_t written = front_idx.load(std::memory_order_relaxed);
+            for (uint32_t i = 0; i < NODE_ENTRIES; ++i) {
+                const EntryFlag f = entries[i].flag.load(std::memory_order_relaxed);
+                if (f != ENTRY_FREE && f != ENTRY_COMPLETE) {
+                    violations->fetch_add(1, std::memory_order_relaxed);
+                    return; // one record per node is enough
+                }
+            }
+        }
+#endif
     };
 
     class NodeRegistry {
@@ -52,6 +83,7 @@ private:
         std::mutex _mut;
         std::condition_variable _cv;
         std::atomic<uint64_t>* _queue_weak_head{nullptr};
+        std::atomic<uint32_t>* _violations{nullptr};
 
         inline uint32_t wrap(uint32_t raw_index) const { return raw_index & INDEX_MASK; }
 
@@ -66,6 +98,12 @@ private:
         }
 
         void set_weak_head_ptr(std::atomic<uint64_t>* ptr) { _queue_weak_head = ptr; }
+        void set_violations_ptr(std::atomic<uint32_t>* ptr) { _violations = ptr; }
+        std::atomic<uint32_t>* violations_ptr() const { return _violations; }
+
+        // Nodes carry the canary report target so ~Node can record without
+        // knowing the Queue.
+        Node* allocate_node() { return new Node(_violations); }
 
         static inline uint64_t make_state(uint32_t gen, bool writing, bool retiring, uint32_t uses) {
             uint64_t s = (static_cast<uint64_t>(gen) << GEN_SHIFT) | (uses & USE_COUNT_MASK);
@@ -145,7 +183,7 @@ private:
                     uint64_t claim_st = make_state(get_gen(s), true, false, 2);
                     if (slot.state.compare_exchange_strong(s, claim_st, std::memory_order_acq_rel)) {
                         
-                        slot.node.store(new Node(), std::memory_order_release);
+                        slot.node.store(allocate_node(), std::memory_order_release);
                         slot.state.store(make_state(get_gen(s), false, false, 2), std::memory_order_release);
 
                         uint32_t expected_next = NULL_INDEX;
@@ -177,8 +215,8 @@ private:
             
             while (true) {
                 uint32_t uses = get_uses(s);
-                #if DEBUG
-                if (uses == 0) throw std::logic_error("Double-free detected.");
+                #if FASTFHIR_DEBUG
+                if (uses == 0) { _violations->fetch_add(1, std::memory_order_relaxed); return; }
                 #else
                 if (uses == 0) return;
                 #endif
@@ -220,7 +258,11 @@ private:
 
     NodeRegistry registry;
     std::atomic<uint32_t> _tail_index{0};
-    std::atomic<uint64_t> _weak_head{0}; 
+    std::atomic<uint64_t> _weak_head{0};
+    // Debug-only violation counter, set by the ~Node canary and the double-free
+    // guard. Owners (tests) poll it via debug_violations(); the guards must not
+    // throw -- see Node::violations for why. Never written in release builds.
+    std::atomic<uint32_t> _debug_violations{0}; 
 
     void advance_tail(uint32_t old_idx, uint32_t new_idx) {
         if (_tail_index.compare_exchange_strong(old_idx, new_idx, std::memory_order_release)) {
@@ -230,7 +272,12 @@ private:
 
 public:
     // ---------------------------------------------------------
-    // Injector
+    // Injector -- the queue is MPSC: any number of producer threads push
+    // concurrently (front_idx claim + per-entry CAS; CAS'd node linking at
+    // boundaries). An Injector handle is an independent per-thread cursor
+    // (mutable NodeRef) -- do not share one handle across threads; create one
+    // per producing thread, on the spawning thread, then move it into the
+    // producer. A moved-from Injector silently drops pushes.
     // ---------------------------------------------------------
     class Injector {
         friend class Queue;
@@ -277,7 +324,20 @@ public:
     };
 
     // ---------------------------------------------------------
-    // Consumer
+    // Consumer -- the queue is lockless and exists precisely so that ANY
+    // number of consumer threads can drain concurrently at full speed: each
+    // entry is claimed by exactly one consumer via the PENDING->READING CAS
+    // (single delivery), so the queue never serializes consumers. A Consumer
+    // handle is an independent per-thread cursor (mutable NodeRef + _entry_idx)
+    // -- do not share one handle across threads; create one per draining thread.
+    //
+    // The invariant that matters is CONTINUOUS CONSUMER EXISTENCE: at least
+    // one handle must be alive from before the first push until the drain
+    // completes. The zero-consumer window lets the chain collapse -- nodes are
+    // freed with un-consumed entries, and a consumer created later latches
+    // past them (AR-3/AR-4) -- so creating consumers per application loop is
+    // unsafe. Create them on the spawning thread before the first push and
+    // keep them for the queue's whole lifetime.
     // ---------------------------------------------------------
     class Consumer {
         friend class Queue;
@@ -342,9 +402,10 @@ public:
     // ---------------------------------------------------------
     Queue() {
         registry.set_weak_head_ptr(&_weak_head);
+        registry.set_violations_ptr(&_debug_violations);
 
         auto& slot = registry.get_slot(0);
-        slot.node.store(new Node(), std::memory_order_relaxed);
+        slot.node.store(registry.allocate_node(), std::memory_order_relaxed);
         slot.state.store(NodeRegistry::make_state(1, false, false, 1), std::memory_order_relaxed);
         
         _tail_index.store(0, std::memory_order_relaxed);
@@ -363,6 +424,15 @@ public:
         
         return Injector(this, typename NodeRegistry::NodeRef(registry, t_idx, n));
     }
+
+
+    #if FASTFHIR_DEBUG
+    // Number of debug-canary violations recorded (nodes freed with un-consumed
+    // entries, refcount underflows). Always 0 in release builds.
+    uint32_t debug_violations() const {
+        return _debug_violations.load(std::memory_order_relaxed);
+    }
+    #endif
 
     Consumer get_consumer() {
         while (true) {

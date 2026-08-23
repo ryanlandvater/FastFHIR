@@ -531,7 +531,10 @@ public:
                 return FF_DECODE_CODEABLE_CONCEPT(m_base, m_node_offset, m_version).label;
             }
 
-            if (m_recovery != RECOVER_FF_STRING) {
+            // Opaque JSON shares the FF_STRING layout exactly, so the DECODE is
+            // identical; only the render sites care that the bytes are already
+            // JSON. See FF_IsStringLayoutTag.
+            if (!FF_IsStringLayoutTag(m_recovery)) {
                 throw std::runtime_error("FastFHIR: Node is not a string or code.");
             }
             return FF_STRING(m_node_offset, m_size, m_version, m_engine_version).read_view(m_base);

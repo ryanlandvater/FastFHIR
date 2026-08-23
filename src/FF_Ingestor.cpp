@@ -21,13 +21,57 @@
 #include <cctype>
 #include <cstdio>
 #include <deque>
-#include <map>  // skipped_summary: ordered so the report is deterministic
+#include <map>  // retained_summary: ordered so the report is deterministic
 #include <thread>
 #include <vector>
 #include <algorithm>
 
 namespace FastFHIR::Ingest
 {
+
+    // =====================================================================
+    // Worker-pool lifecycle (Iris-style dispatch; IrisCodecEncoder.cpp)
+    // =====================================================================
+    // Both producer/consumer pools below (predigest URL scan and bundle-entry
+    // parse) run the same pattern: one atomic status drives the workers, which
+    // check it at the top of every loop iteration, park on an empty queue
+    // instead of yield-spinning, and exit on a status change. The producer
+    // notifies after each push so a parked consumer wakes for mid-stream work —
+    // mandatory, not a nicety: the queue's ring only drains while consumers
+    // pop, so a sleeping consumer deadlocks any bundle larger than capacity
+    // (the producer blocks in allocate_and_link with nobody draining).
+    enum class PoolStatus : uint8_t
+    {
+        RUNNING,  // work may still arrive
+        COMPLETE, // producer finished; consumers drain, then exit
+        FAULTED   // a worker failed; everyone exits now
+    };
+
+    // Park a consumer until a push lands or the status changes. Claims NOTHING:
+    // the caller re-pops at its loop top after waking, so the loop's pop is the
+    // single claim site -- a park that claimed a task was a silent-drop bug
+    // (AR-3-class loss under load, fixed 2026-08-22). Wakeups: the producer's
+    // per-push notify, or the final COMPLETE store -- a VALUE CHANGE that always
+    // wakes a parked consumer, so a notify lost in the futex window can never
+    // strand it. The waiter count is bumped before the wait so a push that
+    // races the park is caught by the caller's re-pop (PENDING store is release,
+    // pop load is acquire) or by the post-push notify (waiters > 0).
+    static void park_for_task(std::atomic<PoolStatus> &status,
+                              std::atomic<uint32_t> &waiters)
+    {
+        waiters.fetch_add(1, std::memory_order_relaxed);
+        if (status.load(std::memory_order_acquire) == PoolStatus::RUNNING)
+            status.wait(PoolStatus::RUNNING); // spurious wakeups re-check at the loop top
+        waiters.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+    // Wake one parked consumer after a push (no-op unless somebody is parked).
+    static inline void notify_parked(std::atomic<PoolStatus> &status,
+                                     std::atomic<uint32_t> &waiters)
+    {
+        if (waiters.load(std::memory_order_relaxed) > 0)
+            status.notify_one();
+    }
 
     // =====================================================================
     // PREDIGESTION — pipelined Extension URL scan + concurrent trie builder
@@ -61,8 +105,8 @@ namespace FastFHIR::Ingest
     //           All trie mutations happen on the single consumer thread — no
     //           locking needed.
     //
-    //  Barrier  Main thread joins all producers, sets `producers_done`, joins the
-    //           consumer.  At this point `entries` is complete.
+    //  Barrier  Main thread joins all producers, stores COMPLETE (waking any
+    //           parked consumer), joins it.  At this point `entries` is complete.
     //
     //  Phase 4  Main thread writes the FF_URL_DIRECTORY block from `entries`
     //           (identical to the old Phase 5), records the offset, and returns.
@@ -155,10 +199,25 @@ namespace FastFHIR::Ingest
         UrlBatch batch;
         std::array<uint64_t, DEDUP_SLOTS> dedup_cache;
         UrlBatchQueue::Injector injector;
+        std::atomic<PoolStatus> &status;
+        std::atomic<uint32_t> &waiters;
 
-        explicit ProducerCtx(UrlBatchQueue &q) : injector(q.get_injector())
+        explicit ProducerCtx(UrlBatchQueue &q,
+                             std::atomic<PoolStatus> &st,
+                             std::atomic<uint32_t> &w)
+            : injector(q.get_injector()), status(st), waiters(w)
         {
             dedup_cache.fill(0);
+        }
+
+        // Hand the current batch to the consumer and wake it if parked: the
+        // consumer must drain mid-stream or the queue ring fills and the
+        // producer blocks in allocate_and_link with nobody popping.
+        void submit_batch()
+        {
+            injector.push(batch);
+            batch.count = 0;
+            notify_parked(status, waiters);
         }
 
         // Add a URL to the current batch, flushing when full.
@@ -181,20 +240,14 @@ namespace FastFHIR::Ingest
             dedup_cache[slot] = h;
             batch.entries[batch.count++] = {url};
             if (batch.count == URL_BATCH_SIZE)
-            {
-                injector.push(batch);
-                batch.count = 0;
-            }
+                submit_batch();
         }
 
         // Flush any partial batch remaining after chunk scanning.
         void flush()
         {
             if (batch.count > 0)
-            {
-                injector.push(batch);
-                batch.count = 0;
-            }
+                submit_batch();
         }
     };
 
@@ -660,31 +713,32 @@ namespace FastFHIR::Ingest
         // shared MPSC queue; the consumer pops and inserts into the radix trie.
 
         UrlBatchQueue batch_queue;
-        std::atomic<bool> producers_done{false};
+        // Pool lifecycle (see the shared machinery above): the consumer parks
+        // on an empty queue instead of yield-spinning and exits when the
+        // producers store COMPLETE.
+        std::atomic<PoolStatus> status{PoolStatus::RUNNING};
+        std::atomic<uint32_t> waiters{0};
         ConsumerState cs(builder, mem, mode);
 
         // Acquire Consumer before any Injectors (gets head node reference).
         auto consumer_handle = batch_queue.get_consumer();
 
         std::thread consumer_thread(
-            [c = std::move(consumer_handle), &producers_done, &cs]() mutable
+            [c = std::move(consumer_handle), &status, &waiters, &cs]() mutable
             {
                 UrlBatch batch;
-                while (true)
+                for (;;)
                 {
                     if (c.pop(batch))
                     {
                         consumer_process_batch(cs, batch);
                         continue;
                     }
-                    if (producers_done.load(std::memory_order_acquire))
-                    {
-                        // Producers done: drain any remaining in-flight batches.
-                        while (c.pop(batch))
-                            consumer_process_batch(cs, batch);
+                    // Drained once the producers are done: a pop fails only at
+                    // end-of-queue, since no producer can still be writing.
+                    if (status.load(std::memory_order_acquire) == PoolStatus::COMPLETE)
                         break;
-                    }
-                    std::this_thread::yield();
+                    park_for_task(status, waiters); // claims nothing; re-pop at loop top
                 }
             });
 
@@ -700,7 +754,7 @@ namespace FastFHIR::Ingest
             {
                 workers.emplace_back([&, t]()
                                      {
-                                         ProducerCtx ctx(batch_queue);
+                                         ProducerCtx ctx(batch_queue, status, waiters);
                                          for (size_t i = t; i < num_chunks; i += nthreads)
                                              scan_chunk_producer(prechunked_entries[i], ctx);
                                          ctx.flush(); // push partial tail batch
@@ -711,7 +765,8 @@ namespace FastFHIR::Ingest
         }
 
         // Signal consumer that no more batches will arrive.
-        producers_done.store(true, std::memory_order_release);
+        status.store(PoolStatus::COMPLETE, std::memory_order_release);
+        status.notify_all();
         consumer_thread.join();
 
         // ── Phase 4: Early-exit if no URLs were interned ──────────────────────────
@@ -966,15 +1021,21 @@ namespace FastFHIR::Ingest
         return FF_SUCCESS;
     }
 
-    /// Count and summarise "[Skipped]" lines — entries the ingest discarded.
+    /// Count and summarise "[Retained]" lines — resources stored as opaque JSON.
     ///
-    /// `dispatch_resource` returns a null handle for a resource type outside the
-    /// compiled profile, and the bundle patcher then just leaves the slot unset.
-    /// That is real clinical data loss, so it must not stay buried in a logger
-    /// nobody drains: one Synthea bundle silently lost 41 of 250 records (all of
+    /// `dispatch_resource` cannot type a resource outside the compiled profile,
+    /// so it copies the raw JSON into an opaque block instead. Nothing is lost
+    /// from the document and it round-trips byte-exactly; what is unavailable is
+    /// TYPED access — no V-Table, so no Node navigation into its fields and no
+    /// interior compaction. That is worth telling the caller, because a query
+    /// that expects to reach inside these resources will come back empty.
+    ///
+    /// This used to summarise "[Skipped]" lines, when the same case DISCARDED
+    /// the entry: one Synthea bundle silently lost 41 of 250 records (all of
     /// Claim, ExplanationOfBenefit, SupplyDelivery, ImagingStudy and
     /// MedicationAdministration) and still returned FF_SUCCESS (TASKS.md A26).
-    static std::string skipped_summary(const ConcurrentLogger &logger)
+    /// The warning stays — the severity of it does not.
+    static std::string retained_summary(const ConcurrentLogger &logger)
     {
         const std::string all = logger.to_string();
         std::map<std::string, size_t> by_type;
@@ -984,7 +1045,7 @@ namespace FastFHIR::Ingest
             const size_t eol = all.find('\n', pos);
             const size_t end = (eol == std::string::npos) ? all.size() : eol;
             const std::string_view line(all.data() + pos, end - pos);
-            if (line.find("[Skipped]") != std::string_view::npos)
+            if (line.find("[Retained]") != std::string_view::npos)
             {
                 ++total;
                 // The emitter quotes the type: ...resource type 'Claim' is not...
@@ -1003,7 +1064,8 @@ namespace FastFHIR::Ingest
 
         std::string out = "FastFHIR: " + std::to_string(total) +
                           " bundle entr" + (total == 1 ? "y was" : "ies were") +
-                          " DISCARDED — resource type not in this build's profile: ";
+                          " stored as OPAQUE JSON (retained and exportable, but not "
+                          "typed-queryable) — resource type not in this build's profile: ";
         bool first = true;
         for (const auto &[type, n] : by_type)
         {
@@ -1031,13 +1093,13 @@ namespace FastFHIR::Ingest
     }
 
     /// Stack every warning-class logger line into @p out as tagged entries:
-    /// the [Skipped] discard lines aggregated by resource type first, then each
-    /// [Warning] line verbatim. All entries get the [WARNING] tag from
+    /// the [Retained] opaque-JSON lines aggregated by resource type first, then
+    /// each [Warning] line verbatim. All entries get the [WARNING] tag from
     /// FF_Result::append; the logger's own tag is stripped first.
     static void stack_logger_warnings(const ConcurrentLogger &logger, FF_Result &out)
     {
-        if (std::string skipped = skipped_summary(logger); !skipped.empty())
-            out.append(FF_WARNING_PARTIAL_INGEST, std::move(skipped));
+        if (std::string retained = retained_summary(logger); !retained.empty())
+            out.append(FF_WARNING_PARTIAL_INGEST, std::move(retained));
         const std::string all = logger.to_string();
         for (size_t pos = 0; pos < all.size();)
         {
@@ -1238,7 +1300,13 @@ namespace FastFHIR::Ingest
             };
             using BundleQueue = FIFO::Queue<BundleTask, 256>;
             BundleQueue task_queue;
-            std::atomic<bool> producer_done{false};
+            // Iris-style pool lifecycle (see the shared machinery at the top of
+            // this file): status checked at the top of every worker iteration,
+            // park on an empty queue, exit on status change. FAULTED also
+            // latches m_engine_faulted so the public API refuses the next ingest
+            // until reset().
+            std::atomic<PoolStatus> status{PoolStatus::RUNNING};
+            std::atomic<uint32_t> waiters{0};
 
             std::vector<std::thread> workers;
             auto *shared_chunks = &entry_chunks;
@@ -1270,40 +1338,54 @@ namespace FastFHIR::Ingest
 
             for (unsigned int i = 0; i < m_num_threads; ++i)
             {
-                workers.emplace_back([this, i, &producer_done, shared_chunks, entry_array, &m_builder, consumer = std::move(consumers[i])]() mutable
+                workers.emplace_back([this, i, &status, &waiters, shared_chunks, entry_array, &m_builder, consumer = std::move(consumers[i])]() mutable
                                      {
                 auto& local_parser = m_parser_pool[i];
                 BundleTask task;
-                while (true) {
-                    if (!consumer.pop(task)) {
-                        if (producer_done.load(std::memory_order_acquire) && consumer.at_end()) break;
-                        std::this_thread::yield();
+                // Fail-fast helper: flip the pool status (sibling workers exit at
+                // their next loop-top check), latch the engine fault for
+                // is_faulted(), and log the cause for stack_logger_fatals.
+                auto fail = [&](const std::string &msg) {
+                    status.store(PoolStatus::FAULTED, std::memory_order_release);
+                    status.notify_all();
+                    m_engine_faulted.store(true, std::memory_order_release);
+                    m_logger.log(msg);
+                };
+                for (;;) {
+                    // Loop-top status check (Iris): exit on fault even while idle.
+                    if (status.load(std::memory_order_acquire) == PoolStatus::FAULTED) break;
+
+                    if (consumer.pop(task)) {
+                        // Re-check before touching the engine: a sibling may have
+                        // faulted while this pop was in flight.
+                        if (status.load(std::memory_order_acquire) == PoolStatus::FAULTED) break;
+                        const size_t idx = task.idx;
+                        try {
+                            Reflective::MutableEntry entry_wrapper = entry_array[idx];
+                            simdjson::ondemand::document local_doc = local_parser.iterate((*shared_chunks)[idx]).value();
+                            simdjson::ondemand::object local_obj = local_doc.get_object();
+                            Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
+                        } catch (const simdjson::simdjson_error& e) {
+                            fail(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                 std::to_string(idx) + " (simdjson): " + e.what());
+                            break;
+                        } catch (const std::exception& e) {
+                            fail(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                 std::to_string(idx) + " (std::exception): " + e.what());
+                            break;
+                        } catch (...) {
+                            fail(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                 std::to_string(idx) + " with unknown exception.");
+                            break;
+                        }
                         continue;
                     }
 
-                    const size_t idx = task.idx;
-                    if (m_engine_faulted.load(std::memory_order_relaxed)) break;
-                    try {
-                        Reflective::MutableEntry entry_wrapper = entry_array[idx];
-                        simdjson::ondemand::document local_doc = local_parser.iterate((*shared_chunks)[idx]).value();
-                        simdjson::ondemand::object local_obj = local_doc.get_object();
-                        Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
-                    } catch (const simdjson::simdjson_error& e) {
-                        m_engine_faulted.store(true, std::memory_order_release);
-                        m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
-                                     std::to_string(idx) + " (simdjson): " + e.what());
-                        break;
-                    } catch (const std::exception& e) {
-                        m_engine_faulted.store(true, std::memory_order_release);
-                        m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
-                                     std::to_string(idx) + " (std::exception): " + e.what());
-                        break;
-                    } catch (...) {
-                        m_engine_faulted.store(true, std::memory_order_release);
-                        m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
-                                     std::to_string(idx) + " with unknown exception.");
-                        break;
-                    }
+                    // Queue empty: with the producer done this is end-of-queue (no
+                    // producer can still be writing); otherwise park -- claims
+                    // nothing, re-pop at the loop top.
+                    if (status.load(std::memory_order_acquire) == PoolStatus::COMPLETE) break;
+                    park_for_task(status, waiters);
                 } });
             }
 
@@ -1312,14 +1394,16 @@ namespace FastFHIR::Ingest
                 for (size_t idx = 0; idx < count; ++idx)
                 {
                     injector.push(BundleTask{idx});
+                    notify_parked(status, waiters);
                 }
             }
-            producer_done.store(true, std::memory_order_release);
+            status.store(PoolStatus::COMPLETE, std::memory_order_release);
+            status.notify_all();
 
             for (auto &worker : workers)
                 worker.join();
 
-            // Check if the engine faulted during the worker runs.
+            // Check if the pool faulted during the worker runs.
             // The worker's catch block logged the ACTUAL cause (the exception
             // message) into m_logger. Nothing drains that buffer unless the caller
             // asks for it, so a precise, actionable error -- e.g. the SIZE/STORE
@@ -1327,7 +1411,7 @@ namespace FastFHIR::Ingest
             // every tool as the useless "check the engine logs". Carry the fatal
             // lines out with the result: a fail-loud check that fails into an
             // unread buffer is a fail-silent check with extra steps.
-            if (m_engine_faulted.load(std::memory_order_acquire))
+            if (status.load(std::memory_order_acquire) == PoolStatus::FAULTED)
             {
                 FF_Result result{FF_FAILURE, "Ingestion aborted due to worker thread crash."};
                 stack_logger_fatals(m_logger, result);
@@ -1339,11 +1423,11 @@ namespace FastFHIR::Ingest
             // =====================================================================
             out_root = root_handle;
 
-            // Warnings stack into the result message: [Skipped] discard lines
-            // (aggregated by resource type) plus every engine [Warning] line,
-            // each a tagged entry. The stream is well-formed, so this is not a
-            // failure — but the caller must never learn about lost clinical
-            // records by diffing documents (TASKS.md A26 / A26.2).
+            // Warnings stack into the result message: [Retained] opaque-JSON
+            // lines (aggregated by resource type) plus every engine [Warning]
+            // line, each a tagged entry. The stream is well-formed, so this is
+            // not a failure — but the caller must never learn what this build
+            // could not type by diffing documents (TASKS.md A26 / A26.2).
             FF_Result result{FF_SUCCESS};
             stack_logger_warnings(m_logger, result);
             return result;

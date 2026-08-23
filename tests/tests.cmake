@@ -93,6 +93,9 @@ if(FASTFHIR_BUILD_TESTS)
     add_ff_cpp_test(ff_test_datetime   tests/cpp/test_datetime.cpp)
     add_ff_cpp_test(ff_test_api        tests/cpp/test_api.cpp)
     add_ff_cpp_test(ff_test_dictionary tests/cpp/test_dictionary.cpp)
+    # AR-4.4: FIFO::Queue had no direct test until a lock-free defect in it
+    # silently dropped 2,000 tasks per ingest (AR-3). Header-only, no ingestor.
+    add_ff_cpp_test(ff_test_queue      tests/cpp/ff_test_queue.cpp)
     # COV-1.1: validates streams the WRITER produced, so unlike the other
     # standalone suites it drives the ingestor, needs the checksum hasher, and
     # needs the fixture path -- it is deliberately fed real documents. Without
@@ -102,13 +105,21 @@ if(FASTFHIR_BUILD_TESTS)
         PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
     target_compile_definitions(ff_test_roundtrip_validate PRIVATE
         $<$<BOOL:${FASTFHIR_DOWNLOAD_SYNTHEA}>:FASTFHIR_SYNTHEA_DIR="${_SYNTHEA_DIR}">)
+    # COV-1.5: same shape, one stage further -- ingest a real bundle, compact it,
+    # and require the compact export to be byte-identical to the standard one.
+    # Same ingestor/hasher/fixture needs as COV-1.1 above, same SKIP behaviour.
+    add_ff_cpp_test(ff_test_compact_roundtrip tests/cpp/ff_test_compact_roundtrip.cpp)
+    target_link_libraries(ff_test_compact_roundtrip
+        PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
+    target_compile_definitions(ff_test_compact_roundtrip PRIVATE
+        $<$<BOOL:${FASTFHIR_DOWNLOAD_SYNTHEA}>:FASTFHIR_SYNTHEA_DIR="${_SYNTHEA_DIR}">)
     # WO-1 out-param contract test drives FF_Ingest, so it needs the ingestor.
     target_link_libraries(ff_test_api PRIVATE fastfhir_ingestor simdjson::simdjson)
 
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate)
+    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue)
         add_test(NAME "cpp_${_standalone}" COMMAND ${_standalone})
     endforeach()
 

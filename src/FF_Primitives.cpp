@@ -327,12 +327,13 @@ Offset STORE_FF_CODE(BYTE* const __base, Offset start_offset, std::string_view c
     return STORE_FF_STRING(__base, start_offset, code_str);
 }
 
-Size STORE_FF_STRING(BYTE* const __base, Offset start_offset, std::string_view str) {
+Size STORE_FF_STRING(BYTE* const __base, Offset start_offset, std::string_view str,
+                     RECOVERY_TAG tag) {
     auto __ptr = __base + start_offset;
     uint32_t length = static_cast<uint32_t>(str.size());
-    
+
     STORE_U64(__ptr + DATA_BLOCK::VALIDATION, start_offset);
-    STORE_U16(__ptr + DATA_BLOCK::RECOVERY,   RECOVER_FF_STRING);
+    STORE_U16(__ptr + DATA_BLOCK::RECOVERY,   tag);
     STORE_U32(__ptr + FF_STRING::LENGTH,      length);
     
     std::memcpy(__ptr + FF_STRING::STRING_DATA, str.data(), length);

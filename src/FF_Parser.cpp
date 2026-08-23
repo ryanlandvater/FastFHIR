@@ -231,7 +231,12 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
             Offset child_offset = LOAD_U64(e.base + slot_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + slot_offset + DATA_BLOCK::RECOVERY));
-            return Node(e.base, size, version, child_offset, actual_tag, FF_FIELD_BLOCK,
+            // Same rule as the standard path: the kind follows the tag, so an
+            // out-of-profile resource retained as opaque JSON is walked as the
+            // string-layout block it is.
+            return Node(e.base, size, version, child_offset, actual_tag,
+                        Recovery_to_Kind(actual_tag) == FF_FIELD_STRING ? FF_FIELD_STRING
+                                                                        : FF_FIELD_BLOCK,
                         FF_RECOVER_UNDEFINED, false, compact_ops, e.m_engine_version);
         }
 
@@ -247,7 +252,12 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
         case FF_FIELD_STRING: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
-            return Node(e.base, size, version, child_offset, RECOVER_FF_STRING, schema_kind,
+            // The stored tag, not RECOVER_FF_STRING assumed: an opaque-JSON
+            // payload shares this layout and must keep its own identity, or the
+            // render sites quote and escape a whole resource.
+            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
+                LOAD_U16(e.base + child_offset + DATA_BLOCK::RECOVERY));
+            return Node(e.base, size, version, child_offset, actual_tag, schema_kind,
                         FF_RECOVER_UNDEFINED, false, standard_ops_ptr(), e.m_engine_version);
         }
 
@@ -255,7 +265,21 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
             Offset child_offset = LOAD_U64(e.base + slot_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + child_offset + DATA_BLOCK::RECOVERY));
-            return Node(e.base, size, version, child_offset, actual_tag, schema_kind,
+            // The recovery tag is ground truth, exactly as in the standard path
+            // above -- and this branch is missing that rule was a live defect,
+            // not a hypothetical. `Attachment.data` declares schema kind
+            // FF_FIELD_BLOCK with child_recovery RECOVER_FF_STRING (the
+            // complex-block mapping for base64Binary), so the compact reader
+            // built a BLOCK node over an FF_STRING, `fields()` asked
+            // reflected_fields_view for a string's V-Table, got {}, and
+            // print_json read the empty field list as "no members present" and
+            // dropped every DiagnosticReport attachment from the compact export.
+            // The standard path fixed this in A23.3 ("Bug C"); the compact path
+            // was never given the same correction, and nothing compacted a real
+            // document until COV-1.5.
+            FF_FieldKind child_kind = schema_kind;
+            if (FF_IsStringLayoutTag(actual_tag)) child_kind = FF_FIELD_STRING;
+            return Node(e.base, size, version, child_offset, actual_tag, child_kind,
                         FF_RECOVER_UNDEFINED, false, compact_ops, e.m_engine_version);
         }
     }
@@ -593,7 +617,12 @@ bool DeepValidator::walk(Offset off, RECOVERY_TAG expected, std::size_t depth,
     bool r = true;
     if (IsArrayTag(actual)) {
         r = walk_array(off, actual, depth, out);
-    } else if (actual == RECOVER_FF_STRING) {
+    } else if (FF_IsStringLayoutTag(actual)) {
+        // Both string-layout tags carry a length-prefixed payload and no
+        // V-Table, so they need the bounds check here and would get NOTHING
+        // from walk_fields -- reflected_fields_view returns {} for them and the
+        // empty span is an early `return true`. An opaque-JSON block reaching
+        // that branch would be waved through with its length unchecked.
         const uint32_t len = LOAD_U32(base + off + FF_STRING::LENGTH);
         if (!fits(off, FF_STRING::HEADER_SIZE + len)) {
             r = fail(out, "string at offset " + std::to_string(off) + " (via " + via +
@@ -993,6 +1022,16 @@ void Reflective::Node::print_json(std::ostream& out) const {
             break;
         }
         case FF_FIELD_STRING:
+            // The one place the two string-layout tags diverge. An opaque-JSON
+            // payload is already a serialized JSON value -- an object, for a
+            // retained out-of-profile resource -- so it is spliced in verbatim.
+            // Quoting and escaping it would export the resource as a string
+            // literal: valid JSON, wrong document, and a round-trip diff on
+            // every field it contains at once.
+            if (m_recovery == RECOVER_FF_OPAQUE_JSON) {
+                out << as<std::string_view>();
+                break;
+            }
             out << "\"";
             escape_json_string(out, as<std::string_view>());
             out << "\"";
@@ -1571,7 +1610,14 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
             std::to_string(tuple_tag) + " but the block it points at carries " +
             std::to_string(block_tag));
 
-        return Node(n.m_base, n.m_size, n.m_version, actual_off, tuple_tag, FF_FIELD_BLOCK,
+        // The kind follows the tag for the same reason the tag outranks the array
+        // header above: a `contained` resource outside the compiled profile is
+        // retained as an opaque-JSON block, which has string layout and no
+        // V-Table. Calling it a block is the reflected_fields_view/{} ->
+        // "no members" -> dropped-element shape.
+        return Node(n.m_base, n.m_size, n.m_version, actual_off, tuple_tag,
+                    Recovery_to_Kind(tuple_tag) == FF_FIELD_STRING ? FF_FIELD_STRING
+                                                                   : FF_FIELD_BLOCK,
                     FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
     }
 
@@ -1710,7 +1756,17 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
             Offset actual_off = LOAD_U64(e.base + slot_offset);
             if (actual_off == FF_NULL_OFFSET) return {};
             RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + slot_offset + DATA_BLOCK::RECOVERY));
-            return Node(e.base, size, version, actual_off, actual_tag, FF_FIELD_BLOCK,
+            // The tag beside the offset is ground truth for the KIND too, not
+            // just the type name. This used to hardcode FF_FIELD_BLOCK, which
+            // was right only while every resource slot held a generated
+            // resource block: a resource outside the compiled profile is
+            // retained as an opaque-JSON blob (string layout), and calling that
+            // a block asks fields() for a V-Table it does not have -- the
+            // reflected_fields_view/{} -> "no members" -> dropped-field shape
+            // that has now cost four separate defects.
+            return Node(e.base, size, version, actual_off, actual_tag,
+                        Recovery_to_Kind(actual_tag) == FF_FIELD_STRING ? FF_FIELD_STRING
+                                                                        : FF_FIELD_BLOCK,
                         FF_RECOVER_UNDEFINED, false, ops, e.m_engine_version);
         }
 
@@ -1736,7 +1792,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
             // walked as strings (is_empty/print_json) instead of as empty blocks, which
             // emitted dangling keys like "start":, (Bug C, TASKS.md A23.3).
             FF_FieldKind child_kind = schema_kind;
-            if (actual_tag == RECOVER_FF_STRING) child_kind = FF_FIELD_STRING;
+            if (FF_IsStringLayoutTag(actual_tag)) child_kind = FF_FIELD_STRING;
             return Node(e.base, size, version, child_offset, actual_tag, child_kind,
                         FF_RECOVER_UNDEFINED, false, ops, e.m_engine_version);
         }

@@ -64,6 +64,29 @@ _SCALAR_INGEST: dict[str, tuple[str, str, str]] = {
     "decimal": ("get_double", "double", "v"),
 }
 
+# The RECOVERY_TAG a choice ([x]) variant of each integer-family type carries.
+#
+# A choice slot has nothing but this tag to say which FHIR type it holds, so the
+# exporter reads the variant's name straight off it. One tag standing in for
+# several types therefore RENAMES the field rather than corrupting its value:
+# every one of these used to emit RECOVER_FF_UINT32 (except integer64), and
+# get_choice_suffix maps that to "UnsignedInt", so `valueInteger` left as
+# `valueUnsignedInt` -- 4,396 pairs in Synthea, silent and well-formed.
+#
+# Every value here MUST be in the scalar band (0x0100-0x01FF). A choice slot
+# holds its value inline, and Recovery_to_Kind sends anything >= 0x0200 down the
+# FF_FIELD_BLOCK path, where the reader would treat the raw integer as a block
+# offset. That is why RECOVER_FF_POSITIVEINT (0x0230) and RECOVER_FF_UNSIGNEDINT
+# (0x0237) are NOT used despite their names -- they are datatype-band tags, and
+# `positiveInt` consequently shares "UnsignedInt" until a scalar-band tag is
+# appended for it (TASKS.md AR-5).
+_CHOICE_INT_TAGS: dict[str, str] = {
+    "integer": "RECOVER_FF_INT32",
+    "unsignedInt": "RECOVER_FF_UINT32",
+    "positiveInt": "RECOVER_FF_UINT32",
+    "integer64": "RECOVER_FF_UINT64",
+}
+
 # Scalars whose SOURCE TEXT carries something the parsed value cannot.
 #
 # Only `decimal`: FHIR counts trailing zeros as significant, and a binary64 has
@@ -182,11 +205,27 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                             f"                    data.{cpp_name}.value = b_val;\n"
                             f"                }}\n"
                         )
-                    elif c_type in ("integer", "positiveInt", "unsignedInt", "integer64"):
+                    elif c_type in _CHOICE_INT_TAGS:
+                        # The tag is the ONLY thing naming a choice variant on the
+                        # way out, so one tag standing in for several FHIR types
+                        # renames the field: RECOVER_FF_UINT32 made every
+                        # `valueInteger` export as `valueUnsignedInt` (4,396 pairs
+                        # in Synthea alone). Emit the tag for THIS c_type instead.
+                        #
+                        # The tag must stay in the scalar band (0x01xx): a choice
+                        # slot holds its value inline, and Recovery_to_Kind maps
+                        # anything >= 0x0200 to FF_FIELD_BLOCK, which would make
+                        # the reader treat the raw integer as a block offset. That
+                        # rules out RECOVER_FF_POSITIVEINT (0x0230) and
+                        # RECOVER_FF_UNSIGNEDINT (0x0237) despite their names --
+                        # they are datatype-band tags. `positiveInt` therefore
+                        # still exports as `unsignedInt`; giving it its own
+                        # spelling needs a new scalar-band tag, which is a
+                        # permanent ledger append (TASKS.md AR-5).
                         cpp += (
                             f"                uint64_t i_val;\n"
                             f"                if (field.value().get_uint64().get(i_val) == simdjson::SUCCESS) {{\n"
-                            f'                    data.{cpp_name}.tag = (suffix == "Integer64") ? RECOVER_FF_UINT64 : RECOVER_FF_UINT32;\n'
+                            f"                    data.{cpp_name}.tag = {_CHOICE_INT_TAGS[c_type]};\n"
                             f"                    data.{cpp_name}.value = i_val;\n"
                             f"                }}\n"
                         )
@@ -517,17 +556,38 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         cpp += f'    {prefix} (resource_type == "{res}") '
         cpp += f"return builder.append_obj({res}_from_json(obj, logger, nullptr, &builder));\n"
         dispatch_is_first = False
-    # Out-of-profile resource types land here. The old message named neither the
-    # type nor the reason, and went to a logger nothing drained -- so a bundle
-    # could lose 41 of 250 clinical records and still exit 0 (TASKS.md A26).
-    # "[Skipped]" is the tag Ingestor::ingest_fhir_json greps for to fold the
-    # count into the returned FF_Result; keep the two in sync.
+    # Out-of-profile resource types land here. They used to be DISCARDED, which
+    # cost a bundle 41 of 250 clinical records at exit 0 (TASKS.md A26); the log
+    # line was added then, but a named loss is still a loss.
+    #
+    # Now the raw JSON is retained verbatim as an opaque block, so a resource the
+    # profile cannot TYPE is still carried, exported and round-tripped. A profile
+    # decides what this build can index, not what it may hold.
+    #
+    # "[Retained]" is the tag Ingestor::ingest_fhir_json greps for to summarise
+    # these into the returned FF_Result; keep the two in sync.
     cpp += (
-        '    if (logger) logger->log(std::string("[Skipped] FastFHIR Ingestion: '
+        "    // simdjson's raw_json() spans from the object's recorded start token,\n"
+        '    // so the caller having already read "resourceType" off this object does\n'
+        "    // not truncate it; consume() then skips to the closing brace from\n"
+        "    // wherever the field iterator stands.\n"
+        "    std::string_view __raw;\n"
+        "    if (obj.raw_json().get(__raw) != simdjson::SUCCESS) {\n"
+        '        if (logger) logger->log(std::string("[Warning] FastFHIR Ingestion: '
+        "resource type '\") + std::string(resource_type) + \"' is outside this build's "
+        'profile AND its raw JSON could not be re-read; the entry was discarded.");\n'
+        "        return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
+        "    }\n"
+        "    // The span ends at the NEXT structural token, so it can carry trailing\n"
+        "    // whitespace from a pretty-printed document. Harmless when spliced back\n"
+        "    // in, but it would be stored forever.\n"
+        "    while (!__raw.empty() && static_cast<unsigned char>(__raw.back()) <= ' ')\n"
+        "        __raw.remove_suffix(1);\n"
+        '    if (logger) logger->log(std::string("[Retained] FastFHIR Ingestion: '
         "resource type '\") + std::string(resource_type) + \"' is not compiled into "
-        "this build's resource profile (see FASTFHIR_PRODUCTION_PROFILE); the entry "
-        'was discarded.");\n'
-        "    return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
+        "this build's resource profile (see FASTFHIR_PRODUCTION_PROFILE); it was stored "
+        'as opaque JSON and round-trips intact, but its fields are not typed-queryable.");\n'
+        "    return builder.append_opaque_json(__raw);\n"
         "}\n\n"
     )
 

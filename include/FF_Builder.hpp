@@ -286,6 +286,32 @@ namespace FastFHIR
         }
 
         /**
+         * @brief Retain a FHIR resource this build cannot type, verbatim.
+         *
+         * The generated ingest dispatch knows only the resources in the
+         * compiled FASTFHIR_PRODUCTION_PROFILE. Anything else used to be
+         * DISCARDED with a log line -- an entry shell with `fullUrl` and
+         * `request` but no `resource`, which is not valid FHIR in a transaction
+         * bundle and loses clinical data outright.
+         *
+         * Instead the raw JSON is copied into the arena as an FF_STRING-layout
+         * block tagged RECOVER_FF_OPAQUE_JSON, and the export path splices those
+         * bytes back in unquoted. The document round-trips byte-exactly; what is
+         * lost is only typed ACCESS to the fields inside it (no V-Table, so no
+         * Node navigation, no query, no compaction of its interior). That is the
+         * honest trade: a profile decides what this build can index, never what
+         * it is allowed to carry.
+         *
+         * @param raw_json The complete serialized JSON value, braces included.
+         * @return A handle whose recovery tag is RECOVER_FF_OPAQUE_JSON, storable
+         *         in any resource slot exactly like a typed resource handle.
+         *
+         * Defined after Reflective::ObjectHandle, beside the append_obj
+         * overloads, because the return type is only forward-declared here.
+         */
+        Reflective::ObjectHandle append_opaque_json(std::string_view raw_json);
+
+        /**
          * @brief Claim arena space for the child payload of a block whose
          *        V-Table header is ALREADY placed.
          *
@@ -670,6 +696,38 @@ namespace FastFHIR
     inline Reflective::ObjectHandle Builder::append_obj(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag)
     {
         return Reflective::ObjectHandle(this, append(offsets, semantic_tag), semantic_tag);
+    }
+
+    inline Reflective::ObjectHandle Builder::append_opaque_json(std::string_view raw_json)
+    {
+        if (!try_begin_mutation())
+        {
+            throw std::runtime_error(
+                "FastFHIR: Builder is finalizing; append is no longer allowed.");
+        }
+
+        struct MutationGuard
+        {
+            Builder *self;
+            ~MutationGuard() { self->end_mutation(); }
+        } guard{this};
+
+        const Size data_size = SIZE_FF_STRING(raw_json);
+        const Offset offset = m_memory.claim_space(data_size);
+        const Size written = STORE_FF_STRING(m_base, offset, raw_json, RECOVER_FF_OPAQUE_JSON);
+
+        // The same SIZE/STORE contract append() enforces. It matters more here,
+        // not less: this path runs on concurrent ingest workers, where a store
+        // overrunning its claim silently overwrites whichever worker claimed next.
+        if (written != data_size)
+        {
+            throw std::runtime_error(
+                "FastFHIR: SIZE/STORE contract violated in opaque-JSON append: claimed " +
+                std::to_string(data_size) + " bytes but wrote " + std::to_string(written) +
+                ". This is a FastFHIR bug.");
+        }
+
+        return Reflective::ObjectHandle(this, offset, RECOVER_FF_OPAQUE_JSON);
     }
 
     inline Reflective::ObjectHandle Builder::root_handle() const

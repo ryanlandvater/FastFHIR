@@ -222,8 +222,24 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
             }
             return py::str(dt_text);
         }
+        case FF_FIELD_RESOURCE: {
+            // A resource outside the compiled profile is retained as an
+            // opaque-JSON block, which has string layout and NO V-Table. Handing
+            // it to ObjectHandle below would offer Python a navigable object
+            // whose every field lookup misses. Return the raw JSON text instead
+            // and let the caller decide whether to parse it.
+            const Offset abs_off = entry.absolute_offset();
+            const auto slot_tag = static_cast<RECOVERY_TAG>(
+                LOAD_U16(entry.base + abs_off + DATA_BLOCK::RECOVERY));
+            if (slot_tag == RECOVER_FF_OPAQUE_JSON) {
+                const Offset child_off = LOAD_U64(entry.base + abs_off);
+                if (child_off == FF_NULL_OFFSET) return py::none();
+                return py::str(FF_STRING(child_off, arena_size, version,
+                                         entry.m_engine_version).read_view(entry.base));
+            }
+            [[fallthrough]];
+        }
         case FF_FIELD_BLOCK:
-        case FF_FIELD_RESOURCE:
         case FF_FIELD_ARRAY: {
             Reflective::ObjectHandle elevated = entry_wrapper.entry.as_handle();
             if (elevated.offset() == FF_NULL_OFFSET) {

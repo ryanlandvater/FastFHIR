@@ -71,7 +71,7 @@
     "RECOVER_FF_OPAQUE_JSON": {
       "value": "0x0007",
       "band": "primitive",
-      "note": "Path B passive raw-JSON extension blob"
+      "note": "Raw-JSON blob: FF_STRING layout exactly (14-byte header + payload), but the payload is ALREADY-SERIALIZED JSON and is spliced into the export unquoted. Two producers: Path B passive extensions, and any resource outside the compiled FASTFHIR_PRODUCTION_PROFILE, which is retained verbatim rather than dropped. Readers test FF_IsStringLayoutTag for the bytes; only the render sites test this tag."
     },
     "RECOVER_FF_WASM_PAYLOAD": {
       "value": "0x0008",

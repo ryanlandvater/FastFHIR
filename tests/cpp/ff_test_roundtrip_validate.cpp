@@ -32,6 +32,7 @@
 
 #include <openssl/evp.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -51,9 +52,14 @@ static void CHECK(bool ok, const char* what) {
 #  define FASTFHIR_SYNTHEA_DIR ""
 #endif
 
-// Up to `limit` Synthea bundles. One fixture is not representative -- the
-// validator defect needed a bundle carrying a populated scalar array (Claim) or
-// a resource array, and the alphabetically-first fixture need not have either.
+// The first `limit` Synthea bundles in NAME order. One fixture is not
+// representative -- the validator defect needed a bundle carrying a populated
+// scalar array (Claim) or a resource array.
+//
+// Sorted, because `directory_iterator` yields in filesystem order: truncating
+// that to `limit` picked an arbitrary subset that differed between machines, so
+// a red here would not reproduce from the same command elsewhere. Same rule as
+// ff_test_datetime's pinned seed.
 static std::vector<fs::path> find_bundles(std::size_t limit) {
     std::vector<fs::path> out;
     const fs::path root(FASTFHIR_SYNTHEA_DIR);
@@ -63,10 +69,11 @@ static std::vector<fs::path> find_bundles(std::size_t limit) {
         if (!fs::is_directory(dir, ec)) continue;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
             if (entry.path().extension() == ".json") out.push_back(entry.path());
-            if (out.size() >= limit) return out;
         }
-        if (!out.empty()) return out;
+        if (!out.empty()) break;
     }
+    std::sort(out.begin(), out.end());
+    if (out.size() > limit) out.resize(limit);
     return out;
 }
 

@@ -113,17 +113,32 @@ inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_of
         case FF_FIELD_BLOCK:
             return LOAD_U64(base + field_absolute_offset) == FF_NULL_OFFSET;
             
+        // Signedness does not enter into it: the sentinel is a BIT PATTERN
+        // (all ones), so int32_t and uint32_t share the test. FF_FIELD_INT32 was
+        // omitted here and became reachable the moment `integer` choice variants
+        // started carrying RECOVER_FF_INT32 instead of RECOVER_FF_UINT32 -- at
+        // which point every `valueInteger` in the corpus stopped being mislabelled
+        // `valueUnsignedInt` and started vanishing outright, because `default`
+        // below says "absent" and print_json drops it. Same trap as the date/time
+        // one described below, sprung the same way: a kind reachable for the
+        // first time meets a switch that never listed it.
         case FF_FIELD_CODE:
         case FF_FIELD_URL:
         case FF_FIELD_UINT32:
+        case FF_FIELD_INT32:
             return LOAD_U32(base + field_absolute_offset) == FF_NULL_UINT32;
-            
+
         // Both are 8 inline bytes whose null is all-ones, so they share a case.
         // Omitting FF_FIELD_DATETIME would not fail loudly: the `default` below
         // returns true, so every date/time field in the stream would report as
-        // absent and be dropped on export.
+        // absent and be dropped on export. FF_FIELD_INT64/UINT64 join them for
+        // the same reason -- 8 inline bytes, all-ones null -- and were likewise
+        // absent; nothing emits an integer64 choice variant in the current
+        // profile, so they were latently broken rather than visibly so.
         case FF_FIELD_FLOAT64:
         case FF_FIELD_DATETIME:
+        case FF_FIELD_INT64:
+        case FF_FIELD_UINT64:
             return LOAD_U64(base + field_absolute_offset) == FF_NULL_UINT64;
             
         case FF_FIELD_BOOL:

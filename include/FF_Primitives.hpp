@@ -954,6 +954,30 @@ struct RecoveryTraits<RECOVER_FF_RESOURCE>
 {
     static constexpr FF_FieldKind kind = FF_FIELD_RESOURCE;
 };
+template <>
+struct RecoveryTraits<RECOVER_FF_OPAQUE_JSON>
+{
+    static constexpr FF_FieldKind kind = FF_FIELD_STRING;
+};
+
+// Does this tag name a block laid out exactly like an FF_STRING?
+//
+// The dual type system separates PHYSICAL layout (the kind) from SEMANTIC
+// identity (the tag), and this is the one place two tags share a layout:
+// RECOVER_FF_OPAQUE_JSON is byte-for-byte an FF_STRING -- 14-byte header, then
+// `length` payload bytes -- but the payload is already-serialized JSON rather
+// than a JSON string value. So every reader that walks, bounds-checks or
+// decodes the BYTES asks this question, and only the two places that decide how
+// to RENDER them (Node::print_json, Node::to_debug_json) test the tag itself.
+//
+// Kept as one predicate rather than two `==` comparisons at each site for the
+// reason ff_kind_is_inline_scalar is: the last four defects in this file's
+// history were a list of tags copied to a second site and then extended at only
+// one of them.
+constexpr bool FF_IsStringLayoutTag(RECOVERY_TAG tag)
+{
+    return tag == RECOVER_FF_STRING || tag == RECOVER_FF_OPAQUE_JSON;
+}
 
 // Exhaustive runtime mapping for dynamic bindings (Python/JSON)
 inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag)
@@ -999,7 +1023,12 @@ inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag)
     }
     switch (base)
     {
+    // Both string-layout tags land on the string KIND -- the kind names the
+    // bytes, and these bytes are identical. What separates them is what the
+    // payload MEANS, which only the render sites consult. See
+    // FF_IsStringLayoutTag.
     case RECOVER_FF_STRING:
+    case RECOVER_FF_OPAQUE_JSON:
         return FF_FIELD_STRING;
     case RECOVER_FF_RESOURCE:
         return FF_FIELD_RESOURCE;
@@ -1023,6 +1052,19 @@ static_assert(Recovery_to_Kind(RECOVER_FF_DATE) == FF_FIELD_DATETIME,
               "all four date/time tags must collapse to the single FF_FIELD_DATETIME kind");
 static_assert(ff_slot_width(FF_FIELD_DATETIME) == TYPE_SIZE_UINT64,
               "a packed date/time must occupy the same 8 bytes the string offset did");
+// Same pinning for the two string-layout tags, for the same reason: the
+// predicate and the two mappings are three independent statements of one fact.
+static_assert(Recovery_to_Kind(RECOVER_FF_OPAQUE_JSON) ==
+                      RecoveryTraits<RECOVER_FF_OPAQUE_JSON>::kind &&
+                  Recovery_to_Kind(RECOVER_FF_STRING) == RecoveryTraits<RECOVER_FF_STRING>::kind,
+              "the compile-time and runtime tag->kind mappings disagree for the string layout");
+static_assert(FF_IsStringLayoutTag(RECOVER_FF_STRING) &&
+                  FF_IsStringLayoutTag(RECOVER_FF_OPAQUE_JSON) &&
+                  Recovery_to_Kind(RECOVER_FF_OPAQUE_JSON) == FF_FIELD_STRING,
+              "every string-layout tag must map to FF_FIELD_STRING");
+static_assert(!FF_IsStringLayoutTag(RECOVER_FF_CODEABLE_CONCEPT) &&
+                  !FF_IsStringLayoutTag(RECOVER_FF_RESOURCE),
+              "FF_IsStringLayoutTag must not claim blocks that merely contain text");
 
 struct FF_FieldInfo
 {
@@ -1711,7 +1753,12 @@ struct ChoiceEntry
 // =====================================================================
 Size SIZE_FF_STRING(std::string_view str);
 Size SIZE_FF_CODE(std::string_view code_str, uint32_t version);
-Size STORE_FF_STRING(BYTE *const __base, Offset start_offset, std::string_view str);
+// `tag` is the ONE thing that varies between the two string-layout blocks
+// (FF_IsStringLayoutTag): RECOVER_FF_OPAQUE_JSON writes the identical header and
+// payload but marks the bytes as already-serialized JSON. One emitter with an
+// enum argument, not two near-identical emitters to drift apart.
+Size STORE_FF_STRING(BYTE *const __base, Offset start_offset, std::string_view str,
+                     RECOVERY_TAG tag = RECOVER_FF_STRING);
 Offset STORE_FF_CODE(BYTE *const __base, Offset start_offset, std::string_view code_str, uint32_t version);
 // Pack a code value into a 32-bit vtable slot.  Returns dictionary index
 // (MSB=0) when the code is in the permanent dictionary, or a packed relative

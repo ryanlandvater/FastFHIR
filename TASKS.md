@@ -257,13 +257,17 @@ DT-4.4, 2026-08-20 — see each task). Nothing gates DT-1.
 | DT-2 | P1 | Generator: route date/dateTime/instant/time off STRING_TYPES | 306 elements across 120 types | **scalar slots + choice variants DONE** (working tree); **DT-2.4 arrays open** |
 | DT-3 | P1 | Ingest + export paths | where the encode/decode actually happens | open |
 | DT-4 | P1 | Tests, then re-baseline the wire witness | the gate must move deliberately, in the same commit | open |
-| AR-1 | P1 | Array readers dispatch on the header tag, not the kind bits | every scalar array exports as `[]` — 136,006 of the 195,708 remaining round-trip diffs | open |
+| RT-1c | P1 | Integer choice variants tagged `RECOVER_FF_UINT32` | `valueInteger` exported as `valueUnsignedInt`; 8,812 diffs | **DONE 2026-08-23** (working tree) |
+| AR-1 | P1 | Array readers dispatch on the header tag, not the kind bits | every scalar array exports as `[]` — 136,006 of the 195,708 remaining round-trip diffs | **DONE 2026-08-22** (working tree) |
+| OPQ-1 | **P1** | Retain out-of-profile resources as opaque JSON instead of dropping them | closed the last 30,064 round-trip diffs; `py_roundtrip` is **342/342 clean, 0 diffs** | **DONE 2026-08-23** (working tree) |
 | AR-2 | P2 | `FF_FieldKeys.hpp` disagrees with the wire on 6 `code` array fields | a consumer navigating by the public constant mis-reads those arrays | open |
 | AR-3 | **P1** | Ingest is load-sensitive: same fixture, different resources kept | silent, nondeterministic data loss; blocks any exact round-trip number | **DONE 2026-08-22** (working tree) |
-| AR-4 | **P1** | `FIFO::Queue` deletes nodes still holding PENDING tasks | proven: a node is freed with 2,000 un-consumed entries; AR-3's fix only avoids triggering it | open |
+| AR-4 | **P1** | `FIFO::Queue` deletes nodes still holding PENDING tasks | **resolved by design decision**: collapse-by-design + debug-only canary that RECORDS via `debug_violations()` (throws could not propagate and corrupted the refcount); AR-4.4 `ff_test_queue` asserts it | **DONE 2026-08-22** (working tree) |
+| AR-5 | P2 | `positiveInt` choice variants export as `unsignedInt` | no scalar-band tag exists for it; the reserved 0x0230 is datatype-band and would be read as a block | open |
 | DBG-1 | P2 | `Node::to_debug_json()` — round-trip JSON annotated with wire metadata | JSON diffing cannot see a right value under a wrong tag | **DONE 2026-08-22** (working tree) |
-| GEN-1 | **P1** | Generator occasionally emits an incomplete tree | observed once: `FF_CodeSystems.hpp` short 5 enums, build broke on a missing type | open |
-| COV-1 | **P1** | No test feeds writer output to the reader/validator | 3 defects in one day inside "covered" code; validator rejected all 342 bundles while its own test passed | open |
+| GEN-1 | **P1** | Generator occasionally emits an incomplete tree | `FF_CodeSystems.hpp` short 5 enums, build broke on a missing type | open — **leading hypothesis is now STALE ARTIFACTS after a profile change, reproduced deliberately 2026-08-23**, not nondeterminism |
+| COV-1 | **P1** | No test feeds writer output to the reader/validator | 3 defects in one day inside "covered" code; validator rejected all 342 bundles while its own test passed | **1.1 + 1.5 DONE**; 1.2-1.4 open |
+| CMP-1 | **P1** | Compaction lost scalar arrays, the URL table and `Attachment.data` | found by COV-1.5 on its first run; compaction had never been fed a real document | **DONE 2026-08-23** (working tree) |
 
 ---
 
@@ -1199,6 +1203,85 @@ new bucket appearing, and no new diffs on `/entry/N/resource/category`.
 
 ---
 
+## OPQ-1 — Out-of-profile resources are retained, not discarded (P1)
+
+> **DONE 2026-08-23 (working tree, uncommitted).** This closed `py_roundtrip`:
+> **342/342 fixtures clean, 0 diffs**, repeatable across runs.
+
+**Why.** `dispatch_resource` returns a typed handle only for resources compiled
+into `FASTFHIR_PRODUCTION_PROFILE`. Everything else returned a null handle, the
+bundle patcher left the slot unset, and the entry shipped as
+`{"fullUrl":…, "request":{…}}` with **no `resource`** — not valid FHIR in a
+transaction bundle, and real clinical data loss (TASKS.md A26 measured one
+Synthea bundle losing 41 of 250 records at exit 0). It was also the last 30,064
+of the round-trip diffs: 15,032 `DROPPED_RESOURCE` + 15,032 `ADDED_RESOURCE`,
+because a resource-less entry cannot be paired by identity.
+
+**The fix is not "compile every resource."** That answers the corpus, not the
+problem — the next deployment with a resource nobody listed loses it exactly the
+same way. A format that can only carry what its build profile happens to name is
+a format that silently edits documents.
+
+### What it does
+
+The raw JSON of an untyped resource is copied into the arena as a block tagged
+`RECOVER_FF_OPAQUE_JSON` (`0x0007`, **already reserved** — zero ledger impact),
+which is an `FF_STRING` byte for byte, and `print_json` splices those bytes back
+in unquoted. The document round-trips byte-exactly. What is given up is typed
+*access*: no V-Table, so no `Node` navigation into its fields, no query, no
+interior compaction. `Ingestor` reports the count and types on the `FF_Result`
+(the log tag moved `[Skipped]` → `[Retained]`; `retained_summary` greps for it).
+
+### The four sites that had to change together
+
+The recurring defect shape, found by grepping before declaring it done: **a
+resource slot's kind must follow the tag beside its offset.** Three of these
+hardcoded `FF_FIELD_BLOCK`, which is correct only while every resource slot holds
+a generated resource block. An opaque block called a block asks `fields()` for a
+V-Table it has not got, `reflected_fields_view` returns `{}`, the empty field list
+reads as "no members present", and the resource vanishes from the export.
+
+| Site | File |
+|---|---|
+| `ParserOps::standard_entry_as_node` | `src/FF_Parser.cpp` |
+| `ParserOps::compact_entry_as_node` | `src/FF_Parser.cpp` |
+| `ParserOps::array_element` (the 10-byte tuple branch, e.g. `contained`) | `src/FF_Parser.cpp` |
+| `DeepValidator::walk` string branch — must bounds-check the opaque length, or `walk_fields` waves it through on an empty field span | `src/FF_Parser.cpp` |
+
+Plus: `archive_string` in the compactor now carries the source tag (it defaulted
+to `RECOVER_FF_STRING`, which would have downgraded a retained resource to a
+quoted string literal in the compact copy), and the Python bindings return the
+raw JSON text for an opaque resource slot rather than a handle whose every field
+lookup misses.
+
+### The deliberate hole — do not "fix" it
+
+`CMakePresets.json` sets `us-core,billing,medication-admin,supply` and
+**deliberately omits `imaging`**. The corpus has **1,444 `ImagingStudy`
+resources across the 342 fixtures**, so every one takes the fallback, and
+`py_roundtrip` demanding zero diffs is what proves the fallback is lossless on
+real data every single run. Enabling `imaging` would compile the type and
+silently retire that coverage. If you want `ImagingStudy` typed in your own
+build, add it to your profile — do not change the preset.
+
+**Verify:**
+```bash
+python tests/python/roundtrip_aggregate.py    # fixtures=342 clean=342/342 total_diffs=0
+./build/ff_roundtrip build/synthea_fhir_r4/<any>.json 2>&1 >/dev/null | head -1
+# -> "... stored as OPAQUE JSON ... ImagingStudy xN"
+```
+
+### Still open, deliberately
+
+- `Decode::choice` (`include/FF_Ops.hpp`) tests `entry.tag == RECOVER_FF_STRING`
+  and so would not decode an opaque payload. Not reachable today — a resource is
+  never a choice variant — but it is on the same list as that function's existing
+  `RECOVER_FF_CODE` / date-time gaps (handoff §5). Fix them together.
+- Nothing round-trips an opaque block through the **compactor** in the suite.
+  `archive_string` was corrected by inspection, not by a failing test. COV-1.
+
+---
+
 ## DBG-1 — `to_debug_json()`: the round-trip with its wire metadata (P2)
 
 > **DONE 2026-08-22 (working tree, uncommitted).**
@@ -1362,6 +1445,31 @@ the *test author's* idea of the format, not with the writer.
   hand-build a buffer where they could round-trip one. Convert where cheap; the
   synthetic ones keep value for hostile/corrupt input, which a writer cannot
   produce.
+- **COV-1.5** **DONE 2026-08-23** (working tree). `tests/cpp/ff_test_compact_roundtrip.cpp`:
+  ingest 8 real Synthea bundles, compact each, and require the compact
+  `print_json` to be **byte-identical** to the standard one. All four CMake
+  registrations done; same `OpenSSL::Crypto` + `FASTFHIR_SYNTHEA_DIR` needs and
+  same SKIP behaviour as COV-1.1. Runs in ~0.5 s.
+
+  **It found three defects on its first run**, none of them the one it was
+  written for. Nothing had ever handed the compactor a real document:
+
+  | Defect | Symptom | Cause |
+  |---|---|---|
+  | Scalar arrays | throw: `unsupported node kind in archive_node(): 7` | `archive_array` turned EVERY array into an `FF_ARRAY::OFFSET` table and enqueued each element as a NodePointer; `archive_node` handles only BLOCK/ARRAY/STRING. Pre-AR-1 the reader mislabelled scalar elements `FF_FIELD_BLOCK`, so this silently archived an **empty object** where the values were; AR-1 turned a silent wrong answer into a loud one. Fixed: an inline-scalar array holds no offsets, so it is copied **verbatim** (self-offset rewritten) — which also stops the compactor violating the array invariant. |
+  | URL directory | every `Extension.url` and `Bundle.entry.fullUrl` exported as `null` | `Compactor::archive` sealed with `FF_NULL_OFFSET` for the URL table and a comment calling it "not preserved". Every `FF_FIELD_URL` slot is an INDEX into that table, so dropping it anonymises every extension in the document. Fixed: `archive_url_directory` copies the header + entry table and rewrites each `SEG_OFFSET` (the `PRIOR_IDX` is an index and survives). |
+  | `Attachment.data` | dropped from every DiagnosticReport | `compact_entry_as_node`'s `default:` kept `schema_kind` instead of re-deriving from the actual tag. `Attachment.data` declares kind `FF_FIELD_BLOCK` with `child_recovery RECOVER_FF_STRING`, so the compact reader built a BLOCK node over an `FF_STRING`, `reflected_fields_view` returned `{}`, and print_json read the empty field list as "no members present". **The standard path fixed exactly this in A23.3 ("Bug C"); the compact path was never given the same correction.** |
+
+  The third is the recurring shape yet again, and the second time a `default:`
+  branch that keeps the schema kind has cost a whole field class. **The MODULE
+  registry is still dropped by compaction** — it only exists under
+  `FASTFHIR_ENABLE_EXTENSIONS` and nothing has compacted such a stream, which is
+  precisely what was true of the URL table until this test looked.
+
+  Both fixture-picking helpers were also **sorted**: `directory_iterator` yields
+  in filesystem order, so truncating it to `limit` chose an arbitrary subset that
+  differed between machines — a red that would not reproduce from the same
+  command. Same rule as `ff_test_datetime`'s pinned seed.
 
 **Done when:** a test fails if the validator rejects a stream this project's own
 writer produced.
@@ -1411,32 +1519,59 @@ extra release is elsewhere — a candidate is the FREE-slot claim path setting
 
 ### Work
 
-- **AR-4.1** Find the unbalanced decrement on node 0. The instrumentation that
-  produced the table above is the tool: log `uses` at every
-  `increment_node`/`decrement_node` with a queue tag and node index, run under
-  24-way contention, and read the sequence.
-- **AR-4.2** Make retirement conditional on completion, not just on refcount —
-  a node with any `ENTRY_PENDING`/`ENTRY_WRITING` entry must not be freed.
-  Scanning `NODE_ENTRIES` flags per retirement is O(2000) on a path that should
-  be cheap, so prefer a per-node consumed counter compared against written count
-  (`Node::front_idx` is already there and may be intended for this).
-- **AR-4.3** ⚠ Decide the ownership rule explicitly and write it in the header:
-  Ryan's stated model is that the queue pins the tail, each node pins its
-  successor, and consumers pin the head. Today only the middle one is true. This
-  is a design decision about memory bounds vs. safety and is **Ryan's alone**.
-- **AR-4.4** A unit test for the queue itself: push > `NODE_ENTRIES` items with
-  a consumer created late, assert every item is delivered. **Nothing tests
-  `FIFO::Queue` directly**, which is why a lock-free primitive shipped with a
-  silent task-dropping bug (see COV-1 — same root cause as the validator gap).
+- **AR-4.1** ~~Find the unbalanced decrement on node 0~~ **ANSWERED (2026-08-22)** —
+  there is none. Node 0's ledger is exactly balanced for the holders that exist
+  (ctor 1 [tail], injector +1, `advance_tail` −1, injector's `_ref.advance` −1 →
+  0); the retirement observed at `uses_before=1` is the injector's own
+  advance-off. What is absent is a *front* pin — and its absence is the design
+  decision below, not a bug.
+- **AR-4.2** ~~Make retirement conditional on completion~~ **REJECTED (AR-4.3)** —
+  completion-gated retirement would pin un-consumed nodes indefinitely,
+  resurrecting the leak the collapse exists to avoid. Replaced by the debug-only
+  canary: `Node::~Node()` (`#if FASTFHIR_DEBUG`, `FF_Queue.hpp`) records a
+  violation on `debug_violations()` if any entry is
+  `ENTRY_PENDING`/`ENTRY_WRITING`/`ENTRY_READING` at deletion; release builds
+  compile the scan out. **It records, it does not throw** — see AR-4.4.
+- **AR-4.3** **DECIDED (2026-08-22, Ryan): the chain collapses by design.**
+  The queue never pins `_weak_head` on purpose — "no consumers, no reason to
+  live". The queue is lockless and safe for any number of concurrent consumer
+  threads (single-delivery per-entry CAS); consumers keep the front alive, and
+  **at least one consumer must exist for the queue's whole lifetime** — a
+  zero-consumer window lets the chain collapse (CLAUDE.md §6, contractually
+  created before the first push and moved into their workers). The queue keeps
+  the tail; each node pins its successor. Safety half of the trade: the DEBUG
+  canary. Memory-bounds half: un-consumed nodes are freed, nothing leaks, no
+  completion bookkeeping on the retire path.
+- **AR-4.4** **DONE (2026-08-22)** — `tests/cpp/ff_test_queue.cpp` (registered in
+  ctest): push > `NODE_ENTRIES` items with consumers latched before pushing
+  (1 and 4 consumers, all 5000 delivered), plus the late-consumer misuse case
+  asserted via `debug_violations() > 0`. Two findings surfaced while writing it,
+  both fixed in the same commit: (a) the throwing canary corrupted the refcount
+  mid-advance — the push-2001 retire runs inside `_ref.advance` AFTER the slot
+  was exchanged, so a throw strands the injector's `NodeRef` on a dead slot and
+  the teardown trips the "Double-free detected" guard — an artifact of the
+  throwing canary, **not** a pre-existing imbalance: AR-4.1's ledger balances,
+  and with the recording canary the same case now returns cleanly
+  (`late consumer saw 3000 of 5000 items, debug_violations=1`); (b) every destructor route to the
+  guard runs inside `~NodeRef`, which is implicitly noexcept, so the throw could
+  only `std::terminate` — never propagate. The canary therefore **records** the
+  violation on `debug_violations()` instead of throwing; the test asserts it and
+  runs by default (no abort).
 
-**Done when:** a node holding un-consumed entries cannot be freed, and AR-4.4
-fails without the fix.
+**Done when:** a `DEBUG` build records a violation (`debug_violations() > 0`,
+asserted by `ff_test_queue`) when a node is freed with un-consumed entries —
+without aborting, since a throw cannot propagate through the noexcept
+`~NodeRef` and corrupts the refcount mid-advance — release builds compile the
+canary out (no scan, no counter writes), and `ff_test_queue` proves both.
 
 ---
 
 ## GEN-1 — The generator emitted an incomplete tree once (P1)
 
-**Observed 2026-08-22 and not reproduced since.** A `cmake --preset ninja`
+**Observed 2026-08-22; reproduced THREE more times on 2026-08-23** — roughly one
+configure in four during heavy iteration. No longer a one-off: this is a live
+P1 that breaks the build and, once, let a stale binary report a plausible
+round-trip number while the build had 31 errors. A `cmake --preset ninja`
 produced a `generated_src/FF_CodeSystems.hpp` holding **72** `enum class FF_*`
 definitions instead of 77. `FF_NoteType` was among the missing five, while
 `FF_ClaimResponse.hpp`, `FF_ExplanationOfBenefit.hpp` and
@@ -1461,6 +1596,50 @@ causes, none confirmed:
   variance should then have shown up across the four stable runs;
 - a partial or interrupted `write_if_changed`, leaving a truncated file;
 - profile-dependent enum collection interacting with a cached/stale input.
+
+### ⚠ Leading hypothesis (2026-08-23): STALE ARTIFACTS, not nondeterminism
+
+**The third candidate above is now the strong one, and the failure mode was
+reproduced deliberately.** The generator **never deletes output it no longer
+emits**, and `write_if_changed` leaves untouched files at their old mtime. So
+configuring the same `generated_src/` under a NARROWER profile leaves orphaned
+`FF_<Resource>.{hpp,cpp}` behind, the `CONFIGURE_DEPENDS` glob in
+`CMakeLists.txt` picks them up, and they reference enums that
+`FF_CodeSystems.hpp` — which *was* regenerated — no longer contains.
+
+Reproduced today while swapping `supply` out for `imaging`:
+
+```
+generated_src/FF_SupplyDelivery.hpp:35:5: error: unknown type name 'FF_SupplyDeliveryStatus'
+generated_src/FF_SupplyRequest.cpp:370:27: error: use of undeclared identifier 'parse_SupplyRequestStatus'
+```
+
+`rm -rf generated_src && cmake --preset ninja` → 0 errors, every time.
+
+**Every detail of the original GEN-1 report fits this and not nondeterminism:**
+`FF_CodeSystems.hpp` held FEWER enums than the headers expected (a narrower
+profile regenerating it); the referencing headers "had not themselves been
+regenerated (mtime an hour older)" — which is precisely what `write_if_changed`
+leaves behind; and "the next configure fixed it" because the next configure used
+the wider profile again. "One configure in four during heavy iteration" matches a
+session in which some configures went through `--preset ninja` (`us-core,billing`)
+and others through a bare `cmake -S . -B build`, which takes the
+`CMakeLists.txt:67` default of **`us-core`**.
+
+**Not proven for the original occurrences** — those trees are gone, and this is
+inference from a matching reproduction, not the same event. But it is testable:
+
+- **GEN-1.1** Configure with `--preset ninja`, then reconfigure the same build
+  directory with `-DFASTFHIR_PRODUCTION_PROFILE=us-core`, then reconfigure back.
+  If the build breaks with `unknown type name` in generated code, GEN-1 is this
+  and the "deterministic generator" claim in CLAUDE.md never needed amending.
+- **GEN-1.2** Fix it at the source: have the pipeline remove generated files it
+  did not emit this run, or have CMake stamp the resolved profile into
+  `generated_src/` and wipe the tree when it changes. The first is better — it
+  also covers a resource being dropped from a grouping by hand.
+- **GEN-1.3** Until one of those lands, **`rm -rf generated_src` after any
+  profile change**, and treat "mysterious `unknown type name` in generated code"
+  as stale output rather than a flake.
 
 - **GEN-1.1** Add a determinism check to `pytest tests/generator`: generate twice
   into scratch trees and assert byte-identical output. That converts a rare
@@ -1568,9 +1747,9 @@ with a different stdout hash. These are separate processes with no shared state,
 so the load-sensitivity is inside one ingest.
 
 ⚠ **`FF_IngestorCreateInfo::concurrency` is honoured in only one of two places.**
-`m_num_threads` gates the pool at `src/FF_Ingestor.cpp:1245`, but
+`m_num_threads` gates the pool at `src/FF_Ingestor.cpp:1310`, but
 `FF_PredigestExtensionURLs` sizes its producer pool from
-`std::thread::hardware_concurrency()` directly (`src/FF_Ingestor.cpp:692`). So
+`std::thread::hardware_concurrency()` directly (`src/FF_Ingestor.cpp:752`). So
 `ff_roundtrip`'s `concurrency = 1` — added as the "A23 diagnostic: force a single
 worker to test the concurrency hypothesis" — **never applied to that pool**, and
 the A23 experiment could not have proven what it was built to prove. Whether
@@ -5560,3 +5739,32 @@ validate intern→store→reconstruct against the roundtrip, then mirror for
 **Priority order:** #2 + #3 are the largest correctable chunk (~1,500 diffs);
 #5 is a one-liner; #1/#4 are the URL-trie feature; #6 is a policy call.
 Verify with `ctest --preset ninja -R py_roundtrip` after each.
+
+---
+
+## AR-5 — `positiveInt` choice variants export as `unsignedInt` (P2)
+
+Fallout from 1c, deliberately left. A choice slot's `RECOVERY_TAG` is the only
+thing naming its FHIR type on export, and there is **no scalar-band tag meaning
+`positiveInt`**, so it shares `RECOVER_FF_UINT32` with `unsignedInt` and
+`get_choice_suffix` calls both `"UnsignedInt"`.
+
+⚠ **The obvious fix is wrong.** `RECOVER_FF_POSITIVEINT` (0x0230) and
+`RECOVER_FF_UNSIGNEDINT` (0x0237) are reserved and look made for this, but they
+sit in the **datatype band**. `Recovery_to_Kind` maps the scalar band
+(0x0100-0x01FF) to inline scalar kinds and everything >= 0x0200 to
+`FF_FIELD_BLOCK` — so tagging an inline choice slot 0x0230 makes the reader
+treat the raw integer as a block offset. That is the AR-1 defect class exactly.
+handoff.md §1c recommends this; do not follow it.
+
+Real options, both Ryan's call:
+- **AR-5.1** Append a scalar-band tag for `positiveInt` (and one for a distinct
+  signed `integer64` if wanted). A permanent ledger append in `master_tags.json`
+  — the scalar band has room, but the band is small, so spending slots on FHIR
+  spellings that share a wire representation is a judgement about what the band
+  is *for*.
+- **AR-5.2** Accept the collapse and document it as a known export difference.
+
+**Scope: zero round-trip impact.** Four fields carry `positiveInt` variants
+(`dosenumber`, `targetitem`, `value`); none appear in the Synthea corpus, so
+neither option moves the diff count.

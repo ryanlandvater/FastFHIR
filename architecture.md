@@ -909,6 +909,61 @@ a terminator means an `FF_STRING` block is exactly 14 + LENGTH bytes — no
 padding, no special-case end byte — preserving exact `VALIDATION`-driven
 bounds.
 
+#### 6.1a `RECOVER_FF_OPAQUE_JSON` — the same block, different meaning
+
+One other tag uses this exact layout: `RECOVER_FF_OPAQUE_JSON` (`0x0007`). Byte
+for byte it is an `FF_STRING` — 14-byte header, `LENGTH` payload bytes — and the
+only difference is what the payload *is*. An `FF_STRING` holds a JSON string
+*value*; an opaque block holds an already-serialized JSON *document fragment*,
+which `Node::print_json` splices into the output **unquoted and unescaped**.
+
+This is the dual type system doing exactly what §3 describes. The **kind** names
+the bytes, so both tags map to `FF_FIELD_STRING` and every reader that walks,
+bounds-checks or decodes them shares one code path — the predicate is
+`FF_IsStringLayoutTag(tag)`. The **tag** names the meaning, so only the two
+render sites (`print_json`, `to_debug_json`) ever compare against
+`RECOVER_FF_OPAQUE_JSON` itself.
+
+Two producers write it:
+
+| Producer | Why |
+|---|---|
+| Passive extensions (Path B, §10.1) | The extension has no compiled codec and no WASM module. |
+| A resource outside `FASTFHIR_PRODUCTION_PROFILE` | The generated `dispatch_resource` has no `_from_json` for its type. |
+
+The second is the one that matters for correctness: an untyped resource used to
+be **discarded**, leaving a `Bundle.entry` with `fullUrl` and `request` but no
+`resource` — not valid FHIR in a transaction bundle, and silent clinical data
+loss (TASKS.md A26). It is now retained verbatim, so the document round-trips
+byte-exactly. What a profile decides is what this build can **index**, never what
+it may **carry**.
+
+What is genuinely given up is *typed access*: an opaque block has no V-Table, so
+there is no `Node` navigation into its fields, no query, and no interior
+compaction — the compactor copies the block whole, tag included. `Ingestor`
+reports the count and the resource types on the returned `FF_Result` so a caller
+never discovers the limitation by diffing documents.
+
+> ⚠ **A resource slot's kind follows its tag.** The four places that build a
+> `Node` from a 10-byte resource tuple — `standard_entry_as_node`,
+> `compact_entry_as_node`, `ParserOps::array_element`, and `walk_fields`'s
+> validator case — must derive the kind from the tag beside the offset, not
+> hardcode `FF_FIELD_BLOCK`. Three of them did hardcode it, which was correct
+> only while every resource slot held a generated resource block. Calling an
+> opaque block a block asks `fields()` for a V-Table it does not have,
+> `reflected_fields_view` returns `{}`, an empty field list reads as "no members
+> present", and the resource is dropped from the export — the same silent shape
+> as AR-1, `Node::is_empty()`, and `FF_IsFieldEmpty`.
+>
+> The rule is wider than the resource tuple. **Any branch that ends in a pointer
+> hop must re-derive the kind from the block's own tag**, because a schema kind is
+> a claim and the tag is the fact. `Attachment.data` declares kind
+> `FF_FIELD_BLOCK` with `child_recovery RECOVER_FF_STRING` (the complex-block
+> mapping for `base64Binary`) and stores an `FF_STRING`; the standard path
+> re-derives (A23.3, "Bug C") and the compact path did not, so every attachment
+> vanished from a compacted document. Two branches, one rule, fixed eight months
+> apart because nothing compacted a real file until COV-1.5.
+
 ### 6.2 Polymorphic 10-Byte Wrappers
 
 Two structures occupy V-Table slots of size 10 (= `TYPE_SIZE_RESOURCE` =

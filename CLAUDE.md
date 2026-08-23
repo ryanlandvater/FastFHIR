@@ -151,7 +151,8 @@ completely (all 87,840 h:m:s, all 1,681 UTC offsets) it is enumerated instead. P
 that shape for new property-style tests.
 
 Key CMake options: `FASTFHIR_PRODUCTION_PROFILE` (comma-separated union of
-`us-core` (default) | `uk-core` | `billing` | `all`; `us`/`uk` are accepted aliases),
+`us-core` (default) | `uk-core` | `billing` | `medication-admin` | `supply` |
+`imaging` | `all`; `us`/`uk` are accepted aliases),
 `FASTFHIR_BUILD_INGESTOR`
 (needs simdjson; also gates `ff_ingest` and OpenSSL), `FASTFHIR_BUILD_TESTS`,
 `FASTFHIR_BUILD_PYTHON_BINDINGS`, `FASTFHIR_RUN_GENERATOR` (default ON, at configure time).
@@ -227,10 +228,31 @@ it there (see its README, "the Debug trap").
   date/time fields are the remaining gap** — three emitters still send them down the
   string-array branch, so `Timing.event` and `Timing.repeat.timeOfDay` are stored as
   `FF_STRING` (TASKS.md DT-2.4). Full layout: architecture.md §6.3.
+- **Opaque JSON** — `RECOVER_FF_OPAQUE_JSON` (`0x0007`) is an `FF_STRING` block byte for
+  byte, but its payload is already-serialized JSON that `print_json` splices in
+  **unquoted**. A resource outside the compiled profile is retained this way instead of
+  being dropped, so any FHIR document round-trips byte-exactly whatever the profile;
+  what is lost is typed *access* (no V-Table → no `Node` navigation, no query, no interior
+  compaction), which `Ingestor` reports on the `FF_Result`. Readers share one path via
+  `FF_IsStringLayoutTag(tag)`; only the two render sites test the tag itself.
+  **A resource slot's kind follows the tag beside its offset** — three of the four sites
+  that build a Node from a 10-byte resource tuple used to hardcode `FF_FIELD_BLOCK`, which
+  drops an opaque block silently (the `reflected_fields_view` → `{}` → "no members" shape).
+  `CMakePresets.json` deliberately omits the `imaging` grouping so 1,444 real Synthea
+  `ImagingStudy` resources exercise this path on every `py_roundtrip` run; enabling it
+  would retire that coverage. architecture.md §6.1a.
 - **Extensions** — per-extension `EXT_REF` word routes to a registered WASM codec module
   (MSB=1), a retained URL in `FF_URL_DIRECTORY` (MSB=0), or suppression (`0xFFFFFFFF`).
 - **Compactor** — post-finalize rewrite of a sealed stream into a presence-bitmask compact
-  layout; output is read-only, traversed with the same Node API.
+  layout; output is read-only, traversed with the same Node API. **Arrays keep the standard
+  `FF_ARRAY` geometry**, so `archive_array` obeys the same array invariant the writer does:
+  an inline-scalar array holds no offsets and is copied verbatim (self-offset rewritten),
+  and only variable-length elements get an offset table. The **URL intern table is copied
+  and its `SEG_OFFSET`s rewritten** — every `FF_FIELD_URL` slot is an index into it, so
+  dropping it silently anonymises every `Extension.url` and `fullUrl` in the document. The
+  **module registry is still dropped** (WASM-only, uncovered — a known gap). `ff_test_compact_roundtrip`
+  requires the compact `print_json` to be byte-identical to the standard one; it found all
+  three of those defects on its first run (TASKS.md CMP-1 / COV-1.5).
 
 ## Hard invariants — breaking these corrupts data on the wire
 
@@ -329,20 +351,36 @@ decide whether a version gate is wanted.
 6. **Concurrency contract:** `claim_space()` appends are lock-free and thread-safe;
    pointer amendments and finalize are not concurrency-protected (see TASKS.md Q9). Don't
    introduce mutexes into the append hot path.
-   **A `FIFO::Queue` consumer must be created before the first push, on the spawning
-   thread, and moved into its worker.** `get_consumer()` latches the current head node;
+   **`FIFO::Queue` is lockless and safe for any number of concurrent consumer
+   threads** — each entry is single-delivery via the `PENDING->READING` CAS, so
+   consumers never serialize. The hazard is not sharing; it is the **zero-consumer
+   window**: the chain collapses when no consumer handle exists, so at least one
+   consumer must be alive from before the first push until the drain completes.
+   Concretely: **create consumers before the first push, on the spawning
+   thread, and move them into their workers.** `get_consumer()` latches the current head node;
    once a node fills (`NODE_ENTRIES` = 2000) the producer advances and the retirement path
    moves `_weak_head` past it, so a consumer that latches late starts mid-stream and
    silently loses every earlier node. That cost 2,000 bundle entries per affected ingest —
    `FF_SUCCESS`, no warning, a valid but truncated document — and only ever reproduced
    under CPU contention, because that is what delays the worker's first instruction past
    the producer's first node advance (TASKS.md AR-3). The predigest pool has always done
-   this correctly and says so at `FF_Ingestor.cpp:666`; copy that pattern. The queue does
-   not merely fail to enforce this — it **deletes nodes that still hold PENDING
-   tasks**, retiring on reference count without asking whether the work is done
-   (proven: a node freed with 2,000 un-consumed entries; TASKS.md **AR-4**, P1).
-   Until that is fixed the ordering is the caller's duty, and no `FIFO::Queue`
-   call site may assume the type protects it.
+   this correctly and says so at `FF_Ingestor.cpp:727`; copy that pattern. Both pools
+   run the same Iris-style dispatch (a `PoolStatus` atomic with park/notify instead of
+   yield-spin; see the machinery at the top of `FF_Ingestor.cpp`). The queue
+   enforces the convention with a **debug-only canary, not at runtime**: `Node`'s
+   destructor (`#if FASTFHIR_DEBUG`, `FF_Queue.hpp`) scans the node's entries on
+   deletion and **records a violation** on the queue's `debug_violations()`
+   counter when any is still `ENTRY_PENDING`/`ENTRY_WRITING`/`ENTRY_READING` —
+   it must NOT throw: a throw from `~Node` runs inside the retire path after the
+   slot was exchanged, stranding the caller's `NodeRef` on a dead slot (the
+   "Double-free detected" chain) and terminating inside the noexcept `~NodeRef`
+   on every destructor route, so a counter the owner polls is the only reliable
+   report. `ff_test_queue` asserts it. Release builds compile the scan out: the
+   chain **collapses by design** (TASKS.md AR-4 decision) — no consumers, no
+   reason for a node to live, un-consumed entries are freed and nothing leaks.
+   Debug builds are where misuse must surface; the latch-before-push ordering is
+   still the caller's duty, and no `FIFO::Queue` call site may assume the type
+   protects it.
 7. **The two SHA-256 roles in the WASM registry are never conflated:** `sha256(url)` is a
    disk metadata filename only; `sha256(wasm_bytes)` is module identity on the wire.
 
@@ -357,15 +395,30 @@ decide whether a version gate is wanted.
 Common pitfalls for agents: `generated_src/` won't exist until you configure with network;
 `ctest` Python tests use `.venv/bin/python` if present, else the system interpreter.
 
-⚠ **The generator is *usually* deterministic, but not reliably (TASKS.md GEN-1,
-2026-08-22).** It used to say flatly that two runs produce byte-identical trees. One
-configure emitted `FF_CodeSystems.hpp` with 72 `enum class` definitions instead of 77 —
-`FF_NoteType` missing while three headers still referenced it — and the build failed with
-`unknown type name` in generated code that had not been regenerated. The next configure
-produced the full 77 and four more were identical. So a mysterious compile error inside
-`generated_src/` may be this, and re-running the configure "fixes" it without explaining
-anything. Until GEN-1 lands, a diff between two runs is **not** automatically a real
-change — confirm it reproduces before acting on it.
+⚠ **`generated_src/` is never cleaned, so CHANGING THE PROFILE leaves a broken tree.**
+The generator only writes; it never deletes output it no longer emits, and
+`write_if_changed` leaves untouched files at their old mtime. Configure the same
+`generated_src/` under a narrower profile and the orphaned `FF_<Resource>.{hpp,cpp}` stay,
+the `CONFIGURE_DEPENDS` glob still compiles them, and they reference enums the freshly
+regenerated `FF_CodeSystems.hpp` no longer contains:
+
+```
+generated_src/FF_SupplyDelivery.hpp:35:5: error: unknown type name 'FF_SupplyDeliveryStatus'
+```
+
+**`rm -rf generated_src` after any profile change** (reproduced 2026-08-23; a clean
+regenerate fixes it every time).
+
+⚠ **This is also the leading explanation for GEN-1** (TASKS.md), which was recorded as
+generator *nondeterminism*: one configure emitted `FF_CodeSystems.hpp` with 72 `enum class`
+definitions instead of 77, `FF_NoteType` missing while three headers still referenced it,
+those headers "not regenerated, mtime an hour older" — which is exactly what a narrower
+profile plus `write_if_changed` produces, and why "the next configure fixed it". Bare
+`cmake -S . -B build` takes the `CMakeLists.txt:67` default of **`us-core`**, so mixing it
+with `--preset ninja` in one session is enough to trigger this. **Not proven for the
+original occurrences** — GEN-1.1 is the test that would settle it. Until then, treat a
+mysterious `unknown type name` inside `generated_src/` as stale output first and a flake
+second, and confirm any diff between two runs reproduces before acting on it.
 
 ## Portability lessons (paid for on MSVC and Xcode — don't relearn them)
 

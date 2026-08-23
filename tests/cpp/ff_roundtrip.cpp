@@ -120,8 +120,9 @@ int main(int argc, char** argv) {
             return 1;
         }
         // A successful ingest can still carry warnings (out-of-profile resource
-        // types are discarded). stdout is the round-trip document, so warnings
-        // go to stderr — but they must go somewhere, or the loss is silent again.
+        // types are retained as opaque JSON, so they round-trip but are not
+        // typed-queryable). stdout is the round-trip document, so warnings go to
+        // stderr — but they must go somewhere, or the limitation is silent.
         if (!result.message.empty()) {
             std::cerr << result.message << "\n";
         }

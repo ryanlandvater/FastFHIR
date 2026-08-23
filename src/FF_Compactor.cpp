@@ -65,6 +65,15 @@ struct ArchiveContext {
     // the friendship grant that lets the traversal key `path`/`done` on it.
     Offset node_offset(const Reflective::Node& node) const { return node.offset(); }
 
+    // The SOURCE arena a node reads from, and that node's array geometry. Same
+    // friendship grant, same reason: both are private Node state, and the
+    // verbatim-copy path in archive_array needs the source bytes rather than a
+    // re-derivation of them.
+    const BYTE* node_base(const Reflective::Node& node) const { return node.m_base; }
+    FF_ARRAY source_array(const Reflective::Node& node) const {
+        return FF_ARRAY(node.m_node_offset, node.m_size, node.m_version, node.m_engine_version);
+    }
+
     // XP-1.1: bound the stored-graph traversal and detect cycles. `path` is
     // the ancestry of the node being archived (source-arena offsets); `done`
     // maps every fully archived source offset to the offset it was archived
@@ -175,11 +184,17 @@ static inline void enqueue_pending_write(ArchiveContext& context, const PendingW
     context.injector.push(pending);
 }
 
-static Offset archive_string(std::string_view value, Memory& destination) {
+// `tag` carries the source block's identity across the copy. Both string-layout
+// tags (FF_IsStringLayoutTag) reach here, and defaulting to RECOVER_FF_STRING
+// would silently downgrade a retained opaque-JSON resource to a JSON string
+// literal in the compact copy -- the archive would then export the resource
+// quoted and escaped, and its slot's tag would no longer match its block's.
+static Offset archive_string(std::string_view value, Memory& destination,
+                             RECOVERY_TAG tag = RECOVER_FF_STRING) {
     if (value.empty()) return FF_NULL_OFFSET;
 
     const Offset string_off = destination.claim_space(SIZE_FF_STRING(value));
-    STORE_FF_STRING(destination.base(), string_off, value);
+    STORE_FF_STRING(destination.base(), string_off, value, tag);
     return string_off;
 }
 
@@ -294,6 +309,50 @@ static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& co
 }
 
 static Offset archive_array(const Reflective::Node& node, ArchiveContext& context, std::size_t depth) {
+    // ── Inline scalar elements: copy the block verbatim ─────────────────────
+    // An array of raw scalars contains NO offsets -- the elements ARE the
+    // values -- so there is nothing to rewrite and nothing to defer. Copying it
+    // whole is both the cheapest and the only correct answer, the same move
+    // write_compact_code_slot already makes for a CodeableConcept block.
+    //
+    // The generic path below turns every array into an FF_ARRAY::OFFSET pointer
+    // table, which for a scalar array is wrong twice over. It violates the array
+    // invariant (variable length is the ONLY thing that forces an offset table,
+    // so every OFFSET array in a stream is a string array), and it hands
+    // archive_node a scalar Node, which its switch does not list -- so a bundle
+    // carrying `Claim.item.diagnosisSequence` threw "unsupported node kind: 7".
+    //
+    // That throw is new; the defect is not. Before AR-1 the reader labelled
+    // scalar elements FF_FIELD_BLOCK, so they took the block branch,
+    // reflected_fields_view returned {} for a scalar tag, and the compactor
+    // silently archived an EMPTY OBJECT where the values had been. Typing the
+    // elements correctly turned a silent wrong answer into a loud one. Found by
+    // ff_test_compact_roundtrip on its first run (COV-1.5).
+    //
+    // The element type comes from the header tag in MEMORY, never from
+    // node.recovery() or the schema: that is the copy written by the same call
+    // that laid out the bytes (architecture.md §5.3).
+    const BYTE* const src_base = context.node_base(node);
+    const Offset src_off = context.node_offset(node);
+    const RECOVERY_TAG element = GetTypeFromTag(
+        static_cast<RECOVERY_TAG>(LOAD_U16(src_base + src_off + DATA_BLOCK::RECOVERY)));
+
+    if (ff_kind_is_inline_scalar(Recovery_to_Kind(element))) {
+        const FF_ARRAY src_arr = context.source_array(node);
+        const Size header = src_arr.get_header_size();
+        const Size payload = static_cast<Size>(src_arr.entry_count(src_base)) *
+                             static_cast<Size>(src_arr.entry_step(src_base));
+        const Size total = header + payload;
+
+        const Offset dst_off = context.destination.claim_space(total);
+        std::memcpy(context.destination.base() + dst_off, src_base + src_off, total);
+        // The copy carries the SOURCE self-offset; a block whose VALIDATION word
+        // does not equal its own address is exactly what the validator rejects
+        // as "the offset chain is broken".
+        STORE_U64(context.destination.base() + dst_off + DATA_BLOCK::VALIDATION, dst_off);
+        return dst_off;
+    }
+
     const auto elements = node.entries();
     const Size array_size = FF_ARRAY::HEADER_SIZE + static_cast<Size>(elements.size()) * TYPE_SIZE_OFFSET;
     Offset array_off = context.destination.claim_space(array_size);
@@ -583,7 +642,10 @@ static Offset archive_node(const Reflective::Node& node, ArchiveContext& context
     switch (node.kind()) {
         case FF_FIELD_BLOCK:  result = archive_object(node, context, depth); break;
         case FF_FIELD_ARRAY:  result = archive_array(node, context, depth); break;
-        case FF_FIELD_STRING: result = archive_string(node.as<std::string_view>(), context.destination); break;
+        case FF_FIELD_STRING:
+            result = archive_string(node.as<std::string_view>(), context.destination,
+                                    node.recovery());
+            break;
         default:
             throw std::runtime_error(
                 std::string("FastFHIR Compactor Error: unsupported node kind in archive_node(): ") +
@@ -648,6 +710,58 @@ static void process_pending_write(ArchiveContext& context, const PendingWrite& p
     }
     // Mirrors the enqueue-side increment: one fewer outstanding deferred write.
     --context.pending_balance;
+}
+
+// Copy the stream's URL intern table into the compact arena, returning its new
+// offset (FF_NULL_OFFSET when the source has none).
+//
+// Compaction used to drop this table and stamp FF_NULL_OFFSET into the compact
+// header -- a one-line comment called it "not preserved", which understated it
+// considerably. Every FF_FIELD_URL slot is a 4-byte INDEX into this table, so
+// without it `resolve_url_ref` finds nothing and each one exports as `null`.
+// That is `Extension.url` -- required by FHIR, and the only thing that says what
+// an extension MEANS -- plus `Bundle.entry.fullUrl`, on every entry. Compacting
+// a Synthea bundle silently produced a document whose extensions were anonymous.
+// Found by ff_test_compact_roundtrip (COV-1.5); nothing had ever compacted a
+// document carrying URLs.
+//
+// The table is 16-byte header + N × 16-byte entries. `prior_idx` is an INDEX, so
+// it survives relocation untouched; `seg_offset` is an arena offset to an
+// FF_STRING and is the only field that must be rewritten. Each trie node
+// allocated its own segment string, so the map is belt-and-braces against a
+// future producer that interns them.
+static Offset archive_url_directory(const Parser& source, ArchiveContext& context) {
+    const BYTE* const src = source.data();
+    const Offset src_dir = LOAD_U64(src + FF_HEADER::URL_DIR_OFFSET);
+    if (src_dir == FF_NULL_OFFSET) return FF_NULL_OFFSET;
+
+    const FF_URL_DIRECTORY dir(src_dir, source.size_bytes(), source.version());
+    const uint32_t count = dir.entry_count(src);
+    const Size header = dir.get_header_size();
+    const Size total = header + static_cast<Size>(count) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
+
+    BYTE* const dst_base = context.destination.base();
+    const Offset dst_dir = context.destination.claim_space(total);
+    std::memcpy(dst_base + dst_dir, src + src_dir, total);
+    STORE_U64(dst_base + dst_dir + FF_URL_DIRECTORY::VALIDATION, dst_dir);
+
+    std::unordered_map<Offset, Offset> moved;
+    for (uint32_t i = 0; i < count; ++i) {
+        const Offset entry = dst_dir + header + static_cast<Size>(i) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
+        const Offset src_seg = LOAD_U64(dst_base + entry + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET);
+        // An empty segment (the "http://" in a scheme) is stored as no string
+        // at all, and seg_string() returns "" for it -- there is nothing to move.
+        if (src_seg == FF_NULL_OFFSET) continue;
+
+        auto [slot, inserted] = moved.try_emplace(src_seg, FF_NULL_OFFSET);
+        if (inserted) {
+            slot->second = archive_string(
+                FF_STRING(src_seg, source.size_bytes(), source.version()).read_view(src),
+                context.destination);
+        }
+        STORE_U64(dst_base + entry + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET, slot->second);
+    }
+    return dst_dir;
 }
 
 Memory::View Compactor::archive(const Parser& source, const Memory& destination,
@@ -716,12 +830,22 @@ Memory::View Compactor::archive(const Parser& source, const Memory& destination,
         }
     }
 
-    // Shared sealing (header + checksum + hash) with Builder::finalize. The
-    // URL/module directory offsets are not preserved across compaction.
+    // The URL intern table has to come across, or every FF_FIELD_URL slot in the
+    // compact stream indexes a table that is not there. Claimed BEFORE sealing
+    // because seal_stream stamps the offset into the header.
+    //
+    // The MODULE registry is still dropped: it maps EXT_REF words to registered
+    // WASM codec modules, which only exist with FASTFHIR_ENABLE_EXTENSIONS, and
+    // nothing has yet compacted such a stream. That is a known gap, not a
+    // decision that it does not matter -- and it is the same gap this URL table
+    // sat in until a test looked.
+    const Offset compact_url_dir = archive_url_directory(source, context);
+
+    // Shared sealing (header + checksum + hash) with Builder::finalize.
     return seal_stream(dst, static_cast<uint16_t>(source.version()),
                        compact_root_off,
                        static_cast<RECOVERY_TAG>(source.root_type()), algo,
-                       hasher, FF_STREAM_COMPACTED, FF_NULL_OFFSET, FF_NULL_OFFSET);
+                       hasher, FF_STREAM_COMPACTED, compact_url_dir, FF_NULL_OFFSET);
 }
 
 } // namespace FastFHIR
