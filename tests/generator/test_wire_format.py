@@ -132,12 +132,39 @@ def test_permanence_rejects_field_removal(regenerated_dir: Path, baseline: dict)
 
 
 def test_permanence_accepts_field_append(regenerated_dir: Path, baseline: dict) -> None:
-    """Appending a NEW field (and its size constant) is legal growth."""
+    """Appending a NEW field (and its size constant) is legal growth.
+
+    The append is modelled the way the GENERATOR actually emits one: a new slot
+    grows the block header by its width. This test used to append to `order` and
+    `sizes` while leaving `header_sizes` untouched -- a state no generator run
+    can produce -- so it passed while a real append was rejected by the
+    `header_sizes` equality check. The rule is now monotonic growth, and the
+    fixture has to exercise the real shape or it re-becomes decorative.
+    """
     current = witness(regenerated_dir)
-    current["vtables"]["FF_PATIENT"]["order"].append("ZZ_APPENDED")
-    current["vtables"]["FF_PATIENT"]["sizes"]["ZZ_APPENDED_S"] = "TYPE_SIZE_UINT32"
+    block = current["vtables"]["FF_PATIENT"]
+    block["order"].append("ZZ_APPENDED")
+    block["sizes"]["ZZ_APPENDED_S"] = "TYPE_SIZE_UINT32"
+    for k in block["header_sizes"]:
+        block["header_sizes"][k] += 4  # the appended uint32 slot
     errors = _check_permanence(current["vtables"], baseline["vtables"], "vtables")
     assert not errors, f"appended field should pass permanence: {errors}"
+
+
+def test_permanence_rejects_header_shrink(regenerated_dir: Path, baseline: dict) -> None:
+    """A block header may grow, but shrinking it drops a shipped slot.
+
+    The other half of the monotonic rule. Without this, relaxing `header_sizes`
+    from equality to >= would silently permit a REMOVED field, which shifts the
+    offset of every field after it for every stream already written.
+    """
+    current = witness(regenerated_dir)
+    block = current["vtables"]["FF_PATIENT"]
+    for k in block["header_sizes"]:
+        block["header_sizes"][k] -= 4
+    errors = _check_permanence(current["vtables"], baseline["vtables"], "vtables")
+    assert errors, "a shrinking block header must fail permanence"
+    assert any("SHRANK" in e for e in errors), errors
 
 
 def test_codes_section_is_populated(baseline: dict) -> None:

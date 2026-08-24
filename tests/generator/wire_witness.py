@@ -224,6 +224,32 @@ def _check_permanence(current_raw: dict, existing_raw: dict, label: str) -> list
                             f"reordered or removed → wire offsets shift for "
                             f"existing streams (appending fields is legal)"
                         )
+                elif sub == "header_sizes":
+                    # MONOTONIC GROWTH, not equality -- the counterpart of the
+                    # prefix rule above, and it has to be, or the two rules
+                    # contradict each other. Appending a field adds a slot, so a
+                    # legal append ALWAYS grows the block header; requiring
+                    # equality here rejected exactly the change the `order` rule
+                    # calls legal. (test_permanence_accepts_field_append passed
+                    # only because it appended to `order` without growing the
+                    # header -- a state the generator cannot emit.)
+                    #
+                    # Growth is safe precisely because the other two rules pin
+                    # everything below it: shipped fields keep their order
+                    # (prefix rule) and their widths (`sizes` equality), so a
+                    # bigger header can only mean slots added past the end, and
+                    # no existing field's offset moves. SHRINKAGE is still fatal
+                    # -- that drops a shipped slot and shifts everything after.
+                    for k, v in old_sub.items():
+                        if k not in new_sub:
+                            errors.append(
+                                f"  DELETED {label}.{key}.{sub}.{k} — wire constant removed"
+                            )
+                        elif new_sub[k] < v:
+                            errors.append(
+                                f"  SHRANK {label}.{key}.{sub}.{k}: {v!r} → {new_sub[k]!r}"
+                                f" — a block header may grow (appended fields) but never shrink"
+                            )
                 else:
                     for k, v in old_sub.items():
                         if k not in new_sub:

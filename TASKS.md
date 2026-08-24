@@ -265,7 +265,7 @@ DT-4.4, 2026-08-20 — see each task). Nothing gates DT-1.
 | AR-4 | **P1** | `FIFO::Queue` deletes nodes still holding PENDING tasks | **resolved by design decision**: collapse-by-design + debug-only canary that RECORDS via `debug_violations()` (throws could not propagate and corrupted the refcount); AR-4.4 `ff_test_queue` asserts it | **DONE 2026-08-22** (working tree) |
 | AR-5 | P2 | `positiveInt` choice variants export as `unsignedInt` | no scalar-band tag exists for it; the reserved 0x0230 is datatype-band and would be read as a block | open |
 | DBG-1 | P2 | `Node::to_debug_json()` — round-trip JSON annotated with wire metadata | JSON diffing cannot see a right value under a wrong tag | **DONE 2026-08-22** (working tree) |
-| GEN-1 | **P1** | Generator occasionally emits an incomplete tree | `FF_CodeSystems.hpp` short 8 enums, build broke on `FF_Use`/`FF_NoteType` | open — **reproduced live 2026-08-23 with the profile UNCHANGED**; 5 configures immediately after were byte-identical. A stale-artifact theory was proposed and falsified; that is a separate real bug (GEN-1.2) |
+| GEN-1 | **P1** | ~~Generator occasionally emits an incomplete tree~~ — **it was `pytest tests/generator` rewriting `generated_src/` at the `us-core` default** | `FF_CodeSystems.hpp` short 8 enums, build broke on `FF_Use`/`FF_NoteType`; never a flake, fully deterministic | **DIAGNOSED + FIXED 2026-08-24** (working tree). Caught by the GEN-1.1 guard on its first run |
 | COV-1 | **P1** | No test feeds writer output to the reader/validator | 3 defects in one day inside "covered" code; validator rejected all 342 bundles while its own test passed | **1.1 + 1.5 DONE**; 1.2-1.4 open |
 | CMP-1 | **P1** | Compaction lost scalar arrays, the URL table and `Attachment.data` | found by COV-1.5 on its first run; compaction had never been fed a real document | **DONE 2026-08-23** (459e8d8) |
 | REV-1 | **P1** | PR #6 review fixes: Release build broken, corpus gate pinned to 1 worker, 9 more | Release+tests did not compile at all; the 342-fixture gate could not see the AR-3 class | **DONE 2026-08-23** (working tree) |
@@ -1628,9 +1628,32 @@ precedent**, which is the standing answer to this review comment.
   counts N>0 entries that all read back empty, which is precisely how AR-1
   presented.
 
-**Unverified:** `wire_witness.py:220` — whether `header_sizes` equality and the
-`order`-prefix append rule are consistent. Left open deliberately rather than
-guessed at.
+### `wire_witness.py:220` — verified, and it was the sharpest of the fourteen
+
+The gate **accepted an impossible state and rejected the real one.** `order` uses
+a prefix rule ("appending a field is legal growth"), but `header_sizes` was
+checked for **equality** — and a real appended field always grows the block
+header by its slot width. So:
+
+| Mutation | Old rule |
+|---|---|
+| append to `order` + `sizes`, header unchanged — *what the test did, and what the generator can never emit* | **accepted** |
+| append to `order` + `sizes`, header +4 — *what an actual append looks like* | **rejected** |
+
+`header_sizes` is now **monotonic**: growth is legal, shrinkage is fatal. Growth
+is safe precisely because the other two rules pin everything beneath it — shipped
+fields keep their order (prefix rule) and their widths (`sizes` equality), so a
+bigger header can only mean slots appended past the end and no existing offset
+moves. `test_permanence_accepts_field_append` now models a real append, and a new
+`test_permanence_rejects_header_shrink` covers the other half. Wire gate: 47.
+
+### Bazel — verified, contrary to an earlier claim in this file's history
+
+An earlier note said Bazel parity was "registration only, not verified by a
+build". That was wrong: `bazel` 9.2.0 is installed and the suite runs.
+`bazel test //...` → **15/15 pass**, including all four newly registered targets.
+The two corpus suites print `SKIP: no Synthea fixtures` under Bazel (it does not
+download the corpus, CMake does) — loud, not a false pass.
 
 ---
 
@@ -1694,41 +1717,101 @@ tree when it changes. The first is better — it also covers a resource being
 dropped from a grouping by hand. Until then, `rm -rf generated_src` after any
 profile change.
 
-#### (b) GEN-1 proper — genuine nondeterminism, still undiagnosed
+#### (b) GEN-1 — ✅ **DIAGNOSED AND FIXED 2026-08-24.** It was never nondeterminism.
 
-**Reproduced live on 2026-08-23 evening with the profile UNCHANGED**, which is
-what rules (a) out as the explanation. Observed state:
+**`pytest tests/generator` was rewriting the repo's own `generated_src/`.**
 
-- `generated_src/FF_CodeSystems.hpp` held **72** `enum class` definitions.
-- `FF_Use`, `FF_NoteType` and `FF_ClaimStatus` were absent, while
-  `FF_Claim.hpp` and `FF_ClaimResponse.hpp` referenced all three →
-  `error: unknown type name 'FF_Use'`.
-- `FASTFHIR_PRODUCTION_PROFILE` was `us-core,billing,medication-admin,supply`
-  and had not been touched since the previous clean 40/40 build.
-- **Five consecutive `cmake --preset ninja` runs immediately afterwards produced
-  80 enums with an identical md5 every time.** So the generator is deterministic
-  when it works, and intermittently is not.
+`test_regeneration_preserves_every_committed_id` ran `python -m generator` with
+**no `--output-dir`** and `cwd=_REPO_ROOT`, so it regenerated the working tree in
+place — and with `FASTFHIR_PRODUCTION_PROFILE` unset in the environment it did so
+at the `CMakeLists.txt:67` default of **`us-core`**, whatever profile the tree had
+actually been built with.
 
-The bad run was triggered by a `cmake --build` that re-ran configure on its own
-("Re-checking globbed directories"), not by an explicit reconfigure — worth
-noting, though not yet shown to be causal.
+The consequence is mechanical, deterministic, and exactly the reported symptom:
 
-**It also demonstrated the stale-binary hazard in the same minute:**
-`ff_test_roundtrip_validate` printed 8/8 PASS from a binary that had not been
-rebuilt, while the build it belonged to was failing with 10 errors. Never trust
-a test result from a build you did not confirm succeeded.
+1. Build with `us-core,billing,…` → 80 enums, `FF_Claim.cpp` and friends emitted.
+2. Run `pytest tests/generator` → `FF_CodeSystems.hpp` rewritten at `us-core`,
+   now **72 enums**. `write_if_changed` leaves every billing/supply source
+   untouched **at its older mtime**.
+3. Next build → `use of undeclared identifier 'parse_Use'` in generated code
+   *that nobody had regenerated*.
+4. Next `cmake --preset ninja` → regenerates at the real profile, "fixes" it,
+   explains nothing.
 
-- **GEN-1.1** Instrument it. The generator already prints
-  `-- Emitted generated_src/FF_CodeSystems.hpp (N enums)`, so **assert on N**:
-  cross-check every `FF_<Enum>` referenced by the emitted resource sources
-  against the enums actually written, and `raise` at generate time. That turns
-  this from "mysterious C++ errors, maybe against a stale binary" into a named
-  configure failure, whatever the root cause turns out to be. Do this first — it
-  is cheap and it makes every future occurrence self-reporting.
-- **GEN-1.4** Then diagnose. Candidates unchanged: set/dict iteration order in
-  codesystem discovery (`PYTHONHASHSEED` variance would be invisible across
-  five stable runs); a partial or interrupted `write_if_changed`; codesystem
-  discovery interacting with the 149 MB `fhir_packages/` cache.
+Every unexplained detail of the original report falls out of this: the code-system
+header newer than the resource sources ("mtime an hour older"); fewer enums than
+the headers expect; the next configure curing it; and "roughly one configure in
+four during heavy iteration" — it was in fact **once per `pytest tests/generator`
+run**. It also never reproduced under five back-to-back configures because
+configures were never the trigger.
+
+**Fix:** the test now generates into a `tempfile.TemporaryDirectory`. The ledger
+is a repo path and is still exercised and restored exactly as before; only the
+emitted C++ goes somewhere disposable.
+
+**Verified:** with the tree at 80 enums and `FF_Claim.cpp` present, a full
+`pytest tests/generator` run leaves both unchanged and the next build clean —
+where previously the same command left the tree at 72 and the build broken.
+
+**How it was caught:** by the GEN-1.1 guard, on its first run, which is the
+strongest argument for having added it.
+
+<details>
+<summary>Superseded analysis, kept so it is not re-derived a third time</summary>
+
+#### (b-old) "still real, still undiagnosed, still not reproduced on demand"
+
+**Observed twice in the tree; never yet caught in the act.** Both sightings had
+the same signature: `generated_src/FF_CodeSystems.hpp` holding **72**
+`enum class` definitions instead of the full set, with `FF_Use`, `FF_NoteType`
+and `FF_ClaimStatus` absent while `FF_Claim.cpp` / `FF_ClaimResponse.cpp` still
+called `parse_Use` / `parse_NoteType` → `use of undeclared identifier`.
+
+> ⚠ **A "reproduced live, profile unchanged" claim was written here and is
+> withdrawn.** The file carrying the 72 enums was dated **2026-08-23 19:13**
+> while every other file in `generated_src/` was 10:40 and the observation was
+> made on 08-24 — so what was seen was a **stale short header sitting in the
+> tree**, not a generator run misbehaving under observation. Every generator run
+> actually watched has printed and written the full set, and five consecutive
+> configures were byte-identical. Neither the nondeterminism theory nor the
+> stale-artifact theory in (a) is confirmed for these sightings; do not treat
+> either as diagnosed.
+
+What the timestamps DO say, and it is the one solid clue: `FF_CodeSystems.hpp`
+was newer than every other generated file, alone. That is consistent with a
+generator run that rewrote the code-system header and, via `write_if_changed`,
+left every resource header untouched — which is exactly the shape of the
+original 2026-08-22 report ("mtime an hour older"). Whatever produces the short
+header, it produces it **without** re-emitting the sources that depend on it.
+
+**The stale-binary hazard showed up alongside it:** `ff_test_roundtrip_validate`
+printed 8/8 PASS from a binary that had not been rebuilt while its build was
+failing with 10 errors. Never trust a test result from a build you did not
+confirm succeeded.
+
+- **GEN-1.1** ✅ **DONE 2026-08-23.** `validate_codesystem_enums()` in
+  `generator/utilities.py`, called from `library.py` beside the RECOVERY_TAG
+  validators. It cross-checks every `parse_X` / `serialize_X` reference in the
+  emitted sources against the `enum class FF_X` definitions actually written,
+  and raises at generate time naming the enum and the file that wanted it.
+  Keyed on the function names, not the `FF_X` type names, because a bare
+  `FF_Something` cannot be told from a block struct without more context — the
+  two prefixes are emitted by the code-system emitter and nothing else, so there
+  are no false positives. Configure now prints
+  `-- Validated 61 code-system enum references against FF_CodeSystems.hpp`.
+  **Verified against a reconstruction** of the real failure (strip `FF_Use` /
+  `FF_NoteType` / `FF_ClaimStatus` from the header): it raises and names
+  `FF_Use (used by FF_Claim.cpp)` and `FF_NoteType (used by FF_ClaimResponse.cpp)`.
+  This does not fix GEN-1 — it makes every future occurrence self-reporting at
+  the point of origin instead of a wall of C++ errors, possibly against a stale
+  binary.
+- **GEN-1.4** Diagnose. Candidates: set/dict iteration order in codesystem
+  discovery (`PYTHONHASHSEED` variance would be invisible across five stable
+  runs); a partial or interrupted `write_if_changed`; discovery interacting with
+  the 149 MB `fhir_packages/` cache. **When it next fires, the guard will stop
+  the build — capture `FF_CodeSystems.hpp`, its mtime, and the full configure
+  output BEFORE regenerating.** That evidence is what every attempt so far has
+  lacked.
 
 - **GEN-1.1** Add a determinism check to `pytest tests/generator`: generate twice
   into scratch trees and assert byte-identical output. That converts a rare
@@ -1738,8 +1821,29 @@ a test result from a build you did not confirm succeeded.
 - **GEN-1.3** Consider making `write_if_changed` atomic (write temp + rename) so
   an interrupted run cannot leave a partial header behind.
 
-**Done when:** two consecutive generator runs are byte-identical under a test
-that would have caught the 72/77 divergence.
+</details>
+
+**Done when:** ~~two consecutive generator runs are byte-identical~~ — **DONE.**
+`pytest tests/generator` no longer touches the repo's `generated_src/`, and the
+`validate_codesystem_enums` guard fails the configure by name if a short
+code-system header ever appears again from any other cause.
+
+### Still worth doing, now that the cause is known
+
+- **GEN-1.5** No test asserts that running the suite leaves `generated_src/`
+  alone. That property is what broke, and nothing guards it. A session-scoped
+  fixture that hashes `generated_src/FF_CodeSystems.hpp` before and after would
+  have caught this in one run.
+- **GEN-1.6** Audit the rest of the suite for the same shape — any test invoking
+  `python -m generator`, or anything else that writes into the working tree as a
+  side effect. `conftest.py` already does this correctly (`--output-dir` into a
+  `tmp_path_factory` tree) and its docstring explains why; this one test simply
+  never got the same treatment.
+- **GEN-1.7** The generator still honours an unset `FASTFHIR_PRODUCTION_PROFILE`
+  by silently choosing `us-core`. For a tool that writes a profile-dependent tree
+  into a shared directory, defaulting quietly is what let this hide. Consider
+  stamping the resolved profile into a file in `generated_src/` and refusing to
+  overwrite a tree generated under a different one (this also fixes (a)).
 
 ---
 

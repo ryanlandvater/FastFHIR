@@ -420,18 +420,20 @@ generated_src/FF_SupplyDelivery.hpp:35:5: error: unknown type name 'FF_SupplyDel
 **`rm -rf generated_src` after any profile change** (reproduced 2026-08-23; a clean
 regenerate fixes it every time).
 
-⚠ **GEN-1 is a SEPARATE, still-undiagnosed bug — do not conflate it with the above.**
-A stale-artifact explanation for it was proposed and **falsified the same day**: on
-2026-08-23 the generator emitted `FF_CodeSystems.hpp` with **72** `enum class` definitions
-instead of 80, `FF_Use`/`FF_NoteType`/`FF_ClaimStatus` absent while `FF_Claim.hpp` and
-`FF_ClaimResponse.hpp` referenced them — **with the profile unchanged** — and five
-consecutive configures immediately afterwards produced 80 enums with an identical md5. So
-the generator is deterministic when it works and intermittently is not, exactly as
-originally recorded. Treat a mysterious `unknown type name` inside `generated_src/` as
-stale output **if you changed the profile** and as GEN-1 otherwise; either way reconfigure
-and confirm a diff reproduces before acting on it. The same incident printed 8/8 PASS from
-a **stale test binary** while its build was failing with 10 errors — always confirm the
-build succeeded before believing a result.
+✅ **GEN-1 is FIXED (2026-08-24), and it was never generator nondeterminism.**
+`pytest tests/generator` was **rewriting the repo's own `generated_src/`**:
+`test_regeneration_preserves_every_committed_id` ran `python -m generator` with no
+`--output-dir`, and with `FASTFHIR_PRODUCTION_PROFILE` unset it regenerated the working
+tree at the `CMakeLists.txt:67` default of `us-core`. So a tree built as
+`us-core,billing,…` came back with a **72-enum** `FF_CodeSystems.hpp` while
+`write_if_changed` left every billing source untouched at its older mtime — hence
+`unknown type name 'FF_Use'` in generated code nobody had regenerated, "the next configure
+fixed it", and an apparent flake that was in fact **once per test-suite run**. The test now
+generates into a temp directory. Two guards remain as backstops: `validate_codesystem_enums`
+fails the configure by name if a short header ever appears again (it is what caught this),
+and the profile-change rule above still applies. Historical note, because it cost two days:
+the incident also printed 8/8 PASS from a **stale test binary** while its build was failing
+with 10 errors — always confirm the build succeeded before believing a result.
 
 ## Portability lessons (paid for on MSVC and Xcode — don't relearn them)
 

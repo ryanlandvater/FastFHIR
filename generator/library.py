@@ -37,6 +37,7 @@ from generator.bindings.python_fields import (
 )
 from generator.utilities import (
     enclose_namespace,
+    validate_codesystem_enums,
     validate_recovery_bands,
     validate_recovery_tags,
 )
@@ -439,6 +440,14 @@ def compile_fhir_library(
     # (FF_IsResourceTag), so a misplaced tag is silent, not a compile error.
     validate_recovery_bands(recovery_hpp)
     print("-- Validated RECOVERY_TAG band membership and uniqueness")
+
+    # --- GEN-1 guard: the code-system header must satisfy what was emitted ---
+    # The generator has twice produced a short FF_CodeSystems.hpp beside
+    # resource sources that expect the full set, which surfaces as a wall of
+    # "use of undeclared identifier" errors in generated code -- once while a
+    # stale test binary reported PASS. Fail here, named, instead.
+    n_enums = validate_codesystem_enums(output_dir)
+    print(f"-- Validated {n_enums} code-system enum references against FF_CodeSystems.hpp")
 
     # --- Ingest mappings ---
     from generator.emit.ingest_mappings import generate_ingest_mappings

@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -167,17 +168,35 @@ def test_regeneration_preserves_every_committed_id():
     snapshot = _LEDGER.read_bytes()
     before = dict(json.loads(snapshot.decode("utf-8"))["ids"])
 
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "generator"],
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
-        after = json.loads(_LEDGER.read_text(encoding="utf-8"))["ids"]
-    finally:
-        _LEDGER.write_bytes(snapshot)
+    # --output-dir a THROWAWAY tree. This used to run the generator with no
+    # output dir at all, so it rewrote the repo's own generated_src/ as a side
+    # effect -- and with FASTFHIR_PRODUCTION_PROFILE unset it did so at the
+    # CMakeLists default `us-core`, whatever profile the working tree was
+    # actually built with.
+    #
+    # THAT IS TASKS.md GEN-1. A developer on us-core,billing,... would build
+    # cleanly, run `pytest tests/generator`, and be left with a 72-enum
+    # FF_CodeSystems.hpp beside billing resource sources that `write_if_changed`
+    # had left untouched at their older mtime -- so the next build died on
+    # `unknown type name 'FF_Use'` in generated code nobody had regenerated, the
+    # next CMake configure silently "fixed" it, and it read as an intermittent
+    # generator flake for two days. It is neither intermittent nor the
+    # generator's fault.
+    #
+    # The ledger is a repo path and is still exercised (and restored below);
+    # only the emitted C++ goes somewhere disposable.
+    with tempfile.TemporaryDirectory(prefix="ffhr_ledger_gate_") as out_dir:
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "generator", "--output-dir", out_dir],
+                cwd=_REPO_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+            )
+            after = json.loads(_LEDGER.read_text(encoding="utf-8"))["ids"]
+        finally:
+            _LEDGER.write_bytes(snapshot)
 
     moved = {c: (before[c], after[c]) for c in before if c in after and before[c] != after[c]}
     dropped = sorted(set(before) - set(after))

@@ -165,3 +165,69 @@ def validate_recovery_tags(
             "at the next free value in its band."
         )
     return len(referenced)
+
+
+def validate_codesystem_enums(output_dir: str, codesystems_name: str = "FF_CodeSystems.hpp") -> int:
+    """Fail loudly if the emitted sources reference a code-system enum that
+    ``FF_CodeSystems.hpp`` does not declare.
+
+    This is the GEN-1 guard. The generator has twice emitted a
+    ``FF_CodeSystems.hpp`` holding fewer ``enum class`` definitions than the
+    resource sources emitted alongside it expect -- 72 instead of 80, with
+    ``FF_Use`` / ``FF_NoteType`` / ``FF_ClaimStatus`` absent while
+    ``FF_Claim.cpp`` still called ``parse_Use``. The failure then surfaces
+    hundreds of lines later as a wall of C++ ``use of undeclared identifier``
+    errors, in generated code, with no indication of the cause -- and on at
+    least one occasion a STALE TEST BINARY reported PASS while that build was
+    failing, so the tree looked green.
+
+    Catching it here converts a mystifying compile failure into a named
+    generate-time error, whatever the underlying cause turns out to be
+    (TASKS.md GEN-1 is still undiagnosed; this does not fix it, it makes every
+    occurrence self-reporting).
+
+    Keyed on the ``parse_X`` / ``serialize_X`` FUNCTION names rather than the
+    ``FF_X`` type names on purpose: a bare ``FF_Something`` reference cannot be
+    told apart from a block struct or a wire constant without knowing what kind
+    of thing it is, whereas these two prefixes are emitted by the code-system
+    emitter and nothing else, so the check has no false positives.
+
+    Returns the number of distinct enums referenced.
+    """
+    codesystems_path = os.path.join(output_dir, codesystems_name)
+    if not os.path.isfile(codesystems_path):
+        raise RuntimeError(
+            f"{codesystems_path} was not emitted; the code-system stage did not run."
+        )
+
+    with open(codesystems_path, encoding="utf-8") as fh:
+        codesystems_src = fh.read()
+    declared = set(re.findall(r"\benum\s+class\s+FF_([A-Za-z0-9_]+)\b", codesystems_src))
+    if not declared:
+        raise RuntimeError(
+            f"{codesystems_path} declares no `enum class` at all -- the code-system "
+            "emitter produced an empty header. See TASKS.md GEN-1."
+        )
+
+    referenced: dict[str, str] = {}
+    for entry in sorted(os.listdir(output_dir)):
+        if entry == codesystems_name or not entry.endswith((".hpp", ".cpp")):
+            continue
+        with open(os.path.join(output_dir, entry), encoding="utf-8") as fh:
+            for name in re.findall(r"\b(?:parse|serialize)_([A-Za-z0-9_]+)\s*\(", fh.read()):
+                referenced.setdefault(name, entry)
+
+    missing = {n: f for n, f in referenced.items() if n not in declared}
+    if missing:
+        listed = "\n".join(f"    FF_{n}  (used by {f})" for n, f in sorted(missing.items()))
+        raise RuntimeError(
+            f"{codesystems_path} declares {len(declared)} enums, but the emitted "
+            f"sources reference {len(missing)} it does not have:\n{listed}\n\n"
+            "This is TASKS.md GEN-1: the code-system header came out short while "
+            "the resource sources beside it expect the full set. The tree is "
+            "INCONSISTENT and will not compile. Re-run the configure -- it has "
+            "recovered on every observed occurrence -- and if it recurs, capture "
+            f"{codesystems_name} and the generator output before regenerating, "
+            "because that is the evidence the diagnosis still lacks."
+        )
+    return len(referenced)
