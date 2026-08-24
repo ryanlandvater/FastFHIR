@@ -20,7 +20,7 @@
 2. [Memory Architecture: The Virtual Memory Arena (VMA)](#2-memory-architecture-the-virtual-memory-arena-vma)
 3. [The Dual-Layer Type System](#3-the-dual-layer-type-system)
 4. [Binary Wire Format: `DATA_BLOCK` Anatomy](#4-binary-wire-format-data_block-anatomy)
-5. [The Array Subsystem: Inline vs. Offset](#5-the-array-subsystem-inline-vs-offset)
+5. [The Array Subsystem: Inline Entries and the One Indirection](#5-the-array-subsystem-inline-entries-and-the-one-indirection)
 6. [High-Performance Primitives](#6-high-performance-primitives)
 7. [Concurrent Builder Mechanics](#7-concurrent-builder-mechanics)
 8. [Zero-Copy Read Path (`Reflective::Node`)](#8-zero-copy-read-path-reflectivenode)
@@ -323,7 +323,7 @@ uses kind to decode and recovery to dispatch.
 
 ### 3.1 `FF_FieldKind` — Physical Discriminant
 
-`FF_Primitives.hpp:156–171`.
+`FF_Primitives.hpp:547–565`.
 
 ```
 enum FF_FieldKind : uint16_t {
@@ -334,8 +334,13 @@ enum FF_FieldKind : uint16_t {
     FF_FIELD_INT64,     FF_FIELD_UINT64,
     FF_FIELD_FLOAT64,
     FF_FIELD_RESOURCE,  FF_FIELD_CHOICE,
+    FF_FIELD_DATETIME,                      // 13 — one kind, four tags (§6.3)
 };
 ```
+
+Members **append and never renumber**: the enum is part of the ABI — `FF_FieldInfo`
+and `FF_FieldKey` both carry it — even though it is not a wire constant (nothing
+serialises a kind; it is derived from the recovery tag by `Recovery_to_Kind`).
 
 Kind tells the parser the **storage class** of a slot, not its meaning:
 
@@ -344,8 +349,9 @@ Kind tells the parser the **storage class** of a slot, not its meaning:
 | `FF_FIELD_BOOL`              | 1 B            | 0/1 byte                                         |
 | `FF_FIELD_INT32` / `_UINT32` | 4 B            | LE integer                                       |
 | `FF_FIELD_INT64` / `_UINT64` | 8 B            | LE integer                                       |
-| `FF_FIELD_FLOAT64`           | 8 B            | LE IEEE-754                                      |
+| `FF_FIELD_FLOAT64`           | 9 B            | LE IEEE-754 double, then 1 B of source sigfigs   |
 | `FF_FIELD_CODE`              | 4 B            | Code dictionary index (top bit = custom string)  |
+| `FF_FIELD_DATETIME`          | 8 B            | Packed civil date/time (top bit = original text) |
 | `FF_FIELD_STRING`            | 8 B            | `Offset` to `FF_STRING` block                    |
 | `FF_FIELD_BLOCK`             | 8 B            | `Offset` to nested block                         |
 | `FF_FIELD_ARRAY`             | 8 B            | `Offset` to `FF_ARRAY` block                     |
@@ -353,30 +359,64 @@ Kind tells the parser the **storage class** of a slot, not its meaning:
 | `FF_FIELD_CHOICE`            | 10 B           | `ChoiceEntry` raw 8 B + 2 B recovery tag         |
 
 Slot widths are exactly the values in `TYPE_SIZE`
-(`FF_Primitives.hpp:124–137`). Note in particular that resource and choice
+(`FF_Primitives.hpp:515–528`). Note in particular that resource and choice
 slots are **10 bytes**, not 8 — they carry an inline recovery tag because
 their concrete type is not statically determinable from the parent V-Table.
+
+`FF_FIELD_CODE` and `FF_FIELD_DATETIME` are the two kinds above whose
+interpretation depends on the *value* rather than the kind: the top bit selects
+between an inline value and a pointer. They are one mechanism at two widths and
+are described together in §6.3.
+
+`FF_FIELD_DATETIME` is deliberately **one kind for four recovery tags**
+(`RECOVER_FF_DATE`/`DATETIME`/`TIME`/`INSTANT`). The kind answers "how is this
+slot stored", which is identical for all four; the tag answers "which FHIR type
+is this", which the exporter needs and the kind cannot express. That asymmetry is
+why `Recovery_to_Kind` maps four tags onto one kind while `Kind_to_Recovery` has
+**no** entry for it — a single answer there would be wrong three times in four.
 
 ### 3.2 `RECOVERY_TAG` — Semantic Identifier
 
 A 16-bit (`uint16_t`) ID embedded at bytes 8–9 of every block (immediately
-after the 8-byte `VALIDATION` word). Generated into
-`include/FF_Recovery.hpp` (hand-maintained, not regenerated); the
-inclusion is at `FF_Primitives.hpp`, which includes it as `"FF_Recovery.hpp"`.
+after the 8-byte `VALIDATION` word). Emitted into `generated_src/FF_Recovery.hpp` by
+`generator/emit/recovery_tags.py` from the committed tag ledger
+`dictionaries/master_tags.json`. The header is generated **and** committed —
+it is a permanent wire artifact reviewed in diffs, and must never be
+hand-edited; append to the ledger instead. The ledger covers the whole
+R4 ∪ R5 spec, so the emitted header is byte-identical for every
+`FASTFHIR_PRODUCTION_PROFILE`. The inclusion is at `FF_Primitives.hpp`, which
+includes it as `"FF_Recovery.hpp"`.
 
-The tag space is partitioned by high byte:
+The tag space is partitioned into five **bands**, and the boundaries are
+themselves wire constants — a tag's band is part of its identity:
 
-- `RECOVER_FF_SCALAR_BLOCK = 0x0100` — primitive-block tags
-  (`RECOVER_FF_BOOL`, `RECOVER_FF_INT32`, …).
-- `RECOVER_FF_DATA_TYPE_BLOCK = 0x0200` — the inclusive lower bound for
-  generic FHIR data-type blocks (e.g. `RECOVER_FF_STRING`, complex
-  datatypes). The runtime check `base >= RECOVER_FF_DATA_TYPE_BLOCK`
-  (`FF_Primitives.hpp:221`) groups data-types and concrete resources
-  together as the `FF_FIELD_BLOCK` family; specific resources occupy values
-  above the data-type range allocated by the generator.
+| Band | Range | Holds |
+|---|---|---|
+| Core Primitives | `0x0000 – 0x00FF` | FastFHIR's own structural blocks — `FF_HEADER`, `FF_STRING`, `FF_RESOURCE`, `FF_CHECKSUM`, the directories and registries |
+| Inline Scalars | `0x0100 – 0x01FF` | values that live *in* the V-Table slot — `FF_BOOL`, `FF_INT32` … `FF_FLOAT64`, `FF_CODE`, and the packed date/time family |
+| Data Types | `0x0200 – 0x0FFF` | FHIR complex datatypes |
+| Resources | `0x1000 – 0x1FFF` | concrete FHIR resource types |
+| Sub-elements | `0x2000 – 0x7FFF` | BackboneElements (bit 15 is `RECOVER_ARRAY_BIT`, so `0x7FFF` is the ceiling) |
 
-The runtime tag dispatcher `Recovery_to_Kind` (`FF_Primitives.hpp:203–223`)
-implements exactly this partition.
+**Bands are not documentation — they are dispatch.** `Recovery_to_Kind`
+(`FF_Primitives.hpp`, `Recovery_to_Kind`) tests
+`(base & 0xFF00) == RECOVER_FF_SCALAR_BLOCK` to decide whether a tag denotes an
+inline scalar, and `FF_IsScalarBlockTag` / `FF_IsResourceTag` /
+`FF_IsBackboneTag` (`FF_Utilities.hpp`) classify the same way. A tag placed in
+the wrong band is therefore *silently misclassified at runtime* rather than
+failing to compile.
+
+That is not hypothetical. `RECOVER_FF_CODE` sat in the Core Primitives band
+until 2026-08-19 while being an inline scalar, which put it outside the band
+test — so a `case RECOVER_FF_CODE:` written inside the scalar-band switch was
+unreachable, and the same misbanding silently disabled the code path in the
+Compactor's `write_choice_slot` for the 11 FHIR choice fields that carry a
+`code` variant. It now lives at `0x010B` with the other inline scalars. See
+TASKS.md DT-0.1; the band map with live occupancy counts is emitted at the top
+of `generated_src/FF_Recovery.hpp`.
+
+Within the block family, the check `base >= RECOVER_FF_DATA_TYPE_BLOCK` groups
+data types and concrete resources together as the `FF_FIELD_BLOCK` family.
 
 #### The `0x8000` Array Bit
 
@@ -388,8 +428,7 @@ inline constexpr RECOVERY_TAG GetTypeFromTag(RECOVERY_TAG t) { return RECOVERY_T
 inline constexpr RECOVERY_TAG ToArrayTag    (RECOVERY_TAG b) { return RECOVERY_TAG(b | RECOVER_ARRAY_BIT); }
 ```
 
-(Defined in `generator/1168–1172`; emitted into
-`FF_Recovery.hpp`.)
+(Emitted into `FF_Recovery.hpp` by `generator/emit/recovery_tags.py`.)
 
 The array bit is an **orthogonal modifier**, not a separate enumerator. The
 recovery tag stamped into an `FF_ARRAY` header for an array of `Observation`
@@ -506,7 +545,47 @@ Field slots come in **fixed sizes** drawn from `TYPE_SIZE` (§3.1).
 fields.** A field that is absent in a particular instance is encoded as the
 canonical null sentinel (`FF_NULL_OFFSET = 0xFFFFFFFFFFFFFFFF` for offset
 fields; `FF_NULL_UINT32` for codes; `FF_CODE_NULL` for code-typed primitives;
-etc., enumerated in `FF_Primitives.hpp:45–57`).
+etc., enumerated in `FF_Primitives.hpp:59–88`).
+
+**The sentinel is a bit pattern, not a value.** Every null in that family is
+all-ones *bytes*, and `FF_IsFieldEmpty` tests a slot by loading its raw width
+and comparing against all-ones — one rule, every fixed-width kind. Float slots
+are where the distinction bites: `FF_NULL_F64` must be `std::bit_cast` from
+`FF_NULL_UINT64`, never assigned from it. The numeric conversion yields the
+double `1.8446744073709552e19`, encoded `0x43F0000000000000`, which never
+equals all-ones — so a decimal slot spelled that way is never empty, and every
+absent `Quantity.value` exports as a literal `1.84467e+19`. The all-ones double
+is a quiet NaN and therefore unordered under `==`; absence is tested on the
+bytes (`FF_IsFieldEmpty`), never by comparing against the constant.
+
+**Decimals carry their source precision in a 9th byte.** `decimal` is the only
+FHIR type that reaches an `FF_FIELD_FLOAT64` slot, and the slot is
+`[ double (8) | sigfigs (1) ]`. The kind keeps the `FLOAT64` name deliberately:
+it is named for the slot's *primary view*, not for the FHIR type. Reading the
+first eight bytes as a plain IEEE-754 double and ignoring the ninth is a
+supported, complete way to consume the slot — a column store, an index, or any
+floating-point arithmetic that does not care how the value was typed gets what
+it needs with no decode. Precision is the addendum, wanted by exactly one
+consumer: the JSON exporter. Nothing may be encoded into the value bytes.
+
+A consequence worth stating: `100.0` and `100` produce **identical** first eight
+bytes and differ only at `+8`. Equal as numbers, distinguishable as text — which
+is what lets one slot serve both audiences. The byte at `+8` records how many digits followed the `.`
+in the source document, because FHIR counts trailing zeros as significant
+(`62.00` asserts hundredths, `62` does not) and no bit pattern of a binary64 is
+free to say so. It is the decimal *scale* — what `%.*f` consumes — not a count
+of significant figures; `62.00` stores 2 and has four sig figs.
+`FF_DECIMAL_SIGFIGS_UNSPECIFIED` (all ones) means the source form was not
+recorded — exponent notation, or more fractional digits than a double
+distinguishes — and the exporter then emits the shortest representation that
+round-trips to the stored bits. The ingest reads the count off simdjson's
+`raw_json_token()`, which reports the token without advancing the cursor.
+
+This is the same split DT-2 made for date/time, where an explicit precision
+field is what keeps `"2024"` from round-tripping as `"2024-01-01T00:00:00Z"`.
+Choice (`[x]`) variants are the one gap: their 10-byte slot spends `+8` on the
+`RECOVERY_TAG`, so a `valueDecimal` has nowhere to put a count and exports
+shortest-round-trip.
 
 **Why fixed-stride slots.** Two reasons, both in service of §1.1:
 
@@ -573,38 +652,66 @@ patch may be observed by a concurrent reader. This is acceptable because:
 
 ---
 
-## 5. The Array Subsystem: Inline vs. Offset
+## 5. The Array Subsystem: Inline Entries and the One Indirection
 
-`FF_ARRAY` is the workhorse for every list-typed field in FHIR. Its design
-hinges on a single observation, which we call the Indirection Paradox.
+`FF_ARRAY` is the workhorse for every list-typed field in FHIR. The design
+rule is simple and near-absolute: **an array holds its entries.** Exactly one
+element class cannot honour it.
 
-### 5.1 The Indirection Paradox
+### 5.1 Fixed stride is the constraint; variable length is the only thing that breaks it
 
-Random access — `array[i]` in O(1) — requires that `address(i) = base + i *
-stride` for some *constant* `stride`. If `stride` is not constant (i.e. if
-the elements are variable-length), random access is no longer O(1) without a
-side-band index.
+Random access — `array[i]` in O(1) — requires `address(i) = base + i * stride`
+for some *constant* `stride`. So the question for every element type is not
+"is it simple or complex?" but "**is it fixed-width?**"
 
-Two element classes exist:
+Three element classes are fixed-width and are therefore held inline. One is
+not, and pays for one pointer hop:
 
-- **Fixed-stride elements** (bools, doubles, fixed-layout blocks): stride is
-  trivially the element's size. Store inline.
-- **Variable-stride elements** (strings of arbitrary length, polymorphic
-  resource references where each entry could be a different concrete type
-  with a different size): stride is *not* constant. To preserve O(1), the
-  array stores **offsets** to the actual data; the offsets themselves are
-  fixed-stride (8 bytes each), and the variable-length data lives elsewhere
-  in the arena, reached by one indirection.
+| Element class | Held as | Stride | Example fields | Sites |
+|---|---|---|---|---|
+| **Inline scalar** | the raw value | `sizeof(T)` | `Claim.item.diagnosisSequence` (`uint32`) | 26 |
+| **Inline block** | the element's block header, packed | `T::HEADER_SIZE` | `Extension`, `Reference`, `CodeableConcept`, backbones | 845 |
+| **Inline polymorphic tuple** | 10-byte `{ offset(8), tag(2) }` | `TYPE_SIZE_RESOURCE` = 10 | `contained`, resource lists | 32 |
+| **Offset table** | 8-byte arena offsets | `TYPE_SIZE_OFFSET` = 8 | every `FF_STRING`-backed field | 31 |
 
-The cost of that indirection — one extra pointer chase — is unavoidable; the
-alternative is to lose O(1). The architecture is explicit that this trade
-is worth it: random access dominates iteration in FHIR consumer workloads,
-and the indirection is one cache line at most when the arena is sequentially
-allocated.
+903 of 934 array sites hold their entries directly.
+
+Two consequences are easy to get backwards, so they are stated explicitly:
+
+- **A block element is fixed-width.** A `CodeableConcept` header is a constant
+  size; its variable content (strings, codings) lives elsewhere in the arena
+  and is reached *from* the header. Complexity of the type says nothing about
+  the width of its header.
+- **Polymorphism does not force an offset table.** A resource array is
+  fixed-stride because the 10-byte tuple is fixed-width — the polymorphism
+  lives in the tag *inside* the inline entry, and the tuple's offset field
+  reaches the variable-size resource. This is indirection held inline, not an
+  offset array.
+
+That leaves **variable length** as the sole reason to abandon inline storage,
+and `FF_STRING` as the only element type in the system that has it (its
+`LENGTH` is part of its own header, so the width is not knowable from the
+schema). Every `OFFSET` array in the tree is a string array.
+
+```mermaid
+flowchart TD
+    A["FF_ARRAY header, 16 B<br/>RECOVERY = ARRAY_BIT + element tag"] --> B{"element tag<br/>GetTypeFromTag"}
+    B -->|"scalar band 0x01xx"| S["INLINE SCALAR<br/>stride = sizeof T<br/>v0 · v1 · v2"]
+    B -->|"RECOVER_FF_RESOURCE"| P["INLINE TUPLE<br/>stride = 10<br/>offset+tag · offset+tag"]
+    B -->|"RECOVER_FF_STRING"| O["OFFSET TABLE<br/>stride = 8<br/>ptr · ptr · ptr"]
+    B -->|"any block tag"| K["INLINE BLOCK<br/>stride = T::HEADER_SIZE<br/>hdr0 · hdr1"]
+    P -.->|"one hop"| PR["resource block<br/>elsewhere in arena"]
+    O -.->|"one hop"| OS["FF_STRING<br/>elsewhere in arena"]
+    K -.->|"from inside the header"| KC["variable content<br/>elsewhere in arena"]
+```
+
+The cost of the one indirection is unavoidable; the alternative is to lose
+O(1). Random access dominates iteration in FHIR consumer workloads, and the
+hop is one cache line at most when the arena is sequentially allocated.
 
 ### 5.2 `FF_ARRAY` Layout
 
-`FF_Primitives.hpp:466–508`.
+`include/FF_Primitives.hpp:1295–1346`.
 
 ```
 HEADER (16 bytes):
@@ -631,52 +738,94 @@ slot, growing it to 18 bytes and breaking 8-byte alignment of `ENTRY_COUNT`.
 Packing keeps the header at exactly 16 bytes — a power-of-two header size
 and one cache line — and exposes both fields in a single 16-bit load.
 
-### 5.3 Array Kinds
+### 5.3 The element type is the header's `RECOVERY` tag — and nothing else
 
-Defined as `FF_ARRAY::EntryKind` (`FF_Primitives.hpp:476–481`):
+The two bytes at `FF_ARRAY::RECOVERY` are the array's **single source of
+truth** for what its entries are:
 
-#### `SCALAR (0x0000)` — Packed primitives
+```cpp
+// generated_src/FF_Recovery.hpp:1094–1096
+constexpr uint16_t RECOVER_ARRAY_BIT  = 0x8000;
+constexpr uint16_t RECOVER_TYPE_MASK  = 0x7FFF;
+IsArrayTag(t)     -> (t & RECOVER_ARRAY_BIT) != 0
+GetTypeFromTag(t) -> t & RECOVER_TYPE_MASK      // the element type
+ToArrayTag(base)  -> base | RECOVER_ARRAY_BIT
+```
 
-Each entry is one of: `bool` (1 B), `int32`/`uint32`/`float32` (4 B),
-`int64`/`uint64`/`double` (8 B). Stride = `sizeof(T)`. Zero indirection;
-`array[i]` is a single dereference.
+`ToArrayTag(RECOVER_FF_STRING)` on an array of `code` says, on the wire,
+"array of string" — which is exactly what was written, because `code` values
+are serialised to `FF_STRING` blocks. Every layout decision in §5.1 follows
+from this tag: which of the four classes applies, what the stride is, and
+whether the entry is a value or a pointer. **Readers derive from the tag.**
 
-#### `INLINE_BLOCK (0x8000)` — Contiguous fixed-size blocks
+This matters because the element type is declared in three places, and they do
+not all agree:
 
-Each entry is a complete sub-block (V-Table + payload) of the element type,
-written contiguously. Stride = the element type's `HEADER_SIZE`. Used when
-the element type is a fixed-layout struct — e.g. an array of
-`HumanName`-style records.
+| Source | Authority |
+|---|---|
+| the array header's `RECOVERY` tag | **ground truth** — written by the same call that laid out the bytes, so it cannot drift from the layout |
+| `reflected_fields_view()` tables (`generated_src/FF_*.cpp`) | agrees with the wire |
+| `generated_src/FF_FieldKeys.hpp` constants | **wrong for 6 array fields** — see below |
 
-`array[i]` is a single dereference + V-Table walk, no extra indirection.
+Six `code`-typed array fields carry `RECOVER_FF_CODE` in `FF_FieldKeys.hpp`
+where the wire and the reflection tables both say `RECOVER_FF_STRING`:
+`AllergyIntolerance.category`, `daysOfWeek` on `Availability.availableTime` /
+`Location.hoursOfOperation` / `PractitionerRole.availableTime`, and
+`Timing.repeat.{dayOfWeek,when}`. The FieldKeys emitter records the
+pre-serialisation FHIR type; the other two record what is actually stored. A
+consumer navigating by the `FF_FieldKey` constant would walk those arrays as
+codes and mis-read them. **Never derive array layout from a schema-side copy
+of the element type — read the header.**
 
-The generator emits `STORE_FF_ARRAY_HEADER(__base, child_off,
-FF_ARRAY::INLINE_BLOCK, T::HEADER_SIZE, n, ToArrayTag(T::recovery))` for this
-case (see `generator/782, 800`).
+### 5.4 `EntryKind` — a coarser echo of the tag
 
-#### `OFFSET (0x4000)` — Mandatory indirection
+Defined as `FF_ARRAY::EntryKind` (`include/FF_Primitives.hpp:1304`):
 
-Each entry is an 8-byte arena offset (`Offset`) pointing at the actual
-element block elsewhere in the arena. Stride = 8.
+| Value | Meaning | Written by the generator |
+|---|---|---|
+| `SCALAR = 0x0000` | packed primitives, stride `sizeof(T)` | **never** |
+| `OFFSET = 0x4000` | 8-byte arena offsets | 31 sites (all string arrays) |
+| `INLINE_BLOCK = 0x8000` | entries held inline at `stride` | 903 sites |
 
-This is the **only** legal kind for:
+`INLINE_BLOCK` is emitted for **all three inline classes** — raw scalars, block
+headers, and 10-byte resource tuples — with `stride` distinguishing them. Read
+it as "entries are inline," not as "entries are blocks."
 
-- **Strings** — `FF_STRING` is variable-length by definition (its `LENGTH`
-  field is part of its header).
-- **Resources / polymorphic elements** — different elements may resolve to
-  different concrete recovery tags and therefore different sizes. (For
-  resource arrays, the generator instead emits `INLINE_BLOCK` carrying
-  fixed-size 10-byte `ResourceReference` records — see
-  `generator/emit/store.py` and the wrapper definition in §6.2 — but the
-  *target* of each reference is reached by offset indirection.)
-- **Arrays whose elements would otherwise violate the fixed-stride
-  invariant** for any other reason.
+`SCALAR` is **dead**: no emitter in the tree writes it, and the only mention of
+`FF_ARRAY::SCALAR` outside the enum is a `case` label in the reader. Scalar
+arrays are written as `INLINE_BLOCK` with `stride = sizeof(T)`, and the header
+tag (`ToArrayTag(RECOVER_FF_UINT32)`) is what identifies them.
 
-The generator emits `STORE_FF_ARRAY_HEADER(__base, child_off,
-FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET, n, ToArrayTag(...))` for offset arrays
-(`generator/emit/store.py`).
+**The header answers two separate questions, and neither field substitutes for
+the other:**
 
-### 5.4 Reading Arrays
+| Question | Field |
+|---|---|
+| *What* is the element? | the `RECOVERY` tag — always |
+| *Is the entry the value, or a pointer to it?* | `entries_are_pointers()` (kind bits) |
+
+The kind bits would be derivable from the tag if the tag were always honest
+about storage — scalar band means values, `FF_STRING` means a table. It is not,
+yet: date/time arrays declare `RECOVER_FF_DATETIME` and store `FF_STRING`
+blocks behind offsets (DT-2.4), so the tag says "packed 8-byte value" while the
+entry is an 8-byte pointer. Until that closes, indirection must be read from
+the kind bits.
+
+What the kind bits must **never** be asked is *element shape*. `INLINE_BLOCK`
+is stamped on scalars, block headers and resource tuples alike, so reading it
+as "these are blocks" is what made every scalar array export as `[]`, and what
+made the validator reject valid streams (§5.5).
+
+The generator emits:
+
+```cpp
+STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, T::HEADER_SIZE,      n, ToArrayTag(T::recovery));          // blocks
+STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_UINT32,    n, ToArrayTag(RECOVER_FF_UINT32));    // scalars
+STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_RESOURCE,  n, ToArrayTag(RECOVER_FF_RESOURCE));  // tuples
+STORE_FF_ARRAY_HEADER(__base, child_off, FF_ARRAY::OFFSET,       TYPE_SIZE_OFFSET,    n, ToArrayTag(RECOVER_FF_STRING));    // strings
+```
+
+### 5.5 Reading Arrays
 
 `FF_ARRAY::entries(base)` returns a `const BYTE*` to byte 16 (the start of
 the entry region). `entry_step` and `entry_kind` decode the packed
@@ -684,6 +833,54 @@ the entry region). `entry_step` and `entry_kind` decode the packed
 `entry_kind == OFFSET`. The validator
 (`FF_ARRAY::validate_full`) checks that `HEADER_SIZE + entry_count *
 entry_step == VALIDATION` and that `RECOVERY` has the array bit set.
+
+**Three** readers walk arrays, and all three must agree:
+
+- `ParserOps::array_element` (`src/FF_Parser.cpp`) — the single decision point
+  for "what is element *i*". Both `standard_node_entries` (which materialises
+  every entry, used by `print_json` and the Python bindings) and
+  `standard_node_lookup_index` (the O(1) `node[i]` path) route through it, so
+  they cannot disagree. `compact_node_entries` / `compact_node_lookup_index`
+  delegate to the standard pair, giving one implementation for both layouts.
+- `DeepValidator::walk_array` (`src/FF_Parser.cpp`) — the structural pass behind
+  `validate_FFHR_stream()`. It is a separate walker with its own dispatch, so it
+  needs the same rule stated separately.
+
+`array_element` decides in three branches, in this order: pointer table
+(`entries_are_pointers`, element tag re-read from the pointed-to block),
+polymorphic tuple (`RECOVER_FF_RESOURCE`), then inline entry, whose kind is
+`Recovery_to_Kind(elem)` — that one call resolves the scalar band to a concrete
+scalar kind and every block band to `FF_FIELD_BLOCK`.
+
+Three failure modes follow from getting this wrong. All three were live, and all
+three were silent:
+
+- **Labelling a scalar element a block.** `Node::is_empty()` takes its
+  `FF_FIELD_BLOCK` branch, calls `fields()`, and gets `{}` back — a scalar tag
+  has no entry in `reflected_fields_view`. An empty field list reads as "no
+  members present," so the element reports itself absent and `print_json`'s
+  array loop skips it. Every scalar array exported as `[]`, with no warning on
+  either path.
+- **Reading a per-element recovery tag that isn't there.** The old
+  `INLINE_BLOCK` branch of `node[i]` loaded `LOAD_U16(base + item_off +
+  DATA_BLOCK::RECOVERY)` — 8 bytes into an element that, for a scalar array, is
+  4 bytes wide, reading into the next element or past the entry region.
+- **Validating a non-block as a block.** `walk_array` walked every inline entry
+  through `walk()`, which requires a self-offset at +0. A `uint32` has none, and
+  a resource tuple's +0 is the *target's* offset — so `validate_FFHR_stream()`
+  reported "the offset chain is broken" and **rejected every valid stream
+  containing a populated scalar or resource array.** Nothing caught it because
+  `ff_roundtrip` does not validate and no test fed the validator a `Claim`.
+
+All three are one root cause: inferring element structure from the kind bits
+instead of the tag. §5.3's rule is the fix.
+
+A resource tuple deserves its own note, because it looks like a block and is
+not. Its 10 bytes are `{ offset(8), concrete tag(2) }` — the same field
+positions as a `DATA_BLOCK` header, which is why walking it type-checks and then
+fails at runtime. The offset at +0 is the **target's**, not its own, so a tuple
+must be *followed* (`walk(LOAD_U64(slot), tag_beside_it)`), exactly as
+`walk_fields` treats an `FF_FIELD_RESOURCE` slot — never walked in place.
 
 ---
 
@@ -711,6 +908,61 @@ bytes; null-termination would be ambiguous. More importantly, the absence of
 a terminator means an `FF_STRING` block is exactly 14 + LENGTH bytes — no
 padding, no special-case end byte — preserving exact `VALIDATION`-driven
 bounds.
+
+#### 6.1a `RECOVER_FF_OPAQUE_JSON` — the same block, different meaning
+
+One other tag uses this exact layout: `RECOVER_FF_OPAQUE_JSON` (`0x0007`). Byte
+for byte it is an `FF_STRING` — 14-byte header, `LENGTH` payload bytes — and the
+only difference is what the payload *is*. An `FF_STRING` holds a JSON string
+*value*; an opaque block holds an already-serialized JSON *document fragment*,
+which `Node::print_json` splices into the output **unquoted and unescaped**.
+
+This is the dual type system doing exactly what §3 describes. The **kind** names
+the bytes, so both tags map to `FF_FIELD_STRING` and every reader that walks,
+bounds-checks or decodes them shares one code path — the predicate is
+`FF_IsStringLayoutTag(tag)`. The **tag** names the meaning, so only the two
+render sites (`print_json`, `to_debug_json`) ever compare against
+`RECOVER_FF_OPAQUE_JSON` itself.
+
+Two producers write it:
+
+| Producer | Why |
+|---|---|
+| Passive extensions (Path B, §10.1) | The extension has no compiled codec and no WASM module. |
+| A resource outside `FASTFHIR_PRODUCTION_PROFILE` | The generated `dispatch_resource` has no `_from_json` for its type. |
+
+The second is the one that matters for correctness: an untyped resource used to
+be **discarded**, leaving a `Bundle.entry` with `fullUrl` and `request` but no
+`resource` — not valid FHIR in a transaction bundle, and silent clinical data
+loss (TASKS.md A26). It is now retained verbatim, so the document round-trips
+byte-exactly. What a profile decides is what this build can **index**, never what
+it may **carry**.
+
+What is genuinely given up is *typed access*: an opaque block has no V-Table, so
+there is no `Node` navigation into its fields, no query, and no interior
+compaction — the compactor copies the block whole, tag included. `Ingestor`
+reports the count and the resource types on the returned `FF_Result` so a caller
+never discovers the limitation by diffing documents.
+
+> ⚠ **A resource slot's kind follows its tag.** The four places that build a
+> `Node` from a 10-byte resource tuple — `standard_entry_as_node`,
+> `compact_entry_as_node`, `ParserOps::array_element`, and `walk_fields`'s
+> validator case — must derive the kind from the tag beside the offset, not
+> hardcode `FF_FIELD_BLOCK`. Three of them did hardcode it, which was correct
+> only while every resource slot held a generated resource block. Calling an
+> opaque block a block asks `fields()` for a V-Table it does not have,
+> `reflected_fields_view` returns `{}`, an empty field list reads as "no members
+> present", and the resource is dropped from the export — the same silent shape
+> as AR-1, `Node::is_empty()`, and `FF_IsFieldEmpty`.
+>
+> The rule is wider than the resource tuple. **Any branch that ends in a pointer
+> hop must re-derive the kind from the block's own tag**, because a schema kind is
+> a claim and the tag is the fact. `Attachment.data` declares kind
+> `FF_FIELD_BLOCK` with `child_recovery RECOVER_FF_STRING` (the complex-block
+> mapping for `base64Binary`) and stores an `FF_STRING`; the standard path
+> re-derives (A23.3, "Bug C") and the compact path did not, so every attachment
+> vanished from a compacted document. Two branches, one rule, fixed eight months
+> apart because nothing compacted a real file until COV-1.5.
 
 ### 6.2 Polymorphic 10-Byte Wrappers
 
@@ -766,6 +1018,199 @@ The Builder side is `amend_variant(parent_off, vtable_off, raw_bits, tag)`
 fits both inline scalars (which avoid the indirection of an offset slot) and
 heap-resident polymorphic targets in the same fixed-stride 10-byte slot,
 preserving the array invariant of §5.
+
+### 6.3 MSB-discriminated value slots — `FF_CODE` and `FF_DATETIME`
+
+Two slot kinds hold a value inline *most* of the time and degrade to a pointer
+when the value will not fit. They are the same mechanism at two widths, and
+this section describes them together because a reader who has understood one
+has understood the other — that is the entire design intent, and it is why the
+constants sit adjacent in `FF_Primitives.hpp` rather than in separate blocks.
+
+|  | `FF_CODE` (4 bytes) | `FF_DATETIME` (8 bytes) |
+|---|---|---|
+| Discriminator | bit 31 (`FF_CODEABLE_CONCEPT_FLAG`) | bit 63 (`FF_DATETIME_FALLBACK_FLAG`) |
+| Flag **clear** | 31-bit dictionary ID | 63-bit packed civil date/time |
+| Flag **set** | 31-bit **signed relative** offset to an `FF_CODEABLE_CONCEPT` | 63-bit **signed relative** offset to an `FF_STRING` |
+| Offset is relative to | the containing block | the containing block (identical rule) |
+| Sign-extension helper | `FF_ResolveCodeableConceptOffset` | `FF_ResolveDateTimeOffset` |
+| Null sentinel | `FF_CODE_NULL` = `0xFFFF'FFFF` | `FF_DATETIME_NULL` = `0xFFFF'FFFF'FFFF'FFFF` |
+| Emitters | `SIZE_`/`STORE_`/`ENCODE_FF_CODE` | `SIZE_`/`STORE_`/`ENCODE_FF_DATETIME` |
+
+**Resolve the offset where the containing block is still known.** Both fallback
+offsets are relative to the block, so the arithmetic has two operands — and a
+`Reflective::Node` carries only its own offset, never its parent's. Anything
+that defers the resolution past node construction has therefore already lost an
+operand and can only guess. `ParserOps::code_node()` is the single place the
+code slot's arithmetic happens; every producer of a code node calls it, and the
+node it returns already points at the `FF_CODEABLE_CONCEPT`. The alternative was
+tried and was wrong: `Node::as<string_view>()` used to resolve against the
+node's own offset, which for a choice (`[x]`) variant is the *slot*, so it
+decoded one V-Table width away from the block and returned an empty label —
+silent data loss. DT-3 owes the date/time slot the same treatment.
+
+Two properties make the parity exact rather than approximate:
+
+1. **Relative, not absolute.** Both fallback offsets are signed and relative to
+   the containing block. Absolute offsets would have worked and would have been
+   wrong: a second convention for the same job is something a reader must
+   memorise instead of transfer.
+2. **The null sentinel is reserved out of the flag-set space.** All-ones has the
+   flag set, so it would otherwise decode as a relative offset of `0x7FFF…`.
+   That offset is unreachable — the smallest block is larger than one byte — so
+   the pattern is free to mean "absent". Both paths therefore test the null
+   **before** the flag, and `_pack_datetime_offset` additionally refuses to emit
+   the one relative offset (`-1`) that would collide with it.
+
+```mermaid
+flowchart TD
+    V["value to store"] --> N{"empty?"}
+    N -- yes --> NUL["FF_CODE_NULL / FF_DATETIME_NULL<br/>(all ones)"]
+    N -- no --> F{"fits the inline form?"}
+    F -- "code: in the dictionary<br/>date: parses and fits 63 bits" --> INL["store inline<br/>MSB = 0"]
+    F -- "no" --> BLK["write child block<br/>FF_CODEABLE_CONCEPT / FF_STRING"]
+    BLK --> REL["store signed relative offset<br/>MSB = 1"]
+
+    INL --> RD{"read: slot value"}
+    REL --> RD
+    NUL --> RD
+    RD -- "all ones" --> ABS["absent"]
+    RD -- "MSB = 0" --> DEC["decode inline<br/>FF_ResolveCode / FF_UNPACK_DATETIME"]
+    RD -- "MSB = 1" --> SX["sign-extend, add to block offset,<br/>read the child block"]
+```
+
+**A flagged slot is an edge, and the validator follows it.**
+`validate_FFHR_stream()` skips inline scalars because they cannot aim the reader
+at memory it does not own — but when the MSB is set the slot is not inline data,
+and it is walked like any other offset. Both halves are wired: `FF_FIELD_CODE`
+against `RECOVER_FF_CODEABLE_CONCEPT`, and `FF_FIELD_DATETIME` against
+`RECOVER_FF_STRING`. A slot kind that can point somewhere and is absent from
+`slot_carries_offset` is a hole in the validator.
+
+**Each of these types is reachable through two slot shapes**, and both must
+apply the rule: the type's own V-Table slot, and a choice (`[x]`) slot whose
+active variant happens to be that type. The second is easy to miss — a choice
+slot's 8 raw bytes are usually the value outright, so the validator once decided
+inertness from the variant's recovery band alone. That is wrong for exactly
+these two types: `RECOVER_FF_CODE` sits in the scalar band and still carries the
+MSB discriminator, so a flagged code inside a choice slot went unwalked while
+the export path dereferenced it. The checks therefore live in one place
+(`DeepValidator::check_code_value` / `check_datetime_value`) and both shapes
+call them; duplicating them is what let the two drift apart.
+
+**The tag check is per edge, not per block.** The visited set memoises "this
+block's subtree is structurally sound", which is a property of the *block*;
+"the referring slot said this would be a CodeableConcept" is a property of the
+*edge*, and a block can be reached by many edges. The two must not be conflated:
+until DT-1.5 the memo short-circuited ahead of the tag check, so only the first
+edge to a block was type-checked and every later one was waved through — a
+crafted stream could aim a code slot at any already-visited block and have the
+reader decode an `Identifier` as an `FF_CODEABLE_CONCEPT`. Bounds were never at
+risk; the type was. Checking the tag before consulting the memo costs nothing
+measurable: A/B on the 50.8 MiB Synthea fixture at `-O3`, min of 7, gave
+10.30 ms before and 10.24–10.51 ms across five runs after — the before figure
+sits inside the after build's own spread.
+
+#### The packed date/time payload
+
+63 bits, assigned low field first as symbolic sums (`FF_DateTimeBits`); there are
+no literal shifts anywhere, and `static_assert(FF_DT_FLAG == 63)` pins the total.
+
+```
+bit  63      discriminator  0 = packed inline, 1 = offset to FF_STRING fallback
+bits 62..41  civil days from 0001-01-01, UNSIGNED (22) — years 0001..9999
+bits 40..36  hour   (5)
+bits 35..30  minute (6)
+bits 29..24  second (6)   — 60 is representable, so leap seconds survive
+bits 23..14  millisecond (10)
+bits 13..3   UTC offset, signed minutes (11)
+bits  2..0   precision (3)
+```
+
+**It is packed civil time, not an instant**, and that is forced by FHIR itself:
+`dateTime` is a union of gYear/gYearMonth/date/dateTime, so `"2024"` must not
+round-trip as `"2024-01-01T00:00:00Z"`; `date` never carries a timezone, so an
+epoch-UTC encoding would invent one; `time` has no date to anchor an instant to;
+and seconds may legally be `60`, which `std::chrono` would silently normalise.
+
+Three consequences worth stating because they are not obvious:
+
+- **The epoch is 0001-01-01 and the day field is unsigned.** Not a free choice: a
+  signed count from 1970 needs 2,932,896 days for 1970→9999, and signed 22 bits
+  reach 2,097,151 — capping the format at year 7711 while FHIR permits 9999.
+  From 0001-01-01 the whole span is 3,652,058 days against an unsigned capacity
+  of 4,194,303. The conversion helpers count from 1970 (Hinnant's
+  `days_from_civil`), so the **epoch shift crosses zero** for every pre-1970
+  date; computing it in unsigned arithmetic wraps, which is what
+  `tests/cpp/test_datetime.cpp` [CivilEpoch] exists to catch.
+- **`Z` and `+00:00` are one instant and two texts.** The offset field needs 1,681
+  codes of its 2,048, so one spare code spells `Z` and numeric zero spells
+  `+00:00`. No extra bit.
+- **Precision expresses within-type variation only** — `YEAR, YEAR_MONTH, DATE,
+  SECOND, FRAC1, FRAC2, FRAC3`, seven values in three bits. *Which* of
+  date/dateTime/time/instant a slot holds is the recovery tag's job, which is
+  why all four tags share one layout, one encoder and one decoder while still
+  validating against their own FHIR rules. Folding the four tags into one is not
+  available: in a choice (`[x]`) slot the tag is the only thing naming the active
+  variant, and 20 choice fields mix two or more date/time variants.
+
+Anything that does not fit — more than three fractional digits, a value illegal
+for its tag — sets bit 63 and keeps its **original text** in an `FF_STRING`, so
+the round trip is byte-exact either way. A parse failure is deliberately *not* an
+exception: it takes the same fallback a non-dictionary code takes, because
+preserving the bytes that arrived is always defensible and judging FHIR legality
+belongs to ingest.
+
+**How the kind and the tag divide the work.** `FF_FIELD_DATETIME` is one kind for
+all four tags, and every place that asks *what a slot is* now answers
+consistently: `ff_slot_width` gives 8 bytes (so the compact tables and the
+generated V-Table asserts, which are emitted as calls to it, follow for free);
+`Recovery_to_Kind` and its compile-time twin `RecoveryTraits<>` map all four tags
+to the single kind, pinned equal by `static_assert`; `FF_IsFieldEmpty` treats the
+slot as 8 inline bytes with an all-ones null; and `ff_kind_is_inline_scalar` —
+the single list `Node::is_scalar()` and the `print_json` field dispatch both
+project from — reports it as a scalar, because a packed date/time is an inline
+value exactly as a code is — that a flagged one can point at an `FF_STRING` no
+more makes it a string than a fallback CodeableConcept makes a code a block.
+
+That predicate carries a second obligation on the export path: an inline scalar
+always renders exactly one JSON token, whereas a slot that resolves to a
+`DATA_BLOCK` may reach a block whose every field is absent and render *nothing*.
+`Node::print_json` therefore resolves the child and tests it **before** writing
+the key — a key committed ahead of its value produces `"dose":}` and kills the
+parse for the whole document.
+
+`Kind_to_Recovery` is the one mapping that stays silent: it returns
+`FF_RECOVER_UNDEFINED`, because one kind naming four tags is not a function. Its
+three callers use it only as a fallback when `FF_FieldKey::child_recovery` is
+`UNDEFINED`, and a generated date/time key always carries its specific tag, so
+the fallback must never fire for one.
+
+> **Status (2026-08-22). Live for scalar slots; arrays are the remaining gap.**
+> `date`/`dateTime`/`instant`/`time` are out of `STRING_TYPES` and into
+> `DATETIME_TYPES` (`generator/model/type_map.py`), and every **scalar** slot
+> now emits the packed form — `Patient.birthDate` is
+> `{FF_FIELD_DATETIME, RECOVER_FF_DATE}` in the reflection table and
+> `ENCODE_FF_DATETIME` in the store pass. Choice (`[x]`) variants carry their own
+> four tags and resolve their fallback offset through `resolve_choice`. DT-1.5's
+> validator support (`slot_carries_offset`, `walk_fields`) landed first, as
+> required.
+>
+> **Array-typed date/time fields are still written as `FF_STRING` blocks.**
+> Three emitters route `DATETIME_TYPES` back into the string-array branch —
+> `emit/store.py` (SIZE pass and STORE pass) and `emit/deserialize.py`. When
+> DT-2.1 removed the four types from `STRING_TYPES`, those branches were kept
+> compiling by appending `or f["fhir_type"] in DATETIME_TYPES` rather than being
+> ported, so they reproduce the pre-DT-2 layout. Two fields in the whole spec are
+> affected — `Timing.event` and `Timing.repeat.timeOfDay` — and they are 2 of the
+> 31 `OFFSET` arrays in §5.1's table. Tracked as TASKS.md **DT-2.4**.
+>
+> Closing that gap makes the 8-byte packed slot an **inline array element**,
+> which activates a path that is dormant today: a slot with bit 63 set holds an
+> offset relative to its containing block, and inside an array the containing
+> block is the array itself. The array reader must resolve it against the
+> array's own offset while it still holds it — the same treatment
+> `ParserOps::code_node` gives code slots (§5.5, and the invariant in CLAUDE.md).
 
 ---
 
@@ -973,11 +1418,17 @@ For dynamic clients (Python bindings, JSON exporter), generated reflection
 tables map runtime string keys to the same `FF_FieldKey` values. Lookup is a
 single switch over `RECOVERY_TAG` (the parent's type), then a small
 switch over field name within that block — both generated by
-`generator/` (e.g. the dispatcher built around line 1734).
+`generator/library.py` and `generator/emit/views.py`.
+
+The tables are exposed **zero-copy**: `reflected_fields_view()` returns
+`std::span<const FF_FieldInfo>` over each block's static `FIELDS` array, and
+`Node::fields()` returns that span. The old by-value `reflected_fields()`
+(`std::vector` copy per call) was removed 2026-08-19; nothing on the read path
+allocates for reflection.
 
 ### 8.3 Entry → Node delegation
 
-`Reflective::Entry` (`FF_Parser.hpp:182–255`) is the V-Table-slot coordinate
+`Reflective::Entry` (`FF_Parser.hpp:260–334`) is the V-Table-slot coordinate
 returned by `Node::operator[]`. It holds:
 
 ```
@@ -1001,12 +1452,35 @@ const ParserOps* m_ops;
 - **`HasTypeTraits<T>` structs** — go through `as_node()` and dispatch to
   `TypeTraits<T>::read`.
 
-Implementations are at `FF_Parser.hpp:443–489`. The split is the
+Implementations are at `FF_Parser.hpp:575–612`. The split is the
 optimisation phase commonly referenced as "narrowed offsets and unified
 delegation chains": scalar reads short-circuit; structural reads delegate
 once and only once to `as_node()`. Per-instance overhead is therefore
 *exactly* the size of the type being read, with no Node-construction tax for
 the scalar fast paths.
+
+**What `Entry` keeps that `Node` does not: the parent.** `Entry` is a *slot*
+coordinate and holds `parent_offset` alongside `vtable_offset`; a `Node` is a
+*block* coordinate and holds one offset — its own. That asymmetry is invisible
+until a slot's value is a **block-relative** quantity, which is exactly what a
+flagged `FF_CODE` (and, after DT-2, a flagged `FF_DATETIME`) is. Resolving such
+a value needs both operands, so it must happen while the `Entry` still exists.
+
+`ParserOps::code_node()` is where it happens, and every producer of a code node
+routes through it: both `entry_as_node` implementations and `resolve_choice`.
+The node it hands back already points at the `FF_CODEABLE_CONCEPT`, tagged
+`RECOVER_FF_CODEABLE_CONCEPT` with kind `FF_FIELD_CODE`, so the read path still
+treats it as a coded leaf and `Node::as<std::string_view>()` has no arithmetic
+left to do.
+
+Doing it later does not work, and was the bug: `Node::as<std::string_view>()`
+used to resolve against the node's own offset. For an ordinary code field that
+happens to equal the slot's parent plus zero, so nothing showed; for a choice
+(`[x]`) variant the node's offset *is* the slot, so the read landed one V-Table
+width past the real block and returned an empty label — a silently dropped code
+rather than a failure. `resolve_choice`'s `parent_offset` parameter is
+load-bearing for the same reason and must be handed the containing block; both
+call sites used to pass the slot.
 
 ### 8.4 The `ParserOps` table
 
@@ -1041,13 +1515,19 @@ The stages:
 1. **`specs.fetch_fhir_specs()`** — download the HL7 `r4.core` / `r5.core` NPM
    packages into `fhir_packages/<version>/package/`. Cached; network is needed
    only on the first run.
-2. **`emit.dictionary.generate_master_codes(...)`** — scan the packages for
+   - **Stage 1b — `emit.recovery_tags.generate_recovery_tags(...)`** —
+     reconcile the permanent tag ledger (`dictionaries/master_tags.json`)
+     against the packages and emit `generated_src/FF_Recovery.hpp`. Runs before
+     anything that references a tag. **Append-only**, per band. Discovery is
+     profile-independent, so the emitted header does not vary with
+     `FASTFHIR_PRODUCTION_PROFILE`.
+2. **`emit.code_ids.generate_master_codes(...)`** — scan the packages for
    FHIR-native codes and reconcile them against the committed ID ledger
-   (`generator/master_codes.json`). **Append-only**: an existing code keeps its
+   (`dictionaries/master_codes.json`). **Append-only**: an existing code keeps its
    ID forever, a new code is appended at `_next_id`, and a code HL7 retires
    keeps its ID because stored archives still cite it.
-3. **`emit.codes_header.generate()` + `emit.dictionary.generate_dictionary_tables(...)`**
-   — project the ledger into `dictionaries/`: `FF_Codes.hpp` (named constants,
+3. **`emit.code_names.generate()` + `emit.code_ids.generate_dictionary_tables(...)`**
+   — project the ledger into `generated_src/`: `FF_Codes.hpp` (named constants,
    scoped by terminology source then CodeSystem), `FF_Dictionary_Strings.cpp`
    (the ID → string table, where the array index *is* the ID), and the three
    per-revision lookup tables.
@@ -1064,11 +1544,15 @@ The stages:
 7. **`emit.extensions_known.generate_known_extensions(...)`** — the
    known-extension filter table.
 
-Two things this pipeline does **not** do, contrary to older documentation:
+One thing this pipeline does **not** do, contrary to older documentation: it
+does not delete the spec tree. `fhir_packages/` is a cache and is reused.
 
-- It does not generate `FF_Recovery.hpp`. That file is hand-maintained in
-  `include/`; the generator only *validates* tag names against it.
-- It does not delete the spec tree. `fhir_packages/` is a cache and is reused.
+It *does* generate `generated_src/FF_Recovery.hpp` — stage 1b, before anything that
+references a tag. `emit.recovery_tags.reconcile_tag_ledger` appends any tag the
+committed ledger lacks (append-only, per band), `assert_no_drift` fails if an
+existing value moved or vanished, and the header is then emitted from the
+ledger. `utilities.validate_recovery_tags` remains as a backstop against an
+emitter building a tag *name* that no longer exists.
 
 Output is deterministic: two runs of the generator produce byte-identical
 trees, so any diff between runs is a real change rather than set-iteration

@@ -633,10 +633,9 @@ if __name__ == "__main__": run("Example 7 — Lock-free concurrent generation", 
 def test_8():
     # Source: sealed patient.ffhr produced by test_1 / test_3.
     src_mem     = ff.Memory.create_from_file(PATIENT_FFHR,         capacity=64 * 1024 * 1024)
-    compact_mem = ff.Memory.create_from_file(PATIENT_COMPACT_FFHR, capacity=64 * 1024 * 1024)
 
     with ff.Stream(src_mem, ff.FhirVersion.R5) as src_stream:
-        compact_view = src_stream.compact(compact_mem, ff.Checksum.SHA256)
+        compact_view = src_stream.compact(ff.Checksum.SHA256)
 
     src_size = src_mem.size
     src_mem.close()
@@ -648,8 +647,15 @@ def test_8():
     compact_bytes = bytes(compact_view)
     assert b"patient-1" in compact_bytes,  "patient-1 not found in compact archive"
     assert b"Landvater" in compact_bytes,  "Landvater not found in compact archive"
-    assert b"male"      in compact_bytes,  "gender not found in compact archive"
-    compact_mem.close()
+    # gender is a dictionary-backed code (AdministrativeGender), so the compact
+    # archive stores its code ID, not the literal string — asserting its absence
+    # pins that behavior. Reading the value back would need a Parser over compact
+    # memory, which the Python bindings do not expose yet (Stream wraps Builder,
+    # which refuses compact archives). Tracked with TASKS.md WO-4 notes.
+    assert b"male" not in compact_bytes, "dictionary code must be stored as an ID, not a literal"
+    # Persist the golden compact fixture (FF_Compact allocates its own arena).
+    with open(PATIENT_COMPACT_FFHR, "wb") as out:
+        out.write(compact_bytes)
 
 if __name__ == "__main__": run("Example 8 — Post-finalize archival compaction", test_8)
 
@@ -726,9 +732,8 @@ def test_10():
         source_view = stream.finalize(ff.Checksum.SHA256)
         assert source_view.size > 0, "complex bundle finalize returned empty view"
 
-        # Compact the sealed source into a separate arena.
-        compact_mem = ff.Memory.create_from_file(BUNDLE_COMPLEX_COMPACT_FFHR, capacity=64 * 1024 * 1024)
-        compact_view = stream.compact(compact_mem, ff.Checksum.SHA256)
+        # Compact the sealed source into a fresh arena (FF_Compact allocates it).
+        compact_view = stream.compact(ff.Checksum.SHA256)
         assert compact_view.size > 0, "complex compact archive view is empty"
 
         compact_bytes = bytes(compact_view)
@@ -737,7 +742,9 @@ def test_10():
 
         print(f"  complex source bytes  : {source_view.size:,}")
         print(f"  complex compact bytes : {compact_view.size:,}")
-        compact_mem.close()
+        # Persist the golden compact fixture.
+        with open(BUNDLE_COMPLEX_COMPACT_FFHR, "wb") as out:
+            out.write(compact_bytes)
     mem.close()
 
 if __name__ == "__main__":

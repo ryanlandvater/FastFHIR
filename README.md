@@ -38,6 +38,7 @@ Cross-language support is available through Python bindings (C++ and Python both
 - [Reference](#reference)
     - [Typed Resource Keys](#typed-resource-keys--fastfhirfieldsresourcefield)
     - [Code Assignment Semantics](#code-assignment-semantics)
+    - [Date/Time Assignment Semantics](#datetime-assignment-semantics)
     - [Polymorphic Choice Assignment and Readback](#polymorphic-choice-assignment-and-readback)
     - [Checksum Algorithms](#checksum-algorithms)
     - [FHIR Versions](#fhir-versions)
@@ -53,8 +54,8 @@ Cross-language support is available through Python bindings (C++ and Python both
 ### 1. Extreme Performance & Compact Size
 FastFHIR turns data traversal into pure pointer arithmetic, outpacing text formats and avoiding the unpack step of serialized binaries.
 * **O(1) Random Access:** Jump instantly to any deeply nested FHIR field — completely bypassing the O(N) linear scanning of HL7v2 and the O(N) string-hashing and DOM construction of JSON.
-* **Zero-Heap Allocation:** Reading a FastFHIR stream requires 0 heap allocations. A lightweight `Node` viewing lens is passed directly over the raw memory buffer, enabling nanosecond read times from the instant the message hits RAM.
-* **Zero-Copy Engine:** There is no deserialization phase — no varint unpacking, no C++ message objects. The receiver reads the bytes it was sent. Measured at 2.4–3.4x the receiver-side throughput of an `orjson` JSON pipeline across 1.7–162 MB bundles ([FastFHIR-benchmark](https://github.com/ryanlandvater/FastFHIR_Performance), Test 1).
+* **Zero-Heap Allocation:** Reading a FastFHIR stream requires 0 heap allocations for field navigation and reflection — field metadata is exposed as zero-copy `std::span` views over static tables, and a lightweight `Node` viewing lens is passed directly over the raw memory buffer, enabling nanosecond read times from the instant the message hits RAM. (Array materialization via `entries()` is the one exception: it returns an owning `std::vector<Node>`, one allocation per call, ~1 ns per element at `-O3`.)
+* **Zero-Copy Engine:** There is no deserialization phase — no varint unpacking, no C++ message objects. The receiver reads the bytes it was sent. Measured at 2.4–3.4x the receiver-side throughput of an `orjson` JSON pipeline across 1.7–162 MB bundles ([FastFHIR-benchmark](https://github.com/ryanlandvater/FastFHIR-benchmark), Test 1).
 * **Fraction of Size on Disk:** Optional compact archive mode reduces storage by up to **66%** on sparse resources through presence bitmasks and dense field packing (see [Compact Archives](#7--compact-archives)).
 
 <!-- ![test image](build/test_3.png) -->
@@ -65,8 +66,6 @@ FastFHIR turns data traversal into pure pointer arithmetic, outpacing text forma
   <img alt="Project Logo" src="light-image.png">
 </picture>
 
-
-
 ### 2. Type Safety & Validated FHIR Format
 FastFHIR provides **strongly validated, type-safe FHIR encoding** with guaranteed format correctness and comprehensive extension handling.
 * **Strict Schema Validation:** The binary layout embeds explicit `RECOVERY_TAG` metadata for every object. This provides guaranteed safe polymorphic resolution and strict C++ type checking at runtime, preventing incorrect information context, garbage reads, and buffer overflows. Every resource is validated against official FHIR Structure Definitions at generation time.
@@ -75,7 +74,7 @@ FastFHIR provides **strongly validated, type-safe FHIR encoding** with guarantee
 * **Primitive Extensions Preserved Correctly:** FastFHIR supports FHIR's underscore-prefixed primitive extension model, allowing extensions on scalar primitives to survive ingest, validation, traversal, and re-export. This is a critical compatibility requirement that standard Protobuf JSON serializers do not implement.
 
 ### 3. Memory Safety & Integrity
-**In healthcare, safety is non-negotiable.** FastFHIR gives deterministic memory management and structural integrity at the OS level.
+**Memory safety is a first-class feature**. FastFHIR gives deterministic memory management and structural integrity at the OS level.
 * **OS-Protected Memory:** By utilizing Virtual Memory Arenas (via POSIX `mmap` or Win32 `VirtualAlloc`), FastFHIR ensures pointers remain perfectly stable and memory access is protected by the OS kernel. Legacy formats like JSON expose systems to heap fragmentation and injection attacks; FastFHIR eliminates these vectors entirely.
 * **Strict Polymorphic Type Checking:** The embedded `RECOVERY_TAG` metadata catches type confusion and mis-typed reads at runtime, so a field is never silently reinterpreted as the wrong type. This guards against *malformed* data; the parser has not yet been fuzzed against *hostile* data (TASKS.md G1).
 * **Integrity Footers:** Built-in checksum footers (CRC32/MD5/SHA-256) detect corruption and accidental modification. Note this is *integrity*, not *authenticity* — an attacker who can rewrite payload bytes can recompute the footer. Signed archives are tracked in TASKS.md G4.
@@ -118,7 +117,7 @@ The `build_all` target builds every enabled component: the core library (`libfas
 
 | Option | Default | Description |
 |---|---|---|
-| `FASTFHIR_PRODUCTION_PROFILE` | `us` | Resource profile for code generation: `us` (US Core IG, 27 resources) or `uk` (UK Core IG, 22 resources) |
+| `FASTFHIR_PRODUCTION_PROFILE` | `us-core` | Comma-separated resource groupings to compile; the generator builds their **union**. See [Resource groupings](#resource-groupings) below. |
 | `FASTFHIR_BUILD_SHARED` | `ON` | Build `libfastfhir` as a shared library; set `OFF` for a static archive |
 | `FASTFHIR_BUILD_INGESTOR` | `OFF` | Build the JSON→binary ingest library and `ff_ingest` CLI (requires simdjson) |
 | `FASTFHIR_BUILD_PYTHON_BINDINGS` | `OFF` | Build the pybind11 `_core` extension module |
@@ -130,12 +129,46 @@ Example — UK Core profile with ingestor, tests, and Python bindings:
 
 ```bash
 cmake -S . -B build \
-  -DFASTFHIR_PRODUCTION_PROFILE=uk \
+  -DFASTFHIR_PRODUCTION_PROFILE=uk-core \
   -DFASTFHIR_BUILD_INGESTOR=ON \
   -DFASTFHIR_BUILD_TESTS=ON \
   -DFASTFHIR_BUILD_PYTHON_BINDINGS=ON
 cmake --build build --target build_all -j
 ```
+
+#### Resource groupings
+
+`FASTFHIR_PRODUCTION_PROFILE` takes a **comma-separated list**, because real
+deployments compose — a payer needs US Core *and* claims:
+
+| Grouping | Resources | Covers |
+|---|---|---|
+| `us-core` *(default)* | 28 | [US Core](https://hl7.org/fhir/us/core/) — provider/EHR clinical data; realizes USCDI (defined by ONC/ASTP) |
+| `uk-core` | 23 | [UK Core](https://simplifier.net/hl7fhirukcorer4) |
+| `billing` | 5 | Payer/claims: `ExplanationOfBenefit`, `Claim`, `ClaimResponse`, `PaymentNotice`, `PaymentReconciliation` — the [CARIN Blue Button](https://hl7.org/fhir/us/carin-bb/) / Da Vinci PAS core |
+| `all` | 275 | Every concrete resource in the FHIR packages; absorbs any other name |
+
+```bash
+-DFASTFHIR_PRODUCTION_PROFILE=us-core,billing    # US Core + claims
+-DFASTFHIR_PRODUCTION_PROFILE=us-core,uk-core    # both realms
+```
+
+`us` and `uk` remain accepted as aliases for `us-core` / `uk-core`.
+
+**`ExplanationOfBenefit` is deliberately not in `us-core`.** US Core is
+clinical/EHR scope; EOB is a payer artifact profiled by CARIN Blue Button. If you
+are building payer-side, you want `us-core,billing`.
+
+> **The profile does not change the tag header.** Every resource needs a permanent
+> `RECOVERY_TAG` — plus one per nested BackboneElement — but tag discovery is
+> deliberately profile-independent: the ledger `dictionaries/master_tags.json`
+> covers the whole R4 ∪ R5 spec, so `generated_src/FF_Recovery.hpp` is byte-identical
+> whichever groupings you compile. A permanent wire artifact whose contents
+> depend on build configuration is not a permanent wire artifact. Switching
+> profile therefore changes only which resources get C++ emitted. If a newer FHIR
+> package introduces types the ledger has never seen, the generator appends them
+> at the next free value in their band and rewrites the ledger — an append-only
+> change to a committed wire file, so review that diff. See TASKS.md A27.
 
 See [Generator Architecture](#generator-architecture) for details on profiles and the generation pipeline.
 
@@ -889,15 +922,89 @@ patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "";
 
 #### Read path (inverse operation)
 
-On read, `Node::as<std::string_view>()` performs the inverse resolution order:
+On read, converting a code field to `std::string_view` performs the inverse
+resolution order:
 
 1. Try dictionary resolution via `FF_ResolveCode`
-2. If unresolved, check `FF_CODEABLE_CONCEPT_FLAG` and follow the relative pointer
-   to the `FF_CODEABLE_CONCEPT` block, then decode per system discriminator
-3. Return the referenced custom `FF_STRING` payload
+2. If unresolved, check `FF_CODEABLE_CONCEPT_FLAG` and follow the pointer — signed
+   and **relative to the containing block** — to the `FF_CODEABLE_CONCEPT` block
+3. Decode that block per its system discriminator and return the label
+
+The relative pointer is resolved while the containing block is still known: on
+the fast path by `Entry`, which holds both coordinates, and otherwise at node
+construction. A `Node` keeps only its own offset, so nothing downstream of that
+point can redo the arithmetic.
 
 This is why code fields can be assigned with normal strings while still keeping
 fast dictionary-backed storage for known values.
+
+### Date/Time Assignment Semantics
+
+> **Status:** the representation and its primitives are implemented and
+> unit-tested, but **not yet wired into the generator**. `date`, `dateTime`,
+> `instant` and `time` are still stored as strings today — `Patient.birthDate`
+> and `Observation.issued` below are both `FF_FIELD_STRING` in the current
+> generated headers. The section describes the encoding they move to; **the
+> assignment and read API does not change when they do**, only the bytes.
+> Tracked as DT-2/DT-3 in `TASKS.md`.
+
+`date`, `dateTime`, `instant` and `time` use an 8-byte slot that works exactly
+like the 4-byte code slot above — same discriminator idea, same relative-offset
+rule, same null convention, one width up:
+
+1. Packed inline (the fast path, MSB clear)
+2. Original-text fallback (`FF_STRING` + relative pointer, MSB set)
+3. Null sentinel (`FF_DATETIME_NULL`) for empty input
+
+#### 1) Packed inline
+
+The value is packed into 63 bits as **civil time plus precision plus UTC
+offset** — not an instant. FHIR forces this: `"2024"` is not
+`"2024-01-01T00:00:00Z"`, `date` never carries a timezone, `time` has no date,
+and a leap second (`:60`) is legal and must survive. Comparison for equality
+becomes an integer compare instead of a string compare, and a value costs 8
+bytes instead of an 8-byte pointer plus a 14-byte block header plus the text.
+
+```cpp
+patient_handle[FastFHIR::Fields::PATIENT::BIRTH_DATE] = "1969-07-20";
+obs_handle[FastFHIR::Fields::OBSERVATION::ISSUED]     = "2024-01-15T13:45:30Z";
+// Packed inline: no child block, no pointer chase.
+```
+
+Precision round-trips, so a partial date stays partial — `"2024"` reads back as
+`"2024"`, never as a fabricated January 1st. So does the spelling of a zero
+offset: `Z` and `+00:00` are the same instant and stay distinct texts.
+
+#### 2) Original-text fallback
+
+If the value cannot be packed — more than three fractional digits, or text that
+is not legal for that FHIR type — FastFHIR writes the **original string** into
+the arena as an `FF_STRING`, and stores the relative offset with
+`FF_DATETIME_FALLBACK_FLAG` (bit 63) set, exactly as an unknown code is stored.
+
+```cpp
+obs_handle[FastFHIR::Fields::OBSERVATION::ISSUED] = "2024-01-15T13:45:30.123456Z";
+// 6 fractional digits -> FF_STRING fallback; the text is preserved byte-for-byte.
+```
+
+The round trip is byte-exact on **both** paths. The fallback is not a data-loss
+path and not an error path: unparseable text is preserved rather than rejected,
+for the same reason an unknown code becomes a block instead of an exception.
+
+#### 3) Null handling
+
+An empty string stores `FF_DATETIME_NULL` (all ones), the 8-byte counterpart of
+`FF_CODE_NULL`.
+
+#### Read path (inverse operation)
+
+1. All ones → the field is absent
+2. Bit 63 clear → unpack the civil fields and render at the stored precision
+3. Bit 63 set → sign-extend the relative offset, follow it to the `FF_STRING`,
+   and return the original text
+
+Full layout, rationale, and the constraints that fix the epoch and field widths
+are in [architecture.md §6.3](architecture.md).
 
 ### Polymorphic Choice Assignment and Readback
 
@@ -1199,8 +1306,8 @@ rules — read that one before touching anything that assigns an ID.
 | `generator/emit/deserialize.py` | Eager deserializer generation |
 | `generator/emit/store.py` | SIZE and STORE function generation |
 | `generator/emit/views.py` | Lazy view structs, reflection dispatch |
-| `generator/emit/dictionary.py` | **The permanent code-ID ledger** + `dictionaries/*.cpp` emission |
-| `generator/emit/codes_header.py` | `dictionaries/FF_Codes.hpp` — named code constants |
+| `generator/emit/code_ids.py` | **The permanent code-ID ledger** (`dictionaries/master_codes.json`) + `generated_src/*Dictionary*.cpp` emission |
+| `generator/emit/code_names.py` | `generated_src/FF_Codes.hpp` — named code constants |
 | `generator/emit/codesystems.py` | FF_CodeSystems.hpp enum generation |
 | `generator/emit/traits.py` | Resource traits header |
 | `generator/emit/ingest_mappings.py` | Ingest mapping generation |

@@ -31,9 +31,12 @@ int main() {
     // 1. FF_NULL_OFFSET as object_offset must be rejected, not wrapped.
     {
         auto mem = Memory::create(1ull << 20);
-        Builder b(mem);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
         std::string msg;
-        try { b.amend_pointer(FF_NULL_OFFSET, 8, 64); }
+        try { stream->amend_pointer(FF_NULL_OFFSET, 8, 64); }
         catch (const std::runtime_error& e) { msg = e.what(); }
         // Must be rejected by the BOUNDS check. If the addition wraps, the
         // slot pointer is wild and the already-assigned probe reads garbage --
@@ -45,22 +48,34 @@ int main() {
     //    underflow m_active_mutators and finalize() would then hang or seal early.
     {
         auto mem = Memory::create(1ull << 22);
-        Builder b(mem);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
         PatientData p; p.id = "p1";
-        auto handle = b.append_obj(p);
-        b.set_root(handle);
-        auto view = b.finalize();
+        auto handle = FF_StreamAppendObject(stream, p);
+        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
+            .stream = stream,
+            .root = handle,
+        }), "set root");
+        Memory::View view;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream,
+        }, view), "finalize");
         CHECK(!view.empty(), "finalize() completes after amends (mutator count balanced)");
     }
     // 3. Amending an already-assigned slot must still be refused.
     {
         auto mem = Memory::create(1ull << 22);
-        Builder b(mem);
+        FF_StreamCreateInfo info;
+        info.arena = std::make_shared<Memory>(mem);
+        FF_Stream stream;
+        CHECK(FF_CreateStream(info, stream), "create stream");
         PatientData p; p.id = "p1";
-        auto handle = b.append_obj(p);
+        auto handle = FF_StreamAppendObject(stream, p);
         bool threw = false;
         try {
-            b.amend_pointer(handle.offset(), FF_PATIENT::ID, 128);
+            stream->amend_pointer(handle.offset(), FF_PATIENT::ID, 128);
         } catch (const std::runtime_error&) { threw = true; }
         CHECK(threw, "already-assigned slot refused");
     }

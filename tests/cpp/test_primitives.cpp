@@ -9,6 +9,7 @@
 
 #include <FF_Primitives.hpp>
 #include <FF_Ops.hpp>
+#include <FF_Utilities.hpp>  // FF_IsResourceTag / FF_IsBackboneTag / FF_IsScalarBlockTag
 #include "FF_ResourceTypes.hpp"
 #include <cstring>
 
@@ -70,7 +71,7 @@ static std::vector<uint8_t> make_header_buffer(uint16_t fhir_rev = FHIR_VERSION_
     // Override the VERSION slot with the test's engine version so tests are
     // deterministic regardless of which compile-time FASTFHIR_VERSION_* is set.
     STORE_U32(buf.data() + FF_HEADER::VERSION,
-              FF_ENCODE_HEADER_VERSION(TEST_ENGINE_VERSION, FF_STREAM_LAYOUT_STANDARD));
+              FF_ENCODE_HEADER_VERSION(TEST_ENGINE_VERSION, FF_STREAM_COMPACTION_NONE));
     return buf;
 }
 
@@ -185,17 +186,50 @@ static void test_recovery_known_tags()
     TEST("known RECOVERY_TAG values are correct");
     CHECK_EQ(RECOVER_FF_HEADER, 0x0001, "FF_HEADER");
     CHECK_EQ(RECOVER_FF_STRING, 0x0002, "FF_STRING");
-    CHECK_EQ(RECOVER_FF_CODE, 0x0003, "FF_CODE");
-    CHECK_EQ(RECOVER_FF_RESOURCE, 0x0004, "FF_RESOURCE");
-    CHECK_EQ(RECOVER_FF_CHECKSUM, 0x0005, "FF_CHECKSUM");
+    // FF_CODE moved 0x0003 -> 0x010B on 2026-08-19: it is an inline scalar, and
+    // the primitive band put it outside the band test that routes inline
+    // scalars, leaving two branches written for it unreachable. Pre-release,
+    // deliberate — see _retired in dictionaries/master_tags.json. 0x0003 is
+    // burned and must never be reused.
+    CHECK_EQ(RECOVER_FF_CODE, 0x010B, "FF_CODE");
+    CHECK_EQ(FF_IsScalarBlockTag(RECOVER_FF_CODE), true, "FF_CODE is a scalar");
+    CHECK_EQ(RECOVER_FF_RESOURCE, 0x0003, "FF_RESOURCE");
+    CHECK_EQ(RECOVER_FF_CHECKSUM, 0x0004, "FF_CHECKSUM");
     CHECK_EQ(RECOVER_FF_BOOL, 0x0101, "BOOL");
     CHECK_EQ(RECOVER_FF_INT32, 0x0102, "INT32");
     CHECK_EQ(RECOVER_FF_UINT32, 0x0103, "UINT32");
     CHECK_EQ(RECOVER_FF_FLOAT64, 0x0106, "FLOAT64");
     CHECK_EQ(RECOVER_FF_EXTENSION, 0x0201, "EXTENSION");
-    CHECK_EQ(RECOVER_FF_PATIENT, 0x0314, "PATIENT");
-    CHECK_EQ(RECOVER_FF_OBSERVATION, 0x0312, "OBSERVATION");
-    CHECK_EQ(RECOVER_FF_BUNDLE, 0x0302, "BUNDLE");
+    // Resources moved 0x0300 -> 0x1000 in the 2026-08-14 band re-cut: 256 slots
+    // could not hold FHIR's 178 resource types, and sub-elements needed 711
+    // against the same 256. Pre-release, one-time, deliberate — see the BAND MAP
+    // in FF_Recovery.hpp. These values are permanent from here.
+    CHECK_EQ(RECOVER_FF_PATIENT, 0x1014, "PATIENT");
+    CHECK_EQ(RECOVER_FF_OBSERVATION, 0x1012, "OBSERVATION");
+    CHECK_EQ(RECOVER_FF_BUNDLE, 0x1002, "BUNDLE");
+    CHECK_EQ(RECOVER_FF_BUNDLE_ENTRY, 0x2005, "BUNDLE_ENTRY");
+}
+
+// Band classification must survive the re-cut: FF_IsResourceTag was a high-byte
+// test (`& 0xFF00 == 0x0300`) and would now return false for every resource,
+// since the band spans 0x1000-0x1FFF across 16 high-byte values.
+static void test_recovery_band_classification()
+{
+    TEST("band predicates classify across the whole band");
+    CHECK_EQ(FF_IsResourceTag(RECOVER_FF_PATIENT), true, "PATIENT is a resource");
+    CHECK_EQ(FF_IsResourceTag(RECOVER_FF_BUNDLE), true, "BUNDLE is a resource");
+    CHECK_EQ(FF_IsResourceTag(ToArrayTag(RECOVER_FF_PATIENT)), true, "array-of-PATIENT");
+    CHECK_EQ(FF_IsResourceTag(RECOVER_FF_PERIOD), false, "PERIOD is a datatype");
+    CHECK_EQ(FF_IsResourceTag(RECOVER_FF_BUNDLE_ENTRY), false, "BUNDLE_ENTRY is backbone");
+    CHECK_EQ(FF_IsBackboneTag(RECOVER_FF_BUNDLE_ENTRY), true, "BUNDLE_ENTRY is backbone");
+    CHECK_EQ(FF_IsBackboneTag(RECOVER_FF_PATIENT), false, "PATIENT is not backbone");
+    CHECK_EQ(FF_IsScalarBlockTag(RECOVER_FF_BOOL), true, "BOOL is a scalar");
+    CHECK_EQ(FF_IsScalarBlockTag(RECOVER_FF_PATIENT), false, "PATIENT is not a scalar");
+    // Band edges: the first and last representable slot of the resource band.
+    CHECK_EQ(FF_IsResourceTag(static_cast<RECOVERY_TAG>(RECOVER_BAND_RESOURCE_FIRST)), true, "band first");
+    CHECK_EQ(FF_IsResourceTag(static_cast<RECOVERY_TAG>(RECOVER_BAND_RESOURCE_LAST)), true, "band last");
+    CHECK_EQ(FF_IsResourceTag(static_cast<RECOVERY_TAG>(RECOVER_BAND_RESOURCE_LAST + 1)), false, "past band end");
+    CHECK_EQ(FF_IsResourceTag(static_cast<RECOVERY_TAG>(RECOVER_BAND_RESOURCE_FIRST - 1)), false, "before band start");
 }
 
 // =====================================================================
@@ -374,6 +408,7 @@ int main(int argc, char **argv)
     run("test_recovery_type_mask", test_recovery_type_mask);
     run("test_recovery_to_array", test_recovery_to_array);
     run("test_recovery_known_tags", test_recovery_known_tags);
+    run("test_recovery_band_classification", test_recovery_band_classification);
 
     TEST_GROUP("FF_FieldKey");
     run("test_field_key_construction", test_field_key_construction);

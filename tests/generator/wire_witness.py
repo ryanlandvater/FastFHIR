@@ -11,7 +11,13 @@ the values that actually serialize into a `.ffhr` stream:
                            (`RECOVERY = VALIDATION + VALIDATION_S`) resolved by
                            the C++ compiler, so we capture the *structure* that
                            determines them, not a (non-existent) literal offset.
-  * dictionary codes     — FF_*_CODE_* = 0xNNNNNNNN (hash-based uint32)
+  * dictionary codes     — the permanent uint32 IDs projected into FF_Codes.hpp,
+                           scoped by terminology source then CodeSystem
+                           (`UCUM::PERCENT`, `FHIR::FDI_SURFACE::B`)
+
+All three families are read from the tree being witnessed (see witness()); the
+`tags` and `codes` sections used to witness empty dicts because they were read
+from fixed repo paths instead of the regenerated tree.
 
 If the witness JSON is unchanged across a refactor, the wire format is preserved
 regardless of how the emitting Python or the C++ source text was reorganised.
@@ -30,8 +36,15 @@ from pathlib import Path
 # --- recovery tags: `RECOVER_FF_BUNDLE = 0x0302` (also FF_RECOVER_UNDEFINED) ---
 _TAG = re.compile(r"\b(FF_RECOVER_[A-Z0-9_]+|RECOVER_FF_[A-Z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)")
 
-# --- dictionary codes: `FF_R5_CODE_PERCENT = 0x1CF1F3BB` ---
-_CODE = re.compile(r"\b(FF_[A-Z0-9]+_CODE_[A-Z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)")
+# --- dictionary codes: `FF_CODE_DEF PERCENT = 2;` inside nested scopes ---
+# The old pattern here matched `FF_R5_CODE_PERCENT = 0x1CF1F3BB` -- a flat,
+# hash-based, revision-prefixed scheme that no longer exists. Names are now
+# scoped by terminology source then CodeSystem and IDs are sequential ledger
+# entries, so nothing matched and `codes` witnessed an empty dict.
+_CODE_DEF = re.compile(r"\bFF_CODE_DEF\s+([A-Za-z_]\w*)\s*=\s*(\d+)")
+
+# --- a `namespace X {` or `struct X {` scope opener in FF_Codes.hpp ---
+_SCOPE_OPEN = re.compile(r"^\s*(?:namespace|struct)\s+([A-Za-z_][\w:]*)")
 
 # --- HEADER size literals inside vtable_offsets: `HEADER_R5_SIZE = 46` ---
 _HEADER_SIZE = re.compile(r"\b(HEADER_[A-Z0-9_]*SIZE)\s*=\s*(\d+)")
@@ -93,18 +106,78 @@ def _vtable_layout(text: str) -> dict[str, dict]:
     return out
 
 
-def witness(generated_dir: Path) -> dict:
-    """Build the full wire-format witness for a generated_src/ directory."""
+def _dictionary_codes(text: str, root: str = "FastFHIR::FF_CODE") -> dict[str, int]:
+    """Parse `dictionaries/FF_Codes.hpp` into {qualified name: permanent ID}.
+
+    Constants are scoped by terminology source then CodeSystem, so the name must
+    be qualified to be unique: `UCUM::PERCENT`, `FHIR::FDI_SURFACE::B`. Scopes
+    are a mix of `namespace` and `struct`, so this tracks brace depth rather than
+    assuming one form. The enclosing `FastFHIR::FF_CODE` is dropped as noise.
+    """
+    out: dict[str, int] = {}
+    stack: list[tuple[int, str]] = []
+    depth = 0
+    for line in text.splitlines():
+        s = line.strip()
+        m = _SCOPE_OPEN.match(s)
+        if m and "{" in s:
+            depth += s.count("{") - s.count("}")
+            stack.append((depth, m.group(1)))
+            continue
+        cm = _CODE_DEF.search(s)
+        if cm:
+            names = [n for _, n in stack if n != root]
+            out["::".join([*names, cm.group(1)])] = int(cm.group(2))
+        depth += s.count("{") - s.count("}")
+        while stack and stack[-1][0] > depth:
+            stack.pop()
+    return out
+
+
+def witness(
+    generated_dir: Path,
+    *,
+    recovery_header: Path | None = None,
+    codes_header: Path | None = None,
+) -> dict:
+    """Build the full wire-format witness.
+
+    The three permanent-constant families live in THREE different trees, which is
+    why this takes more than `generated_dir`:
+
+      * vtable layouts   -> generated_src/*_internal.hpp   (regenerated)
+      * recovery tags    -> generated_src/FF_Recovery.hpp        (generated, gitignored)
+      * dictionary codes -> generated_src/FF_Codes.hpp     (regenerated)
+
+    Both generated trees are projections of committed ledgers in dictionaries/
+    (master_tags.json, master_codes.json), so witnessing the emitted C++ checks
+    the ledger AND the emitter that projects it -- a drift in either shows up.
+
+    Scanning only `generated_dir` is exactly why the `tags` and `codes` sections
+    of the golden were empty dicts, and had been passing `{} == {}` ever since:
+    tags are only *referenced* in generated_src (never defined with a value), and
+    FF_Codes.hpp is not under generated_src at all. 165 tags and 5,796 code IDs --
+    the constants that decode every archive ever written -- had no regression
+    protection whatsoever. See TASKS.md A15.
+    """
+    # FF_Recovery.hpp and FF_Codes.hpp are generator output now, so take them
+    # from the tree being witnessed rather than a fixed repo path -- that is
+    # what makes the gate work against a freshly regenerated tree in a tmpdir.
+    recovery_header = recovery_header or generated_dir / "FF_Recovery.hpp"
+    codes_header = codes_header or generated_dir / "FF_Codes.hpp"
+
     out: dict = {"tags": {}, "codes": {}, "vtables": {}}
     for p in sorted(generated_dir.rglob("*.hpp")):
         text = p.read_text(encoding="utf-8")
-        for name, val in _TAG.findall(text):
-            out["tags"][name] = int(val, 0)
-        for name, val in _CODE.findall(text):
-            out["codes"][name] = int(val, 0)
         if p.name.endswith("_internal.hpp"):
             for block, layout in _vtable_layout(text).items():
                 out["vtables"][block] = layout
+
+    if recovery_header.is_file():
+        for name, val in _TAG.findall(recovery_header.read_text(encoding="utf-8")):
+            out["tags"][name] = int(val, 0)
+    if codes_header.is_file():
+        out["codes"] = _dictionary_codes(codes_header.read_text(encoding="utf-8"))
     return out
 
 
@@ -121,24 +194,68 @@ def _check_permanence(current_raw: dict, existing_raw: dict, label: str) -> list
     errors: list[str] = []
     for key, old_val in existing_raw.items():
         if key not in current_raw:
-            errors.append(f"  DELETED {label}.{key} — removal changes the wire format for existing streams")
+            errors.append(
+                f"  DELETED {label}.{key} — removal changes the wire format for existing streams"
+            )
             continue
         new_val = current_raw[key]
         if label == "vtables":
             # Drill into per-block sub-structures
             for sub in ("order", "sizes", "header_sizes"):
-                old_sub = old_val.get(sub, {}) if isinstance(old_val.get(sub), dict) else old_val.get(sub, [])
-                new_sub = new_val.get(sub, {}) if isinstance(new_val.get(sub), dict) else new_val.get(sub, [])
+                old_sub = (
+                    old_val.get(sub, {})
+                    if isinstance(old_val.get(sub), dict)
+                    else old_val.get(sub, [])
+                )
+                new_sub = (
+                    new_val.get(sub, {})
+                    if isinstance(new_val.get(sub), dict)
+                    else new_val.get(sub, [])
+                )
                 if isinstance(old_sub, list):
-                    if old_sub != new_sub:
+                    # Prefix rule, not equality: the shipped golden field order
+                    # must sit at the head of the current order. Appending a
+                    # field is legal growth (FastFHIR models 28 of ~145 R4
+                    # resources); reordering, inserting, or removing a shipped
+                    # field shifts offsets for existing streams.
+                    if new_sub[: len(old_sub)] != old_sub:
                         errors.append(
-                            f"  CHANGED {label}.{key}.{sub}: order changed → "
-                            f"wire offsets shift for existing streams"
+                            f"  CHANGED {label}.{key}.{sub}: shipped fields "
+                            f"reordered or removed → wire offsets shift for "
+                            f"existing streams (appending fields is legal)"
                         )
+                elif sub == "header_sizes":
+                    # MONOTONIC GROWTH, not equality -- the counterpart of the
+                    # prefix rule above, and it has to be, or the two rules
+                    # contradict each other. Appending a field adds a slot, so a
+                    # legal append ALWAYS grows the block header; requiring
+                    # equality here rejected exactly the change the `order` rule
+                    # calls legal. (test_permanence_accepts_field_append passed
+                    # only because it appended to `order` without growing the
+                    # header -- a state the generator cannot emit.)
+                    #
+                    # Growth is safe precisely because the other two rules pin
+                    # everything below it: shipped fields keep their order
+                    # (prefix rule) and their widths (`sizes` equality), so a
+                    # bigger header can only mean slots added past the end, and
+                    # no existing field's offset moves. SHRINKAGE is still fatal
+                    # -- that drops a shipped slot and shifts everything after.
+                    for k, v in old_sub.items():
+                        if k not in new_sub:
+                            errors.append(
+                                f"  DELETED {label}.{key}.{sub}.{k} — wire constant removed"
+                            )
+                        elif new_sub[k] < v:
+                            errors.append(
+                                f"  SHRANK {label}.{key}.{sub}.{k}: {v!r} → {new_sub[k]!r}"
+                                f" — a block header may grow (appended fields) but never shrink"
+                            )
                 else:
                     for k, v in old_sub.items():
                         if k not in new_sub:
-                            errors.append(f"  DELETED {label}.{key}.{sub}.{k} — wire constant removed")
+                            errors.append(
+                                f"  DELETED {label}.{key}.{sub}.{k} — wire constant removed"
+                            )
                         elif new_sub[k] != v:
                             errors.append(
                                 f"  CHANGED {label}.{key}.{sub}.{k}: {v!r} → {new_sub[k]!r}"
@@ -153,7 +270,7 @@ def _check_permanence(current_raw: dict, existing_raw: dict, label: str) -> list
     return errors
 
 
-def dump(generated_dir: Path, dest: Path) -> None:
+def dump(generated_dir: Path, dest: Path, *, force: bool = False) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     current_raw = witness(generated_dir)
     current = json.dumps(current_raw, indent=2, sort_keys=True)
@@ -171,21 +288,38 @@ def dump(generated_dir: Path, dest: Path) -> None:
         errors: list[str] = []
         for section in ("tags", "codes", "vtables"):
             errors.extend(_check_permanence(current_raw[section], existing_raw[section], section))
-        if errors:
+        if errors and not force:
             for err in errors:
                 print(err)
             raise SystemExit(
-                "\nERROR: wire constants above changed or were deleted.\n"
-                "Permanent wire constants cannot be modified once committed.\n"
-                "If this is intentional (e.g. a new feature branch that changes\n"
-                "the wire format version), use --force to override."
+                f"\nERROR: {len(errors)} wire constant(s) above changed or were deleted.\n"
+                "Permanent wire constants cannot be modified once committed — they\n"
+                "decode every .ffhr archive already written.\n\n"
+                "If this is genuinely intentional (a pre-release re-cut, where no\n"
+                "archive exists anywhere), re-run with --force. Record WHY in the\n"
+                "same commit: the header's own comment and TASKS.md, not just the\n"
+                "commit message."
+            )
+        if errors:
+            # --force: the override is real, so make it impossible to perform by
+            # accident or to miss in review.
+            print(f"  !! --force: OVERRIDING {len(errors)} permanence violation(s) !!")
+            for err in errors:
+                print(err)
+            print(
+                "  Every archive written with the previous constants is now\n"
+                "  undecodable. This is only safe pre-release."
             )
 
         print(f"  wire witness CHANGED — {dest.name} needs updating.")
         import difflib
+
         for line in difflib.unified_diff(
-            existing.splitlines(), current.splitlines(),
-            fromfile="existing", tofile="new", lineterm=""
+            existing.splitlines(),
+            current.splitlines(),
+            fromfile="existing",
+            tofile="new",
+            lineterm="",
         ):
             print(line)
 
@@ -195,6 +329,8 @@ def dump(generated_dir: Path, dest: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: wire_witness.py <generated_dir> <out.json>")
-    dump(Path(sys.argv[1]), Path(sys.argv[2]))
+    args = [a for a in sys.argv[1:] if a != "--force"]
+    force = "--force" in sys.argv[1:]
+    if len(args) != 2:
+        raise SystemExit("usage: wire_witness.py [--force] <generated_dir> <out.json>")
+    dump(Path(args[0]), Path(args[1]), force=force)

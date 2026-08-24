@@ -14,7 +14,7 @@
  * as well as streaming via standard input and output for flexible integration into pipelines.
  */
 
-#include "FF_Parser.hpp"
+#include "FastFHIR.hpp"
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -161,7 +161,16 @@ int main(int argc, char** argv) {
         }
 
         // 3. Mount the Parser
-        FastFHIR::Parser parser (parse_buffer, parse_size);
+        FastFHIR::Parser parser;
+        FF_Result parse_result = FastFHIR::FF_Parse(FastFHIR::FF_ParseInfo{
+            .buffer = parse_buffer,
+            .size = parse_size,
+        }, parser);
+        if (!parse_result)
+        {
+            std::cerr << "FastFHIR Export Error: " << parse_result.message << "\n";
+            return 1;
+        }
 
         // 4. Resolve Output Strategy
         if (!output_file.empty()) {

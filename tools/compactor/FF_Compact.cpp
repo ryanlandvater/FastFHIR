@@ -9,7 +9,7 @@
  *
  * @brief FastFHIR Compactor CLI — compact and re-seal a sealed .ffhr stream.
  *
- * Reads a sealed FastFHIR binary stream (.ffhr), runs Compactor::archive() to produce
+ * Reads a sealed FastFHIR binary stream (.ffhr), runs FF_Compact to produce
  * a dense presence-bitmap compact archive, and writes the result to:
  *
  *   • stdout               — when reading from stdin, or when -o - is given
@@ -28,8 +28,7 @@
  *   cat large_bundle.ffhr | ff_compact | ff_export > bundle.json
  */
 
-#include "FF_Parser.hpp"
-#include "FF_Compactor.hpp"
+#include "FastFHIR.hpp"
 
 #include <iostream>
 #include <fstream>
@@ -274,9 +273,19 @@ int main(int argc, char *argv[])
         // -----------------------------------------------------------------
         // 3. Parse and validate the source stream
         // -----------------------------------------------------------------
-        Parser source(parse_buffer, parse_size);
+        Parser source;
+        FF_Result parse_result = FF_Parse(FF_ParseInfo
+            {
+                .buffer = parse_buffer, 
+                .size = parse_size
+            }, source);
+        if (!parse_result)
+        {
+            std::cerr << "[ff_compact] Error: " << parse_result.message << "\n";
+            return 1;
+        }
 
-        if (source.stream_layout() == FF_STREAM_LAYOUT_COMPACT)
+        if (source.stream_layout() == FF_STREAM_COMPACTED)
         {
             std::cerr << "[ff_compact] Error: input stream is already a compact archive.\n"
                       << "             Compact archives cannot be re-compacted.\n";
@@ -287,7 +296,7 @@ int main(int argc, char *argv[])
         // 4. Build optional SHA-256 hasher
         // -----------------------------------------------------------------
         FF_Checksum_Algorithm algo = FF_CHECKSUM_NONE;
-        Compactor::HashCallback hasher;
+        FF_HashCallback hasher;
 
 #ifdef FASTFHIR_HAS_OPENSSL
         if (!no_checksum)
@@ -328,11 +337,21 @@ int main(int argc, char *argv[])
 
         // -----------------------------------------------------------------
         // 5. Compact into a fresh arena
-        //    A compact archive is always <= source size; use source size as
-        //    the capacity upper-bound so the arena never needs to grow.
+        //    A compact archive is always <= source size, so FF_Compact sizes
+        //    the arena from the source parser and never needs to grow.
         // -----------------------------------------------------------------
-        auto dest_mem = Memory::create(parse_size);
-        Memory::View compact_view = Compactor::archive(source, dest_mem, algo, hasher);
+        Memory::View compact_view;
+        FF_Result compact_result = FF_Compact(FF_CompactInfo
+            {
+                .source = source, 
+                .algorithm = algo,
+                .hasher = hasher
+            }, compact_view);
+        if (!compact_result)
+        {
+            std::cerr << "[ff_compact] Error: " << compact_result.message << "\n";
+            return 1;
+        }
 
         if (compact_view.empty())
         {

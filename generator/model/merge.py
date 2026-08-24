@@ -260,9 +260,12 @@ def generate_cxx_for_blocks(master_blocks, versions):
             elif f["fhir_type"] == "string":
                 public_hpp += f"    std::string_view {f['cpp_name']};\n"
             elif code_enum:
+                # Default to the unset sentinel, never enum value 0 -- value 0 is
+                # a real FHIR code, so defaulting to it made every absent code
+                # field write an asserted clinical value to the wire (TASKS.md A24).
                 public_hpp += (
                     f"    {code_enum['enum']} {f['cpp_name']}"
-                    f" = static_cast<{code_enum['enum']}>(0);\n"
+                    f" = {code_enum['enum']}::{_tm.UNSET_ENUMERATOR};\n"
                 )
             elif f["cpp_type"] == "Offset":
                 public_hpp += (
@@ -273,11 +276,27 @@ def generate_cxx_for_blocks(master_blocks, versions):
                 public_hpp += f"    bool {f['cpp_name']} = false;\n"
             elif f["data_type"] == "std::string":
                 public_hpp += f"    std::string {f['cpp_name']};\n"
+            elif f["fhir_type"] == "decimal" and not f["is_array"]:
+                # The value stays a plain double so every consumer that only
+                # wants the number gets it without a decode. Its SOURCE scale
+                # cannot ride inside those 8 bytes -- every bit pattern is
+                # already a legal value -- so it rides as a sibling member and
+                # lands in the slot's 9th byte. See FF_Primitives "DECIMAL SLOT".
+                public_hpp += f"    double {f['cpp_name']} = FF_NULL_F64;\n"
+                public_hpp += (
+                    f"    uint8_t {f['cpp_name']}{_tm.DECIMAL_SIGFIGS_SUFFIX}"
+                    f" = FF_DECIMAL_SIGFIGS_UNSPECIFIED;\n"
+                )
             elif f["fhir_type"] in _tm.TYPE_MAP and "null" in _tm.TYPE_MAP[f["fhir_type"]]:
                 null_val = _tm.TYPE_MAP[f["fhir_type"]]["null"]
                 public_hpp += f"    {f['data_type']} {f['cpp_name']} = {null_val};\n"
             else:
-                public_hpp += f"    {f['data_type']} {f['cpp_name']}{{}};\n"
+                if f.get("url_idx"):
+                    # Absent URLs must store FF_NULL_UINT32 (all-ones), never 0:
+                    # index 0 is a valid URL-directory ref.
+                    public_hpp += f"    {f['data_type']} {f['cpp_name']} = FF_NULL_UINT32;\n"
+                else:
+                    public_hpp += f"    {f['data_type']} {f['cpp_name']}{{}};\n"
         public_hpp += "};\n\n"
 
         # ── INTERNAL: Data Block Sentinel (vtable enums) ───────
@@ -377,9 +396,9 @@ def generate_cxx_for_blocks(master_blocks, versions):
             f" {{ return SIZE_{s_name}(d, v); }}\n"
         )
         traits_hpp += (
-            f"    static void store(BYTE* const base, Offset off,"
+            f"    static Offset store(BYTE* const base, Offset off,"
             f" const {d_name}& d, uint32_t v = FHIR_VERSION_R5)"
-            f" {{ STORE_{s_name}(base, off, d, v); }}\n"
+            f" {{ return STORE_{s_name}(base, off, d, v); }}\n"
         )
         traits_hpp += (
             f"    static {d_name} read(const BYTE* const base, Offset off,"

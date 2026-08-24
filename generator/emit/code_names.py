@@ -1,4 +1,4 @@
-"""Emit dictionaries/FF_Codes.hpp -- the named C++ constants for every code ID.
+"""Emit generated_src/FF_Codes.hpp -- the named C++ constants for every code ID.
 
 Two jobs, and it is worth keeping them straight:
 
@@ -6,7 +6,7 @@ Two jobs, and it is worth keeping them straight:
     source-level only. Renaming one breaks a recompile; it does not touch a
     single byte on the wire, and it never moves an ID.
 
-  * NUMBERING (generator/emit/dictionary.py) decides what a code *is* on the
+  * NUMBERING (generator/emit/code_ids.py) decides what a code *is* on the
     wire. That is permanent. See dictionaries/README.md.
 
 Identifiers for codes already in the ledger are read straight out of it, so the
@@ -20,8 +20,12 @@ import json
 import os
 import re
 
-LEDGER = os.path.join(os.path.dirname(__file__), "..", "master_codes.json")
-OUTPUT = os.path.join(os.path.dirname(__file__), "..", "..", "dictionaries", "FF_Codes.hpp")
+LEDGER = os.path.join(os.path.dirname(__file__), "..", "..", "dictionaries", "master_codes.json")
+# DERIVED artifact, not a ledger: a pure projection of master_codes.json, so it
+# lives with the rest of the generator output rather than beside the ledger it
+# comes from. dictionaries/ holds the SOURCE (the JSON); the output dir holds
+# what is derived from it. The output dir is a parameter of generate() (the
+# wire gate regenerates into a tmp dir); generated_src/ is the default.
 
 
 # Identifiers that are macros in the C/C++ standard library or on Windows. The
@@ -194,8 +198,8 @@ def struct_name(system: str) -> str:
     return sanitize(system) or "UNNAMED"
 
 
-def generate() -> None:
-    """Project the committed ledger into dictionaries/FF_Codes.hpp.
+def generate(output_dir: str = "generated_src") -> None:
+    """Project the committed ledger into <output_dir>/FF_Codes.hpp.
 
     Scoping is by terminology SOURCE, then by CodeSystem within FHIR:
 
@@ -226,7 +230,7 @@ def generate() -> None:
         return out
 
     lines = [
-        "// Auto-generated from generator/master_codes.json. DO NOT EDIT.",
+        "// Auto-generated from dictionaries/master_codes.json. DO NOT EDIT.",
         "//",
         "// Values are PERMANENT wire constants -- they decode every .ffhr archive",
         "// ever written. Regenerating this file may add constants and may rename",
@@ -278,13 +282,14 @@ def generate() -> None:
 
     lines += ["}  // namespace FastFHIR::FF_CODE"]
 
-    os.makedirs(os.path.dirname(OUTPUT), exist_ok=True)
-    with open(OUTPUT, "w", encoding="utf-8") as f:
+    output_path = os.path.join(output_dir, "FF_Codes.hpp")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
     total = sum(len(v) for v in scopes.values())
     print(
-        f"Generated {OUTPUT}  ({total} constants: "
+        f"Generated {output_path}  ({total} constants: "
         f"{len(scopes.get('UCUM', {}))} UCUM, {len(fhir_systems)} FHIR structs, "
         f"{len(scopes.get('LEGACY', {}))} legacy)"
     )

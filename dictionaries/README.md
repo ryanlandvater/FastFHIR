@@ -1,12 +1,22 @@
-# `dictionaries/` — the permanent code ledger
+# `dictionaries/` — the permanent wire ledgers
 
 **Everything in this directory is a wire constant. The numbers here decode every
 `.ffhr` archive that has ever been written.**
 
+Two ledgers live here, under identical rules:
+
+- **`master_codes.json`** — dictionary code IDs (what a clinical code *is*).
+- **`master_tags.json`** — `RECOVERY_TAG` values (what a block *is*), projected
+  into `generated_src/FF_Recovery.hpp`.
+
+Both are committed, both are append-only, and both are generated-and-reviewed
+rather than hand-edited. `master_tags.json` was moved here from `generator/` in
+2026-08 — a ledger is not generator machinery, it is the wire format.
+
 Change what a number means and every stored archive silently decodes to the
 wrong clinical code — no error, no migration path, a lab result simply becomes a
 different lab result. Read this page before touching anything here or in
-`generator/emit/dictionary.py`.
+`generator/emit/code_ids.py`.
 
 ---
 
@@ -26,7 +36,7 @@ External terminologies are still fully supported — they travel as
 user's own licence (see the system registry near the bottom of this file).
 FastFHIR encodes them; it does not distribute them.
 
-Enforced by `_assert_redistributable()` in `generator/emit/dictionary.py`: a
+Enforced by `_assert_redistributable()` in `generator/emit/code_ids.py`: a
 code from an unlisted system stops the build. This is a check rather than a
 convention because the convention already failed — an old value-set expansion
 pulled 13,310 LOINC/SNOMED/EDQM codes in here and nothing objected. They were
@@ -51,7 +61,7 @@ publisher display text. See `THIRD_PARTY_NOTICES.md`.
 | You want to re-sort the dictionary | You don't. Sorting renumbers, and renumbering is data loss. |
 
 Enforced by `assign_ids()` and `_verify_ledger()` in
-`generator/emit/dictionary.py`, and gated by `tests/generator/test_code_ids.py`.
+`generator/emit/code_ids.py`, and gated by `tests/generator/test_code_ids.py`.
 
 ### This has gone wrong before
 
@@ -60,7 +70,7 @@ none. Every ID changed meaning — `"!="` went from 1 to 3294. It went unnoticed
 because the ID-stability test compared two fresh generator runs against *each
 other* rather than against the committed ledger, so both renumbered identically
 and the test passed. Hence: `assign_ids()` can only append, and the test now
-compares against `generator/master_codes.json`.
+compares against `master_codes.json`.
 
 ### The one deliberate exception
 
@@ -79,13 +89,19 @@ that window is closed.
 
 ## What each file is
 
+**This directory holds the ledgers — the SOURCE. Everything projected from them
+is generator output and lives in `generated_src/`, gitignored and rebuilt at
+configure time.** A projection is not a second source of truth: committing both
+meant 1.2 MB of derived C++ shadowing a 460 KB ledger, with two things to keep
+in step instead of one. Review wire changes on the ledger diff.
+
 | File | Direction | Role |
 |---|---|---|
-| `../generator/master_codes.json` | — | **The ledger.** Source of truth for every ID. Committed, append-only, human-readable. Everything below is generated from it. |
-| `FF_Dictionary_Strings.cpp` | ID → string | The one backing store. **Array index _is_ the ID**, so slot order is the wire format. Retired IDs remain as `nullptr` holes. |
-| `FF_Codes.hpp` | name → ID | Named C++ constants, scoped by terminology source then CodeSystem (see below). Compile-time ergonomics only; never consulted at runtime. |
-| `FF_R4_Dictionary.cpp`<br>`FF_R5_Dictionary.cpp`<br>`FF_UCUM_Dictionary.cpp` | string → ID | Ingest lookup, one table per FHIR revision. Rows reference `FF_Codes.hpp` constants **symbolically**, so a rename or deletion breaks the *compile* instead of silently drifting. That is the one wire-safety property a C++ compiler can enforce for us. |
-| `FF_SNOMED_Concepts.cpp` | — | Hand-maintained SNOMED concept constants. |
+| `master_codes.json` | — | **The code ledger.** Source of truth for every dictionary ID. Committed, append-only, human-readable. Everything below is generated from it. |
+| `master_tags.json` | — | **The recovery-tag ledger.** Source of truth for every `RECOVERY_TAG` value. Same rules; projected into `generated_src/FF_Recovery.hpp` by `generator/emit/recovery_tags.py`. That header is generated at configure time and **gitignored** (2026-08-19) — the same reasoning applied to the code projections below: a projection is not a second source of truth. Covers the whole FHIR spec, so it does not vary with the build profile. |
+| `generated_src/FF_Dictionary_Strings.cpp` | ID → string | The one backing store. **Array index _is_ the ID**, so slot order is the wire format. Retired IDs remain as `nullptr` holes. |
+| `generated_src/FF_Codes.hpp` | name → ID | Named C++ constants, scoped by terminology source then CodeSystem (see below). Compile-time ergonomics only; never consulted at runtime. |
+| `generated_src/FF_R4_Dictionary.cpp`<br>`generated_src/FF_R5_Dictionary.cpp`<br>`generated_src/FF_UCUM_Dictionary.cpp` | string → ID | Ingest lookup, one table per FHIR revision. Rows reference `FF_Codes.hpp` constants **symbolically**, so a rename or deletion breaks the *compile* instead of silently drifting. That is the one wire-safety property a C++ compiler can enforce for us. |
 
 The version tables are **membership sets** ("which codes may be ingested for
 this FHIR revision"), not independent mappings. One code, one ID, one string —
@@ -127,9 +143,9 @@ empty today and is omitted from the header entirely when empty.
 
 Two different things; only one is permanent.
 
-- **Numbering** (`generator/emit/dictionary.py`) — the uint32 written to disk.
+- **Numbering** (`generator/emit/code_ids.py`) — the uint32 written to disk.
   **Permanent.**
-- **Naming** (`generator/emit/codes_header.py`) — what a code is *called* in
+- **Naming** (`generator/emit/code_names.py`) — what a code is *called* in
   C++. Source-level only; a rename breaks a recompile and nothing else.
 
 A rename is allowed. A renumber is not. Identifiers come out of the ledger's
@@ -147,21 +163,25 @@ python -m generator
 Then confirm the ledger only grew:
 
 ```bash
-git diff --stat generator/master_codes.json
+git diff --stat dictionaries/master_codes.json dictionaries/master_tags.json
 pytest tests/generator -q
 ```
 
 **Review checklist for any diff touching this directory:**
 
-1. `git diff generator/master_codes.json` shows **only additions** to `ids`. A
+1. `git diff dictionaries/master_codes.json` shows **only additions** to `ids` (and
+   `master_tags.json` only additions to `tags`). A
    changed line for an existing code is a renumber — stop.
 2. `_next_id` went up, never down.
-3. `FF_Dictionary_Strings.cpp` shows only **appended** lines. A changed line in
-   the middle means slots shifted — stop.
+3. `FF_Dictionary_Strings.cpp` is no longer committed — the equivalent check is
+   item 1: a changed `ids` entry *is* a shifted slot, because the array index is
+   the ID. Regenerate and confirm the wire gate passes.
 4. `pytest tests/generator -q` passes with **no skips**.
 
-Never hand-edit the generated files. Fix the emitter and regenerate; if a
-generated file and its emitter disagree, the emitter wins.
+Never hand-edit the generated files in `generated_src/`. Fix the emitter and
+regenerate; if a generated file and its emitter disagree, the emitter wins. The
+ledgers here are hand-editable only to *append* — and even that is normally the
+generator's job.
 
 ---
 
@@ -204,7 +224,7 @@ the variable-length payload.
 
 ```
 Offset  0– 7 : VALIDATION  (uint64_t)
-Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT (0x000A)
+Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT (0x0009)
 Offset 10    : SYSTEM      (uint8_t)  — FF_CodeableConceptSystem
 Offset 11    : LENGTH      (uint8_t)  — payload byte count
 Offset 12+   : PAYLOAD     (variable) — LENGTH bytes

@@ -17,6 +17,9 @@
 #include <filesystem>
 #include <stdexcept>
 #include <cstring>
+#include <algorithm>
+#include <functional>
+#include <vector>
 #include "FF_Primitives.hpp"
 
 namespace FastFHIR
@@ -183,9 +186,14 @@ namespace FastFHIR
              */
             bool empty() const noexcept;
 
+            /** @brief Null view; required for FF_* out-parameter patterns. */
+            View() = default;
+
         private:
             friend class Memory;
-            const std::shared_ptr<FF_Memory_t> m_vma_ref;
+            // Non-const so View stays copy-assignable (FF_* out-parameter
+            // pattern, e.g. FF_StreamFinalize(..., Memory::View& out)).
+            std::shared_ptr<FF_Memory_t> m_vma_ref = nullptr;
             explicit View(std::shared_ptr<FF_Memory_t> vma_ref) : m_vma_ref(std::move(vma_ref)) {}
         };
 
@@ -338,15 +346,21 @@ namespace FastFHIR
     }
     inline const char *Memory::View::data() const noexcept
     {
-        return reinterpret_cast<const char *>(m_vma_ref->m_base);
+        return m_vma_ref ? reinterpret_cast<const char *>(m_vma_ref->m_base) : nullptr;
     }
     inline size_t Memory::View::size() const noexcept
     {
+        if (!m_vma_ref) return 0;
         return std::atomic_ref<uint64_t>(*m_vma_ref->m_head_ptr).load(std::memory_order_acquire) & OFFSET_MASK;
     }
     inline Memory::View::operator std::string_view() const noexcept
     {
-        return std::string_view(reinterpret_cast<const char *>(m_vma_ref->m_base), size());
+        // data() and size() are both null-guarded above; this conversion must be
+        // too, or the null state is only half-supported. An out-view cleared
+        // after an API failure is exactly the object a caller is most likely to
+        // convert while checking whether anything came back -- and doing so
+        // dereferenced m_vma_ref and crashed, in a function marked noexcept.
+        return std::string_view(data(), size());
     }
     inline bool Memory::View::empty() const noexcept
     {
@@ -416,6 +430,48 @@ namespace FastFHIR
             m_memory->release_stream_lock();
             m_memory = nullptr;
         }
+    }
+
+    // ============================================================================
+    // Shared stream sealing
+    // ============================================================================
+
+    /**
+     * @brief Seals a stream: claims the checksum slot, stamps the FF_HEADER, and
+     *        hashes the payload up to the hash slot.
+     * @details The single implementation of the sealing tail shared by the only two
+     * producers of sealed FastFHIR streams -- Builder::finalize() (standard layout,
+     * with URL/module directory offsets) and Compactor::archive() (compact layout,
+     * no directory offsets). Producer-specific concerns stay with the callers:
+     * checksum-algorithm defaulting/warnings and backing-file truncation.
+     * @param memory The arena holding the payload; the checksum slot is claimed at
+     *        the current write head, so call after the payload is fully written.
+     * @param hasher May be null when @p algo is FF_CHECKSUM_NONE; the stream is
+     *        then emitted with a zeroed checksum.
+     * @return A lifetime-safe view of the sealed stream.
+     */
+    inline Memory::View seal_stream(
+        const Memory& memory, uint16_t fhir_revision, Offset root_offset,
+        RECOVERY_TAG root_recovery, FF_Checksum_Algorithm algo,
+        const std::function<std::vector<BYTE>(const unsigned char*, Size)>& hasher,
+        FF_StreamCompaction stream_layout = FF_STREAM_COMPACTION_NONE,
+        Offset url_dir_offset = FF_NULL_OFFSET,
+        Offset module_reg_offset = FF_NULL_OFFSET)
+    {
+        const Offset checksum_off = memory.claim_space(FF_CHECKSUM::HEADER_SIZE);
+        STORE_FF_HEADER(memory.base(), fhir_revision, memory.size(), root_offset,
+                        root_recovery, checksum_off, url_dir_offset,
+                        module_reg_offset, stream_layout);
+        // Writes the 12 bytes of metadata, returns a pointer to byte 12 (the 32-byte slot)
+        BYTE* hash_dst = STORE_FF_CHECKSUM_METADATA(memory.base(), checksum_off, algo);
+        if (hasher != nullptr && algo != FF_CHECKSUM_NONE) {
+            // Hash the payload + the 12 bytes of metadata, stopping exactly where the hash slot begins.
+            const Size bytes_to_hash = checksum_off + FF_CHECKSUM::HASH_DATA;
+            std::vector<BYTE> hash_value = hasher(memory.base(), bytes_to_hash);
+            const size_t copy_len = std::min(hash_value.size(), static_cast<size_t>(FF_MAX_HASH_BYTES));
+            std::memcpy(hash_dst, hash_value.data(), copy_len);
+        }
+        return memory.view();
     }
 
 } // namespace FastFHIR

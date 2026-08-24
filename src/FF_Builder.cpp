@@ -32,7 +32,6 @@ namespace FastFHIR {
 Builder::Builder(const Memory& memory, FHIR_VERSION fhir_revision)
 : m_memory(memory),
 m_base(memory.base()),
-m_checksum_offset(FF_NULL_OFFSET),
 m_root_offset(FF_NULL_OFFSET),
 m_root_recovery(FF_RECOVER_UNDEFINED),
 m_fhir_rev(fhir_revision),
@@ -50,7 +49,7 @@ m_active_mutators(0)
     // Parser throws on fresh/provisional memory (header validation fails) —
     // treat that as a new writable stream.
     bool parsed_existing_stream = false;
-    FF_StreamLayout existing_layout = FF_STREAM_LAYOUT_STANDARD;
+    FF_StreamCompaction existing_layout = FF_STREAM_COMPACTION_NONE;
     try {
         Parser p(m_memory);
         parsed_existing_stream = true;
@@ -81,7 +80,7 @@ m_active_mutators(0)
         // No valid FastFHIR stream detected — this is a new stream, leave root unset.
     }
 
-    if (parsed_existing_stream && existing_layout == FF_STREAM_LAYOUT_COMPACT) {
+    if (parsed_existing_stream && existing_layout == FF_STREAM_COMPACTED) {
         throw std::runtime_error(
             "FastFHIR: Cannot open Builder on a compact archive. "
             "Decompact to a standard stream before append/mutation."
@@ -215,6 +214,31 @@ void Builder::amend_variant(Offset object_offset, size_t field_vtable_offset, ui
     STORE_U16(scope.slot() + DATA_BLOCK::RECOVERY, new_tag);
 }
 
+void Builder::amend_datetime(Offset object_offset, size_t field_vtable_offset,
+                             std::string_view text, RECOVERY_TAG tag)
+{
+    // The slot's absent value is FF_DATETIME_NULL, which is all-ones — the same
+    // probe semantics as OffsetIsNull, so the shared _amend_prepare applies.
+    AmendScope scope = _amend_prepare(object_offset, field_vtable_offset,
+                                      sizeof(uint64_t), AssignedProbe::OffsetIsNull,
+                                      "Datetime");
+    // DT-2: the fallback FF_STRING (text that does not fit the packed 63 bits)
+    // is claimed from child space and written by ENCODE_FF_DATETIME; empty and
+    // packable text claim nothing (SIZE_FF_DATETIME returns 0 for both).
+    const Size need = SIZE_FF_DATETIME(text, tag);
+    Offset child_off = m_memory.claim_space(need);
+    const Offset write_head = child_off;
+    const uint64_t encoded = ENCODE_FF_DATETIME(m_base, object_offset, child_off, text, tag);
+    if (child_off != write_head + need)
+    {
+        throw std::runtime_error(
+            "FastFHIR: SIZE/STORE contract violated in datetime amend: claimed " +
+            std::to_string(need) + " bytes but encode consumed " +
+            std::to_string(child_off - write_head) + ".");
+    }
+    STORE_U64(scope.slot(), encoded);
+}
+
 // =====================================================================
 // Finalization & Checksums
 // =====================================================================
@@ -264,46 +288,20 @@ Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &h
     else if (m_root_recovery == FF_RECOVER_UNDEFINED)
         throw std::runtime_error("FastFHIR: Cannot finalize stream. Root recovery tag is UNDEFINED. Calling application must set root explicitly.");
 
-    // Reserve space for the checksum at the end of the stream and write the header metadata
-    m_checksum_offset = m_memory.claim_space(FF_CHECKSUM::HEADER_SIZE);
-
     // If no hasher or algorithm is provided, default to FF_CHECKSUM_NONE and emit a warning. 
     // The stream will still be valid but with a zeroed checksum.
     if (hasher == nullptr || algo == FF_CHECKSUM_NONE) {
         std::cerr << "[FastFHIR] Warning: No hash function provided; file will be emitted with zeroed checksum.\n";
         algo = FF_CHECKSUM_NONE;
     }
-    
-    // Write the FF_HEADER with the root resource info and checksum location.
-    // FF_HEADER lives at offset 0. URL_DIR_OFFSET is populated by
-    // FF_PredigestExtensionURLs via set_url_dir_offset(); MODULE_REG_OFFSET is
-    // reserved for Phase 7 (WASM module binding) and defaults to FF_NULL_OFFSET.
-    STORE_FF_HEADER(
-        m_base,
-        m_fhir_rev,
-        m_memory.size(),
-        m_root_offset,
-        m_root_recovery,
-        m_checksum_offset,
-        m_url_dir_offset,
-        m_module_reg_offset
-    );
 
-    // Writes the 12 bytes of metadata, returns a pointer to byte 12 (the 32-byte slot)
-    BYTE *hash_dst = STORE_FF_CHECKSUM_METADATA(m_base, m_checksum_offset, algo);
-
-    // Seal the stream with the hash algorithm
-    if (hasher != nullptr && algo != FF_CHECKSUM_NONE) {
-        // Hash the payload + the 12 bytes of metadata, stopping exactly where the hash slot begins.
-        Size bytes_to_hash = m_checksum_offset + FF_CHECKSUM::HASH_DATA;
-        std::vector<BYTE> hash_value = hasher(m_base, bytes_to_hash);
-
-        size_t copy_len = std::min(hash_value.size(), static_cast<size_t>(FF_MAX_HASH_BYTES));
-        std::memcpy(hash_dst, hash_value.data(), copy_len);
-    }
-
-    // Return the lifetime-safe view to the memory
-    auto view = m_memory.view();
+    // Shared sealing (header + checksum + hash) with Compactor::archive. The
+    // URL/module directory offsets are builder state; the stream stays standard
+    // layout. The backing file is truncated to the sealed size afterwards.
+    const Memory::View view = seal_stream(m_memory, m_fhir_rev, m_root_offset,
+                                          m_root_recovery, algo, hasher,
+                                          FF_STREAM_COMPACTION_NONE,
+                                          m_url_dir_offset, m_module_reg_offset);
     m_memory.truncate_file(view.size());
     return view;
 }

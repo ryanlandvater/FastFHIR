@@ -30,11 +30,17 @@ from generator.emit.traits import generate_resource_traits_header
 from generator.bindings.python_fields import (
     emit_python_fields,
     emit_python_ast,
+    emit_python_fields_init,
     emit_python_fields_stubs,
     emit_python_ast_stubs,
     emit_py_typed_marker,
 )
-from generator.utilities import enclose_namespace, validate_recovery_tags
+from generator.utilities import (
+    enclose_namespace,
+    validate_codesystem_enums,
+    validate_recovery_bands,
+    validate_recovery_tags,
+)
 
 
 def compile_fhir_library(
@@ -145,14 +151,18 @@ def compile_fhir_library(
                 short = _st._field_key_short_name(orig)
                 ns_name = f"{owner_ns}::{c_name}"
                 owner = path.replace(".", "_").upper()
-                if owner not in python_resource_map:
-                    python_resource_map[owner] = {}
+                # The map key is the FHIR class name the docs/tests import
+                # (Patient, BundleEntry, ObservationComponent) — derived from the
+                # path's own case, not reconstructible from the uppercase owner.
+                class_key = "".join(seg[:1].upper() + seg[1:] for seg in path.split("."))
+                if class_key not in python_resource_map:
+                    python_resource_map[class_key] = {}
                 token_registry.setdefault(path, {})[orig] = (
-                    len(python_resource_map[owner]),
+                    len(python_resource_map[class_key]),
                     ns_name,
                 )
-                python_resource_map[owner][orig] = (
-                    len(python_resource_map[owner]) - 1,
+                python_resource_map[class_key][orig] = (
+                    len(python_resource_map[class_key]) - 1,
                     orig,
                     owner,
                     fld.get("fhir_type", "string"),
@@ -244,14 +254,16 @@ def compile_fhir_library(
                 short = _st._field_key_short_name(orig)
                 ns_name = f"{owner_ns}::{c_name}"
                 owner = path.replace(".", "_").upper()
-                if owner not in python_resource_map:
-                    python_resource_map[owner] = {}
+                # Same PascalCase key rule as the data-type pass above.
+                class_key = "".join(seg[:1].upper() + seg[1:] for seg in path.split("."))
+                if class_key not in python_resource_map:
+                    python_resource_map[class_key] = {}
                 token_registry.setdefault(path, {})[orig] = (
-                    len(python_resource_map[owner]),
+                    len(python_resource_map[class_key]),
                     ns_name,
                 )
-                python_resource_map[owner][orig] = (
-                    len(python_resource_map[owner]) - 1,
+                python_resource_map[class_key][orig] = (
+                    len(python_resource_map[class_key]) - 1,
                     orig,
                     owner,
                     fld.get("fhir_type", "string"),
@@ -294,6 +306,7 @@ def compile_fhir_library(
     fields_inner = ""
 
     registry_entries: list[str] = []
+    registry_index: dict[tuple[str, str], int] = {}
     seen_blocks: set[str] = set()
 
     for path, layout in sorted(block_key_defs, key=lambda item: item[0]):
@@ -323,10 +336,31 @@ def compile_fhir_library(
                 f"{child_rec}, {arr_offsets}, \"{f['cpp_name']}\"}};\n"
             )
             registry_entries.append(f"        &FastFHIR::Fields::{ns_name}::{short_name}")
+            # Record the true global Registry index (keyed by the class name the
+            # Python fields import) so emit_python_fields can emit it — the
+            # per-block indices assigned during map construction are off by one
+            # and do not index this array.
+            ck = "".join(seg[:1].upper() + seg[1:] for seg in path.split("."))
+            registry_index[(ck, f["orig_name"])] = len(registry_entries) - 1
 
         fields_inner += enclose_namespace(ns_name, block_body) + "\n"
 
     field_keys_hpp += enclose_namespace("FastFHIR::Fields", fields_inner) + "\n"
+
+    # ── Reconcile Python field indices with the C++ Registry ─────────────────
+    # The bindings resolve a Python Field by indexing the generated C++
+    # Registry (FF_FieldKeys.cpp), a global array. Rewrite the per-block map
+    # metadata with the true global index; a field the registry does not know
+    # is a generator bug and must fail loudly, not emit a wrong index.
+    for _ck, _fields in python_resource_map.items():
+        for _orig, _meta in _fields.items():
+            _idx, _orig_name, _owner, _fhir_type = _meta
+            python_resource_map[_ck][_orig] = (
+                registry_index[(_ck, _orig)],
+                _orig_name,
+                _owner,
+                _fhir_type,
+            )
 
     cpp_body_fieldkeys = (
         f"    const FF_FieldKey* const Registry[] = {{\n"
@@ -344,13 +378,19 @@ def compile_fhir_library(
     # --- Python field modules + AST path builders + stubs ---
     emit_python_fields(python_resource_map, output_dir)
     emit_python_ast(all_blocks, block_key_defs, token_registry, output_dir)
+    emit_python_fields_init(python_resource_map, output_dir)
     emit_python_fields_stubs(python_resource_map, output_dir)
     emit_python_ast_stubs(all_blocks, block_key_defs, output_dir)
     emit_py_typed_marker(output_dir)
 
     # --- Reflection dispatch ---
+    # Choice [x] variants name a top-level type -- mostly data types (Quantity,
+    # CodeableConcept, Period), occasionally a resource. Dotless paths only:
+    # a backbone element like "Observation.component" is never a variant.
     reflection_hpp, reflection_cpp = generate_reflection_dispatch(
-        sorted(reflected_block_names), resources
+        sorted(reflected_block_names),
+        resources,
+        top_level_types=sorted(p for p in all_blocks if "." not in p),
     )
     write_if_changed(os.path.join(output_dir, "FF_Reflection.hpp"), reflection_hpp)
     write_if_changed(os.path.join(output_dir, "FF_Reflection.cpp"), reflection_cpp)
@@ -379,12 +419,35 @@ def compile_fhir_library(
     write_if_changed(os.path.join(output_dir, "FF_AllTypes.hpp"), all_types_hpp)
 
     # --- Validate RECOVERY_TAG references against the permanent header ---
-    # include/FF_Recovery.hpp is hand-maintained; the generator only references
-    # its tags, and builds some of those names by concatenation. This checks
-    # every emitted tag actually exists, instead of letting a bad name surface
+    # generated_src/FF_Recovery.hpp is GENERATED from dictionaries/master_tags.json at
+    # stage 1b, so every tag the spec needs is already declared by now. The
+    # emitters build some tag names by concatenation, though, so this checks
+    # every emitted name actually resolves, instead of letting a bad one surface
     # as a wall of C++ "undeclared identifier" errors.
-    n_tags = validate_recovery_tags(output_dir, "include/FF_Recovery.hpp")
-    print(f"-- Validated {n_tags} RECOVERY_TAG references against include/FF_Recovery.hpp")
+    # Against the header just emitted into output_dir, NOT a hardcoded
+    # "generated_src/FF_Recovery.hpp". The wire-format tests generate into a
+    # temporary directory (tests/generator/conftest.py), so the hardcoded path
+    # made a clean checkout fail outright and a dirty one validate the temporary
+    # sources against an unrelated stale header -- the check silently stopped
+    # being about the tree it was checking.
+    recovery_hpp = os.path.join(output_dir, "FF_Recovery.hpp")
+    n_tags = validate_recovery_tags(output_dir, recovery_hpp)
+    print(f"-- Validated {n_tags} RECOVERY_TAG references against {recovery_hpp}")
+
+    # --- Validate the header's own band discipline ---
+    # Independent of what was emitted: every tag must sit inside a band, and no
+    # two tags may share a value. Bands drive runtime classification
+    # (FF_IsResourceTag), so a misplaced tag is silent, not a compile error.
+    validate_recovery_bands(recovery_hpp)
+    print("-- Validated RECOVERY_TAG band membership and uniqueness")
+
+    # --- GEN-1 guard: the code-system header must satisfy what was emitted ---
+    # The generator has twice produced a short FF_CodeSystems.hpp beside
+    # resource sources that expect the full set, which surfaces as a wall of
+    # "use of undeclared identifier" errors in generated code -- once while a
+    # stale test binary reported PASS. Fail here, named, instead.
+    n_enums = validate_codesystem_enums(output_dir)
+    print(f"-- Validated {n_enums} code-system enum references against FF_CodeSystems.hpp")
 
     # --- Ingest mappings ---
     from generator.emit.ingest_mappings import generate_ingest_mappings
@@ -398,7 +461,7 @@ def compile_fhir_library(
 _DATA_TYPES_TRAITS = """template<> struct TypeTraits<std::string_view> {
     static constexpr auto recovery = RECOVER_FF_STRING;
     static Size size(std::string_view d, uint32_t = FHIR_VERSION_R5) { return SIZE_FF_STRING(d); }
-    static void store(BYTE* const base, Offset off, std::string_view d, uint32_t = FHIR_VERSION_R5) { STORE_FF_STRING(base, off, d); }
+    static Offset store(BYTE* const base, Offset off, std::string_view d, uint32_t = FHIR_VERSION_R5) { return off + STORE_FF_STRING(base, off, d); }
 };
 
 template<> struct TypeTraits<std::vector<Offset>> {
@@ -407,38 +470,52 @@ template<> struct TypeTraits<std::vector<Offset>> {
 template<> struct TypeTraits<std::vector<ResourceReference>> {
     static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_RESOURCE | RECOVER_ARRAY_BIT);
     static Size size(const std::vector<ResourceReference>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_RESOURCE); }
-    static void store(BYTE* const base, Offset off, const std::vector<ResourceReference>& d, uint32_t = FHIR_VERSION_R5) {
+    static Offset store(BYTE* const base, Offset off, const std::vector<ResourceReference>& d, uint32_t = FHIR_VERSION_R5) {
         STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_RESOURCE, static_cast<uint32_t>(d.size()), recovery);
         for (const auto& ref : d) {
             STORE_U64(base + off, ref.offset); STORE_U16(base + off + DATA_BLOCK::RECOVERY, ref.recovery); off += TYPE_SIZE_RESOURCE;
         }
+        return off;
     }
 };
 
 template<> struct TypeTraits<std::vector<uint8_t>> {
     static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_BOOL | RECOVER_ARRAY_BIT);
     static Size size(const std::vector<uint8_t>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_UINT8); }
-    static void store(BYTE* const base, Offset off, const std::vector<uint8_t>& d, uint32_t = FHIR_VERSION_R5) {
+    static Offset store(BYTE* const base, Offset off, const std::vector<uint8_t>& d, uint32_t = FHIR_VERSION_R5) {
         STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_UINT8, static_cast<uint32_t>(d.size()), recovery);
         for (const auto& v : d) { STORE_U8(base + off, v); off += TYPE_SIZE_UINT8; }
+        return off;
     }
 };
 
 template<> struct TypeTraits<std::vector<uint32_t>> {
     static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_UINT32 | RECOVER_ARRAY_BIT);
     static Size size(const std::vector<uint32_t>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_UINT32); }
-    static void store(BYTE* const base, Offset off, const std::vector<uint32_t>& d, uint32_t = FHIR_VERSION_R5) {
+    static Offset store(BYTE* const base, Offset off, const std::vector<uint32_t>& d, uint32_t = FHIR_VERSION_R5) {
         STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_UINT32, static_cast<uint32_t>(d.size()), recovery);
         for (const auto& v : d) { STORE_U32(base + off, v); off += TYPE_SIZE_UINT32; }
+        return off;
     }
 };
 
 template<> struct TypeTraits<std::vector<double>> {
     static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_FLOAT64 | RECOVER_ARRAY_BIT);
-    static Size size(const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_FLOAT64); }
-    static void store(BYTE* const base, Offset off, const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) {
-        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_FLOAT64, static_cast<uint32_t>(d.size()), recovery);
-        for (const auto& v : d) { STORE_F64(base + off, v); off += TYPE_SIZE_FLOAT64; }
+    // A decimal entry is TYPE_SIZE_DECIMAL wide, not TYPE_SIZE_FLOAT64: the 9th
+    // byte is the source digit count. std::vector<double> has nowhere to keep a
+    // per-element count, so every entry writes the sentinel and exports
+    // shortest-round-trip -- but the STRIDE must still match what
+    // generate_store_fields emits for the same array, or the two writers
+    // disagree by one byte per element and the reader walks off the entries.
+    static Size size(const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_DECIMAL); }
+    static Offset store(BYTE* const base, Offset off, const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) {
+        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_DECIMAL, static_cast<uint32_t>(d.size()), recovery);
+        for (const auto& v : d) {
+            STORE_F64(base + off, v);
+            STORE_U8(base + off + TYPE_SIZE_UINT64, FF_DECIMAL_SIGFIGS_UNSPECIFIED);
+            off += TYPE_SIZE_DECIMAL;
+        }
+        return off;
     }
 };
 

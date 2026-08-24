@@ -38,13 +38,27 @@ model/               Pure data. No string emission.
                        tests/generator/test_model.py.
 
 emit/                model -> C++ strings.
-  dictionary.py        THE ID LEDGER. Scans packages, appends new codes, emits
-                       dictionaries/*.cpp. Owns numbering.
-  codes_header.py      Emits dictionaries/FF_Codes.hpp, scoped by source then
-                       CodeSystem. Owns naming (source-level only).
+  -- the three ledger emitters; see "Ledgers vs projections" below --
+  code_ids.py          Owns code NUMBERING (permanent). Scans packages, appends
+                       to dictionaries/master_codes.json, emits the string table
+                       and per-version lookup tables into the output dir.
+  code_names.py        Owns code NAMING (source-level only). Mints C++
+                       identifiers and emits FF_Codes.hpp into the output dir.
+  recovery_tags.py     Owns tag NUMBERING (permanent). Reconciles
+                       dictionaries/master_tags.json and emits
+                       FF_Recovery.hpp into the output dir. No naming
+                       counterpart: a tag's name is mechanically its FHIR path.
   codesystems.py       Bounded code enums (FF_CodeSystems.hpp)
   store.py             size_fields / store_fields
   deserialize.py       Eager struct deserializers
+  ingest_mappings.py   simdjson _from_json deserializers (the heaviest emitter).
+                       Which simdjson accessor a scalar primitive gets is the
+                       _SCALAR_INGEST table, keyed on SCALAR_PRIMITIVE_TYPES and
+                       shared by the 0..1 and 0..* paths -- never an if/elif
+                       chain with a catch-all arm. A catch-all cannot tell a type
+                       it planned for from one nobody wired up, which is how
+                       every `decimal` in the spec spent its life being read with
+                       get_uint64() and discarded.
   views.py             Lazy view structs, reflection dispatch
   traits.py            Resource trait headers
   header.py            auto_header banner, write_if_changed
@@ -64,10 +78,13 @@ noted above, which are deliberately staged for planned work rather than dead.
 1. **Fetch** — `specs.py` pulls `hl7.fhir.r4.core` / `r5.core` from
    packages.fhir.org into `fhir_packages/<version>/package/`. Cached; needs
    network only on first run.
-2. **Reconcile IDs** — `emit/dictionary.py` scans the packages and appends any
+2. **Reconcile IDs** — `emit/code_ids.py` scans the packages and appends any
    new codes to `master_codes.json`. **Append-only.**
-3. **Emit `dictionaries/`** — `codes_header.py` writes `FF_Codes.hpp`;
-   `dictionary.py` writes the string table and per-version lookup tables.
+3. **Project the ledger** — `emit/code_names.py` writes `FF_Codes.hpp` into the
+   output dir; `emit/code_ids.py` writes the string table and per-version lookup
+   tables, also into the output dir. (Both, plus `recovery_tags.py`, honor
+   `--output-dir`; the wire gate regenerates into a tmp dir and witnesses that
+   tree.)
 4. **Code systems** — `emit/codesystems.py` writes `FF_CodeSystems.hpp`.
 5. **Library** — `library.py` emits the per-resource C++, field keys,
    reflection, and Python bindings.
@@ -87,3 +104,28 @@ pytest tests/generator -q
 
 The generated C++ has its own hand-tuned style and is out of scope for these
 tools.
+
+
+## Ledgers vs projections
+
+Three emitters own permanent wire numbers. They are split along one axis, and it
+is worth knowing which:
+
+| module | owns | ledger | emits | permanent? |
+|---|---|---|---|---|
+| `emit/code_ids.py` | code **numbering** | `dictionaries/master_codes.json` | `generated_src/FF_Dictionary_Strings.cpp` + the three lookup tables | **yes** |
+| `emit/code_names.py` | code **naming** | (reads the ledger's `scopes`) | `generated_src/FF_Codes.hpp` | no — a rename breaks a recompile and nothing else |
+| `emit/recovery_tags.py` | tag **numbering** | `dictionaries/master_tags.json` | `generated_src/FF_Recovery.hpp` | **yes** |
+
+Codes need two modules because a code's *name* is a real decision:
+`FF_CODE::FHIR::ADMINISTRATIVE_GENDER::MALE` involves scoping and collision
+handling (`CO`/`co`, `T`/`t`, `PHF`/`PhF` come from different systems).
+Separating naming from numbering is what makes "a rename is allowed, a renumber
+is not" enforceable rather than aspirational.
+
+Recovery tags have no such axis — the name is mechanically the path
+(`Bundle.entry` -> `RECOVER_FF_BUNDLE_ENTRY`), so there is nothing to mint and
+no second module.
+
+**The ledgers live in `dictionaries/` and are committed. Everything projected
+from them is generator output.** A projection is not a second source of truth.

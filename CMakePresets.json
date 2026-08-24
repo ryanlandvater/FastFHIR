@@ -1,0 +1,77 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "cacheVariables": {
+        "FASTFHIR_BUILD_TESTS": "ON",
+        "FASTFHIR_BUILD_INGESTOR": "ON",
+        "FASTFHIR_RUN_GENERATOR": "ON",
+        "FASTFHIR_PRODUCTION_PROFILE": "us-core,billing,medication-admin,supply"
+      }
+    },
+
+    {
+      "name": "xcode",
+      "inherits": "base",
+      "displayName": "Xcode (build-xcode)",
+      "description": "Xcode project for debugging tests and tools. Multi-config: pick Debug in the scheme, not CMAKE_BUILD_TYPE. Scheme generation is OFF here and re-enabled per runnable target at the bottom of CMakeLists.txt; set it ON for a scheme per target.",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build-xcode",
+      "cacheVariables": {
+        "CMAKE_XCODE_GENERATE_SCHEME": "OFF",
+        "CMAKE_XCODE_ATTRIBUTE_GCC_OPTIMIZATION_LEVEL[variant=Debug]": "0",
+        "CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH[variant=Debug]": "YES",
+        "CMAKE_XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT": "dwarf-with-dsym"
+      }
+    },
+
+    {
+      "name": "xcode-asan",
+      "inherits": "xcode",
+      "displayName": "Xcode + AddressSanitizer (build-xcode-asan)",
+      "description": "Same project with ASan/UBSan on. Use for A14 and any crash hunt; see TASKS.md G2.",
+      "binaryDir": "${sourceDir}/build-xcode-asan",
+      "cacheVariables": {
+        "CMAKE_XCODE_SCHEME_ADDRESS_SANITIZER": "ON",
+        "CMAKE_XCODE_SCHEME_UNDEFINED_BEHAVIOUR_SANITIZER": "ON"
+      }
+    },
+
+    {
+      "name": "ninja",
+      "inherits": "base",
+      "displayName": "Ninja (build)",
+      "description": "Command-line build used by CLAUDE.md and CI. Single-config.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FASTFHIR_BUILD_PYTHON_BINDINGS": "ON"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "xcode",       "configurePreset": "xcode",       "configuration": "Debug" },
+    { "name": "xcode-asan",  "configurePreset": "xcode-asan",  "configuration": "Debug" },
+    { "name": "ninja",       "configurePreset": "ninja" }
+  ],
+
+  "testPresets": [
+    {
+      "name": "xcode",
+      "configurePreset": "xcode",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "ninja",
+      "configurePreset": "ninja",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

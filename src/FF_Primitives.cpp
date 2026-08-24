@@ -74,8 +74,8 @@ FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
     // 3. FastFHIR Engine Version / Stream Layout metadata checks
     uint32_t encoded_version = LOAD_U32(__base + VERSION);
     uint32_t engine_ver = FF_HEADER_ENGINE_VERSION(encoded_version);
-    FF_StreamLayout layout = FF_HEADER_STREAM_LAYOUT(encoded_version);
-    if (layout != FF_STREAM_LAYOUT_STANDARD && layout != FF_STREAM_LAYOUT_COMPACT) {
+    FF_StreamCompaction layout = FF_HEADER_STREAM_LAYOUT(encoded_version);
+    if (layout != FF_STREAM_COMPACTION_NONE && layout != FF_STREAM_COMPACTED) {
         return {FF_VALIDATION_FAILURE, "FF_HEADER stream layout flag is invalid."};
     }
     // if ((engine_ver >> 16) > FF_VERSION_MAJOR) return {FF_VALIDATION_FAILURE, "Unsupported engine."};
@@ -98,7 +98,7 @@ FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
 uint32_t FF_HEADER::get_engine_version(const BYTE* const __base) const {
     return FF_HEADER_ENGINE_VERSION(LOAD_U32(__base + VERSION));
 }
-FF_StreamLayout FF_HEADER::get_stream_layout(const BYTE* const __base) const {
+FF_StreamCompaction FF_HEADER::get_stream_layout(const BYTE* const __base) const {
     return FF_HEADER_STREAM_LAYOUT(LOAD_U32(__base + VERSION));
 }
 uint16_t FF_HEADER::get_fhir_rev(const BYTE* const __base) const { return LOAD_U16(__base + FHIR_REV); }
@@ -128,7 +128,7 @@ void STORE_FF_HEADER (BYTE* const __base,
                             Offset checksum_offset,
                             Offset url_dir_offset,
                             Offset module_reg_offset,
-                            FF_StreamLayout stream_layout) {
+                            FF_StreamCompaction stream_layout) {
                             
     STORE_U32(__base + FF_HEADER::MAGIC, FF_MAGIC_BYTES);
     STORE_U16(__base + FF_HEADER::RECOVERY, RECOVER_FF_HEADER); // Assumes you defined this tag
@@ -297,8 +297,20 @@ std::string FF_STRING::read(const BYTE* const __base) const {
 // =====================================================================
 // LOCK-FREE STRING & MSB DICTIONARY EMITTERS
 // =====================================================================
+// SIZE_FF_STRING reports the size of what STORE_FF_STRING WRITES -- nothing else.
+// It must never special-case the empty string: STORE_FF_STRING writes a full
+// 14-byte FF_STRING header for a zero-length payload, so a size of 0 here means
+// the caller claims 14 bytes too few and the store runs into whatever the NEXT
+// claim_space() hands out. That is the exact mechanism of TASKS.md A23 Bug B,
+// reachable through three separate paths (string[] elements, unique_ptr-stored
+// dateTime/markdown/... fields, and TypeTraits<std::string_view>).
+//
+// "Absent" is NOT this function's job. Callers that treat an empty string as an
+// absent field guard with `!empty()` and write FF_NULL_OFFSET into the slot --
+// see generate_size_fields/generate_store_fields, which guard in lockstep. Array
+// elements cannot be skipped that way (it would change the element count), so
+// they store a real empty FF_STRING and this size must account for it.
 Size SIZE_FF_STRING(std::string_view str) {
-    if (str.empty()) return 0;
     return FF_STRING::HEADER_SIZE + str.size();
 }
 Size SIZE_FF_CODE(std::string_view code_str, uint32_t version = FHIR_VERSION_R5) {
@@ -315,12 +327,13 @@ Offset STORE_FF_CODE(BYTE* const __base, Offset start_offset, std::string_view c
     return STORE_FF_STRING(__base, start_offset, code_str);
 }
 
-Size STORE_FF_STRING(BYTE* const __base, Offset start_offset, std::string_view str) {
+Size STORE_FF_STRING(BYTE* const __base, Offset start_offset, std::string_view str,
+                     RECOVERY_TAG tag) {
     auto __ptr = __base + start_offset;
     uint32_t length = static_cast<uint32_t>(str.size());
-    
+
     STORE_U64(__ptr + DATA_BLOCK::VALIDATION, start_offset);
-    STORE_U16(__ptr + DATA_BLOCK::RECOVERY,   RECOVER_FF_STRING);
+    STORE_U16(__ptr + DATA_BLOCK::RECOVERY,   tag);
     STORE_U32(__ptr + FF_STRING::LENGTH,      length);
     
     std::memcpy(__ptr + FF_STRING::STRING_DATA, str.data(), length);
@@ -335,7 +348,16 @@ static uint32_t _pack_codeable_concept_offset(Offset cc_offset, Offset block_off
     if (rel < -0x40000000LL || rel > 0x3FFFFFFFLL) {
         throw std::runtime_error("FastFHIR: CodeableConcept relative offset exceeds ±1 GB.");
     }
-    return (static_cast<uint32_t>(static_cast<int32_t>(rel)) & 0x7FFFFFFFu) | FF_CODEABLE_CONCEPT_FLAG;
+    // rel == -1 encodes to all-ones, which IS FF_CODE_NULL. It cannot occur
+    // -- the smallest block is DATA_BLOCK::HEADER_SIZE bytes, so a preceding
+    // FF_CODEABLE_CONCEPT is at least that far back -- but the sentinel's whole
+    // claim to that bit pattern is that no real offset produces it, and a claim
+    // worth making is worth checking. FF_DATETIME has the identical case at 63 bits.
+    if (rel == -1) {
+        throw std::runtime_error(
+            "FastFHIR: CodeableConcept fallback offset of -1 collides with FF_CODE_NULL.");
+    }
+    return (static_cast<uint32_t>(static_cast<int32_t>(rel)) & FF_CODE_PAYLOAD_MASK) | FF_CODEABLE_CONCEPT_FLAG;
 }
 
 // =====================================================================
@@ -503,6 +525,264 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
     write_cc_header_(ptr, cc_offset, child_off, codec->system, payload_len);
     std::memcpy(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, code_str.data(), code_str.size());
     return _pack_codeable_concept_offset(cc_offset, block_offset);
+}
+
+// =====================================================================
+// PACKED DATE/TIME — parse, format, and the SIZE/STORE/ENCODE triple
+// =====================================================================
+// The date/time counterpart of the code emitters above; the slot contract is
+// tabulated against FF_CODE's in FF_Primitives.hpp. Text that parses and fits
+// becomes a packed 63-bit value; anything else keeps its ORIGINAL bytes in an
+// FF_STRING reached by a signed relative offset. That is what makes the round
+// trip byte-exact without asking the wire format to be a text format.
+//
+// A parse failure is NOT an exception, deliberately. It takes the same fallback
+// path as text that is legal but does not fit, for the same reason a code that
+// is not in the dictionary becomes a block instead of an error: preserving the
+// bytes that arrived is always defensible, and deciding whether they are legal
+// FHIR belongs to ingest (DT-3), which has the resource context to say so.
+
+static uint64_t _pack_datetime_offset(Offset str_offset, Offset block_offset) {
+    int64_t rel = static_cast<int64_t>(str_offset) - static_cast<int64_t>(block_offset);
+    if (rel < -0x4000000000000000LL || rel > 0x3FFFFFFFFFFFFFFFLL) {
+        throw std::runtime_error(
+            "FastFHIR: date/time fallback offset " + std::to_string(rel) +
+            " exceeds the 63-bit signed relative range.");
+    }
+    // rel == -1 encodes to all-ones, which IS FF_DATETIME_NULL. It cannot occur
+    // -- the smallest block is DATA_BLOCK::HEADER_SIZE bytes, so a preceding
+    // FF_STRING is at least that far back -- but the sentinel's whole claim to
+    // that bit pattern is that no real offset produces it, and a claim worth
+    // making is worth checking. FF_CODE has the identical latent case at 31 bits.
+    if (rel == -1) {
+        throw std::runtime_error(
+            "FastFHIR: date/time fallback offset of -1 collides with FF_DATETIME_NULL.");
+    }
+    return (static_cast<uint64_t>(rel) & FF_DATETIME_PAYLOAD_MASK) | FF_DATETIME_FALLBACK_FLAG;
+}
+
+namespace {
+
+constexpr bool dt_is_leap(uint32_t y) noexcept {
+    return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+}
+
+constexpr uint32_t dt_days_in_month(uint32_t y, uint32_t m) noexcept {
+    constexpr uint8_t DAYS[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    return (m == 2 && dt_is_leap(y)) ? 29u : DAYS[m - 1];
+}
+
+constexpr uint8_t dt_rank(FF_DateTimePrecision p) noexcept {
+    return static_cast<uint8_t>(p);
+}
+
+// Exactly `count` ASCII digits at `pos`. Strict on purpose: FHIR zero-pads every
+// field, so "2024-1-5" is not a value FHIR can express, and accepting it would
+// re-render as different text than arrived -- a silent edit, not a round trip.
+bool dt_digits(std::string_view s, size_t pos, size_t count, uint32_t& out) noexcept {
+    if (pos + count > s.size()) return false;
+    uint32_t v = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const char c = s[pos + i];
+        if (c < '0' || c > '9') return false;
+        v = v * 10 + static_cast<uint32_t>(c - '0');
+    }
+    out = v;
+    return true;
+}
+
+// `Z` or +/-hh:mm, and it must be the whole remainder of the text.
+bool dt_timezone(std::string_view s, size_t pos, int16_t& out) noexcept {
+    if (pos >= s.size()) return false;
+    if (s[pos] == 'Z') {
+        if (pos + 1 != s.size()) return false;
+        out = FF_DATETIME_OFFSET_Z;
+        return true;
+    }
+    const char sign = s[pos];
+    if (sign != '+' && sign != '-') return false;
+
+    uint32_t hh = 0, mm = 0;
+    if (!dt_digits(s, pos + 1, 2, hh)) return false;
+    if (pos + 3 >= s.size() || s[pos + 3] != ':') return false;
+    if (!dt_digits(s, pos + 4, 2, mm) || pos + 6 != s.size()) return false;
+    if (mm > 59) return false;
+
+    const int32_t minutes = static_cast<int32_t>(hh) * 60 + static_cast<int32_t>(mm);
+    if (minutes > FF_DATETIME_OFFSET_MAX) return false;   // beyond +/-14:00
+    out = static_cast<int16_t>(sign == '-' ? -minutes : minutes);
+    return true;
+}
+
+// hh:mm:ss[.f{1,3}] starting at `pos`; `end` lands on the first byte after it.
+// A fraction of 4+ digits is legal FHIR that this layout cannot hold, so it is
+// rejected here and collected by the FF_STRING fallback.
+bool dt_time(std::string_view s, size_t pos, FF_DateTimeParts& p, size_t& end) noexcept {
+    uint32_t hh = 0, mm = 0, ss = 0;
+    if (!dt_digits(s, pos, 2, hh)) return false;
+    if (pos + 2 >= s.size() || s[pos + 2] != ':') return false;
+    if (!dt_digits(s, pos + 3, 2, mm)) return false;
+    if (pos + 5 >= s.size() || s[pos + 5] != ':') return false;
+    if (!dt_digits(s, pos + 6, 2, ss)) return false;
+    if (hh > 23 || mm > 59 || ss > 60) return false;   // 60: leap seconds are legal FHIR
+
+    p.hour      = static_cast<uint8_t>(hh);
+    p.minute    = static_cast<uint8_t>(mm);
+    p.second    = static_cast<uint8_t>(ss);
+    p.precision = FF_DateTimePrecision::SECOND;
+    end         = pos + 8;
+
+    if (end >= s.size() || s[end] != '.') return true;
+
+    uint32_t frac = 0, digits = 0;
+    for (size_t i = end + 1; i < s.size() && s[i] >= '0' && s[i] <= '9'; ++i, ++digits) {
+        if (digits == 3) return false;                 // 4+ fractional digits
+        frac = frac * 10 + static_cast<uint32_t>(s[i] - '0');
+    }
+    if (digits == 0) return false;                     // a bare '.' is not a value
+
+    constexpr uint16_t SCALE[3] = {100, 10, 1};
+    p.millisecond = static_cast<uint16_t>(frac * SCALE[digits - 1]);
+    p.precision   = static_cast<FF_DateTimePrecision>(
+        dt_rank(FF_DateTimePrecision::SECOND) + digits);
+    end += 1 + digits;
+    return true;
+}
+
+void dt_append(std::string& s, uint32_t value, size_t width) {
+    char buf[4];
+    for (size_t i = width; i-- > 0; value /= 10) {
+        buf[i] = static_cast<char>('0' + value % 10);
+    }
+    s.append(buf, width);
+}
+
+} // namespace
+
+std::optional<FF_DateTimeParts> FF_PARSE_DATETIME(std::string_view text, RECOVERY_TAG tag) {
+    if (text.empty()) return std::nullopt;
+
+    const RECOVERY_TAG base = GetTypeFromTag(tag);
+    FF_DateTimeParts p;
+
+    // FHIR 'time' is a duration since midnight: no date, no timezone. Both the
+    // days and offset fields stay zero, which is the rule that keeps two equal
+    // values one integer compare (see FF_DateTimeParts).
+    if (base == RECOVER_FF_TIME) {
+        size_t end = 0;
+        if (!dt_time(text, 0, p, end) || end != text.size()) return std::nullopt;
+        return p;
+    }
+
+    uint32_t y = 0, m = 1, d = 1;
+    if (!dt_digits(text, 0, 4, y) || y < 1) return std::nullopt;   // 4 digits caps y at 9999
+    p.precision = FF_DateTimePrecision::YEAR;
+    size_t pos = 4;
+
+    if (pos < text.size()) {
+        if (text[pos] != '-' || !dt_digits(text, pos + 1, 2, m)) return std::nullopt;
+        if (m < 1 || m > 12) return std::nullopt;
+        p.precision = FF_DateTimePrecision::YEAR_MONTH;
+        pos += 3;
+    }
+    if (pos < text.size() && text[pos] == '-') {
+        if (!dt_digits(text, pos + 1, 2, d)) return std::nullopt;
+        if (d < 1 || d > dt_days_in_month(y, m)) return std::nullopt;
+        p.precision = FF_DateTimePrecision::DATE;
+        pos += 3;
+    }
+    p.days = ff_datetime_days_from_civil(static_cast<int32_t>(y), m, d);
+
+    if (pos < text.size()) {
+        // FHIR's grammar makes the timezone mandatory once 'T' is present, which
+        // is also why there is no MINUTE precision to represent.
+        if (text[pos] != 'T') return std::nullopt;
+        size_t end = 0;
+        if (!dt_time(text, pos + 1, p, end)) return std::nullopt;
+        if (!dt_timezone(text, end, p.utc_offset)) return std::nullopt;
+    }
+
+    // Per-type rules. One encoder, four tags: the tag is what says which of the
+    // union's members this text is allowed to be.
+    const bool has_time = dt_rank(p.precision) >= dt_rank(FF_DateTimePrecision::SECOND);
+    if (base == RECOVER_FF_DATE && has_time) return std::nullopt;
+    if (base == RECOVER_FF_INSTANT && !has_time) return std::nullopt;
+    return p;
+}
+
+std::string FF_FORMAT_DATETIME(const FF_DateTimeParts& p, RECOVERY_TAG tag) {
+    const RECOVERY_TAG base = GetTypeFromTag(tag);
+    const uint8_t prec = dt_rank(p.precision);
+    std::string out;
+
+    if (base != RECOVER_FF_TIME) {
+        const FF_CivilDate civil = ff_datetime_civil_from_days(p.days);
+        dt_append(out, static_cast<uint32_t>(civil.year), 4);
+        if (prec >= dt_rank(FF_DateTimePrecision::YEAR_MONTH)) {
+            out += '-';
+            dt_append(out, civil.month, 2);
+        }
+        if (prec >= dt_rank(FF_DateTimePrecision::DATE)) {
+            out += '-';
+            dt_append(out, civil.day, 2);
+        }
+        if (prec < dt_rank(FF_DateTimePrecision::SECOND)) return out;
+        out += 'T';
+    }
+
+    dt_append(out, p.hour, 2);
+    out += ':';
+    dt_append(out, p.minute, 2);
+    out += ':';
+    dt_append(out, p.second, 2);
+
+    if (prec > dt_rank(FF_DateTimePrecision::SECOND)) {
+        constexpr uint16_t SCALE[3] = {100, 10, 1};
+        const uint8_t digits = prec - dt_rank(FF_DateTimePrecision::SECOND);
+        out += '.';
+        dt_append(out, p.millisecond / SCALE[digits - 1], digits);
+    }
+
+    if (base == RECOVER_FF_TIME) return out;
+    if (p.utc_offset == FF_DATETIME_OFFSET_Z) return out += 'Z';
+
+    const uint32_t magnitude =
+        static_cast<uint32_t>(p.utc_offset < 0 ? -p.utc_offset : p.utc_offset);
+    out += (p.utc_offset < 0) ? '-' : '+';
+    dt_append(out, magnitude / 60, 2);
+    out += ':';
+    dt_append(out, magnitude % 60, 2);
+    return out;
+}
+
+Size SIZE_FF_DATETIME(std::string_view text, RECOVERY_TAG tag) {
+    if (text.empty()) return 0;
+    const std::optional<FF_DateTimeParts> parts = FF_PARSE_DATETIME(text, tag);
+    if (parts && ff_datetime_fits(*parts)) return 0;   // packs inline, no child block
+    return SIZE_FF_STRING(text);
+}
+
+Offset STORE_FF_DATETIME(BYTE* const __base, Offset start_offset,
+                         std::string_view text, RECOVERY_TAG tag) {
+    if (text.empty()) return 0;
+    const std::optional<FF_DateTimeParts> parts = FF_PARSE_DATETIME(text, tag);
+    if (parts && ff_datetime_fits(*parts)) return 0;
+    return STORE_FF_STRING(__base, start_offset, text);
+}
+
+uint64_t ENCODE_FF_DATETIME(BYTE* const __base, Offset block_offset, Offset& child_off,
+                            std::string_view text, RECOVERY_TAG tag) {
+    if (text.empty()) return FF_DATETIME_NULL;
+
+    // ff_datetime_fits is not redundant with the parser's own range checks: it
+    // is the one place FF_PACK_DATETIME's precondition is enforced, so a future
+    // parser change cannot quietly start packing a value the fields cannot hold.
+    const std::optional<FF_DateTimeParts> parts = FF_PARSE_DATETIME(text, tag);
+    if (parts && ff_datetime_fits(*parts)) return FF_PACK_DATETIME(*parts);
+
+    const Offset str_offset = child_off;
+    child_off += STORE_FF_STRING(__base, str_offset, text);
+    return _pack_datetime_offset(str_offset, block_offset);
 }
 
 // =====================================================================

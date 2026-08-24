@@ -30,6 +30,16 @@ namespace FastFHIR
         class ObjectHandle;
     }
 
+    // FF_* external API (declared fully in FastFHIR.hpp). Forward declarations
+    // live here so the sealed-stream lifecycle methods can be private and
+    // reachable only from the FF_* wrapper layer in src/FF_API.cpp.
+    struct FF_StreamSetRootInfo;
+    struct FF_StreamFinalizeInfo;
+    struct FF_StreamQueryInfo;
+    FF_Result FF_StreamSetRoot(const FF_StreamSetRootInfo&) noexcept;
+    FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo&, Memory::View&) noexcept;
+    FF_Result FF_StreamQuery(const FF_StreamQueryInfo&, Parser&) noexcept;
+
     // =====================================================================
     // BUILDER
     // =====================================================================
@@ -44,10 +54,12 @@ namespace FastFHIR
     class Builder
     {
         friend class FastFHIR::AdvancedBuilderAccess;
+        friend FF_Result FF_StreamSetRoot(const FF_StreamSetRootInfo&) noexcept;
+        friend FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo&, Memory::View&) noexcept;
+        friend FF_Result FF_StreamQuery(const FF_StreamQueryInfo&, Parser&) noexcept;
 
         Memory m_memory;
         BYTE *const m_base;
-        Offset m_checksum_offset;
         Offset m_url_dir_offset = FF_NULL_OFFSET;
         Offset m_module_reg_offset = FF_NULL_OFFSET;
         Offset m_root_offset;
@@ -174,18 +186,6 @@ namespace FastFHIR
         explicit Builder(const Memory &memory, FHIR_VERSION fhir_revision = FHIR_VERSION_R5);
         ~Builder();
 
-        /**
-         * @brief Generates a lightweight, snapshot of the current stream.
-         * Creating this is nearly zero-cost as it only populates CPU registers.
-         *
-         * @return A new Parser instance that can be used to read the current state of the stream without
-         * interfering with ongoing mutations.
-         */
-        Parser query() const
-        {
-            return Parser(m_memory);
-        }
-
         // --- Lock-Free Concurrent Appending ---
 
         /**
@@ -211,8 +211,22 @@ namespace FastFHIR
             // Thread-safe claim of space in the arena for the new data
             Offset offset = m_memory.claim_space(data_size);
 
-            // Thread-safe write of the data into the claimed space
-            TypeTraits<T_Data>::store(m_base, offset, data, m_fhir_rev);
+            // Thread-safe write of the data into the claimed space. The generated
+            // STORE_* returns the absolute end offset; enforcing the SIZE/STORE
+            // contract here means a generator SIZE/STORE disagreement fails loudly
+            // instead of silently letting the next claim overlap this resource's
+            // tail (TASKS.md A23 / Bug B). This is what makes the arena layout
+            // strict rather than assumed.
+            const Offset end = TypeTraits<T_Data>::store(m_base, offset, data, m_fhir_rev);
+            if (end != offset + data_size) {
+                throw std::runtime_error(
+                    "FastFHIR: SIZE/STORE contract violated: claimed " +
+                    std::to_string(data_size) + " bytes but store consumed " +
+                    std::to_string(end - offset) + " (recovery tag " +
+                    std::to_string(static_cast<unsigned>(TypeTraits<T_Data>::recovery)) +
+                    "). This is a generator bug — the SIZE and STORE emitters "
+                    "disagree (TASKS.md A8.2/A23).");
+            }
 
             // Return the offset where the data was written for potential pointer patching
             return offset;
@@ -223,6 +237,11 @@ namespace FastFHIR
          */
         template <typename T_Data>
         Reflective::ObjectHandle append_obj(const T_Data &data);
+
+        /**
+         * @brief Overload for appending offset arrays and returning a proxy handle.
+         */
+        Reflective::ObjectHandle append_obj(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag);
 
         /**
          * @brief Overload for strongly-typed Offset Arrays.
@@ -256,14 +275,75 @@ namespace FastFHIR
                 STORE_U64(m_base + write_head, off);
                 write_head += 8;
             }
+            if (write_head != offset + data_size) {
+                throw std::runtime_error(
+                    "FastFHIR: SIZE/STORE contract violated in offset-array append: claimed " +
+                    std::to_string(data_size) + " bytes but wrote " +
+                    std::to_string(write_head - offset) + ".");
+            }
 
             return offset;
         }
 
         /**
-         * @brief Overload for appending offset arrays and returning a proxy handle.
+         * @brief Retain a FHIR resource this build cannot type, verbatim.
+         *
+         * The generated ingest dispatch knows only the resources in the
+         * compiled FASTFHIR_PRODUCTION_PROFILE. Anything else used to be
+         * DISCARDED with a log line -- an entry shell with `fullUrl` and
+         * `request` but no `resource`, which is not valid FHIR in a transaction
+         * bundle and loses clinical data outright.
+         *
+         * Instead the raw JSON is copied into the arena as an FF_STRING-layout
+         * block tagged RECOVER_FF_OPAQUE_JSON, and the export path splices those
+         * bytes back in unquoted. The document round-trips byte-exactly; what is
+         * lost is only typed ACCESS to the fields inside it (no V-Table, so no
+         * Node navigation, no query, no compaction of its interior). That is the
+         * honest trade: a profile decides what this build can index, never what
+         * it is allowed to carry.
+         *
+         * @param raw_json The complete serialized JSON value, braces included.
+         * @return A handle whose recovery tag is RECOVER_FF_OPAQUE_JSON, storable
+         *         in any resource slot exactly like a typed resource handle.
+         *
+         * Defined after Reflective::ObjectHandle, beside the append_obj
+         * overloads, because the return type is only forward-declared here.
          */
-        Reflective::ObjectHandle append_obj(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag);
+        Reflective::ObjectHandle append_opaque_json(std::string_view raw_json);
+
+        /**
+         * @brief Claim arena space for the child payload of a block whose
+         *        V-Table header is ALREADY placed.
+         *
+         * `append()` claims header and payload together and writes both at one
+         * offset. An inline-block array element cannot do that: its header was
+         * allocated with the array, so only the variable-length tail still
+         * needs space, and the two offsets are then handed separately to the
+         * generated four-argument STORE_*.
+         *
+         * This exists rather than calling `memory().claim_space()` directly so
+         * the claim takes the same finalize guard every other mutation does --
+         * a worker thread claiming into a stream that has begun sealing is the
+         * one way this path can corrupt a document, and it is silent.
+         * Callers own the SIZE/STORE contract check that `append()` performs
+         * internally, because they supply both offsets.
+         */
+        Offset claim_child_space(Size bytes)
+        {
+            if (!try_begin_mutation())
+            {
+                throw std::runtime_error(
+                    "FastFHIR: Builder is finalizing; child-space claim is no longer allowed.");
+            }
+
+            struct MutationGuard
+            {
+                Builder *self;
+                ~MutationGuard() { self->end_mutation(); }
+            } guard{this};
+
+            return m_memory.claim_space(bytes);
+        }
 
         /**
          * @brief Instantiates a read-only Node directly from a known offset mid-stream.
@@ -292,13 +372,15 @@ namespace FastFHIR
             requires std::is_arithmetic_v<T>
         void amend_scalar(Offset object_offset, size_t field_vtable_offset, T val);
 
-        // --- Finalization & Checksums ---
-
         /**
-         * @brief Sets the root resource pointer and recovery tag in the header.
-         * [NOTE] This function must be called before finalize().
+         * @brief DT-2: writes a date/time text into an inline 8-byte slot —
+         * packed, or a flagged relative offset to an FF_STRING fallback claimed
+         * from child space. The mutation-path counterpart of ENCODE_FF_DATETIME.
          */
-        void set_root(const Reflective::ObjectHandle &handle);
+        void amend_datetime(Offset object_offset, size_t field_vtable_offset,
+                            std::string_view text, RECOVERY_TAG tag);
+
+        // --- Finalization & Checksums ---
 
         /**
          * @brief Get the current mutable root handle, if one is set.
@@ -306,14 +388,14 @@ namespace FastFHIR
          */
         Reflective::ObjectHandle root_handle() const;
 
+    private:
+        // Sealed-stream lifecycle. Private: the only entry points are the
+        // friend FF_* functions (FF_StreamSetRoot / FF_StreamFinalize /
+        // FF_StreamQuery) declared above — see FastFHIR.hpp.
         using HashCallback = std::function<std::vector<BYTE>(const unsigned char *byte_start, Size bytes_to_hash)>;
-        /**
-         * @brief Bakes the File Header, and executes the provided hashing callback to seal the file.
-         * @param algo The cryptographic algorithm tag to write into the metadata.
-         * @param hasher A callback that takes the payload and returns the raw hash bytes.
-         * @return A view of the complete, sealed file (including the checksum footer) ready for network transmission.
-         */
+        void set_root(const Reflective::ObjectHandle &handle);
         Memory::View finalize(FF_Checksum_Algorithm algo = FF_CHECKSUM_NONE, const HashCallback &hasher = nullptr);
+        Parser query() const { return Parser(m_memory); }
 
     protected:
         Offset allocate_raw(Size size);
@@ -429,7 +511,7 @@ namespace FastFHIR
             bool is_string() const;
             bool is_scalar() const;
             size_t size() const;
-            std::vector<FF_FieldInfo> fields() const;
+            std::span<const FF_FieldInfo> fields() const;
             std::vector<std::string_view> keys() const;
 
             // Field/index access
@@ -484,7 +566,7 @@ namespace FastFHIR
             bool is_string() const { return as_node().is_string(); }
             bool is_scalar() const { return as_node().is_scalar(); }
             size_t size() const { return as_node().size(); }
-            std::vector<FF_FieldInfo> fields() const { return as_node().fields(); }
+            std::span<const FF_FieldInfo> fields() const { return as_node().fields(); }
             std::vector<std::string_view> keys() const { return as_node().keys(); }
 
             MutableEntry operator[](FF_FieldKey key) const;
@@ -507,7 +589,7 @@ namespace FastFHIR
         inline bool MutableEntry::is_string() const { return as_handle().is_string(); }
         inline bool MutableEntry::is_scalar() const { return as_handle().is_scalar(); }
         inline size_t MutableEntry::size() const { return as_handle().size(); }
-        inline std::vector<FF_FieldInfo> MutableEntry::fields() const { return as_handle().fields(); }
+        inline std::span<const FF_FieldInfo> MutableEntry::fields() const { return as_handle().fields(); }
         inline std::vector<std::string_view> MutableEntry::keys() const { return as_handle().keys(); }
 
         // 3. Field/Index Access
@@ -518,6 +600,21 @@ namespace FastFHIR
             requires(!std::is_arithmetic_v<T_Data>)
         Offset MutableEntry::operator=(const T_Data &data)
         {
+            // DT-2: a date/time slot is an inline 8-byte packed word (or a
+            // flagged relative offset to an FF_STRING fallback). String
+            // assignment must ENCODE into the slot — storing an FF_STRING child
+            // and patching a pointer would leave an offset word that the reader
+            // now unpacks as datetime bits (garbage dates).
+            if constexpr (std::is_same_v<T_Data, std::string_view>)
+            {
+                if (m_kind == FF_FIELD_DATETIME)
+                {
+                    m_builder->amend_datetime(m_parent_offset, m_vtable_offset,
+                                              data, m_recovery);
+                    return offset();
+                }
+            }
+
             // 1. Offload strict schema validation to the translation unit
             validate_assignment(TypeTraits<T_Data>::recovery);
 
@@ -599,6 +696,38 @@ namespace FastFHIR
     inline Reflective::ObjectHandle Builder::append_obj(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag)
     {
         return Reflective::ObjectHandle(this, append(offsets, semantic_tag), semantic_tag);
+    }
+
+    inline Reflective::ObjectHandle Builder::append_opaque_json(std::string_view raw_json)
+    {
+        if (!try_begin_mutation())
+        {
+            throw std::runtime_error(
+                "FastFHIR: Builder is finalizing; append is no longer allowed.");
+        }
+
+        struct MutationGuard
+        {
+            Builder *self;
+            ~MutationGuard() { self->end_mutation(); }
+        } guard{this};
+
+        const Size data_size = SIZE_FF_STRING(raw_json);
+        const Offset offset = m_memory.claim_space(data_size);
+        const Size written = STORE_FF_STRING(m_base, offset, raw_json, RECOVER_FF_OPAQUE_JSON);
+
+        // The same SIZE/STORE contract append() enforces. It matters more here,
+        // not less: this path runs on concurrent ingest workers, where a store
+        // overrunning its claim silently overwrites whichever worker claimed next.
+        if (written != data_size)
+        {
+            throw std::runtime_error(
+                "FastFHIR: SIZE/STORE contract violated in opaque-JSON append: claimed " +
+                std::to_string(data_size) + " bytes but wrote " + std::to_string(written) +
+                ". This is a FastFHIR bug.");
+        }
+
+        return Reflective::ObjectHandle(this, offset, RECOVER_FF_OPAQUE_JSON);
     }
 
     inline Reflective::ObjectHandle Builder::root_handle() const

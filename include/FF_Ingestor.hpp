@@ -21,11 +21,23 @@
 
 namespace FastFHIR::Ingest {
 
-enum class FF_ExtensionFilterMode {
-    FILTER_ALL_KNOWN,   // Suppress profile-native + HL7-known-safe (default)
-    FILTER_NATIVE_ONLY, // Suppress only profile-native extensions
-    FILTER_NONE,        // Store all extensions; dispatch everything to WASM
-};
+// =====================================================================
+// ARENA SIZING FLOOR
+// =====================================================================
+// The smallest arena an ingest can succeed in, whatever the input size.
+//
+// Sizing an arena from the JSON length alone fails at the bottom: FF_HEADER is
+// 54 bytes and a resource V-Table runs to ~250 (FF_PATIENT is 191), and neither
+// scales with input. A 66-byte Patient asked for 132 bytes and needed 245. The
+// arena is RESERVED virtual memory, not committed pages, so over-reserving here
+// costs nothing.
+//
+// Declared here rather than in the CLI because it is a property of the FORMAT's
+// fixed overhead, not of any one caller -- and because it was previously a
+// function-local constant in tools/ingestor/FF_Ingest.cpp with the value
+// duplicated as a literal in tests/cpp/test_bundle_ingest.cpp, where the copy
+// had drifted to half the real floor while claiming in a comment to mirror it.
+inline constexpr size_t FF_MIN_ARENA = 2ull << 20;  // 2 MiB
 
 // =====================================================================
 // PREDIGESTION
@@ -40,15 +52,10 @@ void FF_PredigestExtensionURLs(
     Builder&                builder,
     FF_ExtensionFilterMode  mode = FF_ExtensionFilterMode::FILTER_ALL_KNOWN);
 
-enum class SourceType {
-    FHIR_JSON, // Standard FHIR JSON (R4/R5)
-    HL7_V2,    // Pipe-delimited (ER7)
-    HL7_V3     // XML-based (CDA)
-};
-
 struct IngestRequest {
     FastFHIR::Builder& builder;
-    SourceType source_type;
+    FF_SourceType source_type = FF_SOURCE_FHIR_JSON;
+    FF_ExtensionFilterMode extension_filter = FF_ExtensionFilterMode::FILTER_ALL_KNOWN;
     std::string_view json_string;
 
     /**
@@ -112,7 +119,7 @@ public:
      *       *_from_json and only its offset is patched into the parent slot, and readers
      *       re-derive the element layout from the FF_ARRAY header on the wire.
      */
-    FF_Result insert_at_field(Reflective::ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload, SourceType fmt = SourceType::FHIR_JSON);
+    FF_Result insert_at_field(Reflective::ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload, FF_SourceType fmt = FF_SOURCE_FHIR_JSON);
 
     /**
      * @brief Resets the engine state for a new file and returns all accumulated logs.
@@ -134,3 +141,20 @@ private:
 };
 
 } // namespace FastFHIR::Ingest
+
+// =====================================================================
+// FF_* INGEST HANDLE BODY
+// =====================================================================
+// FF_Ingestor_t is declared opaque in FastFHIR.hpp (installed header) so
+// consumers never see simdjson; the definition lives in this internal header,
+// which is where the ingest engine itself is defined.
+namespace FastFHIR {
+
+class FF_Ingestor_t {
+public:
+    Ingest::Ingestor impl;
+    FF_Ingestor_t(Size logger_capacity, uint32_t concurrency)
+        : impl(logger_capacity, concurrency) {}
+};
+
+} // namespace FastFHIR

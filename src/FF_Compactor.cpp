@@ -8,7 +8,9 @@
 #include "FF_SIMD.hpp"
 
 #include "FF_Reflection.hpp"
+#include <algorithm>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 namespace FastFHIR {
@@ -19,7 +21,9 @@ enum class PendingWriteKind {
     NodePointer,
     ResourcePointer,
     Code32,
+    Datetime64,
     ChoiceNode,
+    ResolvedOffset,
 };
 
 struct PendingWrite {
@@ -28,6 +32,25 @@ struct PendingWrite {
     Reflective::Entry entry;
     Offset slot_offset = FF_NULL_OFFSET;
     Offset parent_anchor = FF_NULL_OFFSET;
+    // Depth of `node` in the stored object graph (root = 0). Threaded through
+    // the pending queue because the traversal is queue-based: archive_node's
+    // frame ends when the queue pop that spawned it returns, so a shared
+    // ancestry vector is empty again by the time a child is processed -- only
+    // an explicit depth can survive the hop and feed the depth bound.
+    std::size_t depth = 0;
+    // Full ancestry of `node` (all ancestor block offsets, root first),
+    // snapshotted at enqueue time. Cycle detection needs it: the queue-based
+    // traversal pops an ancestor's frame before its children process, so the
+    // live path is empty at process time -- the ancestry must ride the write
+    // and be restored, or a node that reaches an ancestor reports the ancestor
+    // as merely "already archived" and the cycle is accepted (XP-1.3).
+    std::vector<Offset> ancestry;
+    // For PendingWriteKind::ResolvedOffset: the recorded archive offset of an
+    // already-completed child, stored straight into the slot at process time.
+    // Defaults to the invalid sentinel, not FF_NULL_OFFSET: an unset value
+    // must read as "not a resolved offset", never as a valid-looking absent
+    // one -- the same reason slot standins use FF_PENDING_OFFSET.
+    Offset resolved_offset = FF_PENDING_OFFSET;
 };
 
 using PendingQueue = FIFO::Queue<PendingWrite, 1024>;
@@ -38,6 +61,56 @@ struct ArchiveContext {
     PendingQueue::Injector injector;
     PendingQueue::Consumer consumer;
 
+    // Node identity access. Node::offset() is not public API; ArchiveContext is
+    // the friendship grant that lets the traversal key `path`/`done` on it.
+    Offset node_offset(const Reflective::Node& node) const { return node.offset(); }
+
+    // The SOURCE arena a node reads from, and that node's array geometry. Same
+    // friendship grant, same reason: both are private Node state, and the
+    // verbatim-copy path in archive_array needs the source bytes rather than a
+    // re-derivation of them.
+    const BYTE* node_base(const Reflective::Node& node) const { return node.m_base; }
+    FF_ARRAY source_array(const Reflective::Node& node) const {
+        return FF_ARRAY(node.m_node_offset, node.m_size, node.m_version, node.m_engine_version);
+    }
+
+    // XP-1.1: bound the stored-graph traversal and detect cycles. `path` is
+    // the ancestry of the node being archived (source-arena offsets); `done`
+    // maps every fully archived source offset to the offset it was archived
+    // at, so a shared subtree is visited exactly once and any later reference
+    // to it returns the recorded offset. Recorded on completion, never on
+    // entry: marking on entry would let a structure that reaches itself find
+    // its own entry and report success instead of the cycle the path exists
+    // to catch (the ordering IFE learned in validate_nested_attributes).
+    // `path` is live only within one archive_node frame; it is restored from
+    // each pending write's ancestry snapshot before the node processes, so
+    // the cycle check sees the true ancestors of a queue-popped node.
+    //
+    // MAX_NODE_DEPTH is a security cap, not a conformance one. The deepest
+    // acyclic chain in the generated R4/R5 model is 8 object blocks
+    // (FF_ALLERGYINTOLERANCE, measured from the FIELDS tables), ~16 nodes
+    // with the array block each container level interleaves. The FHIR data
+    // model's only unbounded nesting axes are the recursive types
+    // (Extension.extension, QuestionnaireResponse.item.item,
+    // PlanDefinition.action.action), which the spec leaves uncapped; 64 nodes
+    // = 32 item/action recursion levels, an order of magnitude past any
+    // legitimate document while still bounding a crafted file's traversal.
+    static constexpr std::size_t MAX_NODE_DEPTH = 64;
+    std::vector<Offset> path;
+    std::unordered_map<Offset, Offset> done;
+
+    // Deferred-write balance: every enqueue_pending_write increments, every
+    // process_pending_write decrements. A nonzero balance when the drain loop
+    // ends means a pending write was dropped and the sealed stream would
+    // silently lose fields -- Compactor::archive turns that into a throw.
+    std::size_t pending_balance = 0;
+
+    // Every slot that received a pending sentinel, so the seal step can verify
+    // each was resolved. Split by width because the sentinels differ: 8-byte
+    // pointer slots hold FF_PENDING_OFFSET, 4-byte code slots FF_PENDING_CODE.
+    std::vector<Offset> deferred_slots;
+    std::vector<Offset> deferred_code_slots;
+
     explicit ArchiveContext(Memory& dst)
         : destination(dst), queue(), injector(queue.get_injector()), consumer(queue.get_consumer()) {}
 };
@@ -46,19 +119,82 @@ struct ArchiveContext {
 // function the generated COMPACT_SLOT_SIZES tables are emitted from, so the
 // writer here and the compact reader cannot disagree.
 
-static Offset archive_node(const Reflective::Node& node, ArchiveContext& context);
-static Offset archive_array(const Reflective::Node& node, ArchiveContext& context);
-static Offset archive_object(const Reflective::Node& node, ArchiveContext& context);
+// Deferred slots are pre-filled with FF_PENDING_OFFSET / FF_PENDING_CODE,
+// the reserved in-flight sentinels declared in FF_Primitives.hpp. Neither
+// FF_NULL_OFFSET nor FF_CODE_NULL may be used here: they are the reader's
+// canonical "field absent" values, so a standin that survived would read as a
+// silently dropped field instead of an incomplete write.
+//
+// Two checks, and neither subsumes the other. The pending-balance counter
+// proves every enqueued write was processed. The residual scan proves every
+// pre-filled sentinel was overwritten -- which the counter cannot see, because
+// a pre-fill that never enqueued was never counted. That divergence is exactly
+// what the paired helpers below exist to prevent, so always use them rather
+// than writing a sentinel and tracking it by hand.
+//
+// Absent values are written directly (a null array entry stores
+// FF_NULL_OFFSET, never a sentinel) and are deliberately not tracked.
+
+// Write the pending offset sentinel into a deferred 8-byte slot and remember
+// it so the seal step can verify it was resolved.
+static inline void write_pending_slot(ArchiveContext& context, BYTE* base, Offset slot) {
+    STORE_U64(base + slot, FF_PENDING_OFFSET);
+    context.deferred_slots.push_back(slot);
+}
+
+// The 4-byte code-slot counterpart. FF_PENDING_CODE (dictionary ID 0) is
+// never a legal resolved value here: this slot is only deferred when the
+// source code carries FF_CODEABLE_CONCEPT_FLAG, and write_compact_code_slot
+// always resolves it to another bit-31-set value, so 0 is unambiguous.
+static inline void write_pending_code_slot(ArchiveContext& context, BYTE* base, Offset slot) {
+    STORE_U32(base + slot, FF_PENDING_CODE);
+    context.deferred_code_slots.push_back(slot);
+}
+
+static Offset archive_node(const Reflective::Node& node, ArchiveContext& context, std::size_t depth);
+static Offset archive_array(const Reflective::Node& node, ArchiveContext& context, std::size_t depth);
+static Offset archive_object(const Reflective::Node& node, ArchiveContext& context, std::size_t depth);
 
 static inline void enqueue_pending_write(ArchiveContext& context, const PendingWrite& pending) {
+    // Every deferred write passes through here; the drain loop asserts the
+    // enqueue/process balance returns to zero before the stream is sealed.
+    ++context.pending_balance;
+    // Cycle guard and archived-once memo, both at enqueue time. The enqueuing
+    // node's full ancestry is live in context.path right now, so a child that
+    // is its own ancestor closes a loop; a child already fully archived
+    // resolves to its recorded offset instead of being archived again. Neither
+    // check can live in archive_node: a node already in `done` would memo-
+    // return at entry before its own children were enqueued, silently
+    // absorbing a cycle that runs through it (XP-1.3).
+    if (pending.node) {
+        const Offset child_off = context.node_offset(pending.node);
+        if (std::find(context.path.begin(), context.path.end(), child_off) != context.path.end()) {
+            throw std::runtime_error(
+                "FastFHIR Compactor Error: cycle in the stored graph at node offset " +
+                std::to_string(child_off) + " (an ancestor references it)");
+        }
+        if (const auto done = context.done.find(child_off); done != context.done.end()) {
+            context.injector.push(PendingWrite{
+                PendingWriteKind::ResolvedOffset, {}, {}, pending.slot_offset,
+                FF_NULL_OFFSET, 0, {}, done->second,
+            });
+            return;
+        }
+    }
     context.injector.push(pending);
 }
 
-static Offset archive_string(std::string_view value, Memory& destination) {
+// `tag` carries the source block's identity across the copy. Both string-layout
+// tags (FF_IsStringLayoutTag) reach here, and defaulting to RECOVER_FF_STRING
+// would silently downgrade a retained opaque-JSON resource to a JSON string
+// literal in the compact copy -- the archive would then export the resource
+// quoted and escaped, and its slot's tag would no longer match its block's.
+static Offset archive_string(std::string_view value, Memory& destination,
+                             RECOVERY_TAG tag = RECOVER_FF_STRING) {
     if (value.empty()) return FF_NULL_OFFSET;
 
     const Offset string_off = destination.claim_space(SIZE_FF_STRING(value));
-    STORE_FF_STRING(destination.base(), string_off, value);
+    STORE_FF_STRING(destination.base(), string_off, value, tag);
     return string_off;
 }
 
@@ -91,8 +227,36 @@ static void write_compact_code_slot(const Reflective::Entry& entry, Memory& dest
     STORE_U32(base + dense_off, static_cast<uint32_t>(relative_off) | FF_CODEABLE_CONCEPT_FLAG);
 }
 
+static void write_compact_datetime_slot(const Reflective::Entry& entry, Memory& destination,
+                                        Offset compact_parent_off, Offset dense_off) {
+    BYTE* base = destination.base();
+    const uint64_t raw = LOAD_U64(entry.base + entry.absolute_offset());
+    // Packed values and the null sentinel are inline 8 bytes — copy as-is.
+    if (raw == FF_DATETIME_NULL || !FF_DATETIME_IS_FALLBACK(raw)) {
+        STORE_U64(base + dense_off, raw);
+        return;
+    }
+
+    // Flagged fallback: an FF_STRING holding the ORIGINAL text (byte-exact
+    // round trip for values that do not pack). Copy the block verbatim and
+    // re-encode the relative offset against the compact parent, exactly like
+    // write_compact_code_slot does for FF_CODEABLE_CONCEPT.
+    const Offset src_str_off = FF_ResolveDateTimeOffset(raw, entry.parent_offset);
+    const BYTE* src = entry.base;
+    const uint32_t len = LOAD_U32(src + src_str_off + FF_STRING::LENGTH);
+    const Size total_bytes = FF_STRING::HEADER_SIZE + len;
+    const Offset dst_str_off = destination.claim_space(total_bytes);
+    std::memcpy(base + dst_str_off, src + src_str_off, total_bytes);
+
+    const int64_t relative_off = dst_str_off - compact_parent_off;
+    if (relative_off > 0x7FFFFFFFFFFFFFFF) {
+        throw std::runtime_error("FastFHIR Compactor Error: datetime fallback relative offset exceeds 63-bit signed range.");
+    }
+    STORE_U64(base + dense_off, static_cast<uint64_t>(relative_off) | FF_DATETIME_FALLBACK_FLAG);
+}
+
 static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& context,
-                              Offset compact_parent_off, Offset dense_off) {
+                              Offset compact_parent_off, Offset dense_off, std::size_t depth) {
     BYTE* base = context.destination.base();
     const Offset src_slot = entry.absolute_offset();
     const RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(entry.base + src_slot + DATA_BLOCK::RECOVERY));
@@ -126,17 +290,69 @@ static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& co
         return;
     }
 
-    STORE_U64(base + dense_off, FF_NULL_OFFSET);
+    // Through the paired helper, not a hand-rolled store + push_back: keeping
+    // the pre-fill and the tracking inseparable is the whole point of it. The
+    // RECOVERY tag was already written at +8 above; this covers bytes 0..7.
+    write_pending_slot(context, base, dense_off);
+    // Resolve the choice child here so the enqueue-time cycle guard sees it
+    // (the pending write carries the resolved node; the process side reuses it).
+    const Reflective::Node choice_child = entry.as_node();
     enqueue_pending_write(context, PendingWrite{
         PendingWriteKind::ChoiceNode,
-        {},
+        choice_child,
         entry,
         dense_off,
         compact_parent_off,
+        depth + 1,
+        context.path,
     });
 }
 
-static Offset archive_array(const Reflective::Node& node, ArchiveContext& context) {
+static Offset archive_array(const Reflective::Node& node, ArchiveContext& context, std::size_t depth) {
+    // ── Inline scalar elements: copy the block verbatim ─────────────────────
+    // An array of raw scalars contains NO offsets -- the elements ARE the
+    // values -- so there is nothing to rewrite and nothing to defer. Copying it
+    // whole is both the cheapest and the only correct answer, the same move
+    // write_compact_code_slot already makes for a CodeableConcept block.
+    //
+    // The generic path below turns every array into an FF_ARRAY::OFFSET pointer
+    // table, which for a scalar array is wrong twice over. It violates the array
+    // invariant (variable length is the ONLY thing that forces an offset table,
+    // so every OFFSET array in a stream is a string array), and it hands
+    // archive_node a scalar Node, which its switch does not list -- so a bundle
+    // carrying `Claim.item.diagnosisSequence` threw "unsupported node kind: 7".
+    //
+    // That throw is new; the defect is not. Before AR-1 the reader labelled
+    // scalar elements FF_FIELD_BLOCK, so they took the block branch,
+    // reflected_fields_view returned {} for a scalar tag, and the compactor
+    // silently archived an EMPTY OBJECT where the values had been. Typing the
+    // elements correctly turned a silent wrong answer into a loud one. Found by
+    // ff_test_compact_roundtrip on its first run (COV-1.5).
+    //
+    // The element type comes from the header tag in MEMORY, never from
+    // node.recovery() or the schema: that is the copy written by the same call
+    // that laid out the bytes (architecture.md §5.3).
+    const BYTE* const src_base = context.node_base(node);
+    const Offset src_off = context.node_offset(node);
+    const RECOVERY_TAG element = GetTypeFromTag(
+        static_cast<RECOVERY_TAG>(LOAD_U16(src_base + src_off + DATA_BLOCK::RECOVERY)));
+
+    if (ff_kind_is_inline_scalar(Recovery_to_Kind(element))) {
+        const FF_ARRAY src_arr = context.source_array(node);
+        const Size header = src_arr.get_header_size();
+        const Size payload = static_cast<Size>(src_arr.entry_count(src_base)) *
+                             static_cast<Size>(src_arr.entry_step(src_base));
+        const Size total = header + payload;
+
+        const Offset dst_off = context.destination.claim_space(total);
+        std::memcpy(context.destination.base() + dst_off, src_base + src_off, total);
+        // The copy carries the SOURCE self-offset; a block whose VALIDATION word
+        // does not equal its own address is exactly what the validator rejects
+        // as "the offset chain is broken".
+        STORE_U64(context.destination.base() + dst_off + DATA_BLOCK::VALIDATION, dst_off);
+        return dst_off;
+    }
+
     const auto elements = node.entries();
     const Size array_size = FF_ARRAY::HEADER_SIZE + static_cast<Size>(elements.size()) * TYPE_SIZE_OFFSET;
     Offset array_off = context.destination.claim_space(array_size);
@@ -145,15 +361,22 @@ static Offset archive_array(const Reflective::Node& node, ArchiveContext& contex
                           static_cast<uint32_t>(elements.size()), node.recovery());
 
     for (const auto& element : elements) {
-        STORE_U64(context.destination.base() + write_head, FF_NULL_OFFSET);
         if (element) {
+            write_pending_slot(context, context.destination.base(), write_head);
             enqueue_pending_write(context, PendingWrite{
                 PendingWriteKind::NodePointer,
                 element,
                 {},
                 write_head,
                 FF_NULL_OFFSET,
+                depth + 1,
+                context.path,
             });
+        } else {
+            // Null entry: the reader's "absent" value, never the pending
+            // sentinel -- a sentinel here would read as a present entry with
+            // an out-of-bounds offset.
+            STORE_U64(context.destination.base() + write_head, FF_NULL_OFFSET);
         }
         write_head += TYPE_SIZE_OFFSET;
     }
@@ -161,7 +384,7 @@ static Offset archive_array(const Reflective::Node& node, ArchiveContext& contex
     return array_off;
 }
 
-static Offset archive_object(const Reflective::Node& node, ArchiveContext& context) {
+static Offset archive_object(const Reflective::Node& node, ArchiveContext& context, std::size_t depth) {
     struct PresentField {
         size_t index;
         FF_FieldInfo info;
@@ -216,6 +439,12 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
             case FF_FIELD_UINT32:
                 STORE_U32(base + dense_off, entry.as<uint32_t>());
                 break;
+            case FF_FIELD_URL:
+                // Inline 4-byte URL-directory ref — copied verbatim; the ref's
+                // meaning (the directory) lives at stream level, so there is
+                // nothing to defer or re-encode.
+                STORE_U32(base + dense_off, LOAD_U32(entry.base + entry.absolute_offset()));
+                break;
             case FF_FIELD_INT64:
                 STORE_U64(base + dense_off, static_cast<uint64_t>(entry.as<int64_t>()));
                 break;
@@ -223,14 +452,21 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                 STORE_U64(base + dense_off, entry.as<uint64_t>());
                 break;
             case FF_FIELD_FLOAT64:
-                std::memcpy(base + dense_off, entry.base + entry.absolute_offset(), TYPE_SIZE_FLOAT64);
+                // Whole slot, value AND scale byte -- ff_slot_width, not
+                // TYPE_SIZE_FLOAT64, or the compact copy drops the 9th byte and
+                // every decimal loses its source precision on compaction.
+                std::memcpy(base + dense_off, entry.base + entry.absolute_offset(),
+                            ff_slot_width(FF_FIELD_FLOAT64));
                 break;
             case FF_FIELD_CODE:
                 if (const uint32_t raw_code = LOAD_U32(entry.base + entry.absolute_offset());
                     raw_code == FF_CODE_NULL || (raw_code & FF_CODEABLE_CONCEPT_FLAG) == 0) {
                     STORE_U32(base + dense_off, raw_code);
                 } else {
-                    STORE_U32(base + dense_off, FF_CODE_NULL);
+                    // FF_PENDING_CODE, never FF_CODE_NULL: the latter is the
+                    // reader's "no code present", so an unresolved slot would
+                    // read as a dropped clinical code rather than a failure.
+                    write_pending_code_slot(context, base, dense_off);
                     enqueue_pending_write(context, PendingWrite{
                         PendingWriteKind::Code32,
                         {},
@@ -240,8 +476,27 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                     });
                 }
                 break;
+            case FF_FIELD_DATETIME: {
+                // DT-2: the same shape as CODE one width up — packed/null
+                // values are inline 8 bytes; a flagged fallback offset defers
+                // to a verbatim FF_STRING copy.
+                const uint64_t raw_dt = LOAD_U64(entry.base + entry.absolute_offset());
+                if (raw_dt == FF_DATETIME_NULL || !FF_DATETIME_IS_FALLBACK(raw_dt)) {
+                    STORE_U64(base + dense_off, raw_dt);
+                } else {
+                    write_pending_slot(context, base, dense_off);
+                    enqueue_pending_write(context, PendingWrite{
+                        PendingWriteKind::Datetime64,
+                        {},
+                        entry,
+                        dense_off,
+                        object_off,
+                    });
+                }
+                break;
+            }
             case FF_FIELD_STRING: {
-                STORE_U64(base + dense_off, FF_NULL_OFFSET);
+                write_pending_slot(context, base, dense_off);
                 enqueue_pending_write(context, PendingWrite{
                     PendingWriteKind::StringPointer,
                     {},
@@ -252,18 +507,20 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                 break;
             }
             case FF_FIELD_ARRAY: {
-                STORE_U64(base + dense_off, FF_NULL_OFFSET);
+                write_pending_slot(context, base, dense_off);
                 enqueue_pending_write(context, PendingWrite{
                     PendingWriteKind::ArrayPointer,
                     entry.as_node(),
                     {},
                     dense_off,
                     object_off,
+                    depth + 1,
+                    context.path,
                 });
                 break;
             }
             case FF_FIELD_RESOURCE: {
-                STORE_U64(base + dense_off, FF_NULL_OFFSET);
+                write_pending_slot(context, base, dense_off);
                 STORE_U16(base + dense_off + DATA_BLOCK::RECOVERY, FF_RECOVER_UNDEFINED);
                 enqueue_pending_write(context, PendingWrite{
                     PendingWriteKind::ResourcePointer,
@@ -271,20 +528,24 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                     {},
                     dense_off,
                     object_off,
+                    depth + 1,
+                    context.path,
                 });
                 break;
             }
             case FF_FIELD_CHOICE:
-                write_choice_slot(entry, context, object_off, dense_off);
+                write_choice_slot(entry, context, object_off, dense_off, depth);
                 break;
             default: {
-                STORE_U64(base + dense_off, FF_NULL_OFFSET);
+                write_pending_slot(context, base, dense_off);
                 enqueue_pending_write(context, PendingWrite{
                     PendingWriteKind::NodePointer,
                     entry.as_node(),
                     {},
                     dense_off,
                     object_off,
+                    depth + 1,
+                    context.path,
                 });
                 break;
             }
@@ -296,22 +557,114 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
     return object_off;
 }
 
-static Offset archive_node(const Reflective::Node& node, ArchiveContext& context) {
+// Read-only: does any direct child of `node` sit on the restored ancestry
+// path? Only consulted for re-processings of already-completed nodes, where an
+// unconditional memo-return would hide a cycle that a re-walk would newly
+// detect (the graph is static, so the only thing a re-walk can newly do is
+// enqueue the same children against a *different* ancestry -- and if one of
+// those children is on the path, the enqueue-time guard will throw).
+static bool child_touches_path(const Reflective::Node& node, ArchiveContext& context) {
+    const auto on_path = [&context](const Reflective::Node& child) {
+        return child && std::find(context.path.begin(), context.path.end(),
+                                  context.node_offset(child)) != context.path.end();
+    };
+    switch (node.kind()) {
+        case FF_FIELD_BLOCK:
+        case FF_FIELD_RESOURCE: {
+            for (const auto& field : node.fields()) {
+                if (field.kind != FF_FIELD_ARRAY && field.kind != FF_FIELD_BLOCK &&
+                    field.kind != FF_FIELD_RESOURCE && field.kind != FF_FIELD_CHOICE)
+                    continue;
+                const Reflective::Entry entry = node[FF_FieldKey::from_cstr(
+                    node.recovery(), field.kind, field.field_offset,
+                    field.child_recovery, field.array_entries_are_offsets, field.name)];
+                if (!entry) continue;
+                if (on_path(entry.as_node())) return true;
+            }
+            return false;
+        }
+        case FF_FIELD_ARRAY: {
+            for (const auto& child : node.entries())
+                if (on_path(child)) return true;
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
+static Offset archive_node(const Reflective::Node& node, ArchiveContext& context, std::size_t depth) {
     if (!node) return FF_NULL_OFFSET;
 
+    // XP-1.1: every recursive entry into the stored graph funnels through this
+    // guard. Order matters, exactly as IFE learned it in
+    // validate_nested_attributes: depth over the bound first, then ancestry,
+    // then the done-set, and `done` is recorded on completion -- never on
+    // entry -- because a node that reaches itself must find its ancestor on
+    // `path`, not its own done entry reporting success.
+    if (depth > ArchiveContext::MAX_NODE_DEPTH) {
+        throw std::runtime_error(
+            "FastFHIR Compactor Error: node nesting exceeds the maximum depth of " +
+            std::to_string(ArchiveContext::MAX_NODE_DEPTH) +
+            " (refusing a crafted or malformed stored graph)");
+    }
+
+    const Offset node_off = context.node_offset(node);
+    if (std::find(context.path.begin(), context.path.end(), node_off) != context.path.end()) {
+        throw std::runtime_error(
+            "FastFHIR Compactor Error: cycle in the stored graph at node offset " +
+            std::to_string(node_off) + " (an ancestor references it)");
+    }
+
+    // Already archived: a shared subtree (or a duplicate enqueued while its
+    // twin was still in the queue) resolves to the recorded offset instead of
+    // being archived again -- UNLESS a re-walk could newly close a cycle (a
+    // direct child on the restored path), in which case we must process so the
+    // enqueue-time guard throws. An unconditional memo here would hide the
+    // cycle: a node referenced back by one of its own descendants is already
+    // in `done`, and the early return would skip the very enqueue that closes
+    // the loop (XP-1.3).
+    if (const auto done = context.done.find(node_off); done != context.done.end()) {
+        if (!child_touches_path(node, context)) {
+            return done->second;
+        }
+    }
+
+    context.path.push_back(node_off);
+    // Popped on every exit, not only the successful one: a stale ancestor
+    // would make an unrelated sibling report a cycle it does not have.
+    struct PathScope {
+        std::vector<Offset>& path;
+        ~PathScope() { path.pop_back(); }
+    } scope{context.path};
+
+    Offset result;
     switch (node.kind()) {
-        case FF_FIELD_BLOCK:  return archive_object(node, context);
-        case FF_FIELD_ARRAY:  return archive_array(node, context);
-        case FF_FIELD_STRING: return archive_string(node.as<std::string_view>(), context.destination);
+        case FF_FIELD_BLOCK:  result = archive_object(node, context, depth); break;
+        case FF_FIELD_ARRAY:  result = archive_array(node, context, depth); break;
+        case FF_FIELD_STRING:
+            result = archive_string(node.as<std::string_view>(), context.destination,
+                                    node.recovery());
+            break;
         default:
             throw std::runtime_error(
                 std::string("FastFHIR Compactor Error: unsupported node kind in archive_node(): ") +
                 std::to_string(static_cast<int>(node.kind())));
     }
+    // Recorded only once the node is fully archived -- the whole correctness
+    // argument for the done-set (see ArchiveContext).
+    context.done.emplace(node_off, result);
+    return result;
 }
 
 static void process_pending_write(ArchiveContext& context, const PendingWrite& pending) {
     BYTE* base = context.destination.base();
+
+    // Restore the ancestry the enqueuing node snapshotted (PendingWrite::
+    // ancestry). The queue popped this pending long after the parent's frame
+    // exited; without the restore the cycle check below would see an empty
+    // path and accept a node that reaches its own ancestor (XP-1.3).
+    context.path = pending.ancestry;
 
     switch (pending.kind) {
         case PendingWriteKind::StringPointer: {
@@ -320,17 +673,20 @@ static void process_pending_write(ArchiveContext& context, const PendingWrite& p
             break;
         }
         case PendingWriteKind::ArrayPointer: {
-            const Offset child_off = archive_array(pending.node, context);
+            // Through archive_node, not archive_array directly: the array node
+            // itself must pass the depth/cycle/done guards -- a cycle can run
+            // through an array block.
+            const Offset child_off = archive_node(pending.node, context, pending.depth);
             STORE_U64(base + pending.slot_offset, child_off);
             break;
         }
         case PendingWriteKind::NodePointer: {
-            const Offset child_off = archive_node(pending.node, context);
+            const Offset child_off = archive_node(pending.node, context, pending.depth);
             STORE_U64(base + pending.slot_offset, child_off);
             break;
         }
         case PendingWriteKind::ResourcePointer: {
-            const Offset child_off = archive_node(pending.node, context);
+            const Offset child_off = archive_node(pending.node, context, pending.depth);
             STORE_U64(base + pending.slot_offset, child_off);
             STORE_U16(base + pending.slot_offset + DATA_BLOCK::RECOVERY, pending.node.recovery());
             break;
@@ -338,13 +694,74 @@ static void process_pending_write(ArchiveContext& context, const PendingWrite& p
         case PendingWriteKind::Code32:
             write_compact_code_slot(pending.entry, context.destination, pending.parent_anchor, pending.slot_offset);
             break;
+        case PendingWriteKind::Datetime64:
+            write_compact_datetime_slot(pending.entry, context.destination, pending.parent_anchor, pending.slot_offset);
+            break;
+        case PendingWriteKind::ResolvedOffset: {
+            STORE_U64(base + pending.slot_offset, pending.resolved_offset);
+            break;
+        }
         case PendingWriteKind::ChoiceNode: {
-            const Reflective::Node child = pending.entry.as_node();
-            const Offset child_off = archive_node(child, context);
+            const Reflective::Node child = pending.node ? pending.node : pending.entry.as_node();
+            const Offset child_off = archive_node(child, context, pending.depth);
             STORE_U64(base + pending.slot_offset, child_off);
             break;
         }
     }
+    // Mirrors the enqueue-side increment: one fewer outstanding deferred write.
+    --context.pending_balance;
+}
+
+// Copy the stream's URL intern table into the compact arena, returning its new
+// offset (FF_NULL_OFFSET when the source has none).
+//
+// Compaction used to drop this table and stamp FF_NULL_OFFSET into the compact
+// header -- a one-line comment called it "not preserved", which understated it
+// considerably. Every FF_FIELD_URL slot is a 4-byte INDEX into this table, so
+// without it `resolve_url_ref` finds nothing and each one exports as `null`.
+// That is `Extension.url` -- required by FHIR, and the only thing that says what
+// an extension MEANS -- plus `Bundle.entry.fullUrl`, on every entry. Compacting
+// a Synthea bundle silently produced a document whose extensions were anonymous.
+// Found by ff_test_compact_roundtrip (COV-1.5); nothing had ever compacted a
+// document carrying URLs.
+//
+// The table is 16-byte header + N × 16-byte entries. `prior_idx` is an INDEX, so
+// it survives relocation untouched; `seg_offset` is an arena offset to an
+// FF_STRING and is the only field that must be rewritten. Each trie node
+// allocated its own segment string, so the map is belt-and-braces against a
+// future producer that interns them.
+static Offset archive_url_directory(const Parser& source, ArchiveContext& context) {
+    const BYTE* const src = source.data();
+    const Offset src_dir = LOAD_U64(src + FF_HEADER::URL_DIR_OFFSET);
+    if (src_dir == FF_NULL_OFFSET) return FF_NULL_OFFSET;
+
+    const FF_URL_DIRECTORY dir(src_dir, source.size_bytes(), source.version());
+    const uint32_t count = dir.entry_count(src);
+    const Size header = dir.get_header_size();
+    const Size total = header + static_cast<Size>(count) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
+
+    BYTE* const dst_base = context.destination.base();
+    const Offset dst_dir = context.destination.claim_space(total);
+    std::memcpy(dst_base + dst_dir, src + src_dir, total);
+    STORE_U64(dst_base + dst_dir + FF_URL_DIRECTORY::VALIDATION, dst_dir);
+
+    std::unordered_map<Offset, Offset> moved;
+    for (uint32_t i = 0; i < count; ++i) {
+        const Offset entry = dst_dir + header + static_cast<Size>(i) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
+        const Offset src_seg = LOAD_U64(dst_base + entry + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET);
+        // An empty segment (the "http://" in a scheme) is stored as no string
+        // at all, and seg_string() returns "" for it -- there is nothing to move.
+        if (src_seg == FF_NULL_OFFSET) continue;
+
+        auto [slot, inserted] = moved.try_emplace(src_seg, FF_NULL_OFFSET);
+        if (inserted) {
+            slot->second = archive_string(
+                FF_STRING(src_seg, source.size_bytes(), source.version()).read_view(src),
+                context.destination);
+        }
+        STORE_U64(dst_base + entry + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET, slot->second);
+    }
+    return dst_dir;
 }
 
 Memory::View Compactor::archive(const Parser& source, const Memory& destination,
@@ -371,7 +788,7 @@ Memory::View Compactor::archive(const Parser& source, const Memory& destination,
         throw std::runtime_error("FastFHIR Compactor Error: source root must be a valid object node.");
     }
 
-    const Offset compact_root_off = archive_object(root, context);
+    const Offset compact_root_off = archive_node(root, context, 0);
 
     PendingWrite pending;
     while (true) {
@@ -382,29 +799,53 @@ Memory::View Compactor::archive(const Parser& source, const Memory& destination,
         if (context.consumer.at_end()) break;
     }
 
-    BYTE* base = dst.base();
-    const Offset checksum_off = dst.claim_space(FF_CHECKSUM::HEADER_SIZE);
-    STORE_FF_HEADER(
-        base,
-        static_cast<uint16_t>(source.version()),
-        dst.size(),
-        compact_root_off,
-        static_cast<RECOVERY_TAG>(source.root_type()),
-        checksum_off,
-        FF_NULL_OFFSET, // url_dir_offset — not preserved across compaction
-        FF_NULL_OFFSET, // module_reg_offset — not preserved across compaction
-        FF_STREAM_LAYOUT_COMPACT
-    );
-    BYTE* hash_dst = STORE_FF_CHECKSUM_METADATA(base, checksum_off, algo);
-
-    if (hasher != nullptr && algo != FF_CHECKSUM_NONE) {
-        Size bytes_to_hash = checksum_off + FF_CHECKSUM::HASH_DATA;
-        std::vector<BYTE> hash_value = hasher(base, bytes_to_hash);
-        size_t copy_len = std::min(hash_value.size(), static_cast<size_t>(FF_MAX_HASH_BYTES));
-        std::memcpy(hash_dst, hash_value.data(), copy_len);
+    // Every deferred slot must be resolved before the header is stamped: a
+    // nonzero balance here means a pending write was dropped and the sealed
+    // stream would silently lose fields.
+    if (context.pending_balance != 0) {
+        throw std::runtime_error(
+            "FastFHIR Compactor Error: " + std::to_string(context.pending_balance) +
+            " deferred write(s) never resolved; the compact stream would silently lose fields.");
     }
 
-    return dst.view();
+    // Defense-in-depth: every tracked deferred slot must hold a resolved
+    // offset by now. The balance proves every pending was processed; this
+    // proves every sentinel was overwritten -- a sentinel left behind (e.g. by
+    // a gated pre-fill that never enqueued) would read as a present field with
+    // an out-of-bounds offset. Scans only tracked slots, never raw payload:
+    // string bytes can legitimately equal the sentinel value.
+    BYTE* base = dst.base();
+    for (const Offset slot : context.deferred_slots) {
+        if (LOAD_U64(base + slot) == FF_PENDING_OFFSET) {
+            throw std::runtime_error(
+                "FastFHIR Compactor Error: residual pending offset at slot " +
+                std::to_string(slot) + "; a deferred write was never resolved.");
+        }
+    }
+    for (const Offset slot : context.deferred_code_slots) {
+        if (LOAD_U32(base + slot) == FF_PENDING_CODE) {
+            throw std::runtime_error(
+                "FastFHIR Compactor Error: residual pending code at slot " +
+                std::to_string(slot) + "; a deferred code write was never resolved.");
+        }
+    }
+
+    // The URL intern table has to come across, or every FF_FIELD_URL slot in the
+    // compact stream indexes a table that is not there. Claimed BEFORE sealing
+    // because seal_stream stamps the offset into the header.
+    //
+    // The MODULE registry is still dropped: it maps EXT_REF words to registered
+    // WASM codec modules, which only exist with FASTFHIR_ENABLE_EXTENSIONS, and
+    // nothing has yet compacted such a stream. That is a known gap, not a
+    // decision that it does not matter -- and it is the same gap this URL table
+    // sat in until a test looked.
+    const Offset compact_url_dir = archive_url_directory(source, context);
+
+    // Shared sealing (header + checksum + hash) with Builder::finalize.
+    return seal_stream(dst, static_cast<uint16_t>(source.version()),
+                       compact_root_off,
+                       static_cast<RECOVERY_TAG>(source.root_type()), algo,
+                       hasher, FF_STREAM_COMPACTED, compact_url_dir, FF_NULL_OFFSET);
 }
 
 } // namespace FastFHIR

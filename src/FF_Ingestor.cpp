@@ -7,6 +7,7 @@
 // Main Thread Ingestion Routing & Bundle Parsing
 // ============================================================
 #include "FF_Ingestor.hpp"
+#include "FastFHIR.hpp"
 #include "FF_Queue.hpp"
 #include "FF_SIMD.hpp"
 #include "FF_Utilities.hpp"
@@ -20,12 +21,57 @@
 #include <cctype>
 #include <cstdio>
 #include <deque>
+#include <map>  // retained_summary: ordered so the report is deterministic
 #include <thread>
 #include <vector>
 #include <algorithm>
 
 namespace FastFHIR::Ingest
 {
+
+    // =====================================================================
+    // Worker-pool lifecycle (Iris-style dispatch; IrisCodecEncoder.cpp)
+    // =====================================================================
+    // Both producer/consumer pools below (predigest URL scan and bundle-entry
+    // parse) run the same pattern: one atomic status drives the workers, which
+    // check it at the top of every loop iteration, park on an empty queue
+    // instead of yield-spinning, and exit on a status change. The producer
+    // notifies after each push so a parked consumer wakes for mid-stream work —
+    // mandatory, not a nicety: the queue's ring only drains while consumers
+    // pop, so a sleeping consumer deadlocks any bundle larger than capacity
+    // (the producer blocks in allocate_and_link with nobody draining).
+    enum class PoolStatus : uint8_t
+    {
+        RUNNING,  // work may still arrive
+        COMPLETE, // producer finished; consumers drain, then exit
+        FAULTED   // a worker failed; everyone exits now
+    };
+
+    // Park a consumer until a push lands or the status changes. Claims NOTHING:
+    // the caller re-pops at its loop top after waking, so the loop's pop is the
+    // single claim site -- a park that claimed a task was a silent-drop bug
+    // (AR-3-class loss under load, fixed 2026-08-22). Wakeups: the producer's
+    // per-push notify, or the final COMPLETE store -- a VALUE CHANGE that always
+    // wakes a parked consumer, so a notify lost in the futex window can never
+    // strand it. The waiter count is bumped before the wait so a push that
+    // races the park is caught by the caller's re-pop (PENDING store is release,
+    // pop load is acquire) or by the post-push notify (waiters > 0).
+    static void park_for_task(std::atomic<PoolStatus> &status,
+                              std::atomic<uint32_t> &waiters)
+    {
+        waiters.fetch_add(1, std::memory_order_relaxed);
+        if (status.load(std::memory_order_acquire) == PoolStatus::RUNNING)
+            status.wait(PoolStatus::RUNNING); // spurious wakeups re-check at the loop top
+        waiters.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+    // Wake one parked consumer after a push (no-op unless somebody is parked).
+    static inline void notify_parked(std::atomic<PoolStatus> &status,
+                                     std::atomic<uint32_t> &waiters)
+    {
+        if (waiters.load(std::memory_order_relaxed) > 0)
+            status.notify_one();
+    }
 
     // =====================================================================
     // PREDIGESTION — pipelined Extension URL scan + concurrent trie builder
@@ -59,8 +105,8 @@ namespace FastFHIR::Ingest
     //           All trie mutations happen on the single consumer thread — no
     //           locking needed.
     //
-    //  Barrier  Main thread joins all producers, sets `producers_done`, joins the
-    //           consumer.  At this point `entries` is complete.
+    //  Barrier  Main thread joins all producers, stores COMPLETE (waking any
+    //           parked consumer), joins it.  At this point `entries` is complete.
     //
     //  Phase 4  Main thread writes the FF_URL_DIRECTORY block from `entries`
     //           (identical to the old Phase 5), records the offset, and returns.
@@ -153,30 +199,39 @@ namespace FastFHIR::Ingest
         UrlBatch batch;
         std::array<uint64_t, DEDUP_SLOTS> dedup_cache;
         UrlBatchQueue::Injector injector;
+        std::atomic<PoolStatus> &status;
+        std::atomic<uint32_t> &waiters;
 
-        explicit ProducerCtx(UrlBatchQueue &q) : injector(q.get_injector())
+        explicit ProducerCtx(UrlBatchQueue &q,
+                             std::atomic<PoolStatus> &st,
+                             std::atomic<uint32_t> &w)
+            : injector(q.get_injector()), status(st), waiters(w)
         {
             dedup_cache.fill(0);
+        }
+
+        // Hand the current batch to the consumer and wake it if parked: the
+        // consumer must drain mid-stream or the queue ring fills and the
+        // producer blocks in allocate_and_link with nobody popping.
+        void submit_batch()
+        {
+            injector.push(batch);
+            batch.count = 0;
+            notify_parked(status, waiters);
         }
 
         // Add a URL to the current batch, flushing when full.
         // Zero heap allocation on the hot path.
         void push_url(std::string_view url) noexcept
         {
+            // Accept ANY non-empty url. Real-world FHIR data routinely uses
+            // relative nested extension urls (e.g. HL7's own geolocation example:
+            // "latitude"/"longitude" inside an absolute parent url), so an
+            // absolute-URI requirement here silently dropped them from the
+            // directory and broke round-tripping. The trie, FF_URL_DIRECTORY,
+            // and get_url() all handle arbitrary non-empty strings, including
+            // single-segment and scheme-less ones.
             if (url.empty())
-                return;
-            // Reject non-absolute URIs. FHIR extension URLs MUST be absolute URIs
-            // (RFC 3986 §4.3): the scheme component (letters only) must precede ':',
-            // and no '/' may appear before that ':'.
-            // Accepts: "http://…", "https://…", "urn:oid:…", "urn:uuid:…"
-            // Rejects: "/relative", "///path//", "no-scheme/path", ""
-            if (!std::isalpha(static_cast<unsigned char>(url[0])))
-                return;
-            const size_t colon = url.find(':');
-            if (colon == std::string_view::npos)
-                return;
-            const size_t slash = url.find('/');
-            if (slash != std::string_view::npos && slash < colon)
                 return;
             const uint64_t h = fnv1a(url);
             const uint64_t slot = h & (DEDUP_SLOTS - 1u);
@@ -185,26 +240,25 @@ namespace FastFHIR::Ingest
             dedup_cache[slot] = h;
             batch.entries[batch.count++] = {url};
             if (batch.count == URL_BATCH_SIZE)
-            {
-                injector.push(batch);
-                batch.count = 0;
-            }
+                submit_batch();
         }
 
         // Flush any partial batch remaining after chunk scanning.
         void flush()
         {
             if (batch.count > 0)
-            {
-                injector.push(batch);
-                batch.count = 0;
-            }
+                submit_batch();
         }
     };
 
     // ─── URL collection (producer, recursive) ────────────────────────────────────
     // Mirrors collect_extension_urls() but pushes to ProducerCtx instead of a
     // vector — no std::string copies, no arena writes on the producer side.
+    static void collect_extension_object(simdjson::ondemand::object ext_obj,
+                                         ProducerCtx &ctx);
+
+    // Generic walker: find "extension"/"modifierExtension" arrays anywhere in a
+    // container (resource, contained resource, nested complex value...).
     static void collect_extension_urls_pipeline(simdjson::ondemand::object obj,
                                                 ProducerCtx &ctx)
     {
@@ -221,49 +275,7 @@ namespace FastFHIR::Ingest
                     simdjson::ondemand::object ext_obj;
                     if (item.get_object().get(ext_obj) != simdjson::SUCCESS)
                         continue;
-                    std::string_view found_url;
-                    for (auto ext_field : ext_obj)
-                    {
-                        std::string_view ext_key = ext_field.unescaped_key().value_unsafe();
-                        if (ext_key == "url")
-                        {
-                            // Take the URL from the SOURCE buffer, never from
-                            // get_string(). ondemand::get_string() unescapes into the
-                            // parser's internal string buffer, which is reused by the
-                            // very next string parsed from this document -- including
-                            // the unescaped_key() calls in the remaining iterations of
-                            // this loop -- and is destroyed when scan_chunk_producer()
-                            // returns, well before the consumer thread reads the batch.
-                            // Every URL therefore arrived blank at the right length,
-                            // so no '/' was found, no segments were interned, and the
-                            // directory held one junk row per URL.
-                            //
-                            // raw_json_token() points into the chunk, which the caller
-                            // owns for the entire FF_PredigestExtensionURLs call.
-                            std::string_view tok = ext_field.value().raw_json_token();
-                            if (tok.size() >= 2 && tok.front() == '"')
-                            {
-                                const size_t close = tok.find('"', 1);
-                                if (close != std::string_view::npos)
-                                {
-                                    const std::string_view inner = tok.substr(1, close - 1);
-                                    // A backslash-escaped URL has no zero-copy source
-                                    // representation. Leave found_url empty so the URL
-                                    // is skipped rather than interned wrong.
-                                    if (inner.find('\\') == std::string_view::npos)
-                                        found_url = inner;
-                                }
-                            }
-                        }
-                        else
-                        {
-                            simdjson::ondemand::object nested;
-                            if (ext_field.value().get_object().get(nested) == simdjson::SUCCESS)
-                                collect_extension_urls_pipeline(nested, ctx);
-                        }
-                    }
-                    if (!found_url.empty())
-                        ctx.push_url(found_url);
+                    collect_extension_object(ext_obj, ctx);
                 }
             }
             else
@@ -288,6 +300,79 @@ namespace FastFHIR::Ingest
                 }
             }
         }
+    }
+
+    // Process ONE extension object: capture its "url" field, then recurse into
+    // nested values. Nested extension-array items MUST come back here, not
+    // through the generic walker: nested extension objects (an extension's own
+    // "extension" array, e.g. HL7 geolocation's "latitude"/"longitude") carry
+    // their url in their own "url" field, which only this processor reads —
+    // the generic walker only looks for further extension arrays and would
+    // silently drop those urls.
+    static void collect_extension_object(simdjson::ondemand::object ext_obj,
+                                         ProducerCtx &ctx)
+    {
+        std::string_view found_url;
+        for (auto ext_field : ext_obj)
+        {
+            std::string_view ext_key = ext_field.unescaped_key().value_unsafe();
+            if (ext_key == "url")
+            {
+                // Take the URL from the SOURCE buffer, never from
+                // get_string(). ondemand::get_string() unescapes into the
+                // parser's internal string buffer, which is reused by the
+                // very next string parsed from this document -- including
+                // the unescaped_key() calls in the remaining iterations of
+                // this loop -- and is destroyed when scan_chunk_producer()
+                // returns, well before the consumer thread reads the batch.
+                // Every URL therefore arrived blank at the right length,
+                // so no '/' was found, no segments were interned, and the
+                // directory held one junk row per URL.
+                //
+                // raw_json_token() points into the chunk, which the caller
+                // owns for the entire FF_PredigestExtensionURLs call.
+                std::string_view tok = ext_field.value().raw_json_token();
+                if (tok.size() >= 2 && tok.front() == '"')
+                {
+                    const size_t close = tok.find('"', 1);
+                    if (close != std::string_view::npos)
+                    {
+                        const std::string_view inner = tok.substr(1, close - 1);
+                        // A backslash-escaped URL has no zero-copy source
+                        // representation. Leave found_url empty so the URL
+                        // is skipped rather than interned wrong.
+                        if (inner.find('\\') == std::string_view::npos)
+                            found_url = inner;
+                    }
+                }
+            }
+            else
+            {
+                // An object value is a plain container (e.g. valueQuantity) —
+                // scan it for extension arrays. An array value (the extension's
+                // own "extension" array) holds further extension OBJECTS.
+                simdjson::ondemand::object nested;
+                if (ext_field.value().get_object().get(nested) == simdjson::SUCCESS)
+                {
+                    collect_extension_urls_pipeline(nested, ctx);
+                }
+                else
+                {
+                    simdjson::ondemand::array nested_arr;
+                    if (ext_field.value().get_array().get(nested_arr) == simdjson::SUCCESS)
+                    {
+                        for (auto item : nested_arr)
+                        {
+                            simdjson::ondemand::object arr_obj;
+                            if (item.get_object().get(arr_obj) == simdjson::SUCCESS)
+                                collect_extension_object(arr_obj, ctx);
+                        }
+                    }
+                }
+            }
+        }
+        if (!found_url.empty())
+            ctx.push_url(found_url);
     }
 
     // Scan one padded_string chunk for extension URLs and push them to the queue.
@@ -628,31 +713,32 @@ namespace FastFHIR::Ingest
         // shared MPSC queue; the consumer pops and inserts into the radix trie.
 
         UrlBatchQueue batch_queue;
-        std::atomic<bool> producers_done{false};
+        // Pool lifecycle (see the shared machinery above): the consumer parks
+        // on an empty queue instead of yield-spinning and exits when the
+        // producers store COMPLETE.
+        std::atomic<PoolStatus> status{PoolStatus::RUNNING};
+        std::atomic<uint32_t> waiters{0};
         ConsumerState cs(builder, mem, mode);
 
         // Acquire Consumer before any Injectors (gets head node reference).
         auto consumer_handle = batch_queue.get_consumer();
 
         std::thread consumer_thread(
-            [c = std::move(consumer_handle), &producers_done, &cs]() mutable
+            [c = std::move(consumer_handle), &status, &waiters, &cs]() mutable
             {
                 UrlBatch batch;
-                while (true)
+                for (;;)
                 {
                     if (c.pop(batch))
                     {
                         consumer_process_batch(cs, batch);
                         continue;
                     }
-                    if (producers_done.load(std::memory_order_acquire))
-                    {
-                        // Producers done: drain any remaining in-flight batches.
-                        while (c.pop(batch))
-                            consumer_process_batch(cs, batch);
+                    // Drained once the producers are done: a pop fails only at
+                    // end-of-queue, since no producer can still be writing.
+                    if (status.load(std::memory_order_acquire) == PoolStatus::COMPLETE)
                         break;
-                    }
-                    std::this_thread::yield();
+                    park_for_task(status, waiters); // claims nothing; re-pop at loop top
                 }
             });
 
@@ -668,7 +754,7 @@ namespace FastFHIR::Ingest
             {
                 workers.emplace_back([&, t]()
                                      {
-                                         ProducerCtx ctx(batch_queue);
+                                         ProducerCtx ctx(batch_queue, status, waiters);
                                          for (size_t i = t; i < num_chunks; i += nthreads)
                                              scan_chunk_producer(prechunked_entries[i], ctx);
                                          ctx.flush(); // push partial tail batch
@@ -679,7 +765,8 @@ namespace FastFHIR::Ingest
         }
 
         // Signal consumer that no more batches will arrive.
-        producers_done.store(true, std::memory_order_release);
+        status.store(PoolStatus::COMPLETE, std::memory_order_release);
+        status.notify_all();
         consumer_thread.join();
 
         // ── Phase 4: Early-exit if no URLs were interned ──────────────────────────
@@ -934,33 +1021,144 @@ namespace FastFHIR::Ingest
         return FF_SUCCESS;
     }
 
+    /// Count and summarise "[Retained]" lines — resources stored as opaque JSON.
+    ///
+    /// `dispatch_resource` cannot type a resource outside the compiled profile,
+    /// so it copies the raw JSON into an opaque block instead. Nothing is lost
+    /// from the document and it round-trips byte-exactly; what is unavailable is
+    /// TYPED access — no V-Table, so no Node navigation into its fields and no
+    /// interior compaction. That is worth telling the caller, because a query
+    /// that expects to reach inside these resources will come back empty.
+    ///
+    /// This used to summarise "[Skipped]" lines, when the same case DISCARDED
+    /// the entry: one Synthea bundle silently lost 41 of 250 records (all of
+    /// Claim, ExplanationOfBenefit, SupplyDelivery, ImagingStudy and
+    /// MedicationAdministration) and still returned FF_SUCCESS (TASKS.md A26).
+    /// The warning stays — the severity of it does not.
+    static std::string retained_summary(const ConcurrentLogger &logger)
+    {
+        const std::string all = logger.to_string();
+        std::map<std::string, size_t> by_type;
+        size_t total = 0;
+        for (size_t pos = 0; pos < all.size();)
+        {
+            const size_t eol = all.find('\n', pos);
+            const size_t end = (eol == std::string::npos) ? all.size() : eol;
+            const std::string_view line(all.data() + pos, end - pos);
+            if (line.find("[Retained]") != std::string_view::npos)
+            {
+                ++total;
+                // The emitter quotes the type: ...resource type 'Claim' is not...
+                const size_t a = line.find('\'');
+                const size_t b = (a == std::string_view::npos)
+                                     ? std::string_view::npos
+                                     : line.find('\'', a + 1);
+                by_type[b == std::string_view::npos
+                            ? std::string("<unnamed>")
+                            : std::string(line.substr(a + 1, b - a - 1))] += 1;
+            }
+            if (eol == std::string::npos) break;
+            pos = eol + 1;
+        }
+        if (total == 0) return "";
+
+        std::string out = "FastFHIR: " + std::to_string(total) +
+                          " bundle entr" + (total == 1 ? "y was" : "ies were") +
+                          " stored as OPAQUE JSON (retained and exportable, but not "
+                          "typed-queryable) — resource type not in this build's profile: ";
+        bool first = true;
+        for (const auto &[type, n] : by_type)
+        {
+            if (!first) out += ", ";
+            out += type + " x" + std::to_string(n);
+            first = false;
+        }
+        return out;
+    }
+
+    /// Strip the engine's own "[Tag] " prefix from a log line so the
+    /// FF_Result severity tag is the single source of labelling in the message.
+    static std::string_view strip_log_tag(std::string_view line)
+    {
+        if (!line.empty() && line.front() == '[')
+        {
+            const size_t close = line.find(']');
+            if (close != std::string_view::npos)
+            {
+                line.remove_prefix(close + 1);
+                if (!line.empty() && line.front() == ' ') line.remove_prefix(1);
+            }
+        }
+        return line;
+    }
+
+    /// Stack every warning-class logger line into @p out as tagged entries:
+    /// the [Retained] opaque-JSON lines aggregated by resource type first, then
+    /// each [Warning] line verbatim. All entries get the [WARNING] tag from
+    /// FF_Result::append; the logger's own tag is stripped first.
+    static void stack_logger_warnings(const ConcurrentLogger &logger, FF_Result &out)
+    {
+        if (std::string retained = retained_summary(logger); !retained.empty())
+            out.append(FF_WARNING_PARTIAL_INGEST, std::move(retained));
+        const std::string all = logger.to_string();
+        for (size_t pos = 0; pos < all.size();)
+        {
+            const size_t eol = all.find('\n', pos);
+            const size_t end = (eol == std::string::npos) ? all.size() : eol;
+            const std::string_view line(all.data() + pos, end - pos);
+            if (line.find("[Warning]") != std::string_view::npos)
+                out.append(FF_WARNING_PARTIAL_INGEST, std::string(strip_log_tag(line)));
+            if (eol == std::string::npos) break;
+            pos = eol + 1;
+        }
+    }
+
+    /// Stack every [Fatal] line into @p out as tagged [FATAL] entries.
+    /// Workers cannot propagate an exception across the thread boundary, so
+    /// they log it and raise m_engine_faulted; this lifts the cause back into
+    /// the FF_Result the caller actually reads.
+    static void stack_logger_fatals(const ConcurrentLogger &logger, FF_Result &out)
+    {
+        const std::string all = logger.to_string();
+        for (size_t pos = 0; pos < all.size();)
+        {
+            const size_t eol = all.find('\n', pos);
+            const size_t end = (eol == std::string::npos) ? all.size() : eol;
+            const std::string_view line(all.data() + pos, end - pos);
+            if (line.find("[Fatal]") != std::string_view::npos)
+                out.append(FF_FAILURE, std::string(strip_log_tag(line)));
+            if (eol == std::string::npos) break;
+            pos = eol + 1;
+        }
+    }
+
     FF_Result Ingestor::ingest(const IngestRequest &request, Reflective::ObjectHandle &out_root, size_t &out_parsed_count)
     {
         switch (request.source_type)
         {
-        case SourceType::FHIR_JSON:
+        case FF_SOURCE_FHIR_JSON:
             return ingest_fhir_json(request, out_root, out_parsed_count);
-        case SourceType::HL7_V2:
-            return FF_Result{FF_FAILURE, "HL7 v2 ingestion not implemented."};
-        case SourceType::HL7_V3:
-            return FF_Result{FF_FAILURE, "HL7 v3 ingestion not implemented."};
+        case FF_SOURCE_HL7_V2:
+            return FF_Result{FF_NOT_IMPLEMENTED, "HL7 v2 ingestion not implemented."};
+        case FF_SOURCE_HL7_V3:
+            return FF_Result{FF_NOT_IMPLEMENTED, "HL7 v3 ingestion not implemented."};
         default:
-            return FF_Result{FF_FAILURE, "Unknown source type."};
+            return FF_Result{FF_INVALID_ARGUMENT, "Unknown source type."};
         }
     }
 
-    FF_Result Ingestor::insert_at_field(Reflective::ObjectHandle &parent_object, const FF_FieldKey &key, std::string_view payload, SourceType fmt)
+    FF_Result Ingestor::insert_at_field(Reflective::ObjectHandle &parent_object, const FF_FieldKey &key, std::string_view payload, FF_SourceType fmt)
     {
         switch (fmt)
         {
-        case SourceType::FHIR_JSON:
+        case FF_SOURCE_FHIR_JSON:
             return insert_at_field_json(parent_object, key, payload);
-        case SourceType::HL7_V2:
-            return FF_Result{FF_FAILURE, "HL7 v2 field ingestion not implemented."};
-        case SourceType::HL7_V3:
-            return FF_Result{FF_FAILURE, "HL7 v3 field ingestion not implemented."};
+        case FF_SOURCE_HL7_V2:
+            return FF_Result{FF_NOT_IMPLEMENTED, "HL7 v2 field ingestion not implemented."};
+        case FF_SOURCE_HL7_V3:
+            return FF_Result{FF_NOT_IMPLEMENTED, "HL7 v3 field ingestion not implemented."};
         default:
-            return FF_Result{FF_FAILURE, "Unknown source type."};
+            return FF_Result{FF_INVALID_ARGUMENT, "Unknown source type."};
         }
     }
 
@@ -1018,7 +1216,7 @@ namespace FastFHIR::Ingest
             FF_PredigestExtensionURLs(
                 entry_chunks,
                 m_builder,
-                FF_ExtensionFilterMode::FILTER_ALL_KNOWN);
+                request.extension_filter);
 
             // Builder now owns the URL registry; parse workers call builder->resolve_extension_url().
 
@@ -1102,48 +1300,92 @@ namespace FastFHIR::Ingest
             };
             using BundleQueue = FIFO::Queue<BundleTask, 256>;
             BundleQueue task_queue;
-            std::atomic<bool> producer_done{false};
+            // Iris-style pool lifecycle (see the shared machinery at the top of
+            // this file): status checked at the top of every worker iteration,
+            // park on an empty queue, exit on status change. FAULTED also
+            // latches m_engine_faulted so the public API refuses the next ingest
+            // until reset().
+            std::atomic<PoolStatus> status{PoolStatus::RUNNING};
+            std::atomic<uint32_t> waiters{0};
 
             std::vector<std::thread> workers;
             auto *shared_chunks = &entry_chunks;
             workers.reserve(m_num_threads);
+
+            // Consumers are created HERE, on this thread, before a single task is
+            // pushed -- not inside the worker body. get_consumer() latches the
+            // queue's current head node, and a consumer that latches late misses
+            // every node retired before it ran: the producer fills a node
+            // (NODE_ENTRIES = 2000), advances to the next, and the retirement path
+            // moves _weak_head past the full one. A worker scheduled after that
+            // point starts at the SECOND node and silently never sees the first
+            // 2000 tasks.
+            //
+            // That is exactly the observed failure: 2,836 bundle entries chunked
+            // and pushed, 836 processed, the other 2,000 left default-constructed
+            // and then dropped by print_json as empty. It only reproduces under CPU
+            // contention, because that is what delays the worker's first
+            // instruction past the producer's first node advance -- serially the
+            // worker always won the race, which is why every serial run looked
+            // clean (TASKS.md AR-3).
+            //
+            // Creating them here also pins the head node: each consumer holds a
+            // NodeRef, so the node cannot be retired out from under the workers.
+            std::vector<BundleQueue::Consumer> consumers;
+            consumers.reserve(m_num_threads);
+            for (unsigned int i = 0; i < m_num_threads; ++i)
+                consumers.emplace_back(task_queue.get_consumer());
+
             for (unsigned int i = 0; i < m_num_threads; ++i)
             {
-                workers.emplace_back([this, i, &producer_done, shared_chunks, entry_array, &m_builder, &task_queue]() mutable
+                workers.emplace_back([this, i, &status, &waiters, shared_chunks, entry_array, &m_builder, consumer = std::move(consumers[i])]() mutable
                                      {
                 auto& local_parser = m_parser_pool[i];
-                auto consumer = task_queue.get_consumer();
                 BundleTask task;
-                while (true) {
-                    if (!consumer.pop(task)) {
-                        if (producer_done.load(std::memory_order_acquire) && consumer.at_end()) break;
-                        std::this_thread::yield();
+                // Fail-fast helper: flip the pool status (sibling workers exit at
+                // their next loop-top check), latch the engine fault for
+                // is_faulted(), and log the cause for stack_logger_fatals.
+                auto fail = [&](const std::string &msg) {
+                    status.store(PoolStatus::FAULTED, std::memory_order_release);
+                    status.notify_all();
+                    m_engine_faulted.store(true, std::memory_order_release);
+                    m_logger.log(msg);
+                };
+                for (;;) {
+                    // Loop-top status check (Iris): exit on fault even while idle.
+                    if (status.load(std::memory_order_acquire) == PoolStatus::FAULTED) break;
+
+                    if (consumer.pop(task)) {
+                        // Re-check before touching the engine: a sibling may have
+                        // faulted while this pop was in flight.
+                        if (status.load(std::memory_order_acquire) == PoolStatus::FAULTED) break;
+                        const size_t idx = task.idx;
+                        try {
+                            Reflective::MutableEntry entry_wrapper = entry_array[idx];
+                            simdjson::ondemand::document local_doc = local_parser.iterate((*shared_chunks)[idx]).value();
+                            simdjson::ondemand::object local_obj = local_doc.get_object();
+                            Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
+                        } catch (const simdjson::simdjson_error& e) {
+                            fail(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                 std::to_string(idx) + " (simdjson): " + e.what());
+                            break;
+                        } catch (const std::exception& e) {
+                            fail(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                 std::to_string(idx) + " (std::exception): " + e.what());
+                            break;
+                        } catch (...) {
+                            fail(std::string("[Fatal] Worker thread crashed on bundle entry ") +
+                                 std::to_string(idx) + " with unknown exception.");
+                            break;
+                        }
                         continue;
                     }
 
-                    const size_t idx = task.idx;
-                    if (m_engine_faulted.load(std::memory_order_relaxed)) break;
-                    try {
-                        Reflective::MutableEntry entry_wrapper = entry_array[idx];
-                        simdjson::ondemand::document local_doc = local_parser.iterate((*shared_chunks)[idx]).value();
-                        simdjson::ondemand::object local_obj = local_doc.get_object();
-                        Ingest::patch_Bundle_entry_from_json(local_obj, entry_wrapper, m_builder, &m_logger);
-                    } catch (const simdjson::simdjson_error& e) {
-                        m_engine_faulted.store(true, std::memory_order_release);
-                        m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
-                                     std::to_string(idx) + " (simdjson): " + e.what());
-                        break;
-                    } catch (const std::exception& e) {
-                        m_engine_faulted.store(true, std::memory_order_release);
-                        m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
-                                     std::to_string(idx) + " (std::exception): " + e.what());
-                        break;
-                    } catch (...) {
-                        m_engine_faulted.store(true, std::memory_order_release);
-                        m_logger.log(std::string("[Fatal] Worker thread crashed on bundle entry ") +
-                                     std::to_string(idx) + " with unknown exception.");
-                        break;
-                    }
+                    // Queue empty: with the producer done this is end-of-queue (no
+                    // producer can still be writing); otherwise park -- claims
+                    // nothing, re-pop at the loop top.
+                    if (status.load(std::memory_order_acquire) == PoolStatus::COMPLETE) break;
+                    park_for_task(status, waiters);
                 } });
             }
 
@@ -1152,24 +1394,43 @@ namespace FastFHIR::Ingest
                 for (size_t idx = 0; idx < count; ++idx)
                 {
                     injector.push(BundleTask{idx});
+                    notify_parked(status, waiters);
                 }
             }
-            producer_done.store(true, std::memory_order_release);
+            status.store(PoolStatus::COMPLETE, std::memory_order_release);
+            status.notify_all();
 
             for (auto &worker : workers)
                 worker.join();
 
-            // Check if the engine faulted during the worker runs
-            if (m_engine_faulted.load(std::memory_order_acquire))
+            // Check if the pool faulted during the worker runs.
+            // The worker's catch block logged the ACTUAL cause (the exception
+            // message) into m_logger. Nothing drains that buffer unless the caller
+            // asks for it, so a precise, actionable error -- e.g. the SIZE/STORE
+            // contract violation from Builder::append_obj -- used to surface to
+            // every tool as the useless "check the engine logs". Carry the fatal
+            // lines out with the result: a fail-loud check that fails into an
+            // unread buffer is a fail-silent check with extra steps.
+            if (status.load(std::memory_order_acquire) == PoolStatus::FAULTED)
             {
-                return FF_Result{FF_FAILURE, "Ingestion aborted due to worker thread crash. Check ingestor engine logs for error details."};
+                FF_Result result{FF_FAILURE, "Ingestion aborted due to worker thread crash."};
+                stack_logger_fatals(m_logger, result);
+                return result;
             }
 
             // =====================================================================
             // 6. Return Root
             // =====================================================================
             out_root = root_handle;
-            return FF_SUCCESS;
+
+            // Warnings stack into the result message: [Retained] opaque-JSON
+            // lines (aggregated by resource type) plus every engine [Warning]
+            // line, each a tagged entry. The stream is well-formed, so this is
+            // not a failure — but the caller must never learn what this build
+            // could not type by diffing documents (TASKS.md A26 / A26.2).
+            FF_Result result{FF_SUCCESS};
+            stack_logger_warnings(m_logger, result);
+            return result;
         }
         catch (const simdjson::simdjson_error &e)
         {
@@ -1295,3 +1556,65 @@ namespace FastFHIR::Ingest
         return FF_SUCCESS;
     }
 } // namespace FastFHIR::Ingest
+
+// =====================================================================
+// FF_* INGEST SURFACE (declared in FastFHIR.hpp)
+//
+// Kept in this translation unit (and therefore in the ingestor target, not
+// the core library) because it is the only FF_* surface that needs simdjson.
+// FF_Ingestor_t itself is defined in FF_Ingestor.hpp.
+// =====================================================================
+namespace FastFHIR {
+
+FF_Result FF_CreateIngestor(const FF_IngestorCreateInfo& info, FF_Ingestor& out_ingestor) noexcept
+{
+    out_ingestor.reset();
+    try {
+        out_ingestor = std::make_shared<FF_Ingestor_t>(info.logger_capacity, info.concurrency);
+        return FF_Result{FF_SUCCESS};
+    } catch (const std::exception& e) {
+        return FF_Result{FF_FAILURE, std::string("FF_CreateIngestor: ") + e.what()};
+    } catch (...) {
+        return FF_Result{FF_FAILURE, "FF_CreateIngestor: unknown non-std exception"};
+    }
+}
+
+FF_Result FF_Ingest(const FF_IngestInfo& info, Reflective::ObjectHandle& out_root, Size& out_parsed_count) noexcept
+{
+    out_root = Reflective::ObjectHandle();
+    out_parsed_count = 0;
+    if (!info.ingestor)
+        return FF_Result{FF_INVALID_ARGUMENT, "FF_Ingest: null ingestor"};
+    if (!info.stream)
+        return FF_Result{FF_INVALID_ARGUMENT, "FF_Ingest: null destination stream"};
+    try {
+        Ingest::IngestRequest request{*info.stream, info.source_type, info.extension_filter,
+                                      info.payload, info.payload_capacity};
+        // size_t vs Size (uint64_t) are distinct types on LP64; bridge via a local.
+        size_t parsed_count = 0;
+        FF_Result result = info.ingestor->impl.ingest(request, out_root, parsed_count);
+        out_parsed_count = parsed_count;
+        return result;
+    } catch (const std::exception& e) {
+        return FF_Result{FF_FAILURE, std::string("FF_Ingest: ") + e.what()};
+    } catch (...) {
+        return FF_Result{FF_FAILURE, "FF_Ingest: unknown non-std exception"};
+    }
+}
+
+FF_Result FF_IngestInsertAtField(const FF_IngestInsertInfo& info) noexcept
+{
+    if (!info.ingestor)
+        return FF_Result{FF_INVALID_ARGUMENT, "FF_IngestInsertAtField: null ingestor"};
+    try {
+        // Copy the handle: the engine's insert path takes a mutable reference.
+        Reflective::ObjectHandle parent = info.parent;
+        return info.ingestor->impl.insert_at_field(parent, info.key, info.payload, info.source_type);
+    } catch (const std::exception& e) {
+        return FF_Result{FF_FAILURE, std::string("FF_IngestInsertAtField: ") + e.what()};
+    } catch (...) {
+        return FF_Result{FF_FAILURE, "FF_IngestInsertAtField: unknown non-std exception"};
+    }
+}
+
+} // namespace FastFHIR

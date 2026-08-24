@@ -36,15 +36,23 @@ struct PythonFieldProxy {
 // Lifetime Wrappers (Python-only)
 // =====================================================================
 struct PyMemory {
-    std::shared_ptr<Memory> m_core;
+    FF_Memory m_core;
     bool m_closed = false;
 
     PyMemory(size_t capacity, const std::string& shm_name) {
-        m_core = std::make_shared<Memory>(Memory::create(capacity, shm_name));
+        FF_MemoryCreateInfo info;
+        info.capacity = capacity;
+        if (!shm_name.empty()) info.shm_name = shm_name.c_str();
+        FF_Result res = FF_CreateMemory(info, m_core);
+        if (!res) throw std::runtime_error(res.message);
     }
 
     PyMemory(const std::string& filepath, size_t capacity) {
-        m_core = std::make_shared<Memory>(Memory::createFromFile(filepath, capacity));
+        FF_MemoryCreateInfo info;
+        info.capacity = capacity;
+        info.filepath = filepath.c_str();
+        FF_Result res = FF_CreateMemory(info, m_core);
+        if (!res) throw std::runtime_error(res.message);
     }
 
     ~PyMemory() { close(); }
@@ -66,11 +74,15 @@ struct PyMemory {
 };
 
 struct PyStream {
-    std::shared_ptr<Builder> m_builder;
+    FF_Stream m_builder;
     bool m_closed = false;
 
     PyStream(PyMemory& mem, FHIR_VERSION fhir_version) {
-        m_builder = std::make_shared<Builder>(mem.get(), fhir_version);
+        FF_StreamCreateInfo info;
+        info.version = fhir_version;
+        info.arena = mem.m_core;
+        FF_Result res = FF_CreateStream(info, m_builder);
+        if (!res) throw std::runtime_error(res.message);
     }
 
     void close() {
@@ -183,8 +195,51 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
             }
             return py::str(node.as<std::string_view>());
         }
+        case FF_FIELD_URL: {
+            const Offset abs_off = entry.absolute_offset();
+            const uint32_t ref = LOAD_U32(entry.base + abs_off);
+            if (ref == FF_NULL_UINT32) return py::none();
+            // Reconstruct the URL text from the stream's FF_URL_DIRECTORY.
+            const Offset dir_off = LOAD_U64(entry.base + FF_HEADER::URL_DIR_OFFSET);
+            if (dir_off == FF_NULL_OFFSET || dir_off >= arena_size) return py::none();
+            std::string url = FF_URL_DIRECTORY(dir_off, arena_size, version).get_url(entry.base, ref);
+            return py::str(url);
+        }
+        case FF_FIELD_DATETIME: {
+            // DT-2: packed values format canonically; a flagged fallback
+            // returns the ORIGINAL text byte-exact.
+            const Offset abs_off = entry.absolute_offset();
+            const uint64_t raw = LOAD_U64(entry.base + abs_off);
+            if (raw == FF_DATETIME_NULL) {
+                return py::none();
+            }
+            std::string dt_text;
+            if (FF_DATETIME_IS_FALLBACK(raw)) {
+                FF_STRING s(FF_ResolveDateTimeOffset(raw, entry.parent_offset), 0, version);
+                dt_text = std::string(s.read_view(entry.base));
+            } else {
+                dt_text = FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(raw), entry.target_recovery);
+            }
+            return py::str(dt_text);
+        }
+        case FF_FIELD_RESOURCE: {
+            // A resource outside the compiled profile is retained as an
+            // opaque-JSON block, which has string layout and NO V-Table. Handing
+            // it to ObjectHandle below would offer Python a navigable object
+            // whose every field lookup misses. Return the raw JSON text instead
+            // and let the caller decide whether to parse it.
+            const Offset abs_off = entry.absolute_offset();
+            const auto slot_tag = static_cast<RECOVERY_TAG>(
+                LOAD_U16(entry.base + abs_off + DATA_BLOCK::RECOVERY));
+            if (slot_tag == RECOVER_FF_OPAQUE_JSON) {
+                const Offset child_off = LOAD_U64(entry.base + abs_off);
+                if (child_off == FF_NULL_OFFSET) return py::none();
+                return py::str(FF_STRING(child_off, arena_size, version,
+                                         entry.m_engine_version).read_view(entry.base));
+            }
+            [[fallthrough]];
+        }
         case FF_FIELD_BLOCK:
-        case FF_FIELD_RESOURCE:
         case FF_FIELD_ARRAY: {
             Reflective::ObjectHandle elevated = entry_wrapper.entry.as_handle();
             if (elevated.offset() == FF_NULL_OFFSET) {
@@ -286,7 +341,7 @@ static py::object materialize_handle_value(const std::shared_ptr<Builder>& build
         return values;
     }
 
-    for (const FF_FieldInfo& field : FastFHIR::reflected_fields(handle.recovery())) {
+    for (const FF_FieldInfo& field : FastFHIR::reflected_fields_view(handle.recovery())) {
         FF_FieldKey key(handle.recovery(), field.kind, field.field_offset, field.child_recovery,
                         field.array_entries_are_offsets, field.name,
                         field.name ? std::char_traits<char>::length(field.name) : 0);
@@ -346,6 +401,16 @@ static std::string render_parser_json(const Parser& parser) {
     return oss.str();
 }
 
+/// Snapshot the live stream via the FF_* surface; query() is private on Builder.
+static Parser stream_query(const PyStream& self) {
+    Parser parser;
+    FF_Result res = FF_StreamQuery(FF_StreamQueryInfo{
+        .stream = self.m_builder,
+    }, parser);
+    if (!res) throw std::runtime_error(res.message);
+    return parser;
+}
+
 static bool try_extract_recovery_tag(py::handle obj, RECOVERY_TAG& out_tag) {
     if (py::isinstance<py::int_>(obj)) {
         out_tag = obj.cast<RECOVERY_TAG>();
@@ -403,7 +468,7 @@ static py::list collect_filled_object_values(const std::shared_ptr<Builder>& bui
         return filled_fields;
     }
 
-    for (const FF_FieldInfo& field : FastFHIR::reflected_fields(handle.recovery())) {
+    for (const FF_FieldInfo& field : FastFHIR::reflected_fields_view(handle.recovery())) {
         FF_FieldKey key(handle.recovery(), field.kind, field.field_offset, field.child_recovery,
                         field.array_entries_are_offsets, field.name,
                         field.name ? std::char_traits<char>::length(field.name) : 0);
@@ -428,7 +493,7 @@ static py::list collect_filled_object_items(const std::shared_ptr<Builder>& buil
         return items;
     }
 
-    for (const FF_FieldInfo& field : FastFHIR::reflected_fields(handle.recovery())) {
+    for (const FF_FieldInfo& field : FastFHIR::reflected_fields_view(handle.recovery())) {
         FF_FieldKey key(handle.recovery(), field.kind, field.field_offset, field.child_recovery,
                         field.array_entries_are_offsets, field.name,
                         field.name ? std::char_traits<char>::length(field.name) : 0);
@@ -487,11 +552,20 @@ void assign_py_obj(Reflective::MutableEntry& entry, py::handle obj, Reflective::
         
         py::module_ json = py::module_::import("json");
         std::string json_string = py::cast<std::string>(json.attr("dumps")(obj));
-        
-        Ingest::Ingestor ingestor; 
-        FF_Result res = ingestor.insert_at_field(parent_handle, key, json_string);
-        
-        if (res.code != FF_SUCCESS) {
+
+        FF_IngestorCreateInfo ingest_info;
+        FF_Ingestor ingestor;
+        FF_Result create_res = FF_CreateIngestor(ingest_info, ingestor);
+        if (!create_res) throw std::runtime_error(create_res.message);
+
+        FF_Result res = FF_IngestInsertAtField(FF_IngestInsertInfo{
+            .ingestor = ingestor,
+            .parent = parent_handle,
+            .key = key,
+            .payload = json_string,
+        });
+
+        if (res.failed()) {
             throw std::runtime_error(res.message);
         }
         return;
@@ -540,10 +614,10 @@ PYBIND11_MODULE(_core, m) {
         .value("SHA256", FF_CHECKSUM_SHA256)
         .export_values();
 
-    py::enum_<Ingest::SourceType>(m, "SourceType")
-        .value("FHIR_JSON", Ingest::SourceType::FHIR_JSON)
-        .value("HL7_V2", Ingest::SourceType::HL7_V2)
-        .value("HL7_V3", Ingest::SourceType::HL7_V3)
+    py::enum_<FF_SourceType>(m, "SourceType")
+        .value("FHIR_JSON", FF_SOURCE_FHIR_JSON)
+        .value("HL7_V2", FF_SOURCE_HL7_V2)
+        .value("HL7_V3", FF_SOURCE_HL7_V3)
         .export_values();
 
     py::enum_<FHIR_VERSION>(m, "FhirVersion")
@@ -683,6 +757,16 @@ PYBIND11_MODULE(_core, m) {
             // Fallback: try to treat it as a field path by looking for a __call__ or recovery_tag
             throw py::type_error("FastFHIR: Expected ASTNode with .path attribute or field path accessor.");
         })
+        .def("__setitem__", [](PyStreamNode& self, const PythonFieldProxy& field, py::object value) {
+            // Direct field assignment (the documented API:
+            // patient_node[Patient.ACTIVE] = True). Must be registered BEFORE
+            // the generic py::object overload below or pybind11 dispatches
+            // every Field object to the ASTNode path and throws.
+            if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) throw py::index_error();
+            const auto& key = *FastFHIR::FieldKeys::Registry[field.registry_index];
+            PyMutableEntry leaf(self.builder, self.handle[key]);
+            assign_py_obj(leaf.entry, value, self.handle, key);
+        })
         .def("__setitem__", [](PyStreamNode& self, py::object ast_node, py::object value) {
             if (!py::hasattr(ast_node, "path")) throw py::type_error("Requires ASTNode.");
             py::tuple path = ast_node.attr("path").cast<py::tuple>();
@@ -803,17 +887,23 @@ PYBIND11_MODULE(_core, m) {
         .def("__exit__", [](PyStream& self, py::object, py::object, py::object) { self.close(); })
         .def_property("root", 
             [](PyStream& self) { return PyStreamNode(self.m_builder, self.get().root_handle()); }, 
-            [](PyStream& self, const PyStreamNode& handle) { self.get().set_root(handle.handle); }
+            [](PyStream& self, const PyStreamNode& handle) {
+                FF_Result res = FF_StreamSetRoot(FF_StreamSetRootInfo{
+                    .stream = self.m_builder,
+                    .root = handle.handle,
+                });
+                if (!res) throw std::runtime_error(res.message);
+            }
         )
-        .def("query", [](const PyStream& self) { return self.get().query(); })
-        .def_property_readonly("version", [](const PyStream& self) { return self.get().query().version(); })
-        .def_property_readonly("root_type", [](const PyStream& self) { return self.get().query().root_type(); })
-        .def_property_readonly("checksum", [](const PyStream& self) { return self.get().query().checksum(); })
-        .def("to_json", [](const PyStream& self) { return render_parser_json(self.get().query()); })
-        .def("__str__", [](const PyStream& self) { return render_parser_json(self.get().query()); })
-        .def("__repr__", [](const PyStream& self) { return render_parser_json(self.get().query()); })
+        .def("query", [](const PyStream& self) { return stream_query(self); })
+        .def_property_readonly("version", [](const PyStream& self) { return stream_query(self).version(); })
+        .def_property_readonly("root_type", [](const PyStream& self) { return stream_query(self).root_type(); })
+        .def_property_readonly("checksum", [](const PyStream& self) { return stream_query(self).checksum(); })
+        .def("to_json", [](const PyStream& self) { return render_parser_json(stream_query(self)); })
+        .def("__str__", [](const PyStream& self) { return render_parser_json(stream_query(self)); })
+        .def("__repr__", [](const PyStream& self) { return render_parser_json(stream_query(self)); })
         .def("finalize", [](PyStream& self, FF_Checksum_Algorithm algo, py::object py_hasher) {
-            Builder::HashCallback cpp_hasher = nullptr;
+            FF_HashCallback cpp_hasher = nullptr;
             if (!py_hasher.is_none()) {
                 cpp_hasher = [py_hasher](const unsigned char* data, Size size) -> std::vector<BYTE> {
                     py::memoryview view = py::memoryview::from_memory(data, size);
@@ -821,10 +911,17 @@ PYBIND11_MODULE(_core, m) {
                     return std::vector<BYTE>(str_view.begin(), str_view.end());
                 };
             }
-            return self.get().finalize(algo, cpp_hasher); 
-        })
-        .def("compact", [](PyStream& self, PyMemory& destination, FF_Checksum_Algorithm algo, py::object py_hasher) {
-            Compactor::HashCallback cpp_hasher = nullptr;
+            Memory::View out;
+            FF_Result res = FF_StreamFinalize(FF_StreamFinalizeInfo{
+                .stream = self.m_builder,
+                .algorithm = algo,
+                .hasher = cpp_hasher,
+            }, out);
+            if (!res) throw std::runtime_error(res.message);
+            return out;
+        }, py::arg("algo") = FF_CHECKSUM_NONE, py::arg("hasher") = py::none())
+        .def("compact", [](PyStream& self, FF_Checksum_Algorithm algo, py::object py_hasher) {
+            FF_HashCallback cpp_hasher = nullptr;
             if (!py_hasher.is_none()) {
                 cpp_hasher = [py_hasher](const unsigned char* data, Size size) -> std::vector<BYTE> {
                     py::memoryview view = py::memoryview::from_memory(data, size);
@@ -832,13 +929,20 @@ PYBIND11_MODULE(_core, m) {
                     return std::vector<BYTE>(str_view.begin(), str_view.end());
                 };
             }
-            return Compactor::archive(self.get().query(), destination.get(), algo, cpp_hasher);
-        }, py::arg("destination"), py::arg("algo") = FF_CHECKSUM_NONE, py::arg("hasher") = py::none())
+            Memory::View out;
+            FF_Result res = FF_Compact(FF_CompactInfo{
+                .source = stream_query(self),
+                .algorithm = algo,
+                .hasher = cpp_hasher,
+            }, out);
+            if (!res) throw std::runtime_error(res.message);
+            return out;
+        }, py::arg("algo") = FF_CHECKSUM_NONE, py::arg("hasher") = py::none())
         .def_property_readonly("has_url_directory", [](const PyStream& self) {
-            return self.get().query().has_url_directory();
+            return stream_query(self).has_url_directory();
         })
         .def_property_readonly("url_directory", [](const PyStream& self) -> py::object {
-            Parser q = self.get().query();
+            Parser q = stream_query(self);
             if (!q.has_url_directory()) return py::none();
             const BYTE* base = q.data();
             FF_URL_DIRECTORY dir = q.url_directory();
@@ -858,10 +962,10 @@ PYBIND11_MODULE(_core, m) {
             return d;
         })
         .def_property_readonly("has_module_registry", [](const PyStream& self) {
-            return self.get().query().has_module_registry();
+            return stream_query(self).has_module_registry();
         })
         .def_property_readonly("module_registry", [](const PyStream& self) -> py::object {
-            Parser q = self.get().query();
+            Parser q = stream_query(self);
             if (!q.has_module_registry()) return py::none();
             const BYTE* base = q.data();
             FF_MODULE_REGISTRY reg(q.module_registry_offset(), q.size_bytes(), q.version());
@@ -892,16 +996,29 @@ PYBIND11_MODULE(_core, m) {
     // =====================================================================
     // 5. Ingestor
     // =====================================================================
-    py::class_<Ingest::Ingestor>(m, "Ingestor")
-        .def(py::init<size_t, unsigned int>(), py::arg("logger_capacity") = 64 * 1024 * 1024, py::arg("concurrency") = 0)
-        .def("ingest", [](Ingest::Ingestor& self, PyStream& stream, Ingest::SourceType type, std::string_view payload) {
-            Reflective::ObjectHandle root(&stream.get(), FF_NULL_OFFSET);
-            size_t count = 0;
-            Ingest::IngestRequest req{stream.get(), type, payload};
-            FF_Result res = self.ingest(req, root, count);
-            if (res.code != FF_SUCCESS) throw std::runtime_error(res.message);
-            return py::make_tuple(PyStreamNode(stream.m_builder, root), count);
+    py::class_<FF_Ingestor_t, std::shared_ptr<FF_Ingestor_t>>(m, "Ingestor")
+        .def(py::init([](size_t logger_capacity, unsigned int concurrency) {
+            FF_IngestorCreateInfo info;
+            info.logger_capacity = logger_capacity;
+            info.concurrency = static_cast<uint32_t>(concurrency);
+            FF_Ingestor ingestor;
+            FF_Result res = FF_CreateIngestor(info, ingestor);
+            if (!res) throw std::runtime_error(res.message);
+            return ingestor;
+        }), py::arg("logger_capacity") = 64 * 1024 * 1024, py::arg("concurrency") = 0)
+        .def("ingest", [](const FF_Ingestor& self, PyStream& stream, FF_SourceType type, std::string_view payload) {
+            FF_IngestInfo info{
+                .ingestor = self,
+                .stream = stream.m_builder,
+                .source_type = type,
+                .payload = payload,
+            };
+            Reflective::ObjectHandle root;
+            Size count = 0;
+            FF_Result res = FF_Ingest(info, root, count);
+            if (res.failed()) throw std::runtime_error(res.message);
+            return py::make_tuple(PyStreamNode(stream.m_builder, root), static_cast<size_t>(count));
         }, py::arg("stream"), py::arg("source_type"), py::arg("payload"))
-        .def("reset", &Ingest::Ingestor::reset)
-        .def_property_readonly("is_faulted", &Ingest::Ingestor::is_faulted);
+        .def("reset", [](FF_Ingestor_t& self) { return self.impl.reset(); })
+        .def_property_readonly("is_faulted", [](FF_Ingestor_t& self) { return self.impl.is_faulted(); });
 }

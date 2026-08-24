@@ -1,4 +1,6 @@
 from generator.model.type_map import (
+    DATETIME_TYPES,
+    DECIMAL_SIGFIGS_SUFFIX,
     SCALAR_PRIMITIVE_TYPES,
     STRING_TYPES,
     TYPE_MAP,
@@ -30,11 +32,36 @@ def generate_size_fields(layout, block_struct_name, data_name):
             cpp += f"    std::visit([&](auto&& arg) {{\n"
             cpp += f"        using T = std::decay_t<decltype(arg)>;\n"
             cpp += f"        if constexpr (std::is_same_v<T, std::string_view>) {{\n"
-            cpp += f"            if (!arg.empty()) __total += SIZE_FF_STRING(arg);\n"
+            # No `!arg.empty()` guard: the STORE side writes STORE_FF_STRING
+            # unconditionally once the variant holds a string_view, so an empty
+            # one still costs a 14-byte FF_STRING header. Guarding here and not
+            # there is the SIZE/STORE asymmetry that produced A23 Bug B. An
+            # absent choice is std::monostate, not an empty string.
+            #
+            # Three variant families share that one std::string_view and are
+            # separated only by the tag: plain strings, date/time, and code.
+            # Each reserves a different amount of child space -- a date/time
+            # that packs into 63 bits needs none, a code in the dictionary needs
+            # none, and both need an FF_STRING / FF_CODEABLE_CONCEPT when they
+            # do not fit. This must mirror the STORE branch below exactly or the
+            # claim and the write disagree.
+            _cv = f"{data_name}.{f['cpp_name']}"
+            cpp += (
+                f"            if (FF_IsDateTimeTag({_cv}.tag))\n"
+                f"                __total += SIZE_FF_DATETIME(arg, {_cv}.tag);\n"
+                f"            else if ({_cv}.tag == RECOVER_FF_CODE)\n"
+                f"                __total += SIZE_FF_CODE(std::string(arg), __version);\n"
+                f"            else\n"
+                f"                __total += SIZE_FF_STRING(arg);\n"
+            )
             cpp += f"        }}\n"
             cpp += f"    }}, {data_name}.{f['cpp_name']}.value);\n"
         elif kind == "FF_FIELD_ARRAY":
-            if f["fhir_type"] == "string" or f["fhir_type"] in STRING_TYPES:
+            if (
+                f["fhir_type"] == "string"
+                or f["fhir_type"] in STRING_TYPES
+                or f["fhir_type"] in DATETIME_TYPES
+            ):
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * TYPE_SIZE_OFFSET);\n"
                 cpp += f"        for (const auto& __item : {data_name}.{f['cpp_name']}) {{\n"
@@ -46,9 +73,17 @@ def generate_size_fields(layout, block_struct_name, data_name):
                 cpp += f"        __total += FF_ARRAY::HEADER_SIZE + ({data_name}.{f['cpp_name']}.size() * TYPE_SIZE_OFFSET);\n"
                 cpp += f"        for (const auto& __item : {data_name}.{f['cpp_name']}) {{\n"
                 if code_enum:
-                    cpp += f"            __total += SIZE_FF_CODE(std::string({code_enum['serialize']}(__item)), __version);\n"
+                    # The store writes these as FF_STRINGs unconditionally (OFFSET
+                    # array of strings, per the wire format) — the size MUST match,
+                    # so SIZE_FF_STRING, never the dictionary-aware SIZE_FF_CODE.
+                    # The old SIZE_FF_CODE returned 0 for dictionary hits, so every
+                    # resource with a dictionary-backed code array (e.g.
+                    # AllergyIntolerance.category = ["medication"]) was claimed
+                    # short and the NEXT resource's write overlapped its tail
+                    # (TASKS.md A23, Bug B).
+                    cpp += f"            __total += SIZE_FF_STRING(std::string({code_enum['serialize']}(__item)));\n"
                 else:
-                    cpp += f"            __total += SIZE_FF_CODE(__item, __version);\n"
+                    cpp += f"            __total += SIZE_FF_STRING(__item);\n"
                 cpp += f"        }}\n    }}\n"
             elif f["fhir_type"] == "Resource":
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
@@ -72,6 +107,13 @@ def generate_size_fields(layout, block_struct_name, data_name):
         elif kind == "FF_FIELD_STRING":
             cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
             cpp += f"        __total += SIZE_FF_STRING({data_name}.{f['cpp_name']});\n    }}\n"
+
+        elif kind == "FF_FIELD_DATETIME":
+            # DT-2: the slot is inline (already counted in HEADER_SIZE); only
+            # the fallback FF_STRING (text that does not fit the packed 63
+            # bits) needs reserved child space. SIZE_FF_DATETIME returns 0 for
+            # empty text and for text that packs inline.
+            cpp += f"    __total += SIZE_FF_DATETIME({data_name}.{f['cpp_name']}, {_scalar_recovery_tag(f['fhir_type'])});\n"
 
         elif kind == "FF_FIELD_BLOCK":
             # STRING_TYPES (dateTime, base64Binary, markdown, ...) need no special
@@ -127,11 +169,53 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             cpp += f"            STORE_U16({vtable_off} + 8, {data_name}.{f['cpp_name']}.tag);\n"
             cpp += f"        }}\n"
 
-            # 3. Variable-Length String Primitives
+            # 3. Variable-Length String Primitives — and date/time, which
+            #    arrives in the same std::string_view and is separated only by
+            #    the tag. ENCODE_FF_DATETIME returns the 8-byte slot word
+            #    directly (packed civil value, or a flagged relative offset to
+            #    an FF_STRING it writes into child space) and advances child_off
+            #    itself, so there is no STORE_U64(slot, child_off) here: writing
+            #    an absolute FF_STRING offset into a date/time slot is what the
+            #    reader would unpack as a garbage civil date.
             cpp += f"        else if constexpr (std::is_same_v<T, std::string_view>) {{\n"
-            cpp += f"            STORE_U64({vtable_off}, child_off);\n"
-            cpp += f"            child_off += STORE_FF_STRING(__base, child_off, arg);\n"
-            cpp += f"            STORE_U16({vtable_off} + 8, {data_name}.{f['cpp_name']}.tag);\n"
+            cpp += f"            const RECOVERY_TAG __ct = {data_name}.{f['cpp_name']}.tag;\n"
+            cpp += f"            if (FF_IsDateTimeTag(__ct)) {{\n"
+            cpp += (
+                f"                STORE_U64({vtable_off}, ENCODE_FF_DATETIME("
+                f"__base, hdr_off, child_off, arg, __ct));\n"
+            )
+            cpp += f"            }} else if (__ct == RECOVER_FF_CODE) {{\n"
+            # A code is 4 bytes; the choice VALUE AREA is 8 (the slot is 10 --
+            # 8 for the value, 2 for the tag at +8 -- because it must fit the
+            # widest inline variant: uint64, double, or a packed date/time).
+            # So a code occupies the low half and the upper half is padding.
+            #
+            # Fill, then overwrite: identical to the arithmetic branch above,
+            # which pre-fills FF_NULL_OFFSET before STORE_U32 for int32/uint32/
+            # bool. Two padding conventions in adjacent arms of one visitor
+            # would be a difference a reader has to explain to themselves and
+            # cannot.
+            #
+            # The padding has to be determinate at all because finalize hashes
+            # EVERY byte from base() to the hash slot (FF_StreamFinalize in
+            # FF_Memory.hpp), so an unwritten half makes two logically identical
+            # documents digest differently. It reads as zero today only because
+            # claim_space hands back untouched sparse-mmap pages -- the OS's
+            # guarantee, not the format's.
+            #
+            # No reader looks at the upper half: code_node does LOAD_U32 at the
+            # slot start, and STORE_* is little-endian on the wire, so the low
+            # four wire bytes are the word it wants on either host endianness.
+            cpp += f"                STORE_U64({vtable_off}, FF_NULL_OFFSET);\n"
+            cpp += (
+                f"                STORE_U32({vtable_off}, ENCODE_FF_CODE("
+                f"__base, hdr_off, child_off, std::string(arg), __version));\n"
+            )
+            cpp += f"            }} else {{\n"
+            cpp += f"                STORE_U64({vtable_off}, child_off);\n"
+            cpp += f"                child_off += STORE_FF_STRING(__base, child_off, arg);\n"
+            cpp += f"            }}\n"
+            cpp += f"            STORE_U16({vtable_off} + 8, __ct);\n"
             cpp += f"        }}\n"
 
             # 4. Immediate Serialization Offsets (Quantity, CodeableConcept, etc.)
@@ -148,7 +232,11 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             # `in STRING_TYPES` test, never `== "string"`: dateTime, markdown,
             # uri and id share this layout and silently take the wrong branch
             # otherwise.
-            if f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES:
+            if (
+                f["fhir_type"] in ("string", "code")
+                or f["fhir_type"] in STRING_TYPES
+                or f["fhir_type"] in DATETIME_TYPES
+            ):
                 code_enum = f.get("code_enum")
                 cpp += f"    if (!{data_name}.{f['cpp_name']}.empty()) {{\n"
                 cpp += f"        STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, child_off);\n"
@@ -200,6 +288,15 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
                 cpp += f"        child_off += static_cast<Offset>(__n) * {size_const};\n"
                 cpp += f"        for (uint32_t __i = 0; __i < __n; ++__i) {{\n"
                 cpp += f"            {store_mac}(__base + __entries_start + __i * {size_const}, {data_name}.{f['cpp_name']}[__i]);\n"
+                if f["fhir_type"] == "decimal":
+                    # A decimal entry is 9 bytes wide; the vector element is a
+                    # bare double, so there is no per-element source scale to
+                    # record. Write the sentinel rather than leaving the byte
+                    # unset -- the exporter falls back to shortest-round-trip.
+                    cpp += (
+                        f"            STORE_U8(__base + __entries_start + __i * {size_const}"
+                        f" + TYPE_SIZE_UINT64, FF_DECIMAL_SIGFIGS_UNSPECIFIED);\n"
+                    )
                 cpp += f"        }}\n"
                 cpp += f"    }} else {{ STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, FF_NULL_OFFSET); }}\n"
             # --- PATTERN 3: ARRAY OF COMPLEX STRUCTS ---
@@ -285,6 +382,21 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             else:
                 cpp += f"        STORE_U32({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_CODE(__base, hdr_off, child_off, __code_str, __version));\n"
             cpp += f"    }}\n"
+        elif f["fhir_type"] in DATETIME_TYPES:
+            # DT-2: packed inline u64, or a flagged relative offset to an
+            # FF_STRING fallback written by ENCODE_FF_DATETIME into child
+            # space (the SIZE pass above reserves it).
+            cpp += f"    STORE_U64({ptr_name} + {block_struct_name}::{f['name']}, ENCODE_FF_DATETIME(__base, hdr_off, child_off, {data_name}.{f['cpp_name']}, {_scalar_recovery_tag(f['fhir_type'])}));\n"
+        elif f["fhir_type"] == "decimal":
+            # [ double @ +0 | scale @ +8 ]. Two stores, not one -- the 9th byte
+            # is part of the slot and an unwritten one reads as arena garbage,
+            # which the exporter would take for a digit count.
+            slot = f"{ptr_name} + {block_struct_name}::{f['name']}"
+            cpp += f"    STORE_F64({slot}, {data_name}.{f['cpp_name']});\n"
+            cpp += (
+                f"    STORE_U8({slot} + TYPE_SIZE_UINT64, "
+                f"{data_name}.{f['cpp_name']}{DECIMAL_SIGFIGS_SUFFIX});\n"
+            )
         else:
             cpp += f"    {get_store_macro(f['macro'])}({ptr_name} + {block_struct_name}::{f['name']}, {data_name}.{f['cpp_name']});\n"
 

@@ -145,6 +145,56 @@ constexpr uint32_t FF_CODE_PAYLOAD_MASK     = 0x7FFFFFFF;  // Lower 31 bits
 constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x7FFFFFFF;
 ```
 
+### 3.1 The 8-byte sibling: `FF_DATETIME` (live; date/time ARRAYS still pending)
+
+The packed date/time slot is the same mechanism one width up, and belongs beside
+this table so the two are read together rather than discovered separately.
+
+**Status:** DT-2 routed `date`/`dateTime`/`instant`/`time` off `STRING_TYPES` and
+onto `DATETIME_TYPES` in the model, store, deserialize and view emitters, so
+**scalar slots and choice (`[x]`) variants are live on the wire** —
+`Patient.birthDate` emits `ENCODE_FF_DATETIME` under `RECOVER_FF_DATE`. What
+remains is **array-typed** date/time fields, which three emitters still send down
+the string-array branch, so `Timing.event` and `Timing.repeat.timeOfDay` are
+still stored as `FF_STRING` (TASKS.md **DT-2.4**).
+
+| | `FF_FIELD_CODE` (4 B) | `FF_DATETIME` (8 B) |
+|---|---|---|
+| Discriminator | Bit 31, `FF_CODEABLE_CONCEPT_FLAG` | Bit 63, `FF_DATETIME_FALLBACK_FLAG` |
+| MSB = 0 | 31-bit dictionary index | 63-bit packed civil date/time |
+| MSB = 1 | 31-bit signed relative offset → `FF_CODEABLE_CONCEPT` | 63-bit signed relative offset → `FF_STRING` |
+| Payload mask | `FF_CODE_PAYLOAD_MASK` (`0x7FFFFFFF`) | `FF_DATETIME_PAYLOAD_MASK` (`0x7FFF'FFFF'FFFF'FFFF`) |
+| Null | `FF_CODE_NULL` (all ones) | `FF_DATETIME_NULL` (all ones) |
+| Sign-extension | `FF_ResolveCodeableConceptOffset` | `FF_ResolveDateTimeOffset` |
+
+```
+Bit 63 (MSB) = FF_DATETIME_FALLBACK_FLAG → 63-bit signed relative offset to FF_STRING
+Bits 62–41   = civil days from 0001-01-01, unsigned (years 0001..9999)
+Bits 40–36   = hour     Bits 35–30 = minute     Bits 29–24 = second (60 legal)
+Bits 23–14   = millisecond          Bits 13–3  = UTC offset, signed minutes
+Bits  2–0    = precision (YEAR, YEAR_MONTH, DATE, SECOND, FRAC1, FRAC2, FRAC3)
+```
+
+Read path — the same binary branch as the code slot, testing the null sentinel
+first because all-ones has the flag bit set in both:
+
+```cpp
+case FF_FIELD_DATETIME: {                       // one kind, all four date/time tags
+    uint64_t raw = LOAD_U64(base + slot);
+    if (raw == FF_DATETIME_NULL) { /* absent */ }
+    if (FF_DATETIME_IS_FALLBACK(raw)) {
+        Offset str_off = FF_ResolveDateTimeOffset(raw, parent_offset);  // sign-extend 63-bit
+        return /* the original text in that FF_STRING */;
+    }
+    return FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(raw), tag);
+}
+```
+
+Unlike the code slot, the inline form carries no terminology at all — a
+date/time is not a coded concept and never consults the dictionary, so none of
+the CodeSystem machinery in this document applies to it. It shares the *slot
+contract* and nothing else. Full rationale is in `architecture.md` §6.3.
+
 **Read path** — binary branch with sign-extension (see `include/FF_Parser.hpp`,
 `include/FF_Utilities.hpp::FF_ResolveCodeableConceptOffset`):
 
@@ -166,6 +216,24 @@ which bit was the sign bit. The shift-based approach works uniformly:
 left-shift by 1 puts bit 30 in the sign position of `int32_t`, arithmetic
 right-shift sign-extends the full 31-bit signed range (±1 GB).
 
+**`parent_offset` above is the containing block, and that is not negotiable.**
+The offset is block-relative, so resolving it needs an operand the value itself
+does not carry. `Reflective::Entry` still has it (`parent_offset` +
+`vtable_offset`); `Reflective::Node` does not — a node knows only its own
+offset. Every path that turns a code slot into a node therefore resolves through
+`ParserOps::code_node()`, which does the arithmetic at construction and returns
+a node already pointing at the `FF_CODEABLE_CONCEPT`. Code that defers it has
+already lost the operand: `Node::as<std::string_view>()` used to resolve against
+the node's own offset, which for a choice (`[x]`) variant is the *slot*, and
+returned an empty label instead of the code — silently.
+
+**The same rule already applies to date/time variants, and is implemented.**
+DT-2 made `resolve_choice` return a real `FF_FIELD_DATETIME` node, and DT-3
+resolves the bit-63 fallback offset while `parent_offset` is still in hand,
+exactly as `code_node()` does for codes. This is not future work — reading it as
+future work is how the code path gets written a second time, deferred, and
+against the wrong base.
+
 ---
 
 ## 4. `FF_CODEABLE_CONCEPT` — Block Specification
@@ -177,7 +245,7 @@ ARM and other platforms that fault on unaligned 64-bit loads.
 
 ```
 Offset  0– 7 : VALIDATION  (uint64_t)     — standard DATA_BLOCK
-Offset  8– 9 : RECOVERY    (uint16_t)     — RECOVER_FF_CODEABLE_CONCEPT (0x000A)
+Offset  8– 9 : RECOVERY    (uint16_t)     — RECOVER_FF_CODEABLE_CONCEPT (0x0009)
 Offset 10    : SYSTEM      (uint8_t)      — FF_ExternalCodeSystem enum value
 Offset 11–17 : CODE        (7 bytes)      — packed code payload, system-specific
 Offset 18–23 : _PADDING    (6 bytes)      — alignment to 24-byte stride
@@ -195,7 +263,7 @@ Variable-length block. No fixed padding — `FF_Ops.hpp` handles unaligned ARM a
 
 ```
 Offset  0– 7 : VALIDATION  (uint64_t) — standard DATA_BLOCK
-Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT (0x000A)
+Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT (0x0009)
 Offset 10    : SYSTEM      (uint8_t)  — FF_CodeableConceptSystem discriminator
 Offset 11    : LENGTH      (uint8_t)  — payload byte count
 Offset 12+   : PAYLOAD     (variable) — LENGTH bytes
@@ -735,7 +803,8 @@ opaque to the dispatch mechanism.
 1. Add `FF_CODEABLE_CONCEPT_FLAG` and `FF_CODE_PAYLOAD_MASK` to
    `FF_Primitives.hpp`.
 2. Define `FF_CODEABLE_CONCEPT` block struct in `FF_Primitives.hpp`.
-3. Add `RECOVER_FF_CODEABLE_CONCEPT = 0x000A` to `FF_Recovery.hpp`.
+3. `RECOVER_FF_CODEABLE_CONCEPT = 0x0009` in `dictionaries/master_tags.json`
+   (projected into `generated_src/FF_Recovery.hpp`).
 4. Implement `_encode_codeable_concept` and `_pack_code` in
    `FF_Primitives.cpp`.
 5. Update read path in `FF_Parser.cpp` to handle the three-way branch.

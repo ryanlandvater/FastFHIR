@@ -8,7 +8,7 @@
  * * @brief FastFHIR Ingestor CLI implementation with auto-format detection
  */
 
-#include <FF_Builder.hpp>
+#include <FastFHIR.hpp>
 #include <FF_Ingestor.hpp>
 
 #include <iostream>
@@ -17,6 +17,7 @@
 #include <string_view>
 #include <iterator>
 #include <filesystem>
+#include <algorithm>
 #include <openssl/evp.h>
 
 using namespace FastFHIR;
@@ -145,23 +146,23 @@ int main(int argc, char *argv[])
         // Execute the Sniffer
         std::string_view payload(json_buffer.data(), json_buffer.size());
         ClinicalFormat format = detect_format(payload);
-        Ingest::SourceType source_type;
+        FF_SourceType source_type = FF_SOURCE_FHIR_JSON;
 
         switch (format)
         {
         case ClinicalFormat::FHIR_JSON:
             std::cerr << "[FastFHIR Injest CLI] Format Detected: FHIR JSON\n";
-            source_type = Ingest::SourceType::FHIR_JSON;
+            source_type = FF_SOURCE_FHIR_JSON;
             break;
         case ClinicalFormat::HL7_V2:
             std::cerr << "[FastFHIR Injest CLI] Format Detected: HL7 v2\n";
             std::cerr << "[FastFHIR Injest CLI] Error: HL7 v2 ingestion is not yet fully implemented in FastFHIR.\n";
-            source_type = Ingest::SourceType::HL7_V2;
+            source_type = FF_SOURCE_HL7_V2;
             return 1;
         case ClinicalFormat::HL7_V3:
             std::cerr << "[FastFHIR Injest CLI] Format Detected: HL7 v3 / CDA\n";
             std::cerr << "[FastFHIR Injest CLI] Error: HL7 v3 ingestion is not yet fully implemented in FastFHIR.\n";
-            source_type = Ingest::SourceType::HL7_V3;
+            source_type = FF_SOURCE_HL7_V3;
             return 1;
         case ClinicalFormat::FHIR_XML:
             std::cerr << "[FastFHIR Injest CLI] Format Detected: FHIR XML\n";
@@ -176,60 +177,108 @@ int main(int argc, char *argv[])
         // ---------------------------------------------------------
         // Core FastFHIR Ingestion Pipeline
         // ---------------------------------------------------------
-        // HEURISTIC: Clinical JSON is heavy on syntax (quotes, braces, keys).
-        // FastFHIR binary is dense. 2x input size is a safe "one-and-done" allocation.
-        size_t capacity_hint = json_buffer.size() * 2;
-        auto memory = Memory::create(capacity_hint);
-        Builder builder(memory);
-        Ingest::Ingestor ingestor;
+        // HEURISTIC: Clinical JSON is heavy on syntax (quotes, braces, keys) and
+        // FastFHIR binary is dense, so 2x the input is ample for any real document.
+        // It is not ample at the bottom: FF_HEADER is 54 bytes and a resource vtable
+        // is up to ~250 (FF_PATIENT is 191), and neither scales with input size. A
+        // 66-byte Patient asked for 132 bytes and needed 245. The floor covers the
+        // fixed overhead; because the arena is reserved virtual memory, not committed
+        // pages, over-reserving here costs nothing.
+        // FastFHIR::Ingest::FF_MIN_ARENA — one definition, shared with the
+        // regression test that pins this floor (tests/cpp/test_bundle_ingest.cpp).
+        size_t capacity_hint =
+            std::max(json_buffer.size() * 2, FastFHIR::Ingest::FF_MIN_ARENA);
+
+        FF_StreamCreateInfo stream_info;
+        stream_info.capacity = capacity_hint;
+        FF_Stream stream;
+        FF_Result result = FF_CreateStream(stream_info, stream);
+        if (!result)
+        {
+            std::cerr << "[FastFHIR Injest CLI] Fatal Arena/Stream Error: " << result.message << "\n";
+            return 1;
+        }
+
+        FF_IngestorCreateInfo ingestor_info;
+        FF_Ingestor ingestor;
+        result = FF_CreateIngestor(ingestor_info, ingestor);
+        if (!result)
+        {
+            std::cerr << "[FastFHIR Injest CLI] Fatal Ingestor Error: " << result.message << "\n";
+            return 1;
+        }
 
         // json_buffer is a simdjson::padded_string, so the SIMDJSON_PADDING slack the
         // parser needs is already allocated. Declaring the capacity lets the ingestor
         // parse this buffer in place instead of memcpy'ing the whole document.
-        Ingest::IngestRequest request{
-            .builder = builder,
+        FF_IngestInfo ingest_info{
+            .ingestor = ingestor,
+            .stream = stream,
             .source_type = source_type,
-            .json_string = payload,
+            .payload = payload,
             .payload_capacity = json_buffer.size() + simdjson::SIMDJSON_PADDING};
 
-        Reflective::ObjectHandle root_handle(&builder, FF_NULL_OFFSET);
-        size_t parsed_count = 0;
+        Reflective::ObjectHandle root_handle;
+        Size parsed_count = 0;
 
-        FF_Result result = ingestor.ingest(request, root_handle, parsed_count);
+        result = FF_Ingest(ingest_info, root_handle, parsed_count);
 
-        if (result.code != FF_SUCCESS)
+        if (result.failed())
         {
             std::cerr << "[FastFHIR Injest CLI] Fatal Ingestion Error: " << result.message << "\n";
             return 1;
         }
+        // Warnings (e.g. out-of-profile resources discarded) keep the run alive.
+        if (result.is_warning())
+            std::cerr << "[FastFHIR Injest CLI] Warning: " << result.message << "\n";
 
         std::cerr << "[FastFHIR Injest CLI] Successfully parsed " << parsed_count << " resources.\n";
 
-        builder.set_root(root_handle);
-        std::string_view view = builder.finalize(FF_CHECKSUM_SHA256, [](const unsigned char *data, Size size)
-                                                 {
-            // Pre-allocate strictly to the compile-time upper bound
-            std::vector<BYTE> hash(FF_MAX_HASH_BYTES, 0); 
-            unsigned int out_len = 0;
-            
-            EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-            if (ctx != nullptr) {
-                EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-                EVP_DigestUpdate(ctx, data, size);
-                EVP_DigestFinal_ex(ctx, hash.data(), &out_len);
-                EVP_MD_CTX_free(ctx);
-            } else {
-                std::cerr << "[FastFHIR Injest CLI] Warning: Failed to initialize OpenSSL context. Hash will be empty.\n";
-            }
-            
-            // Shrink if a smaller algorithm was somehow used, otherwise a no-op
-            hash.resize(out_len); 
-            return hash; });
+        result = FF_StreamSetRoot(FF_StreamSetRootInfo{
+            .stream = stream,
+            .root = root_handle,
+        });
+        if (!result)
+        {
+            std::cerr << "[FastFHIR Injest CLI] Fatal Root Assignment Error: " << result.message << "\n";
+            return 1;
+        }
+
+        Memory::View view;
+        result = FF_StreamFinalize(FF_StreamFinalizeInfo{
+                                       .stream = stream,
+                                       .algorithm = FF_CHECKSUM_SHA256,
+                                       .hasher = [](const unsigned char *data, Size size) {
+                                           // Pre-allocate strictly to the compile-time upper bound
+                                           std::vector<BYTE> hash(FF_MAX_HASH_BYTES, 0);
+                                           unsigned int out_len = 0;
+
+                                           EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+                                           if (ctx != nullptr) {
+                                               EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
+                                               EVP_DigestUpdate(ctx, data, size);
+                                               EVP_DigestFinal_ex(ctx, hash.data(), &out_len);
+                                               EVP_MD_CTX_free(ctx);
+                                           } else {
+                                               std::cerr << "[FastFHIR Injest CLI] Warning: Failed to initialize OpenSSL context. Hash will be empty.\n";
+                                           }
+
+                                           // Shrink if a smaller algorithm was somehow used, otherwise a no-op
+                                           hash.resize(out_len);
+                                           return hash;
+                                       },
+                                   },
+                                   view);
+        if (!result)
+        {
+            std::cerr << "[FastFHIR Injest CLI] Fatal Finalize Error: " << result.message << "\n";
+            return 1;
+        }
 
         if (output_file.empty())
         {
             std::cerr.flush();
-            std::cout << view;
+            std::cout.write(view.data(), static_cast<std::streamsize>(view.size()));
             std::cout.flush();
         }
         else
@@ -240,9 +289,9 @@ int main(int argc, char *argv[])
                 std::cerr << "[FastFHIR Injest CLI] Error: Could not open output file " << output_file << " for writing.\n";
                 return 1;
             }
-            outfile << view;
+            outfile.write(view.data(), static_cast<std::streamsize>(view.size()));
             outfile.close();
-            std::cerr << "[FastFHIR Injest CLI] Binary saved to " << output_file << " (" << view.length() << " bytes)\n";
+            std::cerr << "[FastFHIR Injest CLI] Binary saved to " << output_file << " (" << view.size() << " bytes)\n";
         }
     }
     catch (const std::exception &e)

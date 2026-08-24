@@ -28,16 +28,16 @@ def enclose_namespace(ns: str, code: str) -> str:
     return f"namespace {ns} {{\n{code}\n}} // namespace {ns}\n"
 
 
-def parse_recovery_tags(recovery_path: str = "include/FF_Recovery.hpp") -> dict[str, int]:
+def parse_recovery_tags(recovery_path: str = "generated_src/FF_Recovery.hpp") -> dict[str, int]:
     """Parse ``RECOVERY_TAG`` enum values from the permanent recovery header.
 
-    Reads ``include/FF_Recovery.hpp`` and extracts all ``NAME = 0xVALUE``
+    Reads ``generated_src/FF_Recovery.hpp`` and extracts all ``NAME = 0xVALUE``
     entries.  Used by the generator to validate that emitted recovery tags
     match the permanent C++ header.
 
     Args:
         recovery_path: Path to ``FF_Recovery.hpp`` relative to workspace root.
-            Defaults to ``include/FF_Recovery.hpp``.
+            Defaults to ``generated_src/FF_Recovery.hpp``.
 
     Returns:
         Dict mapping tag names (e.g. ``"RECOVER_FF_STRING"``) to their
@@ -58,14 +58,79 @@ def parse_recovery_tags(recovery_path: str = "include/FF_Recovery.hpp") -> dict[
     return tags
 
 
-def validate_recovery_tags(output_dir: str, recovery_path: str = "include/FF_Recovery.hpp") -> int:
+def validate_recovery_bands(recovery_path: str = "generated_src/FF_Recovery.hpp") -> None:
+    """Fail loudly if a tag sits outside the band its NAME implies, or collides.
+
+    The bands in FF_Recovery.hpp are not documentation: FF_IsResourceTag and
+    FF_IsScalarBlockTag classify a block by which band its tag falls in, so a tag
+    written into the wrong band is silently mis-classified at runtime rather than
+    failing to compile. The C++ static_asserts catch a bad *boundary*; this
+    catches a bad *tag*, which is the accident that actually happens when someone
+    appends by hand to a 900-entry ledger.
+
+    Also rejects duplicate values. A C++ enum happily accepts two enumerators
+    with the same value, so two block types sharing a recovery tag -- which makes
+    their blocks indistinguishable on the wire -- is otherwise completely silent.
+
+    Limits: this checks that a tag is inside SOME band, not that it is inside the
+    RIGHT one. A resource tag mistakenly written at 0x1500 lands in the backbone
+    band and passes here. Catching that needs the caller's knowledge of what each
+    tag is *for*, which the generator has when it builds the name by
+    concatenation -- see TASKS.md A29.2.
+    """
+    tags = parse_recovery_tags(recovery_path)
+    bands = {
+        "PRIMITIVE": (tags["RECOVER_BAND_PRIMITIVE_FIRST"], tags["RECOVER_BAND_PRIMITIVE_LAST"]),
+        "SCALAR": (tags["RECOVER_BAND_SCALAR_FIRST"], tags["RECOVER_BAND_SCALAR_LAST"]),
+        "DATATYPE": (tags["RECOVER_BAND_DATATYPE_FIRST"], tags["RECOVER_BAND_DATATYPE_LAST"]),
+        "RESOURCE": (tags["RECOVER_BAND_RESOURCE_FIRST"], tags["RECOVER_BAND_RESOURCE_LAST"]),
+        "BACKBONE": (tags["RECOVER_BAND_BACKBONE_FIRST"], tags["RECOVER_BAND_BACKBONE_LAST"]),
+    }
+    # Boundary/mask constants are not themselves tags.
+    skip = set(bands) | {"RECOVER_ARRAY_BIT", "RECOVER_TYPE_MASK"}
+    members = {
+        n: v
+        for n, v in tags.items()
+        if n.startswith(("RECOVER_FF_", "FF_RECOVER_"))
+        and not any(n.startswith(f"RECOVER_BAND_{b}") for b in bands)
+        and n not in skip
+    }
+
+    errors: list[str] = []
+
+    seen: dict[int, str] = {}
+    for name, value in sorted(members.items(), key=lambda kv: (kv[1], kv[0])):
+        if value in seen:
+            errors.append(
+                f"    duplicate value 0x{value:04X}: {seen[value]} and {name} would be "
+                "indistinguishable on the wire"
+            )
+        else:
+            seen[value] = name
+        if not any(lo <= value <= hi for lo, hi in bands.values()):
+            errors.append(f"    {name} = 0x{value:04X} falls outside every band")
+
+    if errors:
+        raise RuntimeError(
+            f"{len(errors)} recovery-tag band violation(s) in {recovery_path}:\n"
+            + "\n".join(errors)
+            + "\n\nSee the BAND MAP at the top of that header. Tag values are "
+            "permanent wire constants -- fix the new tag, never an existing one."
+        )
+
+
+def validate_recovery_tags(
+    output_dir: str, recovery_path: str = "generated_src/FF_Recovery.hpp"
+) -> int:
     """Fail loudly if the generator emitted a RECOVERY_TAG the header lacks.
 
-    `include/FF_Recovery.hpp` is hand-maintained and its values are permanent
-    wire constants -- the generator only ever *references* them. But the
-    reference is built by string concatenation
-    (``f"RECOVER_{child_struct}"`` in model/structure.py), so a rename or a new
-    FHIR type can produce a name that does not exist.
+    `generated_src/FF_Recovery.hpp` is emitted by emit/recovery_tags.py from the
+    committed ledger `dictionaries/master_tags.json`, at stage 1b -- before
+    anything that references a tag. Its values are permanent wire constants.
+    Every tag the spec needs is therefore already declared by the time the
+    emitters run, but the reference is built by string concatenation
+    (``f"RECOVER_{child_struct}"`` in model/structure.py), so a rename or a
+    name discovery never produced can still ask for a tag that does not exist.
 
     That failure currently surfaces as a wall of C++ "undeclared identifier"
     errors across dozens of generated files. Catching it here names the exact
@@ -91,9 +156,78 @@ def validate_recovery_tags(output_dir: str, recovery_path: str = "include/FF_Rec
         raise RuntimeError(
             f"{len(unknown)} RECOVERY_TAG(s) were emitted that {recovery_path} does not "
             f"declare:\n{listed}\n\n"
-            "RECOVERY_TAG values are permanent wire constants and the header is "
-            "hand-maintained -- the generator may only reference existing tags. Either "
-            "add the tag to the header deliberately (it is a wire constant: append, "
-            "never renumber) or fix the name the emitter is building."
+            "RECOVERY_TAG values are permanent wire constants. The header is "
+            "GENERATED from dictionaries/master_tags.json -- never hand-edit it. "
+            "Tag discovery covers the whole spec and appends before the emitters "
+            "run, so a name missing here is almost always a name the emitter built "
+            "wrong: fix the emitter. If the tag is genuinely a new FHIR type, make "
+            "discovery in emit/recovery_tags.py see it and re-run; it will append "
+            "at the next free value in its band."
+        )
+    return len(referenced)
+
+
+def validate_codesystem_enums(output_dir: str, codesystems_name: str = "FF_CodeSystems.hpp") -> int:
+    """Fail loudly if the emitted sources reference a code-system enum that
+    ``FF_CodeSystems.hpp`` does not declare.
+
+    This is the GEN-1 guard. The generator has twice emitted a
+    ``FF_CodeSystems.hpp`` holding fewer ``enum class`` definitions than the
+    resource sources emitted alongside it expect -- 72 instead of 80, with
+    ``FF_Use`` / ``FF_NoteType`` / ``FF_ClaimStatus`` absent while
+    ``FF_Claim.cpp`` still called ``parse_Use``. The failure then surfaces
+    hundreds of lines later as a wall of C++ ``use of undeclared identifier``
+    errors, in generated code, with no indication of the cause -- and on at
+    least one occasion a STALE TEST BINARY reported PASS while that build was
+    failing, so the tree looked green.
+
+    Catching it here converts a mystifying compile failure into a named
+    generate-time error, whatever the underlying cause turns out to be
+    (TASKS.md GEN-1 is still undiagnosed; this does not fix it, it makes every
+    occurrence self-reporting).
+
+    Keyed on the ``parse_X`` / ``serialize_X`` FUNCTION names rather than the
+    ``FF_X`` type names on purpose: a bare ``FF_Something`` reference cannot be
+    told apart from a block struct or a wire constant without knowing what kind
+    of thing it is, whereas these two prefixes are emitted by the code-system
+    emitter and nothing else, so the check has no false positives.
+
+    Returns the number of distinct enums referenced.
+    """
+    codesystems_path = os.path.join(output_dir, codesystems_name)
+    if not os.path.isfile(codesystems_path):
+        raise RuntimeError(
+            f"{codesystems_path} was not emitted; the code-system stage did not run."
+        )
+
+    with open(codesystems_path, encoding="utf-8") as fh:
+        codesystems_src = fh.read()
+    declared = set(re.findall(r"\benum\s+class\s+FF_([A-Za-z0-9_]+)\b", codesystems_src))
+    if not declared:
+        raise RuntimeError(
+            f"{codesystems_path} declares no `enum class` at all -- the code-system "
+            "emitter produced an empty header. See TASKS.md GEN-1."
+        )
+
+    referenced: dict[str, str] = {}
+    for entry in sorted(os.listdir(output_dir)):
+        if entry == codesystems_name or not entry.endswith((".hpp", ".cpp")):
+            continue
+        with open(os.path.join(output_dir, entry), encoding="utf-8") as fh:
+            for name in re.findall(r"\b(?:parse|serialize)_([A-Za-z0-9_]+)\s*\(", fh.read()):
+                referenced.setdefault(name, entry)
+
+    missing = {n: f for n, f in referenced.items() if n not in declared}
+    if missing:
+        listed = "\n".join(f"    FF_{n}  (used by {f})" for n, f in sorted(missing.items()))
+        raise RuntimeError(
+            f"{codesystems_path} declares {len(declared)} enums, but the emitted "
+            f"sources reference {len(missing)} it does not have:\n{listed}\n\n"
+            "This is TASKS.md GEN-1: the code-system header came out short while "
+            "the resource sources beside it expect the full set. The tree is "
+            "INCONSISTENT and will not compile. Re-run the configure -- it has "
+            "recovered on every observed occurrence -- and if it recurs, capture "
+            f"{codesystems_name} and the generator output before regenerating, "
+            "because that is the evidence the diagnosis still lacks."
         )
     return len(referenced)

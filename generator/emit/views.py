@@ -28,6 +28,10 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
             ret_type = "ChoiceEntry"
         elif f.get("raw_scalar"):
             ret_type = f["cpp_type"]
+        elif f["fhir_type"] in _tm.DATETIME_TYPES:
+            # DT-2: the accessor resolves the packed/fallback slot to TEXT —
+            # the zero-copy path stays Node/Entry (TASKS.md DT-2 decision 1).
+            ret_type = "std::string"
         elif f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES:
             ret_type = "std::string_view"
         elif f["fhir_type"] in _tm.TYPE_MAP and f["fhir_type"] not in (
@@ -51,6 +55,7 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
             scalar_types = [
                 "FF_ARRAY",
                 "std::string_view",
+                "std::string",
                 "ResourceReference",
                 "FastFHIR::Reflective::Node",
                 "ChoiceEntry",
@@ -82,6 +87,15 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
             hpp += f"        return Decode::choice(base, offset + {vtable_off});\n"
         elif f.get("raw_scalar"):
             hpp += f"        return {f['macro']}(base + offset + {vtable_off});\n"
+        elif f["fhir_type"] in _tm.DATETIME_TYPES:
+            # DT-2: packed value formats to text; a flagged relative offset
+            # resolves to the FF_STRING holding the original text.
+            hpp += f"        const uint64_t __dt_raw = LOAD_U64(base + offset + {vtable_off});\n"
+            hpp += "        if (__dt_raw == FF_DATETIME_NULL) return std::string();\n"
+            hpp += "        if (FF_DATETIME_IS_FALLBACK(__dt_raw)) {\n"
+            hpp += f"            return std::string(FF_STRING(FF_ResolveDateTimeOffset(__dt_raw, offset), 0, VERSION).read_view(base));\n"
+            hpp += "        }\n"
+            hpp += f"        return FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(__dt_raw), {_st._child_recovery_expr(f, block_struct_name)});\n"
         elif f["fhir_type"] in _tm.TYPE_MAP and f["fhir_type"] not in (
             "string",
             "code",
@@ -157,8 +171,14 @@ def generate_field_info_implementation(layout, block_struct_name):
     return cpp
 
 
-def generate_reflection_dispatch(block_struct_names, resources):
-    """Reflection dispatch matching old ffc.py API."""
+def generate_reflection_dispatch(block_struct_names, resources, top_level_types=()):
+    """Reflection dispatch matching old ffc.py API.
+
+    ``top_level_types`` are the dotless FHIR paths (``Quantity``,
+    ``CodeableConcept``, ``Observation`` ...) that a choice ``[x]`` variant can
+    name. They feed ``reflected_choice_suffix``; ``resources`` alone is not
+    enough, because most choice variants are data types.
+    """
     # ── HPP: banner + includes + namespace body ────────────────────────
     hpp_banner = (
         "// ============================================================\n"
@@ -168,14 +188,25 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "#pragma once\n"
         '#include "FF_Primitives.hpp"\n'
         "#include <string_view>\n"
-        "#include <vector>\n\n"
+        "#include <vector>\n"
+        "#include <span>\n\n"
     )
     hpp_body = (
         "namespace Reflective { class Node; }\n"
-        "std::vector<FF_FieldInfo> reflected_fields(uint16_t recovery);\n"
+        "// Zero-copy view over a block's static FF_FieldInfo table: FIELDS is\n"
+        "// a static array, so the span is a pointer and a length — no\n"
+        "// allocation, no copy. (The by-value reflected_fields() was removed\n"
+        "// 2026-08-19 after every caller migrated to this view.)\n"
+        "std::span<const FF_FieldInfo> reflected_fields_view(uint16_t recovery);\n"
         "std::vector<std::string_view> reflected_keys(uint16_t recovery);\n"
         "Reflective::Node reflected_child_node(const BYTE* base, Size size, uint32_t version, Offset offset, uint16_t recovery, std::string_view key);\n"
         "std::string_view reflected_resource_type(uint16_t recovery);\n"
+        "// FHIR type name for a choice ([x]) variant tag, e.g.\n"
+        '// RECOVER_FF_QUANTITY -> "Quantity", which the exporter appends to the\n'
+        "// base field name to rebuild `valueQuantity`. Covers DATA TYPES as well\n"
+        "// as resources -- reflected_resource_type above deliberately does not,\n"
+        "// and using it here printed a bare `value` for every complex variant.\n"
+        "std::string_view reflected_choice_suffix(uint16_t recovery);\n"
         "const uint8_t* compact_field_sizes(uint16_t recovery);\n"
     )
     hpp = hpp_banner + enclose_namespace("FastFHIR", hpp_body)
@@ -193,10 +224,6 @@ def generate_reflection_dispatch(block_struct_names, resources):
     )
     cpp_body = ""
     cpp_body += (
-        "template <typename T_Block>\n"
-        "std::vector<FF_FieldInfo> fields_for_block() {\n"
-        "    return std::vector<FF_FieldInfo>(T_Block::FIELDS, T_Block::FIELDS + T_Block::FIELD_COUNT);\n"
-        "}\n\n"
         "template <typename T_Block>\n"
         "const uint8_t* compact_sizes_for_block() {\n"
         "    return T_Block::COMPACT_SLOT_SIZES;\n"
@@ -219,11 +246,14 @@ def generate_reflection_dispatch(block_struct_names, resources):
         "    }\n"
         "    return keys;\n"
         "}\n\n"
-        "std::vector<FF_FieldInfo> reflected_fields(uint16_t recovery) {\n"
+        "std::span<const FF_FieldInfo> reflected_fields_view(uint16_t recovery) {\n"
         "    switch (recovery) {\n"
     )
     for s_name in sorted(block_struct_names):
-        cpp_body += f"        case {s_name}::recovery: return fields_for_block<{s_name}>();\n"
+        cpp_body += (
+            f"        case {s_name}::recovery: "
+            f"return {{{s_name}::FIELDS, {s_name}::FIELD_COUNT}};\n"
+        )
     cpp_body += (
         "        default: return {};\n"
         "    }\n"
@@ -251,6 +281,20 @@ def generate_reflection_dispatch(block_struct_names, resources):
     )
     for res in sorted(resources):
         cpp_body += f'        case FF_{res.upper()}::recovery: return "{res}";\n'
+    cpp_body += (
+        '        default: return "";\n'
+        "    }\n"
+        "}\n\n"
+        "// Choice ([x]) variant tag -> FHIR type name. Every top-level block gets\n"
+        "// a case, data types included: a choice slot's runtime tag is the ONLY\n"
+        "// thing naming its active variant, so an unmapped tag is a field exported\n"
+        "// as bare `value` instead of `valueQuantity` -- syntactically fine JSON\n"
+        "// that no FHIR server will accept.\n"
+        "std::string_view reflected_choice_suffix(uint16_t recovery) {\n"
+        "    switch (recovery) {\n"
+    )
+    for _t in sorted(top_level_types):
+        cpp_body += f'        case FF_{_t.upper()}::recovery: return "{_t}";\n'
     cpp_body += (
         '        default: return "";\n'
         "    }\n"

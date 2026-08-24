@@ -17,17 +17,23 @@ See dictionaries/README.md.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 _HERE = Path(__file__).parent
 _REPO_ROOT = _HERE.parents[1]
-_LEDGER = _REPO_ROOT / "generator" / "master_codes.json"
-_STRINGS = _REPO_ROOT / "dictionaries" / "FF_Dictionary_Strings.cpp"
+_LEDGER = _REPO_ROOT / "dictionaries" / "master_codes.json"
+# The string table is generator OUTPUT (a projection of the ledger), so it lives
+# in generated_src/ with the rest. The ledger above is the committed source.
+_STRINGS = Path(os.environ.get("FASTFHIR_GENERATED_DIR", _REPO_ROOT / "generated_src")) / (
+    "FF_Dictionary_Strings.cpp"
+)
 
 # Bit 31 is FF_CODEABLE_CONCEPT_FLAG; 0xFFFFFFFF is FF_CODE_NULL.
 _CODEABLE_CONCEPT_FLAG = 0x80000000
@@ -118,7 +124,7 @@ def test_no_member_shares_its_container_name():
 
 def test_no_identifier_is_a_libc_macro():
     """The preprocessor ignores scoping, so a macro name breaks every scope."""
-    from generator.emit.codes_header import RESERVED_MACROS
+    from generator.emit.code_names import RESERVED_MACROS
 
     for scope, members in _ledger()["scopes"].items():
         bad = sorted({n for n in members.values() if n in RESERVED_MACROS})
@@ -162,17 +168,35 @@ def test_regeneration_preserves_every_committed_id():
     snapshot = _LEDGER.read_bytes()
     before = dict(json.loads(snapshot.decode("utf-8"))["ids"])
 
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "generator"],
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
-        after = json.loads(_LEDGER.read_text(encoding="utf-8"))["ids"]
-    finally:
-        _LEDGER.write_bytes(snapshot)
+    # --output-dir a THROWAWAY tree. This used to run the generator with no
+    # output dir at all, so it rewrote the repo's own generated_src/ as a side
+    # effect -- and with FASTFHIR_PRODUCTION_PROFILE unset it did so at the
+    # CMakeLists default `us-core`, whatever profile the working tree was
+    # actually built with.
+    #
+    # THAT IS TASKS.md GEN-1. A developer on us-core,billing,... would build
+    # cleanly, run `pytest tests/generator`, and be left with a 72-enum
+    # FF_CodeSystems.hpp beside billing resource sources that `write_if_changed`
+    # had left untouched at their older mtime -- so the next build died on
+    # `unknown type name 'FF_Use'` in generated code nobody had regenerated, the
+    # next CMake configure silently "fixed" it, and it read as an intermittent
+    # generator flake for two days. It is neither intermittent nor the
+    # generator's fault.
+    #
+    # The ledger is a repo path and is still exercised (and restored below);
+    # only the emitted C++ goes somewhere disposable.
+    with tempfile.TemporaryDirectory(prefix="ffhr_ledger_gate_") as out_dir:
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "generator", "--output-dir", out_dir],
+                cwd=_REPO_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+            )
+            after = json.loads(_LEDGER.read_text(encoding="utf-8"))["ids"]
+        finally:
+            _LEDGER.write_bytes(snapshot)
 
     moved = {c: (before[c], after[c]) for c in before if c in after and before[c] != after[c]}
     dropped = sorted(set(before) - set(after))
@@ -207,7 +231,7 @@ def test_generator_refuses_non_redistributable_sources():
     failed once: an old value-set expansion pulled 13,310 LOINC/SNOMED/EDQM
     codes into the committed dictionary and nothing objected.
     """
-    from generator.emit.dictionary import _assert_redistributable
+    from generator.emit.code_ids import _assert_redistributable
 
     # HL7 and UCUM are fine.
     _assert_redistributable(

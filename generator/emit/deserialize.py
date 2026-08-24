@@ -1,4 +1,10 @@
-from generator.model.type_map import SCALAR_PRIMITIVE_TYPES, STRING_TYPES, TYPE_MAP
+from generator.model.type_map import (
+    DATETIME_TYPES,
+    DECIMAL_SIGFIGS_SUFFIX,
+    SCALAR_PRIMITIVE_TYPES,
+    STRING_TYPES,
+    TYPE_MAP,
+)
 from generator.model import structure as _st
 from generator.model.structure import _child_recovery_expr, _resolve_data_type_name
 
@@ -54,15 +60,27 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}    auto blk_item_ptr = arr_{f['cpp_name']}.entries(__base);\n"
             cpp += f"{indent}    for (uint32_t i = 0; i < ENTRIES; ++i, blk_item_ptr += STEP) {{\n"
 
-            if f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES:
+            if (
+                f["fhir_type"] in ("string", "code")
+                or f["fhir_type"] in STRING_TYPES
+                or f["fhir_type"] in DATETIME_TYPES
+            ):
                 code_enum = f.get("code_enum")
+                # DT-2 datetime arrays hold std::vector<std::string> (the data
+                # member became std::string); plain string arrays keep
+                # string_view, so only datetime needs the explicit conversion.
+                push_expr = (
+                    "std::string(blk_str.read_view(__base))"
+                    if f["fhir_type"] in DATETIME_TYPES
+                    else "blk_str.read_view(__base)"
+                )
                 cpp += f"{indent}        Offset blk_str_off = LOAD_U64(blk_item_ptr);\n"
                 cpp += f"{indent}        if (blk_str_off != FF_NULL_OFFSET) {{\n"
                 cpp += f"{indent}            FF_STRING blk_str(blk_str_off, __size, __version);\n"
                 if code_enum:
                     cpp += f"{indent}            data.{f['cpp_name']}.push_back({code_enum['parse']}(blk_str.read(__base)));\n"
                 else:
-                    cpp += f"{indent}            data.{f['cpp_name']}.push_back(blk_str.read_view(__base));\n"
+                    cpp += f"{indent}            data.{f['cpp_name']}.push_back({push_expr});\n"
                 cpp += f"{indent}        }}\n"
             elif f["fhir_type"] == "Resource":
                 cpp += f"{indent}        Offset res_off = LOAD_U64(blk_item_ptr);\n"
@@ -123,7 +141,37 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}    }}\n"
             cpp += f"{indent}}}\n"
 
-        elif f["fhir_type"] in TYPE_MAP and f["fhir_type"] not in ("string", "code", "DEFAULT"):
+        elif f["fhir_type"] in DATETIME_TYPES:
+            # DT-2: packed inline u64 decodes to text; a flagged relative
+            # offset resolves to an FF_STRING holding the ORIGINAL text (so the
+            # round trip is byte-exact for values that do not pack).
+            cpp += f"{indent}{{\n"
+            cpp += f"{indent}    const uint64_t __dt_raw = LOAD_U64(__base + {vtable_off});\n"
+            cpp += f"{indent}    if (__dt_raw != FF_DATETIME_NULL) {{\n"
+            cpp += f"{indent}        if (FF_DATETIME_IS_FALLBACK(__dt_raw)) {{\n"
+            cpp += f"{indent}            FF_STRING __dt_str(FF_ResolveDateTimeOffset(__dt_raw, __offset), __size, __version);\n"
+            cpp += f"{indent}            data.{f['cpp_name']} = std::string(__dt_str.read_view(__base));\n"
+            cpp += f"{indent}        }} else {{\n"
+            cpp += f"{indent}            data.{f['cpp_name']} = FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(__dt_raw), {_child_recovery_expr(f, block_struct_name)});\n"
+            cpp += f"{indent}        }}\n"
+            cpp += f"{indent}    }}\n"
+            cpp += f"{indent}}}\n"
+
+        elif f["fhir_type"] == "decimal" and not f["is_array"]:
+            # Mirror of the store: the value from +0, the source scale from +8.
+            # Dropping the scale here would make a POD round trip (deserialize
+            # -> store) silently downgrade every decimal to "no scale recorded".
+            cpp += f"{indent}data.{f['cpp_name']} = FastFHIR::Decode::scalar<double>(__base, {vtable_off}, {_child_recovery_expr(f, block_struct_name)});\n"
+            cpp += (
+                f"{indent}data.{f['cpp_name']}{DECIMAL_SIGFIGS_SUFFIX} = "
+                f"LOAD_U8(__base + {vtable_off} + TYPE_SIZE_UINT64);\n"
+            )
+
+        elif (
+            f["fhir_type"] in TYPE_MAP
+            and f["fhir_type"] not in ("string", "code", "DEFAULT")
+            and f["fhir_type"] not in DATETIME_TYPES
+        ):
             cpp += f"{indent}data.{f['cpp_name']} = FastFHIR::Decode::scalar<{f['cpp_type']}>(__base, {vtable_off}, {_child_recovery_expr(f, block_struct_name)});\n"
 
         if f["first_version_idx"] > 0:
