@@ -58,14 +58,6 @@ FastFHIR turns data traversal into pure pointer arithmetic, outpacing text forma
 * **Zero-Copy Engine:** There is no deserialization phase — no varint unpacking, no C++ message objects. The receiver reads the bytes it was sent. Measured at 2.4–3.4x the receiver-side throughput of an `orjson` JSON pipeline across 1.7–162 MB bundles ([FastFHIR-benchmark](https://github.com/ryanlandvater/FastFHIR-benchmark), Test 1).
 * **Fraction of Size on Disk:** Optional compact archive mode reduces storage by up to **66%** on sparse resources through presence bitmasks and dense field packing (see [Compact Archives](#7--compact-archives)).
 
-<!-- ![test image](build/test_3.png) -->
-<!-- <img src = "build/test_3.png" width="50%"> -->
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="build/dark.png" width="1000">
-  <source media="(prefers-color-scheme: light)" srcset="build/light.png">
-  <img alt="Project Logo" src="light-image.png">
-</picture>
-
 ### 2. Type Safety & Validated FHIR Format
 FastFHIR provides **strongly validated, type-safe FHIR encoding** with guaranteed format correctness and comprehensive extension handling.
 * **Strict Schema Validation:** The binary layout embeds explicit `RECOVERY_TAG` metadata for every object. This provides guaranteed safe polymorphic resolution and strict C++ type checking at runtime, preventing incorrect information context, garbage reads, and buffer overflows. Every resource is validated against official FHIR Structure Definitions at generation time.
@@ -83,7 +75,7 @@ FastFHIR provides **strongly validated, type-safe FHIR encoding** with guarantee
 ### 4. Clinical Informatics: Lock-Free Enrichment & Custom Profiles
 * **In-Stream Lazy Enrichment:** Read a `Patient.id` or route a payload in nanoseconds without parsing the other 9,999 fields in a `Bundle`. You only pay for the exact bytes you traverse. Append a new laboratory result for a patient without touching any other byte in the record — simply add the new result and reseal before passing the message downstream.
 * **Concurrent Mutex-Free Generation:** Serialize thousands of resources simultaneously across a thread pool. FastFHIR's atomic pointer-patching architecture allows surgical data appends (like NLP annotations) into a single contiguous stream without a single lock.
-* **Custom Implementation Guides:** Generator supports pluggable profiles — switch between US Core IG (27 resources), UK Core IG (22 resources), or custom profiles to match your dataset and requirements. Generation happens automatically at build time from official HL7 bundles.
+* **Custom Implementation Guides:** Generator supports pluggable profiles — compose US Core (28 resources), UK Core (23), claims, and other groupings, or define your own to match your dataset. Generation happens automatically at build time from official HL7 bundles, and a resource outside your profile still round-trips intact (see [Resource groupings](#resource-groupings)).
 
 ### 5. Developer Ergonomics & Cross-Language Support
 You do not have to sacrifice a clean API for bare-metal performance — **native support for both C++ and Python**.
@@ -97,16 +89,35 @@ You do not have to sacrifice a clean API for bare-metal performance — **native
 # Quick Start
 
 ## Prerequisites
-* Python 3.9+ (generator only)
+* **Python 3.11+** (generator only — the generator uses PEP 604 `X | None` annotations, so
+  CMake enforces this floor. macOS ships a 3.9 with the Command Line Tools, which fails at
+  import with a `TypeError` far from its cause.)
 * Clang, GCC, or MSVC with C++20 support
-* CMake 3.20+
+* CMake 3.20+ — **3.25+ to use the presets below**
 * Network access (generator fetches FHIR bundles from HL7)
 
 ### Build
 
+The presets are the supported configurations; each encodes the options its workflow needs:
+
+```bash
+cmake --preset ninja && cmake --build --preset ninja        # CLI / CI       -> build/
+cmake --preset xcode && cmake --build --preset xcode        # Xcode IDE      -> build-xcode/
+cmake --preset xcode-asan                                   # + ASan/UBSan   -> build-xcode-asan/
+```
+
+Or configure by hand:
+
 ```bash
 cmake -S . -B build
 cmake --build build --target build_all -j
+```
+
+Run the suites:
+
+```bash
+ctest --preset ninja          # C++ and Python integration tests
+pytest tests/generator -q     # wire-format gate (permanent constants)
 ```
 
 On first configure, CMake automatically runs the code generator — downloading FHIR R4/R5 specification bundles from HL7 and emitting strongly-typed C++ source into `generated_src/`. No manual generator step is needed.
@@ -119,11 +130,12 @@ The `build_all` target builds every enabled component: the core library (`libfas
 |---|---|---|
 | `FASTFHIR_PRODUCTION_PROFILE` | `us-core` | Comma-separated resource groupings to compile; the generator builds their **union**. See [Resource groupings](#resource-groupings) below. |
 | `FASTFHIR_BUILD_SHARED` | `ON` | Build `libfastfhir` as a shared library; set `OFF` for a static archive |
-| `FASTFHIR_BUILD_INGESTOR` | `OFF` | Build the JSON→binary ingest library and `ff_ingest` CLI (requires simdjson) |
+| `FASTFHIR_BUILD_INGESTOR` | `ON` | Build the JSON→binary ingest library and `ff_ingest` CLI (requires simdjson) |
 | `FASTFHIR_BUILD_PYTHON_BINDINGS` | `OFF` | Build the pybind11 `_core` extension module |
-| `FASTFHIR_BUILD_TESTS` | `OFF` | Build the C++ test suite (`ff_test_readme`); requires `FASTFHIR_BUILD_INGESTOR` |
+| `FASTFHIR_BUILD_TESTS` | `ON` | Build the C++ test suite; requires `FASTFHIR_BUILD_INGESTOR` |
 | `FASTFHIR_RUN_GENERATOR` | `ON` | Run the Python code generator at configure time |
 | `FASTFHIR_GENERATE_ON_BUILD` | `OFF` | Re-run the generator before every build (may invalidate the PCH) |
+| `FASTFHIR_ENABLE_EXTENSIONS` | `OFF` | Enable the WASM extension codec host |
 
 Example — UK Core profile with ingestor, tests, and Python bindings:
 
@@ -146,7 +158,10 @@ deployments compose — a payer needs US Core *and* claims:
 | `us-core` *(default)* | 28 | [US Core](https://hl7.org/fhir/us/core/) — provider/EHR clinical data; realizes USCDI (defined by ONC/ASTP) |
 | `uk-core` | 23 | [UK Core](https://simplifier.net/hl7fhirukcorer4) |
 | `billing` | 5 | Payer/claims: `ExplanationOfBenefit`, `Claim`, `ClaimResponse`, `PaymentNotice`, `PaymentReconciliation` — the [CARIN Blue Button](https://hl7.org/fhir/us/carin-bb/) / Da Vinci PAS core |
-| `all` | 275 | Every concrete resource in the FHIR packages; absorbs any other name |
+| `medication-admin` | 1 | `MedicationAdministration` — the "was it actually given" event US Core omits from the medication chain |
+| `supply` | 2 | `SupplyDelivery`, `SupplyRequest` |
+| `imaging` | 1 | `ImagingStudy` — the DICOM study/series/instance structure behind a `DiagnosticReport` |
+| `all` | 275 | Every concrete resource in the FHIR packages; absorbs any other name (**WARNING: this profile is absolutely massive**) |
 
 ```bash
 -DFASTFHIR_PRODUCTION_PROFILE=us-core,billing    # US Core + claims
@@ -159,7 +174,20 @@ deployments compose — a payer needs US Core *and* claims:
 clinical/EHR scope; EOB is a payer artifact profiled by CARIN Blue Button. If you
 are building payer-side, you want `us-core,billing`.
 
-> **The profile does not change the tag header.** Every resource needs a permanent
+> [!NOTE]
+> **The profile decides what this build can BINARY ENCODE – not what a stream can carry. We do NOT drop clinical data!**
+> A resource whose type is outside your profile is **not dropped** — its JSON is
+> retained verbatim in the stream and re-emitted byte-for-byte on export, so any
+> FHIR document round-trips losslessly whatever you compiled. What you give up is
+> *typed access* to that resource – in other words you have to fall back to normal
+> out of the box FHIR. A non-profiled stream has no V-Table, so there is no `Node`
+> navigation into its fields, no query, and no internal byte compaction – i.e. just normal FHIR.
+> Pick a profile for the resources you want to *FastFHIR*. You do not need to
+> enumerate every type in existance in your build.
+
+> [!NOTE]
+> **You do not have to worry about profile affecting `RESOURCE` tag interoperability**. 
+> Every resource is associated with a permanent and git-tracked
 > `RECOVERY_TAG` — plus one per nested BackboneElement — but tag discovery is
 > deliberately profile-independent: the ledger `dictionaries/master_tags.json`
 > covers the whole R4 ∪ R5 spec, so `generated_src/FF_Recovery.hpp` is byte-identical
@@ -176,7 +204,7 @@ See [Generator Architecture](#generator-architecture) for details on profiles an
 
 # Getting Started
 
-These three short steps walk you from zero to a fully-functioning FastFHIR workflow.
+These three basic steps walk you from basic FHIR to a fully-functioning binrary FastFHIR workflow.
 Start at whichever step matches your use-case — you do not have to use all three together.
 
 All example code below is validated in [tests/cpp/test_readme.cpp](tests/cpp/test_readme.cpp) for reference.
@@ -687,17 +715,19 @@ slots only for fields that are actually set. The resulting stream is a new file 
 original is not modified — and is **read-only** (decompact by rebuilding from the original
 standard stream before mutation).
 
+> [!TIP]
 > **Use compact archives when a stream is finalized, unlikely to be mutated, and will
-> be stored or transmitted at scale.** Compact archives are fully traversable via
-> `Parser` using the identical typed-key API as standard streams — no code changes needed
-> on the read side.
+> be stored or transmitted at scale.** Compact archives are just as fast and fully 
+> traversable via `Parser` using the identical typed-key API as standard streams — 
+> no code changes needed on the read side. They **should** be used for long term
+> archiving of data - there is no reason not to archive if not actively editing a resource. 
 
 ### Stream Format Comparison
 
 | Layout | Field storage | Absent fields | Traversal |
 |--------|--------------|---------------|-----------|
 | Standard | Fixed absolute offsets per field | Null sentinel per slot | O(1) direct jump |
-| Compact | Presence bitmask + densely-packed slots | **0 bytes** | O(1) via bitmask scan |
+| Compact | Presence bitmask + densely-packed slots | **0 bytes** | O(1) via SIMD bitmask scan |
 
 ### Size Savings
 
@@ -752,26 +782,24 @@ for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
 
 # Command Line Interface Tools
 
-FastFHIR ships three standalone command-line tools. They are **not** built by default — enable them with the CMake options below:
+FastFHIR ships three standalone command-line tools. All three build by default:
 
-| Tool | CMake option required | Binary name |
+| Tool | Requires | Binary name |
 |---|---|---|
-| Ingestor | `-DFASTFHIR_BUILD_INGESTOR=ON` | `ff_ingest` |
+| Ingestor | `FASTFHIR_BUILD_INGESTOR` *(default `ON`)* | `ff_ingest` |
 | Exporter | _(always built)_ | `ff_export` |
-| Compactor | `-DFASTFHIR_BUILD_INGESTOR=ON` _(for OpenSSL)_ | `ff_compact` |
+| Compactor | _(always built; OpenSSL for SHA-256 re-sealing)_ | `ff_compact` |
 
-> `ff_export` and `ff_compact` are always included in the build. `ff_ingest` requires
-> `-DFASTFHIR_BUILD_INGESTOR=ON` because it depends on **simdjson**. `ff_compact` links
-> against OpenSSL for SHA-256 re-sealing when OpenSSL is available — the same dependency
-> pulled in by the ingestor.
+> `ff_ingest` depends on **simdjson**, which is why it sits behind
+> `FASTFHIR_BUILD_INGESTOR` — that option defaults to `ON`, so set it `OFF` if you want a
+> parse/export-only build without the JSON ingest path.
 
 ```bash
-# Build all three tools (recommended)
-cmake -S . -B build -DFASTFHIR_BUILD_INGESTOR=ON
-cmake --build build --target ff_ingest ff_export ff_compact -j
+# Everything (recommended)
+cmake --preset ninja && cmake --build --preset ninja
 
-# Or build everything at once
-cmake --build build --target build_all -j
+# Or just the tools
+cmake --build build --target ff_ingest ff_export ff_compact -j
 ```
 
 ---
@@ -1334,9 +1362,12 @@ Resource scope constants live in `generator/model/type_map.py`:
 
 | Constant | Contents |
 |---|---|
-| `PRODUCTION_TYPES` | Core FHIR datatypes always generated (Coding, Quantity, Identifier, Age, Count, Availability, ExtendedContactDetail, …) |
-| `US_CORE_RESOURCES` | 27 resources for US Core IG interoperability |
-| `UK_CORE_RESOURCES` | 22 resources for UK Core IG interoperability |
+| `PRODUCTION_TYPES` | Core FHIR datatypes always generated (Coding, Quantity, Identifier, Age, Count, Money, Availability, ExtendedContactDetail, …). **Not profile-dependent** — every build emits the same datatypes, so a type missing here breaks any profile whose resources reference it. |
+| `US_CORE_RESOURCES` | 28 resources for US Core IG interoperability |
+| `UK_CORE_RESOURCES` | 23 resources for UK Core IG interoperability |
+| `BILLING_RESOURCES` | 5 payer/claims resources (CARIN Blue Button / Da Vinci PAS core) |
+| `MEDICATION_ADMIN_RESOURCES` / `SUPPLY_RESOURCES` / `IMAGING_RESOURCES` | 1 / 2 / 1 — the smaller composable groupings |
+| `RESOURCE_GROUPINGS` | The accepted profile names. Adding a grouping means adding one entry here; nothing else in the generator changes. |
 
 ## Design Notes
 * Resource and datatype structs are generated from official HL7 StructureDefinitions.
