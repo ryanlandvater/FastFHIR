@@ -355,7 +355,12 @@ namespace FastFHIR
     }
     inline Memory::View::operator std::string_view() const noexcept
     {
-        return std::string_view(reinterpret_cast<const char *>(m_vma_ref->m_base), size());
+        // data() and size() are both null-guarded above; this conversion must be
+        // too, or the null state is only half-supported. An out-view cleared
+        // after an API failure is exactly the object a caller is most likely to
+        // convert while checking whether anything came back -- and doing so
+        // dereferenced m_vma_ref and crashed, in a function marked noexcept.
+        return std::string_view(data(), size());
     }
     inline bool Memory::View::empty() const noexcept
     {

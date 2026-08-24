@@ -7533,6 +7533,1151 @@
         "VALIDATION_S": "TYPE_SIZE_UINT64"
       }
     },
+    "FF_CLAIM": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 278,
+        "HEADER_R5_SIZE": 318
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "TYPE",
+        "SUBTYPE",
+        "USE",
+        "PATIENT",
+        "BILLABLEPERIOD",
+        "CREATED",
+        "ENTERER",
+        "INSURER",
+        "PROVIDER",
+        "PRIORITY",
+        "FUNDSRESERVE",
+        "RELATED",
+        "PRESCRIPTION",
+        "ORIGINALPRESCRIPTION",
+        "PAYEE",
+        "REFERRAL",
+        "FACILITY",
+        "CARETEAM",
+        "SUPPORTINGINFO",
+        "DIAGNOSIS",
+        "PROCEDURE",
+        "INSURANCE",
+        "ACCIDENT",
+        "ITEM",
+        "TOTAL",
+        "TRACENUMBER",
+        "ENCOUNTER",
+        "DIAGNOSISRELATEDGROUP",
+        "EVENT",
+        "PATIENTPAID"
+      ],
+      "sizes": {
+        "ACCIDENT_S": "TYPE_SIZE_OFFSET",
+        "BILLABLEPERIOD_S": "TYPE_SIZE_OFFSET",
+        "CARETEAM_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CREATED_S": "TYPE_SIZE_UINT64",
+        "DIAGNOSISRELATEDGROUP_S": "TYPE_SIZE_OFFSET",
+        "DIAGNOSIS_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "ENTERER_S": "TYPE_SIZE_OFFSET",
+        "EVENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACILITY_S": "TYPE_SIZE_OFFSET",
+        "FUNDSRESERVE_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INSURANCE_S": "TYPE_SIZE_OFFSET",
+        "INSURER_S": "TYPE_SIZE_OFFSET",
+        "ITEM_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ORIGINALPRESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "PATIENTPAID_S": "TYPE_SIZE_OFFSET",
+        "PATIENT_S": "TYPE_SIZE_OFFSET",
+        "PAYEE_S": "TYPE_SIZE_OFFSET",
+        "PRESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "PRIORITY_S": "TYPE_SIZE_OFFSET",
+        "PROCEDURE_S": "TYPE_SIZE_OFFSET",
+        "PROVIDER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERRAL_S": "TYPE_SIZE_OFFSET",
+        "RELATED_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBTYPE_S": "TYPE_SIZE_OFFSET",
+        "SUPPORTINGINFO_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TOTAL_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "USE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 274,
+        "HEADER_R5_SIZE": 314
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "TYPE",
+        "SUBTYPE",
+        "USE",
+        "PATIENT",
+        "CREATED",
+        "INSURER",
+        "REQUESTOR",
+        "REQUEST",
+        "OUTCOME",
+        "DISPOSITION",
+        "PREAUTHREF",
+        "PREAUTHPERIOD",
+        "PAYEETYPE",
+        "ITEM",
+        "ADDITEM",
+        "ADJUDICATION",
+        "TOTAL",
+        "PAYMENT",
+        "FUNDSRESERVE",
+        "FORMCODE",
+        "FORM",
+        "PROCESSNOTE",
+        "COMMUNICATIONREQUEST",
+        "INSURANCE",
+        "ERROR",
+        "TRACENUMBER",
+        "DECISION",
+        "EVENT",
+        "ENCOUNTER",
+        "DIAGNOSISRELATEDGROUP"
+      ],
+      "sizes": {
+        "ADDITEM_S": "TYPE_SIZE_OFFSET",
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "COMMUNICATIONREQUEST_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CREATED_S": "TYPE_SIZE_UINT64",
+        "DECISION_S": "TYPE_SIZE_OFFSET",
+        "DIAGNOSISRELATEDGROUP_S": "TYPE_SIZE_OFFSET",
+        "DISPOSITION_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "ERROR_S": "TYPE_SIZE_OFFSET",
+        "EVENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FORMCODE_S": "TYPE_SIZE_OFFSET",
+        "FORM_S": "TYPE_SIZE_OFFSET",
+        "FUNDSRESERVE_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INSURANCE_S": "TYPE_SIZE_OFFSET",
+        "INSURER_S": "TYPE_SIZE_OFFSET",
+        "ITEM_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "OUTCOME_S": "TYPE_SIZE_UINT32",
+        "PATIENT_S": "TYPE_SIZE_OFFSET",
+        "PAYEETYPE_S": "TYPE_SIZE_OFFSET",
+        "PAYMENT_S": "TYPE_SIZE_OFFSET",
+        "PREAUTHPERIOD_S": "TYPE_SIZE_OFFSET",
+        "PREAUTHREF_S": "TYPE_SIZE_OFFSET",
+        "PROCESSNOTE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REQUESTOR_S": "TYPE_SIZE_OFFSET",
+        "REQUEST_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBTYPE_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TOTAL_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "USE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_ADDITEM": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 183,
+        "HEADER_R5_SIZE": 231
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "ITEMSEQUENCE",
+        "DETAILSEQUENCE",
+        "SUBDETAILSEQUENCE",
+        "PROVIDER",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "PROGRAMCODE",
+        "SERVICED",
+        "LOCATION",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "BODYSITE",
+        "SUBSITE",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "DETAIL",
+        "TRACENUMBER",
+        "REVENUE",
+        "PRODUCTORSERVICEEND",
+        "REQUEST",
+        "TAX",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "BODYSITE_S": "TYPE_SIZE_OFFSET",
+        "DETAILSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "DETAIL_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ITEMSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "LOCATION_S": "TYPE_SIZE_CHOICE",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "PROGRAMCODE_S": "TYPE_SIZE_OFFSET",
+        "PROVIDER_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REQUEST_S": "TYPE_SIZE_OFFSET",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "SERVICED_S": "TYPE_SIZE_CHOICE",
+        "SUBDETAILSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "SUBSITE_S": "TYPE_SIZE_OFFSET",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_ADDITEM_BODYSITE": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SITE",
+        "SUBSITE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SITE_S": "TYPE_SIZE_OFFSET",
+        "SUBSITE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_ADDITEM_DETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 107,
+        "HEADER_R5_SIZE": 147
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "SUBDETAIL",
+        "TRACENUMBER",
+        "REVENUE",
+        "PRODUCTORSERVICEEND",
+        "TAX",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "SUBDETAIL_S": "TYPE_SIZE_OFFSET",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_ADDITEM_DETAIL_SUBDETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 99,
+        "HEADER_R5_SIZE": 139
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "TRACENUMBER",
+        "REVENUE",
+        "PRODUCTORSERVICEEND",
+        "TAX",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_ERROR": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 54,
+        "HEADER_R5_SIZE": 62
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "ITEMSEQUENCE",
+        "DETAILSEQUENCE",
+        "SUBDETAILSEQUENCE",
+        "CODE",
+        "EXPRESSION"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "DETAILSEQUENCE_S": "TYPE_SIZE_UINT32",
+        "EXPRESSION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ITEMSEQUENCE_S": "TYPE_SIZE_UINT32",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SUBDETAILSEQUENCE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_EVENT": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 52
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "WHEN"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "WHEN_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_CLAIMRESPONSE_INSURANCE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 63,
+        "HEADER_R5_SIZE": 63
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "FOCAL",
+        "COVERAGE",
+        "BUSINESSARRANGEMENT",
+        "CLAIMRESPONSE"
+      ],
+      "sizes": {
+        "BUSINESSARRANGEMENT_S": "TYPE_SIZE_OFFSET",
+        "CLAIMRESPONSE_S": "TYPE_SIZE_OFFSET",
+        "COVERAGE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FOCAL_S": "TYPE_SIZE_UINT8",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_ITEM": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 62,
+        "HEADER_R5_SIZE": 78
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "ITEMSEQUENCE",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "DETAIL",
+        "TRACENUMBER",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "DETAIL_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ITEMSEQUENCE_S": "TYPE_SIZE_UINT32",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_ITEM_ADJUDICATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 67,
+        "HEADER_R5_SIZE": 75
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CATEGORY",
+        "REASON",
+        "AMOUNT",
+        "VALUE",
+        "QUANTITY"
+      ],
+      "sizes": {
+        "AMOUNT_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_DECIMAL"
+      }
+    },
+    "FF_CLAIMRESPONSE_ITEM_DETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 62,
+        "HEADER_R5_SIZE": 78
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DETAILSEQUENCE",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "SUBDETAIL",
+        "TRACENUMBER",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "DETAILSEQUENCE_S": "TYPE_SIZE_UINT32",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "SUBDETAIL_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_ITEM_DETAIL_SUBDETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 54,
+        "HEADER_R5_SIZE": 70
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SUBDETAILSEQUENCE",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "TRACENUMBER",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "SUBDETAILSEQUENCE_S": "TYPE_SIZE_UINT32",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_ITEM_REVIEWOUTCOME": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 66
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DECISION",
+        "REASON",
+        "PREAUTHREF",
+        "PREAUTHPERIOD"
+      ],
+      "sizes": {
+        "DECISION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PREAUTHPERIOD_S": "TYPE_SIZE_OFFSET",
+        "PREAUTHREF_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_PAYMENT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 82,
+        "HEADER_R5_SIZE": 82
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "ADJUSTMENT",
+        "ADJUSTMENTREASON",
+        "DATE",
+        "AMOUNT",
+        "IDENTIFIER"
+      ],
+      "sizes": {
+        "ADJUSTMENTREASON_S": "TYPE_SIZE_OFFSET",
+        "ADJUSTMENT_S": "TYPE_SIZE_OFFSET",
+        "AMOUNT_S": "TYPE_SIZE_OFFSET",
+        "DATE_S": "TYPE_SIZE_UINT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_PROCESSNOTE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "NUMBER",
+        "TYPE",
+        "TEXT",
+        "LANGUAGE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NUMBER_S": "TYPE_SIZE_UINT32",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIMRESPONSE_TOTAL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CATEGORY",
+        "AMOUNT"
+      ],
+      "sizes": {
+        "AMOUNT_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_ACCIDENT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 60,
+        "HEADER_R5_SIZE": 60
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DATE",
+        "TYPE",
+        "LOCATION"
+      ],
+      "sizes": {
+        "DATE_S": "TYPE_SIZE_UINT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LOCATION_S": "TYPE_SIZE_CHOICE",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_CARETEAM": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 63,
+        "HEADER_R5_SIZE": 71
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "PROVIDER",
+        "RESPONSIBLE",
+        "ROLE",
+        "QUALIFICATION",
+        "SPECIALTY"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PROVIDER_S": "TYPE_SIZE_OFFSET",
+        "QUALIFICATION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RESPONSIBLE_S": "TYPE_SIZE_UINT8",
+        "ROLE_S": "TYPE_SIZE_OFFSET",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "SPECIALTY_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_DIAGNOSIS": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 72,
+        "HEADER_R5_SIZE": 72
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "DIAGNOSIS",
+        "TYPE",
+        "ONADMISSION",
+        "PACKAGECODE"
+      ],
+      "sizes": {
+        "DIAGNOSIS_S": "TYPE_SIZE_CHOICE",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ONADMISSION_S": "TYPE_SIZE_OFFSET",
+        "PACKAGECODE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_EVENT": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 52
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "WHEN"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "WHEN_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_CLAIM_INSURANCE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 79,
+        "HEADER_R5_SIZE": 79
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "FOCAL",
+        "IDENTIFIER",
+        "COVERAGE",
+        "BUSINESSARRANGEMENT",
+        "PREAUTHREF",
+        "CLAIMRESPONSE"
+      ],
+      "sizes": {
+        "BUSINESSARRANGEMENT_S": "TYPE_SIZE_OFFSET",
+        "CLAIMRESPONSE_S": "TYPE_SIZE_OFFSET",
+        "COVERAGE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FOCAL_S": "TYPE_SIZE_UINT8",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PREAUTHREF_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_ITEM": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 203,
+        "HEADER_R5_SIZE": 243
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "CARETEAMSEQUENCE",
+        "DIAGNOSISSEQUENCE",
+        "PROCEDURESEQUENCE",
+        "INFORMATIONSEQUENCE",
+        "REVENUE",
+        "CATEGORY",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "PROGRAMCODE",
+        "SERVICED",
+        "LOCATION",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "UDI",
+        "BODYSITE",
+        "SUBSITE",
+        "ENCOUNTER",
+        "DETAIL",
+        "TRACENUMBER",
+        "PRODUCTORSERVICEEND",
+        "REQUEST",
+        "PATIENTPAID",
+        "TAX"
+      ],
+      "sizes": {
+        "BODYSITE_S": "TYPE_SIZE_OFFSET",
+        "CARETEAMSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "DETAIL_S": "TYPE_SIZE_OFFSET",
+        "DIAGNOSISSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "INFORMATIONSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "LOCATION_S": "TYPE_SIZE_CHOICE",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "PATIENTPAID_S": "TYPE_SIZE_OFFSET",
+        "PROCEDURESEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "PROGRAMCODE_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REQUEST_S": "TYPE_SIZE_OFFSET",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "SERVICED_S": "TYPE_SIZE_CHOICE",
+        "SUBSITE_S": "TYPE_SIZE_OFFSET",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UDI_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_ITEM_BODYSITE": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SITE",
+        "SUBSITE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SITE_S": "TYPE_SIZE_OFFSET",
+        "SUBSITE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_ITEM_DETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 127,
+        "HEADER_R5_SIZE": 159
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "REVENUE",
+        "CATEGORY",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "PROGRAMCODE",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "UDI",
+        "SUBDETAIL",
+        "TRACENUMBER",
+        "PRODUCTORSERVICEEND",
+        "PATIENTPAID",
+        "TAX"
+      ],
+      "sizes": {
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "PATIENTPAID_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "PROGRAMCODE_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "SUBDETAIL_S": "TYPE_SIZE_OFFSET",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UDI_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_ITEM_DETAIL_SUBDETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 119,
+        "HEADER_R5_SIZE": 151
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "REVENUE",
+        "CATEGORY",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "PROGRAMCODE",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "UDI",
+        "TRACENUMBER",
+        "PRODUCTORSERVICEEND",
+        "PATIENTPAID",
+        "TAX"
+      ],
+      "sizes": {
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "PATIENTPAID_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "PROGRAMCODE_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UDI_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_PAYEE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "PARTY"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PARTY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_PROCEDURE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 72,
+        "HEADER_R5_SIZE": 72
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "TYPE",
+        "DATE",
+        "PROCEDURE",
+        "UDI"
+      ],
+      "sizes": {
+        "DATE_S": "TYPE_SIZE_UINT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PROCEDURE_S": "TYPE_SIZE_CHOICE",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "UDI_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_RELATED": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CLAIM",
+        "RELATIONSHIP",
+        "REFERENCE"
+      ],
+      "sizes": {
+        "CLAIM_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERENCE_S": "TYPE_SIZE_OFFSET",
+        "RELATIONSHIP_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_CLAIM_SUPPORTINGINFO": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 82,
+        "HEADER_R5_SIZE": 82
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "CATEGORY",
+        "CODE",
+        "TIMING",
+        "VALUE",
+        "REASON"
+      ],
+      "sizes": {
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "TIMING_S": "TYPE_SIZE_CHOICE",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_CHOICE"
+      }
+    },
     "FF_CODEABLECONCEPT": {
       "header_sizes": {
         "HEADER_R4_SIZE": 42,
@@ -9042,6 +10187,992 @@
         "VALIDATION_S": "TYPE_SIZE_UINT64"
       }
     },
+    "FF_EXPLANATIONOFBENEFIT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 398,
+        "HEADER_R5_SIZE": 446
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "TYPE",
+        "SUBTYPE",
+        "USE",
+        "PATIENT",
+        "BILLABLEPERIOD",
+        "CREATED",
+        "ENTERER",
+        "INSURER",
+        "PROVIDER",
+        "PRIORITY",
+        "FUNDSRESERVEREQUESTED",
+        "FUNDSRESERVE",
+        "RELATED",
+        "PRESCRIPTION",
+        "ORIGINALPRESCRIPTION",
+        "PAYEE",
+        "REFERRAL",
+        "FACILITY",
+        "CLAIM",
+        "CLAIMRESPONSE",
+        "OUTCOME",
+        "DISPOSITION",
+        "PREAUTHREF",
+        "PREAUTHREFPERIOD",
+        "CARETEAM",
+        "SUPPORTINGINFO",
+        "DIAGNOSIS",
+        "PROCEDURE",
+        "PRECEDENCE",
+        "INSURANCE",
+        "ACCIDENT",
+        "ITEM",
+        "ADDITEM",
+        "ADJUDICATION",
+        "TOTAL",
+        "PAYMENT",
+        "FORMCODE",
+        "FORM",
+        "PROCESSNOTE",
+        "BENEFITPERIOD",
+        "BENEFITBALANCE",
+        "TRACENUMBER",
+        "EVENT",
+        "ENCOUNTER",
+        "DECISION",
+        "DIAGNOSISRELATEDGROUP",
+        "PATIENTPAID"
+      ],
+      "sizes": {
+        "ACCIDENT_S": "TYPE_SIZE_OFFSET",
+        "ADDITEM_S": "TYPE_SIZE_OFFSET",
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "BENEFITBALANCE_S": "TYPE_SIZE_OFFSET",
+        "BENEFITPERIOD_S": "TYPE_SIZE_OFFSET",
+        "BILLABLEPERIOD_S": "TYPE_SIZE_OFFSET",
+        "CARETEAM_S": "TYPE_SIZE_OFFSET",
+        "CLAIMRESPONSE_S": "TYPE_SIZE_OFFSET",
+        "CLAIM_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CREATED_S": "TYPE_SIZE_UINT64",
+        "DECISION_S": "TYPE_SIZE_OFFSET",
+        "DIAGNOSISRELATEDGROUP_S": "TYPE_SIZE_OFFSET",
+        "DIAGNOSIS_S": "TYPE_SIZE_OFFSET",
+        "DISPOSITION_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "ENTERER_S": "TYPE_SIZE_OFFSET",
+        "EVENT_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACILITY_S": "TYPE_SIZE_OFFSET",
+        "FORMCODE_S": "TYPE_SIZE_OFFSET",
+        "FORM_S": "TYPE_SIZE_OFFSET",
+        "FUNDSRESERVEREQUESTED_S": "TYPE_SIZE_OFFSET",
+        "FUNDSRESERVE_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INSURANCE_S": "TYPE_SIZE_OFFSET",
+        "INSURER_S": "TYPE_SIZE_OFFSET",
+        "ITEM_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ORIGINALPRESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "OUTCOME_S": "TYPE_SIZE_UINT32",
+        "PATIENTPAID_S": "TYPE_SIZE_OFFSET",
+        "PATIENT_S": "TYPE_SIZE_OFFSET",
+        "PAYEE_S": "TYPE_SIZE_OFFSET",
+        "PAYMENT_S": "TYPE_SIZE_OFFSET",
+        "PREAUTHREFPERIOD_S": "TYPE_SIZE_OFFSET",
+        "PREAUTHREF_S": "TYPE_SIZE_OFFSET",
+        "PRECEDENCE_S": "TYPE_SIZE_UINT32",
+        "PRESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "PRIORITY_S": "TYPE_SIZE_OFFSET",
+        "PROCEDURE_S": "TYPE_SIZE_OFFSET",
+        "PROCESSNOTE_S": "TYPE_SIZE_OFFSET",
+        "PROVIDER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERRAL_S": "TYPE_SIZE_OFFSET",
+        "RELATED_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBTYPE_S": "TYPE_SIZE_OFFSET",
+        "SUPPORTINGINFO_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TOTAL_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "USE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_ACCIDENT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 60,
+        "HEADER_R5_SIZE": 60
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DATE",
+        "TYPE",
+        "LOCATION"
+      ],
+      "sizes": {
+        "DATE_S": "TYPE_SIZE_UINT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LOCATION_S": "TYPE_SIZE_CHOICE",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_ADDITEM": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 183,
+        "HEADER_R5_SIZE": 239
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "ITEMSEQUENCE",
+        "DETAILSEQUENCE",
+        "SUBDETAILSEQUENCE",
+        "PROVIDER",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "PROGRAMCODE",
+        "SERVICED",
+        "LOCATION",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "BODYSITE",
+        "SUBSITE",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "DETAIL",
+        "TRACENUMBER",
+        "REVENUE",
+        "PRODUCTORSERVICEEND",
+        "REQUEST",
+        "PATIENTPAID",
+        "TAX",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "BODYSITE_S": "TYPE_SIZE_OFFSET",
+        "DETAILSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "DETAIL_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ITEMSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "LOCATION_S": "TYPE_SIZE_CHOICE",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "PATIENTPAID_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "PROGRAMCODE_S": "TYPE_SIZE_OFFSET",
+        "PROVIDER_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REQUEST_S": "TYPE_SIZE_OFFSET",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "SERVICED_S": "TYPE_SIZE_CHOICE",
+        "SUBDETAILSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "SUBSITE_S": "TYPE_SIZE_OFFSET",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_ADDITEM_BODYSITE": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SITE",
+        "SUBSITE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SITE_S": "TYPE_SIZE_OFFSET",
+        "SUBSITE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_ADDITEM_DETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 107,
+        "HEADER_R5_SIZE": 155
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "SUBDETAIL",
+        "TRACENUMBER",
+        "REVENUE",
+        "PRODUCTORSERVICEEND",
+        "PATIENTPAID",
+        "TAX",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "PATIENTPAID_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "SUBDETAIL_S": "TYPE_SIZE_OFFSET",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_ADDITEM_DETAIL_SUBDETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 99,
+        "HEADER_R5_SIZE": 147
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "TRACENUMBER",
+        "REVENUE",
+        "PRODUCTORSERVICEEND",
+        "PATIENTPAID",
+        "TAX",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "PATIENTPAID_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_BENEFITBALANCE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 91,
+        "HEADER_R5_SIZE": 91
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CATEGORY",
+        "EXCLUDED",
+        "NAME",
+        "DESCRIPTION",
+        "NETWORK",
+        "UNIT",
+        "TERM",
+        "FINANCIAL"
+      ],
+      "sizes": {
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "DESCRIPTION_S": "TYPE_SIZE_OFFSET",
+        "EXCLUDED_S": "TYPE_SIZE_UINT8",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FINANCIAL_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NAME_S": "TYPE_SIZE_OFFSET",
+        "NETWORK_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TERM_S": "TYPE_SIZE_OFFSET",
+        "UNIT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_BENEFITBALANCE_FINANCIAL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 62,
+        "HEADER_R5_SIZE": 62
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "ALLOWED",
+        "USED"
+      ],
+      "sizes": {
+        "ALLOWED_S": "TYPE_SIZE_CHOICE",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "USED_S": "TYPE_SIZE_CHOICE",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_CARETEAM": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 63,
+        "HEADER_R5_SIZE": 71
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "PROVIDER",
+        "RESPONSIBLE",
+        "ROLE",
+        "QUALIFICATION",
+        "SPECIALTY"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PROVIDER_S": "TYPE_SIZE_OFFSET",
+        "QUALIFICATION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RESPONSIBLE_S": "TYPE_SIZE_UINT8",
+        "ROLE_S": "TYPE_SIZE_OFFSET",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "SPECIALTY_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_DIAGNOSIS": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 72,
+        "HEADER_R5_SIZE": 72
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "DIAGNOSIS",
+        "TYPE",
+        "ONADMISSION",
+        "PACKAGECODE"
+      ],
+      "sizes": {
+        "DIAGNOSIS_S": "TYPE_SIZE_CHOICE",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ONADMISSION_S": "TYPE_SIZE_OFFSET",
+        "PACKAGECODE_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_EVENT": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 52
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "WHEN"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "WHEN_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_INSURANCE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 51,
+        "HEADER_R5_SIZE": 51
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "FOCAL",
+        "COVERAGE",
+        "PREAUTHREF"
+      ],
+      "sizes": {
+        "COVERAGE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FOCAL_S": "TYPE_SIZE_UINT8",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PREAUTHREF_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_ITEM": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 219,
+        "HEADER_R5_SIZE": 267
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "CARETEAMSEQUENCE",
+        "DIAGNOSISSEQUENCE",
+        "PROCEDURESEQUENCE",
+        "INFORMATIONSEQUENCE",
+        "REVENUE",
+        "CATEGORY",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "PROGRAMCODE",
+        "SERVICED",
+        "LOCATION",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "UDI",
+        "BODYSITE",
+        "SUBSITE",
+        "ENCOUNTER",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "DETAIL",
+        "TRACENUMBER",
+        "PRODUCTORSERVICEEND",
+        "REQUEST",
+        "PATIENTPAID",
+        "TAX",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "BODYSITE_S": "TYPE_SIZE_OFFSET",
+        "CARETEAMSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "DETAIL_S": "TYPE_SIZE_OFFSET",
+        "DIAGNOSISSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "INFORMATIONSEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "LOCATION_S": "TYPE_SIZE_CHOICE",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "PATIENTPAID_S": "TYPE_SIZE_OFFSET",
+        "PROCEDURESEQUENCE_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "PROGRAMCODE_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REQUEST_S": "TYPE_SIZE_OFFSET",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "SERVICED_S": "TYPE_SIZE_CHOICE",
+        "SUBSITE_S": "TYPE_SIZE_OFFSET",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UDI_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_ITEM_ADJUDICATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 67,
+        "HEADER_R5_SIZE": 75
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CATEGORY",
+        "REASON",
+        "AMOUNT",
+        "VALUE",
+        "QUANTITY"
+      ],
+      "sizes": {
+        "AMOUNT_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_DECIMAL"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_ITEM_BODYSITE": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SITE",
+        "SUBSITE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SITE_S": "TYPE_SIZE_OFFSET",
+        "SUBSITE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_ITEM_DETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 143,
+        "HEADER_R5_SIZE": 183
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "REVENUE",
+        "CATEGORY",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "PROGRAMCODE",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "UDI",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "SUBDETAIL",
+        "TRACENUMBER",
+        "PRODUCTORSERVICEEND",
+        "PATIENTPAID",
+        "TAX",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "PATIENTPAID_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "PROGRAMCODE_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "SUBDETAIL_S": "TYPE_SIZE_OFFSET",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UDI_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_ITEM_DETAIL_SUBDETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 135,
+        "HEADER_R5_SIZE": 175
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "REVENUE",
+        "CATEGORY",
+        "PRODUCTORSERVICE",
+        "MODIFIER",
+        "PROGRAMCODE",
+        "QUANTITY",
+        "UNITPRICE",
+        "FACTOR",
+        "NET",
+        "UDI",
+        "NOTENUMBER",
+        "ADJUDICATION",
+        "TRACENUMBER",
+        "PRODUCTORSERVICEEND",
+        "PATIENTPAID",
+        "TAX",
+        "REVIEWOUTCOME"
+      ],
+      "sizes": {
+        "ADJUDICATION_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FACTOR_S": "TYPE_SIZE_DECIMAL",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "MODIFIER_S": "TYPE_SIZE_OFFSET",
+        "NET_S": "TYPE_SIZE_OFFSET",
+        "NOTENUMBER_S": "TYPE_SIZE_OFFSET",
+        "PATIENTPAID_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICEEND_S": "TYPE_SIZE_OFFSET",
+        "PRODUCTORSERVICE_S": "TYPE_SIZE_OFFSET",
+        "PROGRAMCODE_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REVENUE_S": "TYPE_SIZE_OFFSET",
+        "REVIEWOUTCOME_S": "TYPE_SIZE_OFFSET",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "TAX_S": "TYPE_SIZE_OFFSET",
+        "TRACENUMBER_S": "TYPE_SIZE_OFFSET",
+        "UDI_S": "TYPE_SIZE_OFFSET",
+        "UNITPRICE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_ITEM_REVIEWOUTCOME": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 66
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "DECISION",
+        "REASON",
+        "PREAUTHREF",
+        "PREAUTHPERIOD"
+      ],
+      "sizes": {
+        "DECISION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PREAUTHPERIOD_S": "TYPE_SIZE_OFFSET",
+        "PREAUTHREF_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_PAYEE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "PARTY"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PARTY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_PAYMENT": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 82,
+        "HEADER_R5_SIZE": 82
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "ADJUSTMENT",
+        "ADJUSTMENTREASON",
+        "DATE",
+        "AMOUNT",
+        "IDENTIFIER"
+      ],
+      "sizes": {
+        "ADJUSTMENTREASON_S": "TYPE_SIZE_OFFSET",
+        "ADJUSTMENT_S": "TYPE_SIZE_OFFSET",
+        "AMOUNT_S": "TYPE_SIZE_OFFSET",
+        "DATE_S": "TYPE_SIZE_UINT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_PROCEDURE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 72,
+        "HEADER_R5_SIZE": 72
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "TYPE",
+        "DATE",
+        "PROCEDURE",
+        "UDI"
+      ],
+      "sizes": {
+        "DATE_S": "TYPE_SIZE_UINT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PROCEDURE_S": "TYPE_SIZE_CHOICE",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "UDI_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_PROCESSNOTE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "NUMBER",
+        "TYPE",
+        "TEXT",
+        "LANGUAGE"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NUMBER_S": "TYPE_SIZE_UINT32",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_RELATED": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 58,
+        "HEADER_R5_SIZE": 58
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CLAIM",
+        "RELATIONSHIP",
+        "REFERENCE"
+      ],
+      "sizes": {
+        "CLAIM_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERENCE_S": "TYPE_SIZE_OFFSET",
+        "RELATIONSHIP_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_SUPPORTINGINFO": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 82,
+        "HEADER_R5_SIZE": 82
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "SEQUENCE",
+        "CATEGORY",
+        "CODE",
+        "TIMING",
+        "VALUE",
+        "REASON"
+      ],
+      "sizes": {
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "SEQUENCE_S": "TYPE_SIZE_UINT32",
+        "TIMING_S": "TYPE_SIZE_CHOICE",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_CHOICE"
+      }
+    },
+    "FF_EXPLANATIONOFBENEFIT_TOTAL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CATEGORY",
+        "AMOUNT"
+      ],
+      "sizes": {
+        "AMOUNT_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
     "FF_EXTENDEDCONTACTDETAIL": {
       "header_sizes": {
         "HEADER_R5_SIZE": 74
@@ -9656,6 +11787,144 @@
         "VALIDATION_S": "TYPE_SIZE_UINT64"
       }
     },
+    "FF_MEDICATIONADMINISTRATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 222,
+        "HEADER_R5_SIZE": 273
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "INSTANTIATES",
+        "PARTOF",
+        "STATUS",
+        "STATUSREASON",
+        "CATEGORY",
+        "MEDICATION",
+        "SUBJECT",
+        "CONTEXT",
+        "SUPPORTINGINFORMATION",
+        "EFFECTIVE",
+        "PERFORMER",
+        "REASONCODE",
+        "REASONREFERENCE",
+        "REQUEST",
+        "DEVICE",
+        "NOTE",
+        "DOSAGE",
+        "EVENTHISTORY",
+        "BASEDON",
+        "ENCOUNTER",
+        "OCCURENCE",
+        "RECORDED",
+        "ISSUBPOTENT",
+        "SUBPOTENTREASON",
+        "REASON"
+      ],
+      "sizes": {
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CONTEXT_S": "TYPE_SIZE_OFFSET",
+        "DEVICE_S": "TYPE_SIZE_OFFSET",
+        "DOSAGE_S": "TYPE_SIZE_OFFSET",
+        "EFFECTIVE_S": "TYPE_SIZE_CHOICE",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EVENTHISTORY_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "INSTANTIATES_S": "TYPE_SIZE_OFFSET",
+        "ISSUBPOTENT_S": "TYPE_SIZE_UINT8",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "MEDICATION_S": "TYPE_SIZE_CHOICE",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "NOTE_S": "TYPE_SIZE_OFFSET",
+        "OCCURENCE_S": "TYPE_SIZE_CHOICE",
+        "PARTOF_S": "TYPE_SIZE_OFFSET",
+        "PERFORMER_S": "TYPE_SIZE_OFFSET",
+        "REASONCODE_S": "TYPE_SIZE_OFFSET",
+        "REASONREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECORDED_S": "TYPE_SIZE_UINT64",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REQUEST_S": "TYPE_SIZE_OFFSET",
+        "STATUSREASON_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUBJECT_S": "TYPE_SIZE_OFFSET",
+        "SUBPOTENTREASON_S": "TYPE_SIZE_OFFSET",
+        "SUPPORTINGINFORMATION_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_MEDICATIONADMINISTRATION_DOSAGE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 84,
+        "HEADER_R5_SIZE": 84
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TEXT",
+        "SITE",
+        "ROUTE",
+        "METHOD",
+        "DOSE",
+        "RATE"
+      ],
+      "sizes": {
+        "DOSE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "METHOD_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RATE_S": "TYPE_SIZE_CHOICE",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "ROUTE_S": "TYPE_SIZE_OFFSET",
+        "SITE_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_MEDICATIONADMINISTRATION_PERFORMER": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 50,
+        "HEADER_R5_SIZE": 50
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "FUNCTION",
+        "ACTOR"
+      ],
+      "sizes": {
+        "ACTOR_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FUNCTION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
     "FF_MEDICATIONDISPENSE": {
       "header_sizes": {
         "HEADER_R4_SIZE": 262,
@@ -10169,6 +12438,28 @@
         "VERSIONID_S": "TYPE_SIZE_OFFSET"
       }
     },
+    "FF_MONEY": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 39,
+        "HEADER_R5_SIZE": 39
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "VALUE",
+        "CURRENCY"
+      ],
+      "sizes": {
+        "CURRENCY_S": "TYPE_SIZE_UINT32",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_DECIMAL"
+      }
+    },
     "FF_NARRATIVE": {
       "header_sizes": {
         "HEADER_R4_SIZE": 38,
@@ -10612,6 +12903,264 @@
         "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
         "OTHER_S": "TYPE_SIZE_OFFSET",
         "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TYPE_S": "TYPE_SIZE_UINT32",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PAYMENTNOTICE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 162,
+        "HEADER_R5_SIZE": 170
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "REQUEST",
+        "RESPONSE",
+        "CREATED",
+        "PROVIDER",
+        "PAYMENT",
+        "PAYMENTDATE",
+        "PAYEE",
+        "RECIPIENT",
+        "AMOUNT",
+        "PAYMENTSTATUS",
+        "REPORTER"
+      ],
+      "sizes": {
+        "AMOUNT_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CREATED_S": "TYPE_SIZE_UINT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PAYEE_S": "TYPE_SIZE_OFFSET",
+        "PAYMENTDATE_S": "TYPE_SIZE_UINT64",
+        "PAYMENTSTATUS_S": "TYPE_SIZE_OFFSET",
+        "PAYMENT_S": "TYPE_SIZE_OFFSET",
+        "PROVIDER_S": "TYPE_SIZE_OFFSET",
+        "RECIPIENT_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REPORTER_S": "TYPE_SIZE_OFFSET",
+        "REQUEST_S": "TYPE_SIZE_OFFSET",
+        "RESPONSE_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PAYMENTRECONCILIATION": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 182,
+        "HEADER_R5_SIZE": 318
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "PERIOD",
+        "CREATED",
+        "PAYMENTISSUER",
+        "REQUEST",
+        "REQUESTOR",
+        "OUTCOME",
+        "DISPOSITION",
+        "PAYMENTDATE",
+        "PAYMENTAMOUNT",
+        "PAYMENTIDENTIFIER",
+        "DETAIL",
+        "FORMCODE",
+        "PROCESSNOTE",
+        "TYPE",
+        "KIND",
+        "ENTERER",
+        "ISSUERTYPE",
+        "DATE",
+        "LOCATION",
+        "METHOD",
+        "CARDBRAND",
+        "ACCOUNTNUMBER",
+        "EXPIRATIONDATE",
+        "PROCESSOR",
+        "REFERENCENUMBER",
+        "AUTHORIZATION",
+        "TENDEREDAMOUNT",
+        "RETURNEDAMOUNT",
+        "AMOUNT",
+        "ALLOCATION"
+      ],
+      "sizes": {
+        "ACCOUNTNUMBER_S": "TYPE_SIZE_OFFSET",
+        "ALLOCATION_S": "TYPE_SIZE_OFFSET",
+        "AMOUNT_S": "TYPE_SIZE_OFFSET",
+        "AUTHORIZATION_S": "TYPE_SIZE_OFFSET",
+        "CARDBRAND_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "CREATED_S": "TYPE_SIZE_UINT64",
+        "DATE_S": "TYPE_SIZE_UINT64",
+        "DETAIL_S": "TYPE_SIZE_OFFSET",
+        "DISPOSITION_S": "TYPE_SIZE_OFFSET",
+        "ENTERER_S": "TYPE_SIZE_OFFSET",
+        "EXPIRATIONDATE_S": "TYPE_SIZE_UINT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "FORMCODE_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "ISSUERTYPE_S": "TYPE_SIZE_OFFSET",
+        "KIND_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "LOCATION_S": "TYPE_SIZE_OFFSET",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "METHOD_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "OUTCOME_S": "TYPE_SIZE_UINT32",
+        "PAYMENTAMOUNT_S": "TYPE_SIZE_OFFSET",
+        "PAYMENTDATE_S": "TYPE_SIZE_UINT64",
+        "PAYMENTIDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "PAYMENTISSUER_S": "TYPE_SIZE_OFFSET",
+        "PERIOD_S": "TYPE_SIZE_OFFSET",
+        "PROCESSNOTE_S": "TYPE_SIZE_OFFSET",
+        "PROCESSOR_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REFERENCENUMBER_S": "TYPE_SIZE_OFFSET",
+        "REQUESTOR_S": "TYPE_SIZE_OFFSET",
+        "REQUEST_S": "TYPE_SIZE_OFFSET",
+        "RETURNEDAMOUNT_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "TENDEREDAMOUNT_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PAYMENTRECONCILIATION_ALLOCATION": {
+      "header_sizes": {
+        "HEADER_R5_SIZE": 140
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "PREDECESSOR",
+        "TARGET",
+        "TARGETITEM",
+        "ENCOUNTER",
+        "ACCOUNT",
+        "TYPE",
+        "SUBMITTER",
+        "RESPONSE",
+        "DATE",
+        "RESPONSIBLE",
+        "PAYEE",
+        "AMOUNT"
+      ],
+      "sizes": {
+        "ACCOUNT_S": "TYPE_SIZE_OFFSET",
+        "AMOUNT_S": "TYPE_SIZE_OFFSET",
+        "DATE_S": "TYPE_SIZE_UINT64",
+        "ENCOUNTER_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PAYEE_S": "TYPE_SIZE_OFFSET",
+        "PREDECESSOR_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "RESPONSE_S": "TYPE_SIZE_OFFSET",
+        "RESPONSIBLE_S": "TYPE_SIZE_OFFSET",
+        "SUBMITTER_S": "TYPE_SIZE_OFFSET",
+        "TARGETITEM_S": "TYPE_SIZE_CHOICE",
+        "TARGET_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PAYMENTRECONCILIATION_DETAIL": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 114
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "PREDECESSOR",
+        "TYPE",
+        "REQUEST",
+        "SUBMITTER",
+        "RESPONSE",
+        "DATE",
+        "RESPONSIBLE",
+        "PAYEE",
+        "AMOUNT"
+      ],
+      "sizes": {
+        "AMOUNT_S": "TYPE_SIZE_OFFSET",
+        "DATE_S": "TYPE_SIZE_UINT64",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "PAYEE_S": "TYPE_SIZE_OFFSET",
+        "PREDECESSOR_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REQUEST_S": "TYPE_SIZE_OFFSET",
+        "RESPONSE_S": "TYPE_SIZE_OFFSET",
+        "RESPONSIBLE_S": "TYPE_SIZE_OFFSET",
+        "SUBMITTER_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_PAYMENTRECONCILIATION_PROCESSNOTE": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 46,
+        "HEADER_R5_SIZE": 46
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "TYPE",
+        "TEXT"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
         "TYPE_S": "TYPE_SIZE_UINT32",
         "VALIDATION_S": "TYPE_SIZE_UINT64"
       }
@@ -11833,6 +14382,172 @@
         "RECOVERY_S": "TYPE_SIZE_UINT16",
         "TIME_S": "TYPE_SIZE_CHOICE",
         "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SUPPLYDELIVERY": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 156,
+        "HEADER_R5_SIZE": 156
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "BASEDON",
+        "PARTOF",
+        "STATUS",
+        "PATIENT",
+        "TYPE",
+        "SUPPLIEDITEM",
+        "OCCURRENCE",
+        "SUPPLIER",
+        "DESTINATION",
+        "RECEIVER"
+      ],
+      "sizes": {
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "DESTINATION_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "OCCURRENCE_S": "TYPE_SIZE_CHOICE",
+        "PARTOF_S": "TYPE_SIZE_OFFSET",
+        "PATIENT_S": "TYPE_SIZE_OFFSET",
+        "RECEIVER_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUPPLIEDITEM_S": "TYPE_SIZE_OFFSET",
+        "SUPPLIER_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "TYPE_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SUPPLYDELIVERY_SUPPLIEDITEM": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 52,
+        "HEADER_R5_SIZE": 52
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "QUANTITY",
+        "ITEM"
+      ],
+      "sizes": {
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "ITEM_S": "TYPE_SIZE_CHOICE",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SUPPLYREQUEST": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 186,
+        "HEADER_R5_SIZE": 210
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "META",
+        "IMPLICITRULES",
+        "LANGUAGE",
+        "TEXT",
+        "CONTAINED",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "IDENTIFIER",
+        "STATUS",
+        "CATEGORY",
+        "PRIORITY",
+        "ITEM",
+        "QUANTITY",
+        "PARAMETER",
+        "OCCURRENCE",
+        "AUTHOREDON",
+        "REQUESTER",
+        "SUPPLIER",
+        "REASONCODE",
+        "REASONREFERENCE",
+        "DELIVERFROM",
+        "DELIVERTO",
+        "BASEDON",
+        "DELIVERFOR",
+        "REASON"
+      ],
+      "sizes": {
+        "AUTHOREDON_S": "TYPE_SIZE_UINT64",
+        "BASEDON_S": "TYPE_SIZE_OFFSET",
+        "CATEGORY_S": "TYPE_SIZE_OFFSET",
+        "CONTAINED_S": "TYPE_SIZE_OFFSET",
+        "DELIVERFOR_S": "TYPE_SIZE_OFFSET",
+        "DELIVERFROM_S": "TYPE_SIZE_OFFSET",
+        "DELIVERTO_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "IDENTIFIER_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "IMPLICITRULES_S": "TYPE_SIZE_OFFSET",
+        "ITEM_S": "TYPE_SIZE_CHOICE",
+        "LANGUAGE_S": "TYPE_SIZE_UINT32",
+        "META_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "OCCURRENCE_S": "TYPE_SIZE_CHOICE",
+        "PARAMETER_S": "TYPE_SIZE_OFFSET",
+        "PRIORITY_S": "TYPE_SIZE_UINT32",
+        "QUANTITY_S": "TYPE_SIZE_OFFSET",
+        "REASONCODE_S": "TYPE_SIZE_OFFSET",
+        "REASONREFERENCE_S": "TYPE_SIZE_OFFSET",
+        "REASON_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "REQUESTER_S": "TYPE_SIZE_OFFSET",
+        "STATUS_S": "TYPE_SIZE_UINT32",
+        "SUPPLIER_S": "TYPE_SIZE_OFFSET",
+        "TEXT_S": "TYPE_SIZE_OFFSET",
+        "VALIDATION_S": "TYPE_SIZE_UINT64"
+      }
+    },
+    "FF_SUPPLYREQUEST_PARAMETER": {
+      "header_sizes": {
+        "HEADER_R4_SIZE": 52,
+        "HEADER_R5_SIZE": 52
+      },
+      "order": [
+        "VALIDATION",
+        "RECOVERY",
+        "ID",
+        "EXTENSION",
+        "MODIFIEREXTENSION",
+        "CODE",
+        "VALUE"
+      ],
+      "sizes": {
+        "CODE_S": "TYPE_SIZE_OFFSET",
+        "EXTENSION_S": "TYPE_SIZE_OFFSET",
+        "ID_S": "TYPE_SIZE_OFFSET",
+        "MODIFIEREXTENSION_S": "TYPE_SIZE_OFFSET",
+        "RECOVERY_S": "TYPE_SIZE_UINT16",
+        "VALIDATION_S": "TYPE_SIZE_UINT64",
+        "VALUE_S": "TYPE_SIZE_CHOICE"
       }
     },
     "FF_TIMING": {

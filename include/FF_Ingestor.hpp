@@ -22,6 +22,24 @@
 namespace FastFHIR::Ingest {
 
 // =====================================================================
+// ARENA SIZING FLOOR
+// =====================================================================
+// The smallest arena an ingest can succeed in, whatever the input size.
+//
+// Sizing an arena from the JSON length alone fails at the bottom: FF_HEADER is
+// 54 bytes and a resource V-Table runs to ~250 (FF_PATIENT is 191), and neither
+// scales with input. A 66-byte Patient asked for 132 bytes and needed 245. The
+// arena is RESERVED virtual memory, not committed pages, so over-reserving here
+// costs nothing.
+//
+// Declared here rather than in the CLI because it is a property of the FORMAT's
+// fixed overhead, not of any one caller -- and because it was previously a
+// function-local constant in tools/ingestor/FF_Ingest.cpp with the value
+// duplicated as a literal in tests/cpp/test_bundle_ingest.cpp, where the copy
+// had drifted to half the real floor while claiming in a comment to mirror it.
+inline constexpr size_t FF_MIN_ARENA = 2ull << 20;  // 2 MiB
+
+// =====================================================================
 // PREDIGESTION
 // Single-threaded consumer in a producer/consumer pipeline.
 // Producers (per-thread) scan prechunked entries and push URLs into an

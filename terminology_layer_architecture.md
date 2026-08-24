@@ -145,10 +145,18 @@ constexpr uint32_t FF_CODE_PAYLOAD_MASK     = 0x7FFFFFFF;  // Lower 31 bits
 constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x7FFFFFFF;
 ```
 
-### 3.1 The 8-byte sibling: `FF_DATETIME` (slot + kind implemented, generator pending)
+### 3.1 The 8-byte sibling: `FF_DATETIME` (live; date/time ARRAYS still pending)
 
 The packed date/time slot is the same mechanism one width up, and belongs beside
-this table so the two are read together rather than discovered separately:
+this table so the two are read together rather than discovered separately.
+
+**Status:** DT-2 routed `date`/`dateTime`/`instant`/`time` off `STRING_TYPES` and
+onto `DATETIME_TYPES` in the model, store, deserialize and view emitters, so
+**scalar slots and choice (`[x]`) variants are live on the wire** —
+`Patient.birthDate` emits `ENCODE_FF_DATETIME` under `RECOVER_FF_DATE`. What
+remains is **array-typed** date/time fields, which three emitters still send down
+the string-array branch, so `Timing.event` and `Timing.repeat.timeOfDay` are
+still stored as `FF_STRING` (TASKS.md **DT-2.4**).
 
 | | `FF_FIELD_CODE` (4 B) | `FF_DATETIME` (8 B) |
 |---|---|---|
@@ -217,8 +225,14 @@ offset. Every path that turns a code slot into a node therefore resolves through
 a node already pointing at the `FF_CODEABLE_CONCEPT`. Code that defers it has
 already lost the operand: `Node::as<std::string_view>()` used to resolve against
 the node's own offset, which for a choice (`[x]`) variant is the *slot*, and
-returned an empty label instead of the code — silently. The same rule will apply
-to a date/time variant once DT-2 emits them.
+returned an empty label instead of the code — silently.
+
+**The same rule already applies to date/time variants, and is implemented.**
+DT-2 made `resolve_choice` return a real `FF_FIELD_DATETIME` node, and DT-3
+resolves the bit-63 fallback offset while `parent_offset` is still in hand,
+exactly as `code_node()` does for codes. This is not future work — reading it as
+future work is how the code path gets written a second time, deferred, and
+against the wrong base.
 
 ---
 

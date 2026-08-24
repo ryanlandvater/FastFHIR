@@ -20,8 +20,15 @@
 //   2. THE CANARY CATCHES THE VIOLATION. The chain collapsing when consumers
 //      leave is by design ("no consumers, no reason to live"), so the type
 //      cannot prevent the misuse -- which is exactly why the debug canary in
-//      ~Node exists. A node freed holding ENTRY_PENDING work must throw rather
-//      than silently discard, because silent discard is the original bug.
+//      ~Node exists. A node freed holding ENTRY_PENDING work must RECORD the
+//      violation on debug_violations(), because silent discard is the original
+//      bug and throwing is not an available answer: ~Node runs inside the
+//      retire path after the slot was exchanged, so a throw strands the
+//      caller's NodeRef on a dead slot and then terminates inside the noexcept
+//      ~NodeRef. A counter the owner polls is the only report that survives.
+//      (This paragraph said "must throw" and contradicted both the
+//      implementation and the explanation below it -- documenting the precise
+//      unsafe behaviour the design rejects.)
 //
 // Test 2 is the one that matters: a canary nobody has seen fire is a canary
 // nobody knows is alive.

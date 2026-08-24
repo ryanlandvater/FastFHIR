@@ -171,14 +171,17 @@ int main()
     // ff_ingest sized its arena at 2x the input JSON: a 66-byte Patient asked
     // for 132 bytes and needed 245 (54-byte FF_HEADER + 191-byte Patient vtable)
     // before a single string byte, so every tiny input failed with "VMA Capacity
-    // Exceeded". The CLI now floors the arena at 1 MiB (FF_MIN_ARENA). Mirror
-    // that floor here and pin the smallest real input through the same pipeline
-    // the CLI runs.
+    // Exceeded". The CLI now floors the arena at FastFHIR::Ingest::FF_MIN_ARENA.
+    // Pin the smallest real input through the same pipeline the CLI runs, at
+    // THE SAME constant -- this used to hard-code `1ull << 20` while claiming in
+    // this comment to mirror the CLI, which had moved to 2 MiB. A regression
+    // test that restates a value instead of sharing it stops testing the thing
+    // it names the moment that value changes.
     {
         static const char* kTiny =
             R"({"resourceType":"Patient","id":"p1","active":true,"gender":"male"})";
 
-        auto mem3 = Memory::create(1ull << 20);  // CLI's FF_MIN_ARENA floor
+        auto mem3 = Memory::create(FastFHIR::Ingest::FF_MIN_ARENA);
         FF_StreamCreateInfo stream_info3;
         stream_info3.arena = std::make_shared<Memory>(mem3);
         FF_Stream stream3;

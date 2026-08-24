@@ -107,6 +107,13 @@ cmake --build build --target build_all -j
 ctest --test-dir build --output-on-failure
 
 # Generator tests (wire-format gate)
+# The gate regenerates under the profile in CMakePresets.json (pinned in
+# tests/generator/conftest.py), NOT the generator's `us-core` default. That is
+# load-bearing: `vtables` is derived from the emitted resource headers, so an
+# unpinned run witnessed 141 blocks against a 209-block build and left every
+# billing/supply/medication-admin V-Table ungated. Widen the profile → widen the
+# golden in the same commit; the gate now fails if any emitted constant is
+# missing from it.
 pytest tests/generator -q
 
 # If the wire format has intentionally changed (new block field, new vtable
@@ -429,9 +436,13 @@ tree at the `CMakeLists.txt:67` default of `us-core`. So a tree built as
 `write_if_changed` left every billing source untouched at its older mtime — hence
 `unknown type name 'FF_Use'` in generated code nobody had regenerated, "the next configure
 fixed it", and an apparent flake that was in fact **once per test-suite run**. The test now
-generates into a temp directory. Two guards remain as backstops: `validate_codesystem_enums`
-fails the configure by name if a short header ever appears again (it is what caught this),
-and the profile-change rule above still applies. Historical note, because it cost two days:
+generates into a temp directory, and **three** guards stand behind that:
+`validate_codesystem_enums` fails the configure by name if a short header ever appears
+again (it is what caught this); `tests/conftest.py` hashes `generated_src/` **and**
+`dictionaries/` around every pytest session and fails if a test modified either
+(TASKS.md GEN-1.5 — **tests must never write into the working tree**; generate into a
+`tempfile.TemporaryDirectory`, as `tests/generator/conftest.py` has always done); and the
+profile-change rule above still applies. Historical note, because it cost two days:
 the incident also printed 8/8 PASS from a **stale test binary** while its build was failing
 with 10 errors — always confirm the build succeeded before believing a result.
 

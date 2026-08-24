@@ -35,6 +35,44 @@ def baseline() -> dict:
     return json.loads(_BASELINE.read_text(encoding="utf-8"))
 
 
+def test_golden_covers_every_current_wire_constant(regenerated_dir: Path, baseline: dict) -> None:
+    """Every wire constant the generator emits must be IN the committed golden.
+
+    The three permanence tests below are deliberately asymmetric: they protect
+    what the golden already records and let additions through, because adding a
+    resource legitimately appends tags and V-Tables. That asymmetry leaves a
+    hole at the other end -- a constant that is emitted but never committed is
+    protected by nothing, so a later run may renumber or drop it and every
+    permanence check still passes, having no baseline entry to compare against.
+
+    CLAUDE.md already requires the golden to be committed in the same change;
+    this is the test that makes that requirement real rather than procedural.
+
+    It is also what keeps the gate honest about SCOPE. `vtables` is derived from
+    the emitted resource headers, so it only covers the compiled profile -- with
+    the profile unpinned the golden held 141 blocks against a 209-block build,
+    and every billing/supply/medication-admin V-Table was ungated. conftest now
+    pins the profile from CMakePresets.json; this test fails the moment the two
+    fall out of step again.
+    """
+    current = witness(regenerated_dir)
+    missing: list[str] = []
+    for section in ("tags", "codes", "vtables"):
+        absent = sorted(set(current[section]) - set(baseline[section]))
+        missing.extend(f"{section}.{name}" for name in absent[:40])
+        if len(absent) > 40:
+            missing.append(f"{section}: ... and {len(absent) - 40} more")
+
+    assert not missing, (
+        f"{len(missing)} wire constant(s) are emitted but absent from the committed "
+        "golden, so nothing protects them from being renumbered later:\n  "
+        + "\n  ".join(missing)
+        + "\n\nRe-baseline in the SAME commit as the change that added them:\n"
+        "  python -m tests.generator.wire_witness generated_src "
+        "tests/generator/golden/wire_witness.json"
+    )
+
+
 def test_recovery_tags_stable(regenerated_dir: Path, baseline: dict) -> None:
     """RECOVER_FF_* tags hit bytes 8-9 of every block — must never drift.
 

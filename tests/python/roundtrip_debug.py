@@ -163,7 +163,14 @@ def annotate(diffs: list[DiffEntry], meta: dict[str, dict[str, Any]]) -> str:
         if d.expected is not None:
             lines.append(f"      expected: {d.expected!r}")
         if m is None:
-            siblings = _find_siblings(d.path, meta)
+            # meta_path(), not path: _find_siblings searches the OUTPUT metadata,
+            # which strip_debug keys by output indices. After a dropped Bundle
+            # entry the input and output indices diverge, so searching with the
+            # input path finds nothing and the wire cause -- the whole point of
+            # this branch -- is silently lost. That is the exact case
+            # DiffEntry.actual_path exists for, and this call site was missed
+            # when it was introduced.
+            siblings = _find_siblings(d.meta_path(), meta)
             if siblings:
                 for leaf, sm in siblings:
                     lines.append(

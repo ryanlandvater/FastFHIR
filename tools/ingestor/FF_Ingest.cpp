@@ -184,8 +184,10 @@ int main(int argc, char *argv[])
         // 66-byte Patient asked for 132 bytes and needed 245. The floor covers the
         // fixed overhead; because the arena is reserved virtual memory, not committed
         // pages, over-reserving here costs nothing.
-        static constexpr size_t FF_MIN_ARENA = 2ull << 20;  // 2 MiB
-        size_t capacity_hint = std::max(json_buffer.size() * 2, FF_MIN_ARENA);
+        // FastFHIR::Ingest::FF_MIN_ARENA — one definition, shared with the
+        // regression test that pins this floor (tests/cpp/test_bundle_ingest.cpp).
+        size_t capacity_hint =
+            std::max(json_buffer.size() * 2, FastFHIR::Ingest::FF_MIN_ARENA);
 
         FF_StreamCreateInfo stream_info;
         stream_info.capacity = capacity_hint;

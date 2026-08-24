@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json, re, subprocess, sys
 from collections import defaultdict
+from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -34,7 +35,9 @@ def one(p: Path):
         m = meta.get(d.meta_path())
         sib = None
         if m is None:
-            hits = _find_siblings(d.path, meta)
+            # meta_path(), not path -- the metadata is keyed by output index.
+            # See the same correction in roundtrip_debug.py.
+            hits = _find_siblings(d.meta_path(), meta)
             if hits:
                 sib = (
                     hits[0][0],
@@ -96,7 +99,11 @@ def main() -> int:
     out = [
         "# Round-trip failures, explained by `to_debug_json`",
         "",
-        f"Generated {subprocess.run(['date','+%Y-%m-%d %H:%M'],capture_output=True,text=True).stdout.strip()}",
+        # datetime, not a `date` subprocess: there is no `date` EXECUTABLE on
+        # Windows (it is a cmd builtin), so this raised FileNotFoundError after
+        # both corpus passes had already run -- throwing away ~3 minutes of
+        # completed analysis at the final formatting step.
+        f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f" from {len(fx)} Synthea fixtures via `ff_roundtrip --debug`.",
         "",
         f"- **{clean} / {len(fx)} fixtures clean** in pass 1, {failed} failing "

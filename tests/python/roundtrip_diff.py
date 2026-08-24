@@ -169,10 +169,21 @@ def _diff_entry_array(expected: list, actual: list, path: str) -> list[DiffEntry
     # Multi-map: an identity is not guaranteed unique, so keep insertion order
     # and consume matches in order rather than assuming one entry per key.
     remaining: dict[tuple, list[int]] = {}
+    # Output entries that cannot be keyed at all, in document order. Both
+    # `Resource.id` and `Bundle.entry.fullUrl` are OPTIONAL in FHIR, so an entry
+    # carrying neither is unidentifiable -- not absent. Treating `ident is None`
+    # as "no match" reported such an entry as DROPPED *and* its counterpart as
+    # ADDED even when the two were byte-identical: two identical single-entry
+    # bundles produced 4 diffs. Synthea populates both fields on every entry, so
+    # this never fired on the corpus and would have surfaced as an inexplicable
+    # failure on the first document that did not.
+    unkeyed_actual: list[int] = []
     for i, item in enumerate(actual):
         ident = _entry_identity(item)
         if ident is not None:
             remaining.setdefault(ident, []).append(i)
+        else:
+            unkeyed_actual.append(i)
 
     matched_actual: set[int] = set()
     for i, exp_item in enumerate(expected):
@@ -180,7 +191,16 @@ def _diff_entry_array(expected: list, actual: list, path: str) -> list[DiffEntry
         # source document they already have open.
         item_path = _path_join(path, i)
         ident = _entry_identity(exp_item)
-        slots = remaining.get(ident) if ident is not None else None
+        if ident is None:
+            # Ordered fallback: pair unkeyable inputs with unkeyable outputs in
+            # document order. Positional pairing is exactly what identity
+            # matching exists to avoid, but it is the only thing available for
+            # an entry with no identity, and it is strictly better than
+            # declaring every one of them both dropped and added. Keyed entries
+            # are matched first, so this never steals a pairing from one.
+            slots = [unkeyed_actual.pop(0)] if unkeyed_actual else []
+        else:
+            slots = remaining.get(ident) or []
         if not slots:
             diffs.append(DiffEntry(
                 path=item_path, kind=DiffKind.DROPPED_RESOURCE,
@@ -188,7 +208,7 @@ def _diff_entry_array(expected: list, actual: list, path: str) -> list[DiffEntry
                 message=f"{_entry_label(exp_item)} present in input, absent from output",
             ))
             continue
-        j = slots.pop(0)
+        j = slots.pop(0) if ident is not None else slots[0]
         matched_actual.add(j)
         # Recurse under the input path for display, then rewrite each finding's
         # meta_path onto the OUTPUT path. Both are needed: the reader wants the

@@ -268,7 +268,8 @@ DT-4.4, 2026-08-20 — see each task). Nothing gates DT-1.
 | GEN-1 | **P1** | ~~Generator occasionally emits an incomplete tree~~ — **it was `pytest tests/generator` rewriting `generated_src/` at the `us-core` default** | `FF_CodeSystems.hpp` short 8 enums, build broke on `FF_Use`/`FF_NoteType`; never a flake, fully deterministic | **DIAGNOSED + FIXED 2026-08-24** (working tree). Caught by the GEN-1.1 guard on its first run |
 | COV-1 | **P1** | No test feeds writer output to the reader/validator | 3 defects in one day inside "covered" code; validator rejected all 342 bundles while its own test passed | **1.1 + 1.5 DONE**; 1.2-1.4 open |
 | CMP-1 | **P1** | Compaction lost scalar arrays, the URL table and `Attachment.data` | found by COV-1.5 on its first run; compaction had never been fed a real document | **DONE 2026-08-23** (459e8d8) |
-| REV-1 | **P1** | PR #6 review fixes: Release build broken, corpus gate pinned to 1 worker, 9 more | Release+tests did not compile at all; the 342-fixture gate could not see the AR-3 class | **DONE 2026-08-23** (working tree) |
+| REV-1 | **P1** | PR #6 review fixes: Release build broken, corpus gate pinned to 1 worker, 9 more | Release+tests did not compile at all; the 342-fixture gate could not see the AR-3 class | **DONE 2026-08-23** |
+| REV-2 | **P1** | PR #6 second review: 11 findings, all correct — incl. a null-View crash and **68 V-Tables outside the wire gate** | the "ONE hard gate" was witnessing a `us-core` tree while the presets ship four groupings | **DONE 2026-08-24** (working tree) |
 
 ---
 
@@ -1657,6 +1658,107 @@ download the corpus, CMake does) — loud, not a false pass.
 
 ---
 
+## REV-2 — PR #6, second review round (P1) — ✅ DONE 2026-08-24
+
+Copilot filed 11 more inline comments. **All 11 were correct** (the first round
+was 12 of 14). Four were incomplete work from REV-1; the rest were independent.
+
+### The wire gate was witnessing the wrong tree — the significant one
+
+`witness()` derives its `vtables` section from the **emitted resource headers**,
+so it only covers the compiled profile. `tests/generator/conftest.py` regenerated
+with `FASTFHIR_PRODUCTION_PROFILE` inherited from the ambient environment —
+i.e. the generator's silent `us-core` default. Measured:
+
+| | blocks |
+|---|---|
+| committed golden | **141** |
+| a preset build (`us-core,billing,medication-admin,supply`) | **209** |
+
+**68 V-Tables were outside "the ONE hard gate" entirely** — every block from
+`billing`, `medication-admin` and `supply` (`FF_CLAIM`, `FF_CLAIMRESPONSE`,
+`FF_EXPLANATIONOFBENEFIT`, `FF_SUPPLYDELIVERY`, `FF_MEDICATIONADMINISTRATION`
+and their backbones). Field order, size constants and header sizes could all
+drift with nothing to catch it. `tags` and `codes` were unaffected — both are
+projected from the committed ledgers and cover the whole spec regardless of
+profile (978 / 5796 either way).
+
+Copilot's separate point was also confirmed: nothing required an emitted constant
+to be **in** the golden, so anything added and not committed was protected by
+nothing — verified by adding a tag to a current-witness copy and renumbering it
+on a later pass, both of which passed `_check_permanence`.
+
+**Fixes, in order — the second depends on the first:**
+
+1. **Pin the profile.** `conftest.py::_shipped_profile()` reads
+   `FASTFHIR_PRODUCTION_PROFILE` out of `CMakePresets.json` and passes it
+   explicitly in the subprocess env. Read, not restated: a duplicated constant
+   is one that drifts, which `FF_MIN_ARENA` had just demonstrated in this same
+   review round.
+2. **Widen the golden** to the shipped profile: 141 → **209** blocks. Verified
+   **purely additive** — `_check_permanence(new, old)` is clean across all three
+   sections, so not one existing constant changed or was removed. (The 882
+   deleted *lines* in the diff are `json.dumps` re-serialisation, not semantics;
+   line counts are the wrong instrument here.)
+3. **Require coverage.** New `test_golden_covers_every_current_wire_constant`
+   fails if the generator emits any tag, code or V-Table the golden lacks, and
+   prints the re-baseline command. CLAUDE.md already *required* the golden to be
+   committed alongside the change; this makes it enforced rather than procedural.
+
+**Verified both directions:** the new test failed against the old 141-block
+golden naming `FF_CLAIM` first, and an unpinned `us-core` regeneration now
+produces **67 `DELETED` errors** against the widened golden instead of passing
+silently. Wire gate: **48**.
+
+`FF_IMAGINGSTUDY` is legitimately absent — `imaging` is deliberately out of the
+presets (OPQ-1), so this build emits no ImagingStudy V-Table to gate. Its
+resources travel as opaque JSON.
+
+### The four that were REV-1's own loose ends
+
+- `roundtrip_debug.py` and `roundtrip_failure_report.py` still called
+  `_find_siblings(d.path, meta)`. REV-1 introduced `DiffEntry.actual_path`
+  precisely because that metadata is keyed by OUTPUT index, and converted the
+  direct lookups — but missed both sibling searches, which is the branch that
+  produces the wire cause. After any dropped entry it found nothing and the
+  diagnosis was silently lost. Now `d.meta_path()`; proven with a shifted-index
+  fixture (old: `NOTHING FOUND`, new: the `valueUnsignedInt` sibling).
+- `roundtrip_diff.py` classified every entry lacking **both** `resource.id` and
+  `fullUrl` as `DROPPED_RESOURCE` *and* `ADDED_RESOURCE`. Both fields are
+  optional in FHIR; **two byte-identical bundles produced 4 diffs.** Synthea
+  populates both on every entry, so it never fired on the corpus and would have
+  surfaced as an inexplicable failure on the first document that did not. Now
+  falls back to ordered pairing for unkeyable entries, after keyed matching, so
+  it can never steal a keyed pairing. Verified: identical → 0, changed field →
+  1 field diff, genuine drop → `DROPPED`, keyed-pairing-across-a-drop intact.
+
+### The rest
+
+- **`Memory::View::operator std::string_view()` dereferenced `m_vma_ref`** while
+  `data()` and `size()` had been made null-safe — so converting an out-view
+  cleared after an API failure **crashed**, inside a `noexcept` function. Now
+  built from `data()`/`size()`. Verified with a null `View`: `data=0x0 size=0`,
+  conversion yields an empty view.
+- **`FF_MIN_ARENA` promoted to `FastFHIR::Ingest::FF_MIN_ARENA`.** It was a
+  function-local constant in `tools/ingestor/FF_Ingest.cpp` (2 MiB) with the
+  value restated as a literal in `test_bundle_ingest.cpp` (**1 MiB**) under a
+  comment claiming to mirror the CLI. One definition now; both use it.
+- **`python/README.md` documented a removed parameter.** `compact()` no longer
+  takes `destination`, but the guide's example passed a `Memory` where a
+  `Checksum` was expected and the API table repeated the old signature. Example
+  rewritten to persist the returned view.
+- **`roundtrip_failure_report.py` shelled out to `date`** — no such executable on
+  Windows, so it raised `FileNotFoundError` *after* both corpus passes, throwing
+  away the completed analysis at the formatting step. Now `datetime`.
+- **`ff_test_queue.cpp`'s intro said the canary "must throw"**, contradicting
+  both the implementation and its own later explanation — documenting the exact
+  unsafe behaviour the design rejects, in the file whose job is to explain it.
+- **`terminology_layer_architecture.md`** described DT-2/DT-3 as pending in two
+  places; scalar and choice date/time have been live since DT-2/DT-3 and only
+  arrays remain (DT-2.4).
+
+---
+
 ## GEN-1 — The generator emitted an incomplete tree once (P1)
 
 **Observed 2026-08-22; reproduced THREE more times on 2026-08-23** — roughly one
@@ -1828,22 +1930,75 @@ confirm succeeded.
 `validate_codesystem_enums` guard fails the configure by name if a short
 code-system header ever appears again from any other cause.
 
-### Still worth doing, now that the cause is known
+### GEN-1.5 — ✅ **DONE 2026-08-24.** The property is now asserted
 
-- **GEN-1.5** No test asserts that running the suite leaves `generated_src/`
-  alone. That property is what broke, and nothing guards it. A session-scoped
-  fixture that hashes `generated_src/FF_CodeSystems.hpp` before and after would
-  have caught this in one run.
-- **GEN-1.6** Audit the rest of the suite for the same shape — any test invoking
-  `python -m generator`, or anything else that writes into the working tree as a
-  side effect. `conftest.py` already does this correctly (`--output-dir` into a
-  `tmp_path_factory` tree) and its docstring explains why; this one test simply
-  never got the same treatment.
-- **GEN-1.7** The generator still honours an unset `FASTFHIR_PRODUCTION_PROFILE`
-  by silently choosing `us-core`. For a tool that writes a profile-dependent tree
-  into a shared directory, defaulting quietly is what let this hide. Consider
-  stamping the resolved profile into a file in `generated_src/` and refusing to
-  overwrite a tree generated under a different one (this also fixes (a)).
+`tests/conftest.py` + `tests/tree_guard.py`: a session-scoped **autouse** fixture
+hashes `generated_src/` and `dictionaries/` before and after every pytest
+session and raises in teardown if anything changed, listing the files.
+
+- Placed at `tests/` root, not in a suite subdirectory, so it applies to
+  `pytest tests/generator`, `pytest tests/python` and a bare `pytest tests/`
+  alike — the property is not specific to one suite.
+- **Content hashes, not mtimes.** `write_if_changed` deliberately preserves an
+  unchanged file's mtime, so mtimes would both miss a same-timestamp rewrite and
+  false-positive on a no-op regeneration. ~840 files hash in **0.08 s**, so there
+  was no reason to approximate.
+- `dictionaries/` is protected as well as `generated_src/`. The ledger is the
+  higher-value target: a test that rewrites `master_codes.json` can renumber
+  constants that decode stored archives, which has happened once (`118d6ad`).
+- Autouse, because a guard that must be opted into is one the next test to
+  acquire this bug will not opt into. It raises in TEARDOWN so it can never mask
+  a real test failure.
+
+**Verified by reintroducing the bug.** Dropping `--output-dir` from
+`test_code_ids.py` again and re-running the suite produces:
+
+```
+RuntimeError: the test session MODIFIED the working tree ...
+    MODIFIED generated_src/FF_CodeSystems.hpp
+    MODIFIED generated_src/FF_AllTypes.hpp
+    ...
+```
+with the tree left at 72 enums. Restoring `--output-dir`: 47 passed, tree at 80.
+
+### GEN-1.6 — ✅ **DONE 2026-08-24.** Audit complete; one finding
+
+Every test that invokes the generator or writes anything:
+
+| Site | Verdict |
+|---|---|
+| `tests/generator/conftest.py` | ✅ `--output-dir` into `tmp_path_factory` |
+| `tests/generator/test_determinism.py` | ✅ `--output-dir` into temp trees |
+| `tests/generator/test_code_ids.py` | ✅ fixed (was GEN-1) — temp dir; ledger still snapshotted and restored |
+| `tests/python/test_readme.py` | ✅ writes only under `tempfile.gettempdir()` |
+| `tests/python/roundtrip_failure_report.py` | ✅ writes `build/` (gitignored); a script, not a test |
+| **`tests/test_ff_dictionary.py`** | ⚠ **dead, and shaped like the bug** — see below |
+
+**`tests/test_ff_dictionary.py` is dead code from the pre-ledger architecture.**
+2 of its 3 tests cannot run: `test_dictionary_regeneration_no_modifications`
+imports `generate_master_dictionary`, which **no longer exists**, and passes
+`fhir_specs/R4` / `fhir_specs/R5`, which **do not exist** (the real cache is
+`fhir_packages/`); `test_dictionary_files_compile` wants
+`src/FF_R4_Dictionary.cpp`, from before the dictionary tables became generator
+output. Only `test_known_extensions_includes_code_system_urls` passes. It is also
+outside `pyproject.toml`'s `testpaths = ["tests/generator"]`, so **nothing ever
+runs it** — a bare `pytest` does not collect it.
+
+Its method is the dangerous part: *regenerate the permanent ledger in place, then
+judge the result with `git diff`*. Inert today only because the API it calls is
+gone. **Recommendation: delete it** (git has the history; the style guide says so)
+or rewrite the one live test into `tests/generator/`. Left in place rather than
+deleted unilaterally — but the GEN-1.5 guard now covers `dictionaries/`, so if
+anyone repairs the import without also redirecting the output, the suite fails
+instead of silently rewriting the ledger.
+
+### GEN-1.7 — still open
+
+The generator honours an unset `FASTFHIR_PRODUCTION_PROFILE` by silently choosing
+`us-core`. For a tool that writes a profile-dependent tree into a shared
+directory, defaulting quietly is what let this hide for two days. Stamp the
+resolved profile into `generated_src/` and refuse to overwrite a tree generated
+under a different one — that closes (a) as well as the residue of (b).
 
 ---
 
