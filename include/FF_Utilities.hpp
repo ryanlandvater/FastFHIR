@@ -62,10 +62,17 @@ inline bool FF_IsChoicePresent(uint64_t choice_offset)
  * This is used for validation and to apply resource-specific logic during parsing and building.
  */
 inline constexpr bool FF_IsResourceTag(RECOVERY_TAG tag) {
-    // RANGE check, not a high-byte test. The resource band is 0x0300-0x0FFF --
-    // it spans 13 high-byte values, because 256 slots could not hold FHIR's 178
+    // RANGE check, not a high-byte test. The resource band is 0x1000-0x1FFF --
+    // it spans 16 high-byte values, because 256 slots could not hold FHIR's 178
     // concrete resource types with any headroom. The old `(tag & 0xFF00) ==
     // 0x0300` silently returned false for every resource above 0x03FF.
+    //
+    // The range named here was stale: it still said 0x0300-0x0FFF, the band's
+    // home before the 2026-08-14 re-cut, while the constants below (and
+    // dictionaries/master_tags.json, which is authoritative) had moved to
+    // 0x1000-0x1FFF. The CODE was always right because it reads the constants;
+    // only this comment lied, which is the worst place for it -- beside the
+    // classifier that future band work will be reasoned about from.
     // Strip the array bit first so an array-of-resource still classifies.
     const uint16_t base = static_cast<uint16_t>(GetTypeFromTag(tag));
     return base >= RECOVER_BAND_RESOURCE_FIRST && base <= RECOVER_BAND_RESOURCE_LAST;

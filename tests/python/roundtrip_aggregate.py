@@ -32,10 +32,24 @@ from roundtrip_diff import diff_doms, filter_allowlisted  # noqa: E402
 REPO = Path(__file__).resolve().parents[2]
 _INDEX = re.compile(r"/\d+")
 
-# Set by main() before the pool forks; workers inherit it via copy-on-write
-# rather than paying to pickle it per fixture.
+# Worker-side settings. These are module globals ONLY as a landing place for
+# _init_worker; nothing may rely on inheriting them from the parent.
+#
+# They used to be assigned in main() and read directly by the workers, which
+# works under `fork` and silently does not under `spawn` -- and spawn is the
+# default on macOS (Python 3.8+) and Windows. A spawned worker re-imports this
+# module and gets the defaults below, so `--harness` and `--arena-size` were
+# validated in the parent and then quietly ignored, and every measurement ran
+# against ./build/ff_roundtrip whatever was asked for. ProcessPoolExecutor's
+# `initializer` is the portable channel.
 _HARNESS = REPO / "build" / "ff_roundtrip"
 _ARENA = "2147483648"
+
+
+def _init_worker(harness: str, arena: str) -> None:
+    """Seed each worker process with the parent's resolved settings."""
+    global _HARNESS, _ARENA
+    _HARNESS, _ARENA = Path(harness), arena
 
 
 def _one(path: Path) -> tuple[str, list[tuple[str, str]], str]:
@@ -86,7 +100,9 @@ def main() -> int:
     errors: list[tuple[str, str]] = []
     clean = 0
 
-    with ProcessPoolExecutor() as pool:
+    with ProcessPoolExecutor(
+        initializer=_init_worker, initargs=(str(_HARNESS), _ARENA)
+    ) as pool:
         for name, rows, err in pool.map(_one, fixtures):
             if err:
                 errors.append((name, err))

@@ -267,6 +267,17 @@ tests on each run.
 
 This licenses **representation** changes, not renumbering. Invariant 1 below stands
 unchanged: a `RECOVERY_TAG` or dictionary ID that has been assigned still never moves.
+
+> **The two band re-cuts are closed history, not precedent.** Resources moved
+> `0x0300`→`0x1000` on 2026-08-14, and `RECOVER_FF_CODE` moved to the scalar band
+> (`0x010B`) on 2026-08-19 with the primitive band compacted behind it. Both predate the
+> ledger's append-only regime, both are recorded in `dictionaries/master_tags.json`
+> `_provenance`, and both were taken when no archive existed. **The values they produced
+> are the permanent ones** — `test_primitives.cpp` asserts them precisely so they cannot
+> drift again. Reviewers (including automated ones) read those assertions as *authorising*
+> renumbering and file it as a violation; they are the opposite, and this paragraph is the
+> answer to that review comment. No further re-cut is permitted under the pre-alpha
+> allowance; that would be a separate decision, and it is Ryan's alone.
 That discipline costs nothing to keep now, and it is the habit that has to already be in
 place when the format freezes — which is precisely when it stops being recoverable.
 Relaxing invariant 1 would be a separate decision, and it is Ryan's alone.
@@ -409,16 +420,18 @@ generated_src/FF_SupplyDelivery.hpp:35:5: error: unknown type name 'FF_SupplyDel
 **`rm -rf generated_src` after any profile change** (reproduced 2026-08-23; a clean
 regenerate fixes it every time).
 
-⚠ **This is also the leading explanation for GEN-1** (TASKS.md), which was recorded as
-generator *nondeterminism*: one configure emitted `FF_CodeSystems.hpp` with 72 `enum class`
-definitions instead of 77, `FF_NoteType` missing while three headers still referenced it,
-those headers "not regenerated, mtime an hour older" — which is exactly what a narrower
-profile plus `write_if_changed` produces, and why "the next configure fixed it". Bare
-`cmake -S . -B build` takes the `CMakeLists.txt:67` default of **`us-core`**, so mixing it
-with `--preset ninja` in one session is enough to trigger this. **Not proven for the
-original occurrences** — GEN-1.1 is the test that would settle it. Until then, treat a
-mysterious `unknown type name` inside `generated_src/` as stale output first and a flake
-second, and confirm any diff between two runs reproduces before acting on it.
+⚠ **GEN-1 is a SEPARATE, still-undiagnosed bug — do not conflate it with the above.**
+A stale-artifact explanation for it was proposed and **falsified the same day**: on
+2026-08-23 the generator emitted `FF_CodeSystems.hpp` with **72** `enum class` definitions
+instead of 80, `FF_Use`/`FF_NoteType`/`FF_ClaimStatus` absent while `FF_Claim.hpp` and
+`FF_ClaimResponse.hpp` referenced them — **with the profile unchanged** — and five
+consecutive configures immediately afterwards produced 80 enums with an identical md5. So
+the generator is deterministic when it works and intermittently is not, exactly as
+originally recorded. Treat a mysterious `unknown type name` inside `generated_src/` as
+stale output **if you changed the profile** and as GEN-1 otherwise; either way reconfigure
+and confirm a diff reproduces before acting on it. The same incident printed 8/8 PASS from
+a **stale test binary** while its build was failing with 10 errors — always confirm the
+build succeeded before believing a result.
 
 ## Portability lessons (paid for on MSVC and Xcode — don't relearn them)
 

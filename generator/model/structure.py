@@ -400,6 +400,22 @@ def resolve_production_resources(
     if not names:
         names = ["us-core"]
 
+    # Validate EVERY token before acting on any of them. The "all" shortcut used
+    # to return before this check, so `all,bililng` succeeded and silently
+    # ignored the typo while every other combination failed loudly -- the one
+    # spelling mistake that could not be caught was the one in the profile that
+    # compiles the most code.
+    valid = sorted(set(RESOURCE_GROUPINGS) | set(GROUPING_ALIASES) | {"all"})
+    unknown = [
+        n for n in names if n not in RESOURCE_GROUPINGS and n not in GROUPING_ALIASES and n != "all"
+    ]
+    if unknown:
+        raise RuntimeError(
+            f"Unknown resource grouping(s) in {PRODUCTION_PROFILE_ENV}: "
+            f"{', '.join(sorted(set(unknown)))}. "
+            f"Expected a comma-separated list of: {', '.join(valid)}."
+        )
+
     # "all" absorbs everything -- no point unioning a subset into it.
     if "all" in names:
         resources = _discover_resource_names(
@@ -412,15 +428,6 @@ def resolve_production_resources(
                 "StructureDefinition-*.json files."
             )
         return resources
-
-    valid = sorted(set(RESOURCE_GROUPINGS) | set(GROUPING_ALIASES) | {"all"})
-    unknown = [n for n in names if n not in RESOURCE_GROUPINGS and n not in GROUPING_ALIASES]
-    if unknown:
-        raise RuntimeError(
-            f"Unknown resource grouping(s) in {PRODUCTION_PROFILE_ENV}: "
-            f"{', '.join(sorted(set(unknown)))}. "
-            f"Expected a comma-separated list of: {', '.join(valid)}."
-        )
 
     resources: list[str] = []
     seen: set[str] = set()

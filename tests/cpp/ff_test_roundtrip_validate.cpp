@@ -89,8 +89,58 @@ static std::vector<BYTE> sha256(const unsigned char* data, Size len) {
     return hash;
 }
 
-// One fixture: ingest -> seal -> validate -> re-parse. Returns false on any
-// failure, with the validator's own message printed -- that message is the
+struct WalkStats {
+    std::size_t nodes       = 0;   // proves the walk actually descended
+    std::size_t arrays      = 0;   // proves the array readers were reached
+    std::size_t void_arrays = 0;   // N>0 entries on the wire, all reading back empty
+};
+
+// Descend the whole stored document through the public Node API.
+//
+// Deliberately the reader's own view, not a byte walk: the point is to make the
+// READER disagree with itself where it can. `size()` comes from the array
+// header, `entries()` from the element decoder -- when the second loses what the
+// first counted, that is the AR-1 defect class, and it is invisible to the
+// validator because the bytes are perfectly well-formed.
+//
+// Depth-bounded for the same reason DeepValidator is: this runs on real files,
+// but a bound costs nothing and a runaway recursion in a test is a hang, not a
+// failure.
+static void walk_document(const Reflective::Node& node, WalkStats& stats, int depth) {
+    static constexpr int MAX_DEPTH = 64;
+    if (!node || depth > MAX_DEPTH) return;
+    ++stats.nodes;
+
+    if (node.is_array()) {
+        ++stats.arrays;
+        const auto items = node.entries();
+        if (!items.empty()) {
+            bool any_readable = false;
+            for (const auto& item : items) {
+                if (!item.is_empty()) { any_readable = true; break; }
+            }
+            if (!any_readable) ++stats.void_arrays;
+        }
+        for (const auto& item : items) walk_document(item, stats, depth + 1);
+        return;
+    }
+
+    if (!node.is_object()) return;
+    for (const auto& f : node.fields()) {
+        const FF_FieldKey key = FF_FieldKey::from_cstr(
+            node.recovery(), f.kind, f.field_offset,
+            f.child_recovery, f.array_entries_are_offsets, f.name);
+        const Reflective::Entry entry = node[key];
+        if (!entry) continue;
+        // Inline scalars have no child node to descend into; they are counted
+        // by their parent's presence and rendered from the Entry.
+        if (ff_kind_is_inline_scalar(f.kind)) { ++stats.nodes; continue; }
+        walk_document(entry.as_node(), stats, depth + 1);
+    }
+}
+
+// One fixture: ingest -> seal -> validate -> re-parse -> WALK. Returns false on
+// any failure, with the validator's own message printed -- that message is the
 // diagnosis, so swallowing it would waste the test.
 static bool roundtrip_and_validate(const fs::path& fixture) {
     std::ifstream f(fixture, std::ios::binary | std::ios::ate);
@@ -144,8 +194,41 @@ static bool roundtrip_and_validate(const fs::path& fixture) {
     // Validation proves the offset graph is sound; it does not prove the data
     // reads back. The scalar-array defect passed structurally and still exported
     // an empty list, so walk the document too.
+    //
+    // This block used to be the two lines below and nothing else -- it checked
+    // that `root` was non-null and returned, while the comment above claimed it
+    // walked the document. The regression it names could therefore have sailed
+    // straight through it. Now it actually walks.
     auto root = parser.root();
     if (!root) { printf("    re-parsed root is null\n"); return false; }
+
+    WalkStats stats;
+    walk_document(root, stats, 0);
+
+    // A bundle that reaches here has thousands of nodes; single digits mean the
+    // walk stopped at the root and the assertions below are vacuous.
+    if (stats.nodes < 100) {
+        printf("    walk visited only %zu nodes — the document did not traverse\n", stats.nodes);
+        return false;
+    }
+    // THE assertion, and the one AR-1 would have failed: an array whose header
+    // says it holds N>0 entries, every one of which reads back empty. That is
+    // exactly how `"diagnosisSequence": [1]` exported as `[]` -- structurally
+    // valid, silently void. Comparing counts to the source JSON is py_roundtrip's
+    // job; this only needs the stream to disagree with itself.
+    if (stats.void_arrays > 0) {
+        printf("    %zu array(s) hold entries on the wire but read back entirely empty\n",
+               stats.void_arrays);
+        return false;
+    }
+    if (stats.arrays == 0) {
+        printf("    no arrays reached — this fixture cannot cover the array readers\n");
+        return false;
+    }
+    // Printed, not just asserted: "it passed" and "it looked at anything" are
+    // different claims, and this suite has already spent a session being the
+    // second while reading as the first.
+    printf("      walked %zu nodes, %zu arrays\n", stats.nodes, stats.arrays);
     return true;
 }
 

@@ -114,7 +114,7 @@ def drop_debug_artifacts(
     return [
         d
         for d in diffs
-        if not (d.kind is DiffKind.EXTRA_KEY and (meta.get(d.path) or {}).get("_empty"))
+        if not (d.kind is DiffKind.EXTRA_KEY and (meta.get(d.meta_path()) or {}).get("_empty"))
     ]
 
 
@@ -158,7 +158,7 @@ def annotate(diffs: list[DiffEntry], meta: dict[str, dict[str, Any]]) -> str:
 
     lines: list[str] = []
     for d in diffs:
-        m = meta.get(d.path)
+        m = meta.get(d.meta_path())
         lines.append(f"  [{d.kind.name:<16}] {d.path}")
         if d.expected is not None:
             lines.append(f"      expected: {d.expected!r}")

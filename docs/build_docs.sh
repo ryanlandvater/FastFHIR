@@ -103,8 +103,18 @@ check_orphans() {
     local orphans=0
     while IFS= read -r fragment; do
         local base; base="$(basename "${fragment}")"
-        grep -rqF "include::" --include='*.adoc' "${DOCS_DIR}" \
-            --exclude-dir=output -e "${base}" \
+        # ONE pattern that matches an include directive naming this fragment.
+        #
+        # This was `grep -rqF "include::" ... -e "${base}"`, where -e supplies the
+        # only pattern and "include::" therefore becomes a FILE OPERAND. Measured
+        # on macOS (BSD grep), that operand is missing, grep exits 2, and -q does
+        # not suppress the error status -- so EVERY fragment reported as orphaned
+        # and the check died on a correct tree. On GNU grep the same line instead
+        # searches all AsciiDoc text for the bare basename, where prose naming the
+        # file is enough to let a real orphan pass. Broken in opposite directions
+        # on the two platforms, which is why it needs a single explicit pattern.
+        grep -rqE "include::[^[]*${base//./\\.}" --include='*.adoc' \
+            --exclude-dir=output "${DOCS_DIR}" \
             || { warn "orphaned generated fragment, included by nothing: ${fragment#"${REPO_ROOT}"/}"; orphans=$((orphans + 1)); }
     done < <(find "${generated_root}" -name '*.adoc')
 

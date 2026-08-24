@@ -423,14 +423,21 @@ def compile_fhir_library(
     # emitters build some tag names by concatenation, though, so this checks
     # every emitted name actually resolves, instead of letting a bad one surface
     # as a wall of C++ "undeclared identifier" errors.
-    n_tags = validate_recovery_tags(output_dir, "generated_src/FF_Recovery.hpp")
-    print(f"-- Validated {n_tags} RECOVERY_TAG references against generated_src/FF_Recovery.hpp")
+    # Against the header just emitted into output_dir, NOT a hardcoded
+    # "generated_src/FF_Recovery.hpp". The wire-format tests generate into a
+    # temporary directory (tests/generator/conftest.py), so the hardcoded path
+    # made a clean checkout fail outright and a dirty one validate the temporary
+    # sources against an unrelated stale header -- the check silently stopped
+    # being about the tree it was checking.
+    recovery_hpp = os.path.join(output_dir, "FF_Recovery.hpp")
+    n_tags = validate_recovery_tags(output_dir, recovery_hpp)
+    print(f"-- Validated {n_tags} RECOVERY_TAG references against {recovery_hpp}")
 
     # --- Validate the header's own band discipline ---
     # Independent of what was emitted: every tag must sit inside a band, and no
     # two tags may share a value. Bands drive runtime classification
     # (FF_IsResourceTag), so a misplaced tag is silent, not a compile error.
-    validate_recovery_bands("generated_src/FF_Recovery.hpp")
+    validate_recovery_bands(recovery_hpp)
     print("-- Validated RECOVERY_TAG band membership and uniqueness")
 
     # --- Ingest mappings ---

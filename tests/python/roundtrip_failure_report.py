@@ -31,7 +31,7 @@ def one(p: Path):
     )
     rows = []
     for d in diffs:
-        m = meta.get(d.path)
+        m = meta.get(d.meta_path())
         sib = None
         if m is None:
             hits = _find_siblings(d.path, meta)

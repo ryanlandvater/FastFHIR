@@ -426,13 +426,20 @@ public:
     }
 
 
-    #if FASTFHIR_DEBUG
     // Number of debug-canary violations recorded (nodes freed with un-consumed
-    // entries, refcount underflows). Always 0 in release builds.
+    // entries, refcount underflows). Always 0 in release builds, where the
+    // canary WRITES are compiled out.
+    //
+    // The accessor itself is deliberately NOT behind #if FASTFHIR_DEBUG. It
+    // costs one relaxed load, and gating it broke every Release build with tests
+    // enabled: ff_test_queue prints the counter unconditionally (a value of 0 is
+    // the correct release answer, and the assertion on it is what is gated), so
+    // a Release configure failed with "no member named 'debug_violations'".
+    // FASTFHIR_BUILD_TESTS defaults ON, so that included the Release recipe in
+    // CLAUDE.md's performance section. Gate the writes, never the reader.
     uint32_t debug_violations() const {
         return _debug_violations.load(std::memory_order_relaxed);
     }
-    #endif
 
     Consumer get_consumer() {
         while (true) {

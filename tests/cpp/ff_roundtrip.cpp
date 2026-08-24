@@ -56,7 +56,8 @@ static std::vector<BYTE> sha256(const unsigned char *data, Size len)
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: ff_roundtrip <fixture.json> [--arena-size N] [--debug] [--debug-indent N]\n";
+        std::cerr << "Usage: ff_roundtrip <fixture.json> [--arena-size N] [--debug]"
+                     " [--debug-indent N] [--workers N] [--dump-sealed PATH]\n";
         return 1;
     }
 
@@ -64,6 +65,18 @@ int main(int argc, char** argv) {
     size_t arena_size = 256 * 1024 * 1024; // 256 MB default
     bool debug_json = false;
     int debug_indent = 0;
+    // 0 = the production default (hardware concurrency). This harness drives the
+    // 342-fixture corpus gate, so it MUST take the concurrent ingest path by
+    // default: AR-3 was a load-sensitive consumer latch that only ever
+    // reproduced under CPU contention, and a serial-only gate cannot see that
+    // class at all. It was pinned to 1 as an "A23 diagnostic" and never unpinned,
+    // which silently made every corpus measurement a single-worker measurement.
+    uint32_t workers = 0;
+    // Byte-level inspection of the sealed stream, off unless asked for. This was
+    // an unconditional write to a fixed /tmp path -- the corpus tools run many
+    // harness processes at once, so they raced on one file, and Windows has no
+    // /tmp at all.
+    std::string dump_sealed;
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "--arena-size") == 0 && i + 1 < argc) {
             arena_size = static_cast<size_t>(std::stoul(argv[++i]));
@@ -72,6 +85,10 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--debug-indent") == 0 && i + 1 < argc) {
             debug_json = true;
             debug_indent = std::stoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--workers") == 0 && i + 1 < argc) {
+            workers = static_cast<uint32_t>(std::stoul(argv[++i]));
+        } else if (std::strcmp(argv[i], "--dump-sealed") == 0 && i + 1 < argc) {
+            dump_sealed = argv[++i];
         }
     }
 #ifdef NDEBUG
@@ -96,9 +113,8 @@ int main(int argc, char** argv) {
             std::cerr << "create stream failed\n";
             return 1;
         }
-        // A23 diagnostic: force a single worker to test the concurrency hypothesis.
         FF_IngestorCreateInfo ingestor_info;
-        ingestor_info.concurrency = 1;
+        ingestor_info.concurrency = workers;   // 0 = hardware concurrency
         FF_Ingestor ingestor;
         if (!FF_CreateIngestor(ingestor_info, ingestor)) {
             std::cerr << "create ingestor failed\n";
@@ -148,9 +164,12 @@ int main(int argc, char** argv) {
             std::cerr << "finalize returned empty view\n";
             return 1;
         }
-        // A23 diagnostic: dump the sealed stream for byte-level inspection.
-        {
-            std::ofstream out("/tmp/sealed.ffhr", std::ios::binary);
+        if (!dump_sealed.empty()) {
+            std::ofstream out(dump_sealed, std::ios::binary);
+            if (!out) {
+                std::cerr << "cannot open --dump-sealed path: " << dump_sealed << "\n";
+                return 1;
+            }
             out.write(reinterpret_cast<const char*>(view.data()),
                       static_cast<std::streamsize>(view.size()));
         }

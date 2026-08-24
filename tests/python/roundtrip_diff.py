@@ -34,6 +34,17 @@ class DiffEntry:
     expected: Any = None    # value from input DOM
     actual: Any = None      # value from output DOM
     message: str = ""       # human-readable explanation
+    # The same location addressed in the OUTPUT document, when identity pairing
+    # made the two disagree. `path` deliberately keeps the INPUT index so a
+    # reader can find the entry in the source they already have open -- but
+    # `strip_debug` keys its wire metadata by OUTPUT paths, so after any dropped
+    # entry every later annotation looked up the wrong resource (or none).
+    # Defaults to `path`, which is correct wherever the indices agree.
+    actual_path: str | None = None
+
+    def meta_path(self) -> str:
+        """The key to look this diff up by in `strip_debug` metadata."""
+        return self.actual_path if self.actual_path is not None else self.path
 
 
 # ─── Allowlist ───────────────────────────────────────────────────────────────
@@ -179,7 +190,17 @@ def _diff_entry_array(expected: list, actual: list, path: str) -> list[DiffEntry
             continue
         j = slots.pop(0)
         matched_actual.add(j)
-        diffs.extend(diff_doms(exp_item, actual[j], item_path))
+        # Recurse under the input path for display, then rewrite each finding's
+        # meta_path onto the OUTPUT path. Both are needed: the reader wants the
+        # source index, the wire-cause annotator needs the output index, and
+        # before this they silently shared one field.
+        sub = diff_doms(exp_item, actual[j], item_path)
+        if i != j:
+            actual_prefix = _path_join(path, j)
+            for d in sub:
+                tail = d.path[len(item_path):]
+                d.actual_path = actual_prefix + tail
+        diffs.extend(sub)
 
     for j, act_item in enumerate(actual):
         if j not in matched_actual:
