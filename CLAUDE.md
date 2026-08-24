@@ -39,7 +39,7 @@ deleted; consult git history if you need them.
 | `dictionaries/` | **The permanent wire ledgers — two JSON files and a README, nothing else.** `master_codes.json` (dictionary code IDs) and `master_tags.json` (`RECOVERY_TAG` values). Committed; every number is a wire constant that decodes stored archives. Append-only — **read `dictionaries/README.md` before touching this or anything that assigns an ID or a tag.** The C++ they project into is generator output in `generated_src/`, not committed. |
 | `generator/` | Python code generator — see `generator/README.md` for the module map. `pipeline.py` orchestrates; `model/` pure data, `emit/` model→str, `bindings/` Python emission. `emit/code_ids.py` owns **numbering** (permanent), `emit/code_names.py` owns **naming** (source-level only), `emit/recovery_tags.py` projects the tag ledger into `generated_src/FF_Recovery.hpp`. Both committed ledgers live in `dictionaries/`, not here — a ledger is wire format, not generator machinery. |
 | `generated_src/` | Generator output (~75 C++ files), including `FF_Codes.hpp`, the dictionary tables projected from `dictionaries/*.json`, and `FF_Recovery.hpp` projected from `master_tags.json`. **Gitignored** — produced at CMake configure time. Most of it requires network (HL7 / packages.fhir.org); the dictionary projection does not, needing only the committed ledger. |
-| `python/` | pybind11 bindings (`FF_PythonBindings.cpp` → `_core`) + `fastfhir` package. `fastfhir/fields.py` is generated at build time. |
+| `python/` | pybind11 bindings (`FF_PythonBindings.cpp` → `_core`) + `fastfhir` package. `fastfhir.fields` is a generated **package** (`<build>/python/fields/`, one module + `.pyi` per resource, plus `py.typed`), emitted by `generator/bindings/python_fields.py` at build time — it is not a single `fields.py`, and it is not written into the source tree. |
 | `tools/` | CLI tools: `ingestor/FF_Ingest.cpp`, `exporter/FF_Export.cpp`, `compactor/FF_Compact.cpp`. |
 | `tests/` | `cpp/` (standalone-main tests via ctest), `python/` (README/round-trip suites via ctest `py_*`), `generator/` (pytest wire-format gate). |
 | `architecture.md` | Deep reference for the binary format, VMA, builder, and read path. Read it before touching wire-format code. |
@@ -348,7 +348,8 @@ decide whether a version gate is wanted.
    (symbolic sums in headers — never introduce literal offsets), `FF_HEADER` layout,
    `FF_CODEABLE_CONCEPT_FLAG`, `FF_CODE_NULL`, `FF_NULL_OFFSET`.
 2. **Never hand-edit generated files** (`generated_src/` — which now includes `FF_Codes.hpp`
-   and the dictionary tables — plus `generated_src/FF_Recovery.hpp` and `python/fastfhir/fields.py`).
+   and the dictionary tables — plus `generated_src/FF_Recovery.hpp` and the generated
+   `fastfhir.fields` package).
    Fix the emitter in `generator/emit/` and regenerate. If a generated file and its emitter
    disagree, the emitter wins. Note the two JSON ledgers in `dictionaries/` are generated
    **and committed** — they are permanent wire artifacts, reviewed in diffs.

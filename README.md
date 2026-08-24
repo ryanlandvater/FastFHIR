@@ -11,7 +11,16 @@ FastFHIR
 
 Healthcare interoperability has historically relied on formats that are **inherently unsafe**, **computationally expensive**, and **structurally brittle**. FastFHIR replaces traditional parsing with a mathematically strict, offset-based binary layout that guarantees type safety, data recovery, in-stream HL7 enrichment, and blistering speed. It generates strongly-typed C++ structs and a mathematically strict, zero-copy binary architecture directly from official HL7 FHIR Structure Definitions.
 
-Cross-language support is available through Python bindings (C++ and Python both supported natively) — see [`The Python Readme`](python/README.md) for Python API examples and full integration workflows.
+
+```py
+import fastfhir as ff
+from fastfhir.fields import Patient
+
+with ff.Stream(ff.Memory.create_from_file("patient.ffhr"), ff.FhirVersion.R5) as stream:
+    print(stream.root[Patient.ID].value())       # "patient-1"  — no parse step
+```
+
+C++ and Python are both first-class; neither is a port of the other.
 
 ---
 
@@ -88,7 +97,18 @@ You do not have to sacrifice a clean API for bare-metal performance — **native
 
 # Quick Start
 
-## Prerequisites
+> [!TIP]
+> ## Use Python, not C/C++? We got you.
+>
+> #### **→ [Read the Python API guide](python/README.md)**
+>
+> **You get full functionality through our cross languge bindings.**
+> Not a subset. Not a subprocess wrapper around the CLI. The same memory-mapped
+> arena, the same O(1) typed field keys, the same zero-copy reads and lock-free
+> in-stream enrichment — driven entirely from Python.
+> 
+
+## Build From Source Prerequisites
 * **Python 3.11+** (generator only — the generator uses PEP 604 `X | None` annotations, so
   CMake enforces this floor. macOS ships a 3.9 with the Command Line Tools, which fails at
   import with a `TypeError` far from its cause.)

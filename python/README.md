@@ -37,6 +37,10 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
         given  = [g.value() for g in name[HumanName.GIVEN]]       # list[str]
         print(given, family)   # ['Ryan', 'Eric'] Landvater
 
+    # Name the root before sealing. A stream with no root cannot be re-opened,
+    # so finalize() refuses rather than writing an unreadable file.
+    stream.root = patient_node
+
     # Seal the file — writes the header + SHA-256 footer into the mapped pages
     stream.finalize(algo=ff.Checksum.SHA256)
 
@@ -131,6 +135,13 @@ The OS writes network data directly into the arena — zero copies on ingest.
 After enrichment, `finalize()` returns a buffer-protocol view that `sendall()`
 reads straight from the same arena pages — zero copies on egress.
 
+> This one is a **server**: it blocks on `accept()` until a client connects, so
+> unlike every other example on this page you cannot paste it into a REPL and
+> watch it finish. Run it, then send it a Patient from another terminal.
+
+<!-- readme-test: skip — blocks on socket.accept() awaiting a client; the same
+     flow is exercised end-to-end by tests/python/test_readme.py::test_4, which
+     drives it with a real client over a loopback connection. -->
 ```py
 import fastfhir as ff
 import socket
@@ -412,10 +423,12 @@ mem = ff.Memory.create_from_file("data.ffhr", capacity=4 * 1024**3)   # file-bac
 
 | Member | Returns | Notes |
 |---|---|---|
-| `.capacity` | `int` | Total bytes allocated |
+| `.capacity` | `int` | Total bytes **reserved** (virtual address space, not committed pages) |
 | `.size` | `int` | Bytes currently written |
 | `.name` | `str` | Shared memory name; empty for anonymous arenas |
 | `.view()` | `MemoryView` | Zero-copy buffer-protocol slice of the arena |
+| `.reset(committed_size=0)` | — | Rewind the write head; the mapping stays open |
+| `.try_acquire_stream()` | `StreamHead` | Exclusive raw-ingest cursor — use as a context manager and `.commit(n)` what you wrote |
 | `.close()` | — | Release the mapping |
 
 ---
@@ -436,6 +449,13 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
 | `.to_json()` | `str` | Full stream JSON |
 | `.finalize(algo, hasher=None)` | `MemoryView` | Seal + write checksum footer; buffer exporter with `.size` |
 | `.compact(algo=NONE, hasher=None)` | `MemoryView` | Compact sealed stream into a fresh arena it allocates; buffer exporter with `.size` |
+| `.query()` | `Parser` | A read lens over the sealed bytes. `.version`, `.root_type` and `.checksum` are conveniences over this. |
+| `.checksum` | `ChecksumValidation` | Footer metadata: payload start, byte count, algorithm, and the expected digest — enough to re-verify integrity yourself |
+| `.has_url_directory` / `.url_directory` | `bool` / `FF_URL_DIRECTORY` | The stream's interned extension-URL table |
+| `.has_module_registry` / `.module_registry` | `bool` / registry | WASM extension codecs; present only in streams built with the extension host |
+
+> `.checksum` reports what the footer *claims*. It is an **integrity** record, not
+> an authenticity one — anyone who can rewrite the payload can recompute it.
 
 ---
 
@@ -447,6 +467,18 @@ node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_string)
 # node  → StreamNode at root resource
 # count → number of resources written
 ```
+
+| Member | Returns | Notes |
+|---|---|---|
+| `.ingest(stream, source_type, payload)` | `(StreamNode, int)` | Root node and the resource count written |
+| `.is_faulted` | `bool` | The engine hit an unrecoverable error and will refuse further work |
+| `.reset()` | `str` | Clear the fault and return the drained diagnostic log |
+
+> A resource type outside the compiled `FASTFHIR_PRODUCTION_PROFILE` is **not
+> dropped** — it is retained verbatim as opaque JSON and re-emitted byte-for-byte,
+> so the document round-trips losslessly. What you lose is typed access: those
+> fields are not reachable through `StreamNode` subscripting. Check the ingest
+> result's warnings if you need to know which types took that path.
 
 ---
 
@@ -521,5 +553,7 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
             status = dr[ff.DiagnosticReport.STATUS].value()        # str
             print(f"  report status: {status}")
 
+    # Always name the root before sealing, or finalize() refuses.
+    stream.root = bundle_node
     stream.finalize(algo=ff.Checksum.SHA256)
 ```

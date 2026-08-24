@@ -26,7 +26,14 @@ __main__.py          CLI entry point (python -m generator)
 pipeline.py          Stage orchestration. No code generation lives here.
 specs.py             Downloads + extracts the HL7 NPM packages.
 library.py           The hub: per-resource generation, field keys, reflection.
-utilities.py         Namespace helpers, recovery-tag parsing.
+utilities.py         Namespace helpers, recovery-tag parsing, and the three
+                     post-emit VALIDATORS -- validate_recovery_tags (every tag
+                     the emitters referenced is declared), validate_recovery_bands
+                     (no tag outside its band, no duplicate value), and
+                     validate_codesystem_enums (every parse_X/serialize_X the
+                     emitted sources call has an enum class FF_X behind it).
+                     Each turns a wall of C++ "undeclared identifier" errors into
+                     one named generate-time failure.
 
 model/               Pure data. No string emission.
   structure.py         StructureDefinition -> field layout
@@ -67,7 +74,10 @@ emit/                model -> C++ strings.
                        it belongs to the Block D extension subsystem in TASKS.md.
 
 bindings/            Python binding emission.
-  python_fields.py     fastfhir/fields.py, .pyi stubs, py.typed
+  python_fields.py     Writes <output_dir>/python/fields/ -- a PACKAGE, one
+                       module per resource (patient.py, bundle_entry.py, ...)
+                       plus a .pyi stub each, base.py, and the PEP 561
+                       py.typed marker. Imported as `fastfhir.fields`.
 ```
 
 Everything under `emit/` is reachable from `pipeline.py` except the two modules
@@ -87,7 +97,19 @@ noted above, which are deliberately staged for planned work rather than dead.
    tree.)
 4. **Code systems** — `emit/codesystems.py` writes `FF_CodeSystems.hpp`.
 5. **Library** — `library.py` emits the per-resource C++, field keys,
-   reflection, and Python bindings.
+   reflection, and Python bindings, then **validates what it just emitted**
+   against the headers it emitted it beside (`utilities.py`, above). The
+   configure log shows all three:
+
+   ```
+   -- Validated 990 RECOVERY_TAG references against generated_src/FF_Recovery.hpp
+   -- Validated RECOVERY_TAG band membership and uniqueness
+   -- Validated 61 code-system enum references against FF_CodeSystems.hpp
+   ```
+
+   These check the tree in `--output-dir`, never the repo's `generated_src/` —
+   the wire gate regenerates into a temp directory, and validating it against an
+   unrelated header checks nothing.
 6. **Known extensions** — `emit/extensions_known.py`.
 
 ## Style
@@ -104,6 +126,25 @@ pytest tests/generator -q
 
 The generated C++ has its own hand-tuned style and is out of scope for these
 tools.
+
+### Two rules the test suite now enforces
+
+**A test must never write into the working tree.** Generate into a
+`tempfile.TemporaryDirectory` and pass it as `--output-dir`. This is not a
+preference: `test_regeneration_preserves_every_committed_id` once ran the
+generator with no output dir, so `pytest tests/generator` regenerated the repo's
+own `generated_src/` at the `us-core` default — leaving a short
+`FF_CodeSystems.hpp` beside resource sources from a wider profile, which read as
+an intermittent generator flake for two days. `tests/conftest.py` hashes
+`generated_src/` and `dictionaries/` around every session and fails if either
+moved.
+
+**The wire gate pins its profile.** `tests/generator/conftest.py` reads
+`FASTFHIR_PRODUCTION_PROFILE` from `CMakePresets.json` rather than inheriting the
+environment. The `vtables` section of the witness is derived from the *emitted*
+resource headers, so an unpinned run witnessed a 141-block `us-core` tree against
+a 209-block build and left every billing/supply/medication-admin V-Table ungated.
+Widen the profile → re-baseline the golden in the same commit.
 
 
 ## Ledgers vs projections

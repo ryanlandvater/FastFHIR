@@ -188,6 +188,17 @@ if(FASTFHIR_BUILD_TESTS)
             _add_py_test("test_${N}" "test_${N}")
         endforeach()
 
+        # Executes the code blocks in python/README.md AS PUBLISHED, rather than
+        # re-implementing them the way test_readme.py does. That distinction is
+        # not academic: test_readme.py's test_1 sets `stream.root` before
+        # finalize() and the README's Example 1 did not, so the suite was green
+        # while the first example a Python user copies died with
+        # "Cannot finalize because root is unset/invalid". Self-contained (it
+        # seeds its own fixtures in a temp dir), so no DEPENDS ordering.
+        add_test(NAME py_readme_examples
+            COMMAND "${_PY}" -m pytest "${_PY_DIR}/test_readme_examples.py" -v)
+        set_tests_properties(py_readme_examples PROPERTIES TIMEOUT 300)
+
         set_tests_properties(py_getting_started PROPERTIES DEPENDS py_setup)
         set_tests_properties(py_test_1          PROPERTIES DEPENDS py_getting_started)
         set_tests_properties(py_test_2          PROPERTIES DEPENDS py_test_1)
@@ -228,6 +239,7 @@ if(FASTFHIR_BUILD_TESTS)
         set_tests_properties(py_setup py_getting_started
             py_test_1 py_test_2 py_test_3 py_test_4 py_test_5 py_test_6
             py_test_7 py_test_8 py_test_9 py_test_10 py_roundtrip
+            py_readme_examples
             PROPERTIES ENVIRONMENT "PYTHONPATH=${_PYTHONPATH}")
 
 
