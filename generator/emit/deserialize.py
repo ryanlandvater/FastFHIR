@@ -141,6 +141,51 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}    }}\n"
             cpp += f"{indent}}}\n"
 
+        elif kind == "FF_FIELD_BLOCK":
+            # A SINGULAR block-typed field. Its slot holds the ABSOLUTE arena
+            # offset of the child's header -- the same value store.py wrote
+            # (`STORE_U64(slot, child_off)`), NOT the entry-relative offset the
+            # ARRAY branch computes. Do not copy the array form here.
+            #
+            # This branch did not exist until 2026-08-26 (TASKS.md P0-1 /
+            # CAPI-13): a singular CodeableConcept/Reference/BackboneElement
+            # matched no arm of this chain and emitted NOTHING, so 565 fields
+            # across every generated resource file deserialized as null while
+            # the reflective lens read them correctly. The `else` at the end of
+            # this chain is what stops the next one.
+            #
+            # The POCO member is std::unique_ptr<T> (model/merge.py); naming T
+            # via decltype rather than re-deriving it means the two cannot
+            # disagree.
+            child_struct = _resolve_ff_struct_name(
+                f["fhir_type"], f["name"], block_struct_name, f.get("resolved_path")
+            )
+            _p = f"blk_off_{f['cpp_name']}"
+            _elem = f"decltype(data.{f['cpp_name']})::element_type"
+            cpp += f"{indent}Offset {_p} = LOAD_U64(__base + {vtable_off});\n"
+            cpp += f"{indent}if ({_p} != FF_NULL_OFFSET) {{\n"
+            if child_struct == "FF_STRING":
+                # STRING_TYPES stored as unique_ptr<std::string_view> -- FF_STRING
+                # owns its header, so there is no ::deserialize to call.
+                cpp += (
+                    f"{indent}    data.{f['cpp_name']} = std::make_unique<{_elem}>("
+                    f"FF_STRING({_p}, __size, __version).read_view(__base));\n"
+                )
+            else:
+                cpp += (
+                    f"{indent}    data.{f['cpp_name']} = std::make_unique<{_elem}>("
+                    f"{child_struct}::deserialize(__base, {_p}, __size, __version));\n"
+                )
+            cpp += f"{indent}}}\n"
+
+        elif kind == "FF_FIELD_URL":
+            # A 4-byte FF_URL_DIRECTORY index (Extension.url). The POCO member
+            # is the index itself (uint32_t), so the read is the plain scalar
+            # load that mirrors store.py's terminal STORE_U32. Absent stays
+            # FF_NULL_UINT32. Like FF_FIELD_BLOCK above, this emitted nothing
+            # before 2026-08-26, so every hydrated ExtensionData lost its url.
+            cpp += f"{indent}data.{f['cpp_name']} = LOAD_U32(__base + {vtable_off});\n"
+
         elif f["fhir_type"] in DATETIME_TYPES:
             # DT-2: packed inline u64 decodes to text; a flagged relative
             # offset resolves to an FF_STRING holding the ORIGINAL text (so the
@@ -173,6 +218,19 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             and f["fhir_type"] not in DATETIME_TYPES
         ):
             cpp += f"{indent}data.{f['cpp_name']} = FastFHIR::Decode::scalar<{f['cpp_type']}>(__base, {vtable_off}, {_child_recovery_expr(f, block_struct_name)});\n"
+
+        else:
+            # A field kind with no branch above emits NO CODE and silently
+            # drops the field -- which is exactly how CAPI-13 survived a green
+            # suite. Never replace this with a `pass`: an unhandled kind is a
+            # generator bug, and the configure step is the only place it is
+            # still cheap to find.
+            raise NotImplementedError(
+                f"deserialize: no branch for kind={kind} "
+                f"field={block_struct_name}.{f['name']} type={f['fhir_type']} "
+                f"cpp_type={f['cpp_type']} -- would emit no code and silently "
+                f"drop the field"
+            )
 
         if f["first_version_idx"] > 0:
             cpp += f"    }}\n"

@@ -53,7 +53,7 @@ emit/                model -> C++ strings.
                        identifiers and emits FF_Codes.hpp into the output dir.
   recovery_tags.py     Owns tag NUMBERING (permanent). Reconciles
                        dictionaries/master_tags.json and emits
-                       FF_Recovery.hpp into the output dir. No naming
+                       FF_RecoveryTags.hpp into the output dir. No naming
                        counterpart: a tag's name is mechanically its FHIR path.
   codesystems.py       Bounded code enums (FF_CodeSystems.hpp)
   store.py             size_fields / store_fields
@@ -102,7 +102,7 @@ noted above, which are deliberately staged for planned work rather than dead.
    configure log shows all three:
 
    ```
-   -- Validated 990 RECOVERY_TAG references against generated_src/FF_Recovery.hpp
+   -- Validated 990 RECOVERY_TAG references against generated_src/FF_RecoveryTags.hpp
    -- Validated RECOVERY_TAG band membership and uniqueness
    -- Validated 61 code-system enum references against FF_CodeSystems.hpp
    ```
@@ -156,7 +156,7 @@ is worth knowing which:
 |---|---|---|---|---|
 | `emit/code_ids.py` | code **numbering** | `dictionaries/master_codes.json` | `generated_src/FF_Dictionary_Strings.cpp` + the three lookup tables | **yes** |
 | `emit/code_names.py` | code **naming** | (reads the ledger's `scopes`) | `generated_src/FF_Codes.hpp` | no — a rename breaks a recompile and nothing else |
-| `emit/recovery_tags.py` | tag **numbering** | `dictionaries/master_tags.json` | `generated_src/FF_Recovery.hpp` | **yes** |
+| `emit/recovery_tags.py` | tag **numbering** | `dictionaries/master_tags.json` | `generated_src/FF_RecoveryTags.hpp` | **yes** |
 
 Codes need two modules because a code's *name* is a real decision:
 `FF_CODE::FHIR::ADMINISTRATIVE_GENDER::MALE` involves scoping and collision

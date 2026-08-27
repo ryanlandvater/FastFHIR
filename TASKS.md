@@ -8,6 +8,782 @@
 > against the tree on 2026-07-06.
 >
 > Read `CLAUDE.md` first — it defines the invariants you must not break.
+>
+> **Completed work is deleted from this file, not archived in it** (last sweep
+> 2026-08-27: 1,461 lines of finished work orders and checked items removed). Git history
+> is the record — `git log -S'<task id>' -- TASKS.md` finds any of it. The short ledger at
+> the bottom exists only so a finished item is not re-opened by someone who does not know
+> it landed; it is one line per item and must stay that way.
+
+---
+
+# ▶ PRIORITY INDEX
+
+Everything currently open, most urgent first. Deep detail lives in the sections named.
+
+| Priority | Item | What it is | Where |
+|---|---|---|---|
+| **P0** | **P0-3 / REC-10…17** | Recovery: stream map, bit-similarity edge restoration, `src/FF_Recovery.cpp` | `^# ▶ P0-3` |
+| **P0** | **AMEND/APPEND** | Amend + append must take the abstraction types, not only JSON (CAPI-12) | `^# ▶ P0 — AMEND` |
+| **P1** | CAPI-1, 2, 3, 8 | Consumer-API gaps: inline-block array writes, validator/deserializer disagreement, `ChoiceEntry` across arenas, allocating `entries()` | `^# ▶ WORK ORDER — PUBLIC API` |
+| **P1** | Block C | Archive recovery subsystem — **governed by P0-3; do not start before REC-10** | `^## Block C` |
+| **P1** | DT-1 remainder, DT-3, DT-4 | Packed date/time: array-typed fields, ingest/export, wire baseline | `^## DT-` |
+| **P1** | RT-1, AR-1, AR-4, COV-1 | Round-trip identity, array dispatch, queue lifetime, writer-vs-reader coverage | `^## AR-`, `^## COV-1` |
+| **P2** | AR-2, **AR-6** | The schema tables disagree with the wire (6 array fields) and with each other (85 choice slots, 70 disagree / 15 agree-wrongly) | `^## AR-2`, `^## AR-6` |
+| **P2** | CAPI-4, 5, 7, 9, 10, 11, 14 | Consumer-API ergonomics and doc gaps | `^# ▶ WORK ORDER — PUBLIC API` |
+| **P2–P3** | Blocks B, D, E, F, G, H, I | Coverage, WASM, hygiene, benchmarks, security, packaging, spec | `^## Block ` |
+| **planned** | Blocks J, K | External code systems; conformance validation layer. **K before J** (CLAUDE.md) | `^## Block J`, `^## Block K` |
+
+**Standing policy, applies to every item above:** a gate that returns zero results must not
+pass (P0-2). Assert a non-zero floor before asserting any equality.
+
+---
+
+# ▶ SESSION BRIEF — 2026-08-26, filed from FastFHIR-benchmark
+
+**Read this before starting root-repo work.** Everything below was found by driving
+FastFHIR's *public* API as an outside consumer (the four-arm benchmark), not by reading
+this tree. None of it is visible from inside: every existing gate passes, and passed
+throughout.
+
+**Evidence base.** `../FastFHIR-benchmark`, commit `1f625e9` plus working tree.
+Reproduce anything here with:
+
+```bash
+cd ../FastFHIR-benchmark
+bazel build -c opt //bench:bench_harness
+BENCH_CODE_CENSUS=1 ./bazel-bin/bench/bench_harness --runs 1 --bundle-targets-mb 1
+```
+
+P0-1 (`deserialize` dropped every singular block field) is **fixed** — 2026-08-26, see the
+ledger at the bottom. P0-2 and P0-3 follow, then an index of the 13 consumer-API findings.
+**P0-3 was filed separately by Ryan** and is not from the benchmark: it is the
+structural-redundancy principle the recovery process has to be built on, and as of
+2026-08-27 it carries the `src/FF_Recovery.cpp` work order.
+
+---
+
+# ▶ P0-2 — A GATE THAT RETURNS ZERO RESULTS MUST NOT PASS (TESTING POLICY)
+
+P0-1 survived because **the thing that would have caught it reported success while
+finding nothing.**
+
+The benchmark searches Observations for LOINC 2085-9. It reported **0 matches over 24,583
+observations**, while the Synthea corpus carries ~3.75 instances of that code per file.
+All four arms agreed on 0 — so the cross-arm parity check **passed**, because every arm
+hydrates from the same POCO and was therefore equally wrong. Zero was never asserted
+against.
+
+The same shape applies to this repo's suites. A conformance or round-trip test that
+exercises a path zero times is not evidence the path works, and a suite that scores such a
+run as PASS is reporting the wrong thing.
+
+**Asks:**
+
+1. **Assert a non-zero lower bound wherever a test counts anything** — matches, nodes,
+   fields, resources, bytes. `EXPECT_GT(n, 0)` *before* `EXPECT_EQ(a, b)`. A comparison of
+   two empty sets is not a passing test.
+2. **Fixtures must declare what they are expected to contain**, so a fixture that stops
+   containing it fails loudly instead of quietly passing.
+3. **Agreement is not correctness.** Four independent readers agreeing on zero is exactly
+   what a shared upstream defect looks like. Every agreement gate needs an absolute floor
+   beside it.
+
+Precedent from the same repo, same class: a traversal that visited **1 node instead of
+8,000** reported a 300x speedup and passed every check it had
+(`../FastFHIR-benchmark/notes.md` §2).
+
+---
+
+# ▶ P0-3 — RECOVERY MUST RECONCILE **BOTH** WITNESSES OF EVERY EDGE
+
+**Filed 2026-08-26 (Ryan). HIGH priority — this is the governing principle for Block C
+and for the shipped `FastFHIR::Recovery` class, both of which currently implement half
+of it.**
+
+## The property: every edge is recorded twice
+
+A FastFHIR stream is not a chain of single-witness pointers. For one logical edge
+**A → B** (parent block A holds an offset to child block B) the format stores the *same
+fact* in two places that a single corruption cannot both reach:
+
+| # | Witness | Where it lives | What it asserts | On the wire? |
+|---|---|---|---|---|
+| 1a | **parent, position** | A's V-Table slot at a fixed offset within A | *which field of A* this edge is | no — the slot's offset is compile-time |
+| 1b | **parent, target** | the 8 bytes in that slot | *where B is* (absolute arena offset) | **yes** |
+| 1c | **parent, expectation** | `FF_FieldInfo::child_recovery`, `generated_src/FF_Reflection.cpp` | *what type B must be* | **no — compiled in** |
+| 2a | **child, self-offset** | B's `DATA_BLOCK::VALIDATION` (+0, 8 bytes) | *where B thinks it is* | **yes** |
+| 2b | **child, identity** | B's `DATA_BLOCK::RECOVERY` (+8, 2 bytes) | *what B is* | **yes** |
+
+`DATA_BLOCK::validate_offset()` (`src/FF_Primitives.cpp:25`) **already reads all of these
+and cross-checks them** — `LOAD_U64(__base + __offset + VALIDATION) != __offset`, then
+`actual_recovery != recovery_tag`. It uses the comparison **only to reject**. At the moment
+it returns `FF_VALIDATION_FAILURE` it is holding everything needed to repair the edge, and
+it throws that away. That is the whole of this task: stop discarding it.
+
+Note **1c** especially. The expected child type does not live in the stream at all — it is
+projected from the StructureDefinitions into the compiled reflection table. **Stream damage
+cannot corrupt it.** Whatever else is lost, the reader always knows what each slot of each
+block type is *supposed* to point at.
+
+## The two damage cases, and what survives each
+
+### Case 1 — A's offset is corrupt, B is intact
+
+- **Symptom.** A's field reads absent or aims at nonsense; the chain breaks at A.
+- **What survives.** B is still in the arena and is *self-consistent*: its `VALIDATION`
+  word equals its own position and its `RECOVERY` tag names its type. A forward sweep finds
+  it. It is now **orphaned** — no intact slot in the stream points at it.
+- **What the parent still knows, uncorrupted.** Which of A's fields broke (slot position,
+  1a) and what type that field's child must be (1c).
+- **Therefore.** *An unclaimed orphan carrying tag T, plus an unsatisfied slot declaring
+  child type T, is the edge.* Repair = write the orphan's offset back into A's slot.
+  Ryan's example: A's result slot declares `RECOVER_FF_OBSERVATION`; the orphan found by
+  the sweep carries `RECOVER_FF_OBSERVATION`; the two reconstruct the pointer that was
+  destroyed.
+
+### Case 2 — A's offset is correct, B's header is corrupt
+
+- **Symptom.** `validate_offset` fails *at B* — "failed absolute offset validation"
+  (2a damaged) or "recovery tag mismatch" (2b damaged).
+- **What survives.** **Everything needed, on the parent side.** A's offset (1b) gives B's
+  position; A's slot's `child_recovery` (1c) gives B's type. **No search is required** —
+  both damaged header fields are directly rewritable from the parent, and the repair is
+  *exact*, not inferred.
+- **`VALIDATION` is self-describing, which is what makes this free.** Its correct value is
+  a pure function of the block's own position, so it can always be recomputed from the
+  address you arrived at. The flip side is that it carries no information *beyond* "this is
+  a block and it is where you thought it was" — so on its own it can never tell you whether
+  the parent or the child was the corrupt one. That question is answered by 2b vs 1c.
+
+**The general statement: two independent records per edge, one corruption.** Any
+single-site damage leaves the other witness intact, so the edge is reconstructible in both
+directions. The recovery process must be a **two-sided reconciliation**, not a one-sided
+forward scan.
+
+### The strongest case: resource and choice slots duplicate the tag **on the wire**
+
+For a polymorphic slot the parent does not merely *expect* a type — it **stores the child's
+`RECOVERY_TAG` a second time, beside the offset**. A resource slot is a 10-byte tuple
+`{ offset(8) | tag(2) }`, and the tag lives at `slot + DATA_BLOCK::RECOVERY`
+(`generator/emit/store.py`, the `fhir_type == "Resource"` branch, and the array form at
+`__entries_start + i*TYPE_SIZE_RESOURCE + DATA_BLOCK::RECOVERY`). Choice (`[x]`) slots use
+the same 10-byte shape.
+
+So for these edges the same 2-byte value exists at **two distinct addresses** — `slot + 8`
+in the parent and `child_offset + 8` in the child — and the offset that links them is a
+third. `Bundle.entry.resource` is exactly this shape, which is why it is the first place to
+apply the reconciliation:
+
+- **Tag in parent ≠ tag in child** → one of them is damaged, and the *disagreement itself*
+  is the detector. Which side is wrong is then decided by the compiled table (1c) for typed
+  slots, or by whichever value is a legal assigned tag in the ledger.
+- **Tag in parent is intact, offset is corrupt** → Case 1 with the search already closed:
+  sweep for an unclaimed orphan whose `RECOVERY` equals *the parent's stored tag*. No
+  inference from locality is needed, and the "≥2 candidates" ambiguity only survives when
+  two orphans of the same type are both unclaimed.
+- **Offset is intact, child's `RECOVERY` is corrupt** → Case 2, exact: rewrite the child's
+  tag from the parent's copy. This needs no reflection table at all.
+
+**This is the concrete form of Ryan's framing:** *two sets of correct information for each
+one set of mistakes.* An `Observation` pointing at a result block records that edge as
+(a) the parent's offset, (b) the parent's copy of the result's tag, and (c) the result
+block's own header — three facts describing one link, any one of which can be rebuilt from
+the other two.
+
+### The same redundancy in arrays, with a third witness
+
+An `FF_ARRAY` header adds `ENTRY_COUNT` (+12) and `KIND_AND_STEP` (+10) to the two
+`DATA_BLOCK` fields, and the array's own `RECOVERY` tag names the element type
+(`GetTypeFromTag`, bit 15 = `RECOVER_ARRAY_BIT`). So for an array edge the count says *how
+many* children there must be, the tag says *what* each is, and the step says *where the next
+one starts* — a damaged entry is bounded on three sides. Honour the array invariant while
+repairing: only `FF_STRING` arrays hold an offset table; every other element type is inline
+and has no per-entry pointer to corrupt (architecture.md §5, CLAUDE.md).
+
+## Disambiguation — the two cases are not equally determined
+
+> **Superseded in part by "fewest-flips-explains-it" below (2026-08-27).** The ladder here
+> still ranks *which evidence is admissible*; what it could not do was decide between two
+> admissible readings, and it punted that to "report both, repair neither". Bit-similarity
+> scoring closes most of that gap and is now the primary discriminator. Where the two
+> disagree, the Hamming rule wins — but its **flip budget and tie rule still fall back to
+> exactly this section's "report, never guess"**.
+
+Case 2 is deterministic. **Case 1 is a search**, and `child_recovery` alone does not close
+it when the sweep turns up more than one unclaimed orphan of type T. Evidence, strongest
+first:
+
+1. **Claim uniqueness.** A block reachable from an *intact* slot is not an orphan. Sweep
+   the whole stream first, mark everything reachable, and only unreached self-consistent
+   blocks are candidates. This alone resolves most real cases.
+2. **Type.** `child_recovery` from the compiled table (1c); for arrays, the array header's
+   element tag.
+3. **Allocation locality.** `claim_space()` is an atomic bump, so a child is written *after*
+   its parent and usually near it. Nearest-forward-orphan is a strong prior — **it is not a
+   proof**, and it must never be used without (2). This is precisely what the shipped
+   `recover_bundle_entries()` is already doing implicitly, without saying so and without
+   checking the type.
+4. **Cardinality.** A singular slot takes exactly one child; an array's `ENTRY_COUNT` says
+   how many its entry table must hold. A repair that leaves the count unsatisfied is
+   incomplete and must say so.
+
+**Which case am I in?** When the block at the parent's offset fails validation *and* an
+unclaimed orphan of the declared type exists elsewhere, both readings are live. Rule:
+repair **in place** (Case 2) only when the bytes at the parent's target are otherwise
+coherent as the declared type; **re-point** (Case 1) only when an unclaimed orphan of the
+declared type exists. **When both are live, report both candidates and repair neither.**
+
+## Honesty requirement — non-negotiable
+
+A recovered stream is not the same object as an intact one.
+
+- Every repair is **reported**: which edge, which witness supplied the fix, which case, and
+  the confidence (deterministic vs. inferred-from-locality).
+- A repaired stream must be **distinguishable by the caller** from one that needed nothing.
+- **Silent repair is worse than failure**: it converts a detectable corruption into an
+  undetectable one. Same rule as the fail-loud write path in CLAUDE.md §5, and the same
+  reason P0-2 exists — a recovery pass that reports success while having repaired the wrong
+  edge is exactly the shape of defect this backlog keeps paying for.
+
+## Where there is NO second witness — the honest boundary
+
+State this in the API docs; do not let the redundancy above be read as a guarantee.
+
+- **Inline scalar slots.** A `bool` / `uint32` / `double` / packed date-time slot with bit 63
+  clear is bytes with no tag and no self-offset. Nothing cross-checks it, and a flipped bit
+  reads back as a plausible value. (CLAUDE.md's "residue that remains genuinely
+  unchecked".) A **flagged** slot — `FF_CODEABLE_CONCEPT_FLAG`, or bit 63 set on a
+  date/time — *is* an offset and *is* covered by everything above.
+- **Both witnesses damaged on the same edge.** Two independent records defeat one
+  corruption, not two.
+- **`FF_STRING` payload bytes.** The block header is witnessed; the characters are not.
+- The checksum footer proves *something* changed. It localizes nothing.
+
+## What the shipped `FastFHIR::Recovery` does today — and why it is still half
+
+`include/FF_Parser.hpp` / `src/FF_Parser.cpp`, uncommitted working tree. **Re-verify with
+`grep -n` before claiming any subtask** — this description was already stale once.
+
+**What works** (REC-1 / REC-5, 2026-08-26):
+
+- `next_valid_resource()` / `valid_resources()` sweep for self-consistent blocks — the
+  Case 1 sweep.
+- `known_resource_tag()` asks `FF_IsResourceTag()` over the whole resource band, so every
+  resource type is visible to the sweep, not the five that used to be hardcoded.
+- `recover_bundle_entries()` requires the two witnesses to **agree**: a target that
+  validates structurally but whose `RECOVERY` differs from the parent's stored tag is
+  counted in `tag_conflicts`, not accepted as an intact edge. Resync is constrained by the
+  parent's tag through `next_valid_resource_of(from, expect)`.
+- `Stats` carries `tag_conflicts`, `unrecovered`, and a populated `units` list.
+
+**What is still missing — this is what REC-10…17 build:**
+
+- **No stream map.** Every damaged slot rescans the arena from its own start point:
+  `next_valid_resource_of()` is O(damaged × arena) (**F6**). One shared map replaces it.
+- **No reachability pass, so "orphan" is not a decidable predicate.** Nothing distinguishes
+  a block nothing points at from one reached by an edge the walk never visited, which makes
+  the uniqueness test underneath every Case 1 repair meaningless.
+- **Nothing reconciles orphans against unsatisfied slots.** Case 1 repair does not exist;
+  the forward resync is a proximity heuristic wearing its clothes.
+- **Case 2 is not implemented at all** — no `VALIDATION` or `RECOVERY` rewrite from the
+  parent, even though both are deterministic and need no search.
+- **No bit-similarity ranking**, so two orphans of the same type are indistinguishable and
+  the code cannot tell a flipped parent offset from a flipped child validation word.
+- **Bundle entries only.** It walks `Bundle.entry[].resource` and nothing else; every other
+  offset-bearing slot in the document is outside its reach.
+- **No report, no apply/report split.** It returns counts, so a caller cannot see which
+  edge was repaired on what evidence, and repairs cannot be reviewed before being taken.
+
+## Review findings — verified 2026-08-27, do not re-derive
+
+A flash-model review of this block was checked line by line against the tree. **All four
+of its findings hold.** Two need correcting, and there is a fifth hole it did not name.
+Everything below is `grep`-verified; the file:line references were current on 2026-08-27.
+
+### F1 — The compiled type expectation is WRONG for choice slots, not merely absent
+
+```
+generated_src/FF_Observation.cpp:741  {"value",     FF_FIELD_CHOICE, …, RECOVER_FF_QUANTITY, true}
+generated_src/FF_Observation.cpp:738  {"effective", FF_FIELD_CHOICE, …, RECOVER_FF_DATETIME, false}
+generated_src/FF_FieldKeys.hpp:3029   VALUE{…, FF_FIELD_CHOICE, 164, FF_RECOVER_UNDEFINED, true, "value"}
+```
+
+The per-block `FIELDS` reflection table stores the StructureDefinition's **first-listed**
+choice variant as `child_recovery`. That is not the runtime type: the moment `value[x]`
+holds a `Period` or a `CodeableConcept`, the compiled value is affirmatively wrong. **All
+85 choice slots** in the emitted `FIELDS` tables carry such a value — verified with the
+FIELDS-only pattern (`grep '^\s*{"[^"]*", FF_FIELD_CHOICE' generated_src/FF_*.cpp` → 85;
+the unanchored `grep FF_FIELD_CHOICE` returns 438 because 353 of those lines are
+deserializer `case FF_FIELD_CHOICE:` labels, not FIELDS rows).
+
+And the two schema-side tables disagree on **70 of the 85**: `FF_FieldKeys.hpp` correctly
+declines (`FF_RECOVER_UNDEFINED`) there, and on the remaining 15 — all primitive-first
+variants, 11 × `RECOVER_FF_BOOL` + 4 × `RECOVER_FF_STRING` (`deceased[x]`, `asNeeded[x]`,
+the three `value[x]`, `instantiates[x]`, …) — it emits the first-variant tag, *agreeing*
+with FIELDS. Those 15 are emitter branch order, not a semantic decision:
+`_child_recovery_key_expr` hits its `boolean`/`string` branches before the
+`cpp_type == "Offset"` guard, so primitive-first choices get a tag and complex-first ones
+fall through to `FF_RECOVER_UNDEFINED`. All 85 are decoys as runtime expectations no
+matter which table. This is a second — and ~14× larger — instance of the hazard CLAUDE.md
+already records for 6 `code` array fields. Filed separately as **AR-6**; recovery must
+not wait on it (REC-13 resolves choice/resource slots from the stored tag half, never the
+table).
+
+> **Rule for the recovery code.** Resolve a slot's declared child type by KIND:
+> - `FF_FIELD_BLOCK` / `FF_FIELD_STRING` / array → compiled `child_recovery` (trustworthy).
+> - `FF_FIELD_CHOICE` / `FF_FIELD_RESOURCE` → **the slot's own stored tag half** (the
+>   10-byte tuple's `+8`), never the compiled table. The compiled value is a decoy here.
+> - Both halves of a choice slot corrupt → **undecidable. Report, never guess.**
+
+### F2 — The corruption probe cannot generate parent-side damage at all
+
+`bench/bench_test_5.hpp:184-189` **and** `bench/corruption_probe.cpp:95-114` (identical
+shape) build their flip-position set as: the 54-byte `FF_HEADER`, plus `target + 0..9` for
+each bundle entry — the **child's** `VALIDATION` + `RECOVERY`. `slot` is read only to
+*find* `target`; the parent tuple is never added to `positions`.
+
+So **failure mode 1 (parent offset corrupt → orphan sweep) is unreachable in the probe**,
+and no published number measures it. This is not probabilistic — no seed can reach it — so
+the review's suggested "instrument across seeds 0–99" confirmation is unnecessary.
+
+### F3 — The `--check` is one-sided, so misattachment is structurally invisible
+
+`bench/bench_test_5.hpp:16` — the contract is `recovered ⊆ baseline` on `(offset, tag)`
+units, and `calc_stream_hash` (`:85-111`) records units as `{child_offset, tag}` with **no
+parent identity**. Consequences:
+
+- A subset test can fail only on **fabrication** (a unit not in the baseline). It cannot
+  fail on under-recovery or on misattribution — `{} ⊆ baseline` passes.
+- Flip entry *i*'s child header → resync lands on entry *i+1*'s child → that unit **is** in
+  the baseline → integrity reports clean while edge *i* now points at the wrong child.
+
+**This is why the unit must become the edge.** `(parent_slot_off, child_off, tag)` makes
+the misattachment fail the subset test, because `(slot_i, child_{i+1})` is not a baseline
+edge. The edge metric is not a preference; it is the only unit the check can audit.
+
+### F4 — `FF_ARRAY::ENTRY_COUNT` has no second witness (but extent is often derivable)
+
+Written exactly once, `src/FF_Primitives.cpp:275`, via `STORE_FF_ARRAY_HEADER`. No copy
+anywhere. **Correction to the review:** "count the extent as lost" is too pessimistic.
+Extent is *derivable* for three of the four array shapes, and the **element tag** — the
+second witness (the array header's own `ToArrayTag`; the parent slot's compiled
+`child_recovery` is the F1 decoy on choice arrays) — discriminates which walk applies:
+
+- `INLINE_BLOCK` + **block** element tag → stride-walk element `VALIDATION` words from
+  `entries_start` (= array base + `FF_ARRAY::HEADER_SIZE`, 16) until one fails;
+- resource **tuples** (stride 10) or `OFFSET` kind (string/code pointers, stride 8) →
+  stride-walk entries validating each **target** — a stride-walk of the entry bytes
+  themselves reads offsets, not blocks, and reports extent 0 for every string/code/resource
+  array, which is the naive rule's failure;
+- `INLINE_BLOCK` + **scalar** element tag → raw values, no headers, not derivable.
+
+`EntryKind` cannot tell you which case you are in — `INLINE_BLOCK` is stamped on scalars,
+block headers and resource tuples alike (CLAUDE.md) — which is why the element tag, not
+the kind, is the discriminator. So this is a fourth repair class, **extent-derived**, not
+a write-off.
+
+### F5 — The hole the review missed: the FFHR fingerprint has never carried data
+
+`bench/bench_test_5.hpp:283-289` builds `fp.units` **exclusively** from `stats.units`. And
+`Recovery::Stats::units` was declared, documented as "the atoms a driver verifies against a
+clean stream's fingerprint", and **never written** by any version of `FF_Parser.cpp`
+(`git show HEAD:src/FF_Parser.cpp | grep -c units` → 0; the whole `Recovery` class is
+uncommitted working-tree code). So on the FFHR arm: `fp.units = {}` → `{} ⊆ baseline` →
+integrity clean, content-verified 0 %. **The units-based check was vacuous on the one arm
+it exists for.** Populated 2026-08-26; that is why it is visible now. Same P0-2 shape, one
+level up.
+
+### F6 — Attribution correction, and one flaw in the current code
+
+The **91.6 % / 70.3 %** medians in `../FastFHIR-benchmark/handoff.md:422-424` come from
+`bench/corruption_probe.cpp:213` → `rec.recover_bundle_entries().recovered` — a **count**,
+not the units fingerprint. The review attributed them to `bench_test_5.hpp`. Both critiques
+stand, but **fix the attribution before touching files**, or the work lands in the wrong
+one. Those medians must not be cited before or after this work: per F2 they measure
+child-header survival plus the whole-stream fallback, not edge restoration.
+
+`Recovery::next_valid_resource_of()` (added 2026-08-26) scans byte-by-byte from `from` to
+end of arena, once per damaged entry — **O(damaged × arena)**. The single-sweep bucketing
+in REC-11 replaces it.
+
+---
+
+## The discriminator this block was missing: fewest-flips-explains-it
+
+**Ryan, 2026-08-27.** The two-witness principle says an edge is reconstructible. It does
+not say *which* witness was damaged, and P0-3 previously punted that to "report both
+candidates and repair neither". Bit-similarity closes most of that gap.
+
+**Bit flips are local.** A corrupted value stays close, in Hamming distance, to what it
+should have been. So each competing explanation of a broken edge can be scored by the
+number of bit flips it requires, and the cheapest explanation wins. This is
+minimum-description-length, and it works because every quantity involved has a *known
+expected value*.
+
+For a damaged edge at parent slot `S_addr`, with `S = LOAD_U64(base + S_addr)`:
+
+| Hypothesis | What it claims | Cost (bit flips) | Repair |
+|---|---|---|---|
+| `H_val` | the offset is right; the **child's `VALIDATION`** was flipped | `popcount(LOAD_U64(base+S+0) ^ S)` | write `S` into the child's validation word |
+| `H_tag` | the offset is right; the **child's `RECOVERY`** was flipped | `popcount(LOAD_U16(base+S+8) ^ E)` | write `E` into the child's tag |
+| `H_off(P)` | the **parent's offset** was flipped; the true child is the block at `P` | `popcount(S ^ P)` | write `P` into the parent slot |
+
+where `E` is the declared child type resolved per **F1**, and `P` ranges over unclaimed
+orphans in the stream map whose tag equals `E`.
+
+**The costs are directly comparable** — every one is "bits of damage required to explain
+what we observe". That is exactly Ryan's framing: *if the validation word is ALMOST its own
+value, the validation word was wrong, not the parent's offset.* `H_val` is cheap precisely
+when `V` is a near-miss of `S`.
+
+Three properties that make this unusually strong here:
+
+1. **`VALIDATION` is a 64-bit self-referential check.** Its expected value is known
+   *exactly* — its own offset — with no lookup and no second party. It is the single
+   strongest witness in the format, and `H_val`'s cost is therefore exact rather than
+   estimated.
+2. **Valid offsets occupy a tiny slice of the 64-bit space.** A 2 GiB arena uses the low
+   ~31 bits, so the top ~33 bits of every real `Offset` are zero. A flip up there yields an
+   astronomically out-of-range offset — detectable instantly, and repairable at very high
+   confidence because only a handful of bit positions could have produced it. **Handle this
+   case first: it is free and nearly unambiguous.**
+3. **It ranks candidates that type alone cannot separate.** Ryan's case: node A points at
+   node B; orphans B and C both carry `RECOVER_x`. Type filtering leaves two. Ranking
+   `popcount(S ^ B_off)` against `popcount(S ^ C_off)` usually leaves one.
+
+### Rules — these are safety rails, not suggestions
+
+- **Threat model.** Hamming ranking is valid for **bit-flip** corruption only (the probe's
+  model, and the realistic media/transport failure). It is **invalid** for truncation,
+  memmove/shift, and wholesale overwrite, which move bytes en masse and produce large
+  distances. State this in the header. When no hypothesis lands under budget, fall back to
+  type + reachability ranking alone and label the result as such.
+- **Flip budget.** Refuse any hypothesis whose cost exceeds `FF_RECOVERY_MAX_FLIPS` (start
+  at 8; make it a named constant, not a literal). At high corruption density a coincidental
+  low-Hamming match becomes likely, and an unbudgeted search will confidently invent edges.
+- **Ties are ambiguity.** Equal minimum cost between two hypotheses, or between two
+  candidates `P`, is **`ambiguous`** — report every candidate with its cost, repair
+  nothing. Never break a tie by document order or by proximity.
+- **Report the cost.** Every repair record carries the winning hypothesis *and its bit
+  cost*, so a caller can second-guess a 7-flip "win" that a 1-flip result would deserve
+  more trust than. A repair at cost 0 is not a repair — it means nothing was wrong.
+- **Read-only by default.** Repairs are computed and reported; applying them is a separate,
+  explicit call. P0-3's honesty requirement, unchanged.
+
+---
+
+## The stream map — the structure everything else reads
+
+Modelled on the Iris File Extension's deep-validate walk
+(`../Iris-File-Extension/src/IFE_Runtime.cpp:222` — `VisitedBlocks =
+std::unordered_set<Offset>` plus `VisitPath`, which bound cycles and depth during
+`validate_deep`). Iris has no type named `StreamMap`; what is being borrowed is the idea of
+**materialising the set of blocks once, up front**, instead of re-deriving reachability at
+every question. FastFHIR needs it as a first-class object because recovery asks the same
+questions thousands of times, and because `next_valid_resource_of()`'s per-slot rescan is
+O(damaged × arena) (**F6**).
+
+**One linear pass over the arena builds it. Everything else is a lookup.**
+
+```cpp
+struct BlockRef {
+    Offset       offset;        // where the block starts
+    RECOVERY_TAG tag;           // its own RECOVERY word (may be damaged)
+    bool         self_consistent;  // LOAD_U64(base+offset) == offset
+    bool         reachable;     // reached from an intact edge (filled in pass 2)
+};
+
+struct StreamMap {
+    std::vector<BlockRef>                 blocks;      // ascending by offset
+    std::unordered_map<Offset, uint32_t>  by_offset;   // offset -> index
+    std::unordered_map<RECOVERY_TAG,
+                       std::vector<uint32_t>> by_tag;  // tag -> candidate indices
+};
+```
+
+`by_tag` is the bucketing that kills F6's complexity: orphans are grouped by tag **once**,
+and each damaged slot consults its own bucket instead of resweeping the arena.
+
+**Scanning rule.** A block header is `{ VALIDATION(8) | RECOVERY(2) }`. Step **byte by
+byte**, not by 8 — the arena is not aligned to block boundaries and a block can start
+anywhere the bump allocator left it. At each offset `o`, `LOAD_U64(base+o) == o` is a
+64-bit self-check; false positives are ~2⁻⁶⁴ per position, so this alone is a reliable
+block detector. Record the tag beside it without judging it: a block whose validation word
+is intact but whose tag is corrupt is exactly the F-case REC-13 repairs, and discarding it
+here would hide it.
+
+**Cost.** One pass, `size` iterations, one 8-byte load each. On the 50.8 MiB fixture that
+is ~53 M loads — the same order as `validate_FFHR_stream()`, which runs in 10.4 ms at `-O3`
+(CLAUDE.md). Budget it as tens of milliseconds, not seconds, and **measure it in Release**
+— every preset is Debug and will read ~10× slower (CLAUDE.md, "Performance measurements").
+
+---
+
+## Edge enumeration — the denominator, defined once
+
+**F3** requires the unit to be the edge; a ratio needs a denominator that both sides
+compute identically. Define an edge as:
+
+> An **edge** is a `(parent_block_offset, field_offset, child_offset)` triple where the
+> parent slot's kind is one of `FF_FIELD_BLOCK`, `FF_FIELD_STRING`, `FF_FIELD_RESOURCE`,
+> `FF_FIELD_CHOICE` (offset-bearing variants only), `FF_FIELD_ARRAY`, or an array element
+> that is an offset or a resource tuple.
+
+Explicitly **excluded**, because they are not edges and counting them inflates both
+numerator and denominator:
+
+- inline scalars (`bool`, `uint32`, `double`);
+- packed date/time with bit 63 **clear**, and `FF_FIELD_CODE` with the MSB **clear** — no
+  offset, therefore no edge. With the MSB **set** both are flagged offsets and **are**
+  edges (CLAUDE.md: "a flagged offset is an offset, whatever slot it lives in");
+- `FF_FIELD_URL` — a 4-byte index into the URL directory, not an arena offset.
+
+Two properties to state in the report, because they surprise people:
+
+- **Edges ≠ blocks.** Fan-in is real: two slots may point at one interned block, giving
+  2 edges over 1 block.
+- **An edge can be restored while its child is still wrong.** Repairing a parent's offset
+  (mode 1) restores the edge; the child's own tag may still need REC-13. Count them
+  separately or the percentage means two things at once.
+
+The same enumerator must be used by the baseline and by the recovery. Put it in ONE
+function and call it from both.
+
+---
+
+## Repair classes — five, reported separately
+
+Folding these into one "recovered" number blends a search-based inference with three
+deterministic rewrites and makes the "content-verified" claim false for `position-repaired`.
+
+| Class | Damage | Evidence used | Determinism |
+|---|---|---|---|
+| `corroborated` | parent offset flipped (mode 1) | unique unclaimed orphan, tag == declared, min Hamming | inferred — carries a bit cost |
+| `tag_repaired` | child's `RECOVERY` flipped | parent's stored tag half, or compiled `child_recovery` | exact |
+| `position_repaired` | child's `VALIDATION` flipped | recomputed from the parent-named address | exact — but **position-verified, content UNVERIFIED**; label it |
+| `extent_derived` | `FF_ARRAY::ENTRY_COUNT` flipped (**F4**) | element tag discriminates: `INLINE_BLOCK` + block → stride-walk entry `VALIDATION` words; resource tuples / `OFFSET` → stride-walk entries validating each **target**; `INLINE_BLOCK` + scalar → not derivable | inferred; impossible for inline-scalar arrays |
+| `ambiguous` / `unrecovered` | ≥2 candidates at equal cost, or nothing under budget | — | never repaired |
+
+`position_repaired` deserves the loudest caveat: rewriting a validation word proves the
+block is *where the parent said*, and nothing whatever about its payload.
+
+---
+
+## Review round 3 — four fixes applied 2026-08-27
+
+Verified by probe against real Synthea streams, not by reading.
+
+- **Shape dispatch (the big one).** `RECOVER_FF_RESOURCE` is the GENERIC polymorphic
+  marker and lives in the **primitive** band (`0x0003`), so `FF_IsResourceTag()` — a
+  `0x1000..0x1FFF` range test — never matched it. `element_shape_of()` fell through to
+  `InlineBlock`, and `walk_array_extent` then asked a **pointer** whether it equalled its
+  own position. It never does, so the walk bailed at element 0.
+  `src/FF_Recovery.cpp` now tests `element_tag == RECOVER_FF_RESOURCE ||
+  FF_IsResourceTag(...)`.
+
+  > **This is not an offset-array question.** Resource arrays are `INLINE_BLOCK` —
+  > contiguous, fixed stride, no offset table — exactly as designed. Census of a real
+  > bundle: **693 `OFFSET` arrays, every one `RECOVER_FF_STRING`**; everything else
+  > inline. `store.py:245` is the only branch that emits `FF_ARRAY::OFFSET`. What is
+  > inline here is the *storage*; each inline element is still a 10-byte
+  > `{target_offset, target_tag}` tuple whose `+0` points **away**. The
+  > `ElementShape` enum's `InlineBlock` name means "this element is a self-describing
+  > block header", NOT "this array is inline" — three of its four values are inline
+  > arrays. That naming cost a full review round; the enum is now commented, and
+  > renaming it (`SelfDescribing` / `InlineTuple` / `OffsetTable`) is still worth doing.
+
+- **Baseline/recovery divergence: same root cause, no separate fix.** The 736-reference
+  gap between `reachable_blocks()` and `recover()` was NOT the raw-vs-normalized tag
+  compare at the `walk_chain` descent filter, which is what the review guessed. It was the
+  shape misclassification above: `enumerate_block_refs`'s array case feeds
+  `element_shape_of`, so misread resource arrays emitted unusable element references and
+  `walk_chain` never descended into `contained[]`. Fixing the shape closed the gap to **0**.
+- **`ff_test_recovery` registered in all four sites.** It was in `tests.cmake` only;
+  `_BUILD_ALL` and both IDE lists missed it, which is the A20 "Not Run" shape.
+- **The recovery suite counted zero tests.** `TEST(name)` was defined and never called, so
+  `0 test(s), 0 failure(s)` exited 0 and ctest scored it green — deleting all four `run()`
+  lines would have been indistinguishable. The count now moves in `run()`, and **a
+  zero-test run fails** rather than passing on no coverage (P0-2).
+- **The fixture claimed coverage it did not have.** Its comment said `entry[]` gave
+  resource-tuple coverage; `Bundle.entry` is a BackboneElement, so it is an inline array of
+  `FF_BUNDLE_ENTRY` **blocks**. The real tuple array is `contained[]`, which the fixture
+  lacked — which is why its (correct) clean-stream assertions passed while every Synthea
+  bundle reported 46 bogus `ExtentDerived`. Two `contained` resources added; red/green
+  confirmed (reverting the shape fix ⇒ `expected 21 got 22`, 2 failures, exit 1).
+
+**Measured after, four real fixtures:** every reference `Intact`, **zero** of every repair
+class, and `recover()` ⊆ `reachable_blocks()` exactly — 60639/60639, 67032/67032,
+65389/65389, 19274/19274, 0 divergent. ctest **43/43**, `pytest tests/generator` **48/48**.
+
+**Still open:** REC-15 `apply()`, AR-6's emitter fix, the probe smoke run, and the
+both-halves boundary (a wrong-but-under-budget repoint when the true child's VALIDATION is
+also broken) — the two-corruption limit P0-3 names, noted in the test.
+
+## Work order — `src/FF_Recovery.cpp` (flash model executes this)
+
+> **Naming decision (Ryan, 2026-08-27).** The public recovery header is
+> `include/FF_Recovery.hpp`; the generated tags header is renamed
+> `generated_src/FF_Recovery.hpp` → `generated_src/FF_RecoveryTags.hpp` so the two never
+> collide (the `.cpp` may `#include "FF_RecoveryTags.hpp"` for the tag table).
+> `FastFHIR.hpp` includes `FF_Recovery.hpp` — the recovery surface ships with the core
+> surface; the class does no work at construction (the scan is explicit), so there is no
+> accidental cost.
+
+**Ground rules.** Match the surrounding hand-tuned C++ style (CLAUDE.md's two-regime rule;
+the Python tooling does not apply here). Follow `../Arbiter/directives/style_guide.md`:
+early return over nested guards, **no nesting beyond 3 levels — extract a helper**, RAII,
+`noexcept` on leaf helpers that cannot fail, specific exceptions carrying the offending
+value. Every read is on untrusted bytes: **bounds-check before every dereference**, and
+never dereference a header field at construction (that is CAPI-15, already paid for once).
+
+- [ ] **REC-10. `StreamMap` + the scan.** New `src/FF_Recovery.cpp`, new
+  `include/FF_Recovery.hpp`. **Step 0 is the rename:** `generator/emit/recovery_tags.py`
+  writes `FF_RecoveryTags.hpp`; `include/FF_Primitives.hpp:625` includes it;
+  `CMakeLists.txt:326`, `generator/utilities.py` (`parse_recovery_tags` default),
+  `generator/library.py` (validator), and the generator tests (`test_recovery_tags.py`,
+  `test_wire_format.py`, `wire_witness.py`) follow; `mv` the current generated file; docs
+  naming `generated_src/FF_Recovery.hpp` (architecture.md ×5, README.md:213,
+  terminology_layer_architecture.md:807) update in the same change. `StreamMap` mirrors the
+  Iris File Extension's `FileMap` (`../Iris-File-Extension/include/IrisFileExtension.hpp:393`):
+  one map type, two producers, `std::map<Offset, StreamMapEntry>` + `file_size`.
+  `StreamMapEntry { type, offset, size }` with `size` everywhere it is knowable — strings =
+  `FF_STRING::STRING_DATA` + stamped `LENGTH` (+10); arrays =
+  `FF_ARRAY::HEADER_SIZE` + `ENTRY_COUNT` × stride; plain blocks = 0 (caller asks the
+  block). Producers: `reachable_blocks_map()` walks intact parents through the
+  block-reference enumerator — the baseline/clean producer, mirroring
+  `generate_file_map`; `scan()` is the byte-wise signature walk, mirroring
+  `recover_file_structure`, and finds the header by
+  MAGIC (`FF_HEADER` has no VALIDATION — byte 0 is the magic word, `RECOVERY` at +4), not
+  by the VALIDATION check. The clean-stream baseline calls the block enumerator over the
+  one offset-chain walk (`Recovery::reachable_blocks()`) — no scan, no classification;
+  `recover()` is damaged-streams-only, so a baseline never runs the byte census; it
+  dispatches the census and the chain walk on two threads and joins before the orphan
+  test. Expose the `upper_bound(offset)` query for `apply()` and Block C's
+  in-place repair — "what lives after this write offset". `by_tag` buckets only blocks
+  that are self-consistent. **Verify:** on a clean Synthea stream the map's block count is
+  ≥ the bundle's entry count and every entry's child offset is present in the map; assert
+  a **non-zero** block count before any comparison (P0-2).
+- [ ] **REC-11. Reachability, then orphans** (supersedes REC-2). Walk from the root through
+  **intact** edges only, setting `reachable`. Orphans = self-consistent ∧ ¬reachable.
+  Reuse the edge enumerator. Depth- and cycle-bounded exactly as XP-1 requires —
+  `MAX_VALIDATION_DEPTH` is 64 and must not drift from the compactor's `MAX_NODE_DEPTH`.
+  **Verify:** on a clean stream the orphan set is **empty**; print the count either way.
+- [ ] **REC-12. `hamming_cost()` + the hypothesis ranker.** `popcount`-based, `constexpr`
+  where it can be, `noexcept`. Implement `H_val` / `H_tag` / `H_off(P)` exactly as tabled
+  above; enforce `FF_RECOVERY_MAX_FLIPS`; return every candidate with its cost, sorted.
+  **Handle the out-of-range-offset case first** (property 2) — it is the cheapest and most
+  certain. **Verify:** unit test with hand-built streams (this is the one place synthetic
+  fixtures are right — `ff_test_graph_bounds`'s style): flip exactly 1 bit in a validation
+  word and assert `H_val` wins at cost 1; flip 1 bit in a parent offset and assert
+  `H_off` wins at cost 1; flip both and assert `ambiguous`.
+  **Fixed 2026-08-27 (external review round 2):** the ranker now also covers the
+  child-validates-tag-mismatch path (D1 — the orphan hypothesis is computed, not
+  skipped) and the flip budget applies on every repair path (D2). The Intact
+  branch regained its `valid_validation` guard (a broken VALIDATION with an intact
+  tag must not read as Intact). Orphan buckets strip the array bit so an orphaned
+  array matches its slot's declared element type. `tests/cpp/test_recovery.cpp`
+  covers the REC-12 cases + a clean-stream zero-false-positives regression
+  (D3/D4/D5).
+- [ ] **REC-13. The five repair classes.** Apply the ranker per damaged edge; classify per
+  the table. **Read-only**: produce records, mutate nothing. Resolve declared type by slot
+  kind per **F1** — stored tag half for choice/resource, compiled table otherwise.
+- [ ] **REC-14. `FF_RecoveryReport`** (supersedes REC-6). Per-repair records:
+  `(parent_offset, field_offset, child_offset, class, hypothesis, bit_cost)`, plus the
+  candidate list for every ambiguity, plus totals per class. This is the type Block C's C1
+  orchestrator returns. Define it **once**, here.
+- [ ] **REC-15. `apply()` — the only mutating entry point.** Takes a report, applies only
+  records the caller selected, re-verifies each edge afterwards, and refuses silently-failed
+  writes. Never called implicitly by a constructor or by `recover()`.
+- [ ] **REC-16. Retire the half-implementation.** `Recovery::next_valid_resource_of()` and
+  the whole-stream `scan_all_resources()` fallback in `src/FF_Parser.cpp` are superseded by
+  REC-10/REC-11. Delete them — do not leave two mechanisms (style guide: "consolidate
+  redundant pipelines … and delete code to do so"). Keep `Recovery`'s public shape working
+  or update the two call sites in `../FastFHIR-benchmark` in the same change (execution
+  contract rule 9).
+- [ ] **REC-17. Document the boundary** (supersedes REC-7). The "no second witness" list
+  and the **bit-flip-only threat model** go in `include/FF_Recovery.hpp` beside the class, so
+  no consumer reads the redundancy as a guarantee of total recoverability.
+
+**Verify (block).** A corruption harness that damages **exactly one witness** of a known
+edge in a real writer-produced Synthea stream, for each of the five classes, and asserts
+the edge is restored **and reported with the expected class and bit cost**. Assert a
+**non-zero lower bound on edges damaged** before asserting any recovery rate (P0-2) — a
+harness that corrupts nothing recovers everything. Synthetic hand-built streams are correct
+for REC-12's unit cases; the end-to-end cases must use writer output, for the reason COV-1
+gives.
+
+**Benchmark-side, same change set** (`../FastFHIR-benchmark`, execution contract rule 9):
+`corrupt_stream` in **both** `bench/bench_test_5.hpp` and `bench/corruption_probe.cpp` must
+add parent-slot tuples — offset half and tag half **separately seeded** — plus typed 8-byte
+slots and array headers, or mode 1 stays untestable (**F2**). `StreamFingerprint` becomes
+edge-level for the FFHR arm (**F3**). The other three arms keep entry-extraction semantics;
+the figure must say so, because the redundancy is FastFHIR-only and that asymmetry is the
+finding, not an embarrassment.
+
+---
+
+# ▶ CONSUMER-API FINDINGS — INDEX (CAPI-1…13)
+
+Filed 2026-08-26 from FastFHIR-benchmark, the first code outside this repo to drive the
+public API hard. Full detail for each is in the work order further down
+(`grep -n "^## CAPI-" TASKS.md`). Ordered by what to fix first.
+
+| ID | Finding | P | Consumer impact |
+|---|---|---|---|
+| ~~**CAPI-13**~~ | ~~`deserialize` emits nothing for singular block fields~~ | **P0** | ✅ **FIXED 2026-08-26** — see P0-1 above |
+| **CAPI-12** | Cannot append one element to an existing sealed array | P1 | Enrichment requires rebuilding the array |
+| **CAPI-1** | No public API for writing an inline-block array | P1 | Field-by-field assembly writes a corrupt stream, no compile error |
+| **CAPI-2** | `validate_FFHR_stream()` accepts streams the deserializer segfaults on | P1 | "It validates" is not evidence the stream is readable |
+| **CAPI-3** | Block-typed `ChoiceEntry` cannot round-trip across arenas | P1 | `deserialize`→`store` is not an identity; 95 % of real `value[x]` |
+| **CAPI-8** | `entries()` allocates per array; no non-allocating iterator | P1 | ~19 % of a generic walk; contradicts the zero-allocation claim |
+| **CAPI-7** | `FF_FieldInfo` has no `name_len`, so reflection pays a `strlen` per field | P2 | ~22 % of a generic walk, for a value the lookup discards |
+| **CAPI-4** | No zero-copy reader for packed date/time | P2 | `print_json` is the only public path; distorts any query benchmark |
+| **CAPI-9** | `as<std::string_view>()` throws on kinds the docs don't enumerate | P2 | The published README example threw until 2026-08-26 |
+| **CAPI-10** | `Compactor::archive()` output is write-once and the doc doesn't say so | P2 | Enrich-on-compact is impossible; discovered by trying it |
+| **CAPI-11** | Hydrated `ChoiceEntry` exposes the raw packed datetime slot | P2 | Consumers emit a 63-bit integer where a date belongs |
+| **CAPI-5** | `TypeTraits<std::string>` undefined while POCO fields are `std::string` | P2 | Assigning a POCO field back does not compile |
+| **CAPI-6** | Stale `SourceType::FHIR_JSON` in `FF_Ingestor.hpp:69` | P3 | Wrong name in the first example a consumer copies |
+
+**Two claims-alignment items** are filed against README.md as **I3.6** (the `orjson` ratio
+cites a benchmark result that does not exist — no orjson arm has ever existed, and the
+stage named is the wrong one) and **I3.7** (the −66 % compact figure predates the
+compaction data-loss fix by four months and no test pins it; the first honest measurement
+on a real Synthea bundle is **−49 %**).
+
+---
+
+# ▶ P0 — AMEND/APPEND MUST ACCEPT THE ABSTRACTION TYPES DIRECTLY (HIGH PRIORITY)
+
+**Filed 2026-08-26** from FastFHIR-benchmark (evidence trail: CAPI-12). The
+amendment/append surface accepts JSON but not the abstraction types (generated
+POCOs) — yet every JSON payload is parsed into the abstraction **before** it is
+written, as part of the write-datablock workflow (`createXXInfo` →
+`SIZE_FF_*` → `STORE_FF_*`). Requiring JSON as the amendment carrier forces a
+serialize/parse round-trip of data that is already an abstraction in memory.
+
+**The ask, concretely:**
+
+- `Ingest::Ingestor::insert_at_field` gains an abstraction-typed overload —
+  `insert_at_field(parent_object, key, const T_Data&)` — mirroring the existing
+  JSON overload. A caller holding an in-memory observation (e.g. a laboratory
+  system handing FastFHIR a POCO) appends the abstraction directly; JSON
+  support stays for wire/text callers.
+- Appending one element to an **existing sealed array** must work (CAPI-12):
+  extend the array block at the write head and bump the count, or an explicit
+  "open array" build mode. Today `MutableEntry[n]` throws `out_of_range` past
+  the array end and `insert_at_field` refuses already-assigned slots
+  ("Patching an assigned slot risks orphaning elements of the stream").
+- The field-level primitives that already exist for abstractions —
+  `MutableEntry::operator=(const T_Data&)`, `Builder::append_obj`,
+  `amend_*` — extend to array elements and to carrying existing
+  `ObjectHandle`s into amendments.
+
+**Why this matters** (FastFHIR-benchmark PA-10): "append one Observation to a
+Bundle and re-seal" is the §4.1 claim. With JSON-only amendments the only
+working path re-serializes the whole bundle root (delta O(entry-array), ~1.2 MB
+median at the 1024 MB target). With abstraction-typed append, the entry array
+gains one element and the claim becomes demonstrable.
 
 ---
 
@@ -353,87 +1129,6 @@ fixture's output produces exactly one new `DROPPED_RESOURCE`, not a cascade.
 > `_is_entry_array` forced to False the same edit yields **2,405 diffs instead
 > of 833 — 1,572 spurious**. `py_roundtrip` stays red, correctly: the remaining
 > 1.84M diffs are real defects (A24/A25/A26/A27), not measurement error.
-
----
-
-## DT-0 — Band correction and header untracking (P1) — ✅ DONE 2026-08-19
-
-Two prerequisites that fell out of speccing DT-1, both landed before it starts.
-
-### DT-0.1 — `RECOVER_FF_CODE` rebanded, primitive band compacted
-`RECOVER_FF_CODE` moved from `0x0003` (primitive) to **`0x010B`** (scalar), and
-the primitive band was then **compacted to close the hole** rather than leaving
-`0x0003` retired — pre-alpha, so the band is re-cut clean instead of carrying a
-gap forever:
-
-```
-RESOURCE          0x0004 -> 0x0003        OPAQUE_JSON       0x0008 -> 0x0007
-CHECKSUM          0x0005 -> 0x0004        WASM_PAYLOAD      0x0009 -> 0x0008
-URL_DIRECTORY     0x0006 -> 0x0005        CODEABLE_CONCEPT  0x000A -> 0x0009
-MODULE_REGISTRY   0x0007 -> 0x0006        primitive _next_id -> 0x000A
-```
-
-The band is now contiguous `0x0000..0x0009`, verified no duplicates anywhere in
-the ledger. **Append-only resumes from here** — this was the last free re-cut.
-
-This was not tidying. The scalar band membership test
-`(tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK` is what routes inline scalars, and
-`FF_CODE` is an inline scalar that sat outside it. Two branches written for it
-were therefore unreachable:
-
-* `Recovery_to_Kind` — a `case RECOVER_FF_CODE:` inside the scalar switch, dead
-  because `0x0003 & 0xFF00 == 0x0000`. Harmless: a duplicate in the second
-  switch did the work.
-* `Compactor::write_choice_slot` — `if (FF_IsScalarBlockTag(tag)) { if (tag ==
-  RECOVER_FF_CODE) { ... } }`. **Not harmless.** `FF_IsScalarBlockTag(0x0003)`
-  is false, so a choice slot holding a code never took the inline path and fell
-  through to the block path instead. **11 FHIR choice fields carry a `code`
-  variant** (`ElementDefinition.defaultValue[x]`, `.fixed[x]`, `.pattern[x]`,
-  `.example.value[x]`, `Parameters.parameter.value[x]`, …), so this was a live
-  defect, not a theoretical one.
-
-Both are now live. `Recovery_to_Kind`'s `FF_CODE` case moved into the scalar
-switch and out of the second; verified `FF_IsScalarBlockTag(RECOVER_FF_CODE)`
-is now true and every tag still resolves to its previous `FF_FieldKind`.
-`tests/cpp/test_primitives.cpp` pins the new values and the new band membership.
-Wire witness refreshed with `--force` in two passes — `RECOVER_FF_CODE: 3 -> 267`,
-then the seven primitive shifts, each named in the override banner.
-`dictionaries/README.md`'s CodeableConcept block layout updated `0x000A -> 0x0009`.
-Pre-release re-cut, no archives exist (verified: nothing tracked in git, no
-pinned corpus, benchmark repo generates at runtime, the only `.ffhr` on disk are
-build artifacts the suite regenerates).
-
-### DT-0.2 — `include/FF_Recovery.hpp` untracked
-Generated at configure time and now gitignored. The committed record of every
-tag value is the ledger plus `tests/generator/golden/wire_witness.json`; a third
-copy was one more thing to keep in step, which is the same argument
-`dictionaries/README.md` already makes for not committing the code projections.
-Nothing detected a **stale** committed header, and XP-3.2 (`--check`) — the
-thing that would have — is still unbuilt.
-
-Docs updated: `CLAUDE.md` (repo map + invariant 1), `dictionaries/README.md`.
-
-### DT-0.3 — `FF_Recovery.hpp` relocated to `generated_src/`
-Done 2026-08-19. The header now sits with the other projections rather than in
-`include/`, which is what "generated" means everywhere else in this tree.
-`generated_src/` was already gitignored and already on the include path, so
-`#include "FF_Recovery.hpp"` resolves unchanged.
-
-Repointed: `HEADER_PATH` in `emit/recovery_tags.py`, six paths in
-`generator/utilities.py`, four in `library.py`, `model/type_map.py`, the path
-construction in `tests/generator/wire_witness.py` and `test_recovery_tags.py`,
-`test_wire_format.py`, and `CMakeLists.txt`'s install list
-(`FASTFHIR_INCLUDE_DIR` -> `FASTFHIR_GENERATED_DIR`). The `.gitignore` entry for
-the old location is gone — `generated_src/` covers it.
-
-**Verified by deleting it and rebuilding from the ledger alone**, not by
-inspection: with no copy in either location, `generate_recovery_tags()`
-reconciled 978 tags, appended 0, and emitted 74,365 bytes to
-`generated_src/FF_Recovery.hpp` carrying the full BAND MAP — which now reads
-`Core Primitives … 10 used` and `Inline Scalars … 12 used`, reflecting DT-0.1.
-`src/FF_Primitives.cpp` was then forced to recompile and did so cleanly with
-**no copy in `include/`**, proving the include resolves from the new location.
-`ctest` 33/34 (the known `py_roundtrip` red), generator gate 46/46.
 
 ---
 
@@ -1006,129 +1701,6 @@ machine drift and was **not** isolated.)
 
 ---
 
-## DT-2 — Generator: stop treating them as strings (P1)
-
-> ⚠ **IN PROGRESS 2026-08-21 — the tree is in an inconsistent state. Read this
-> before configuring.** `generator/model/type_map.py` has DT-2.1 applied, but
-> `generated_src/` still holds pre-DT-2 output, so the build is green only
-> because nothing has regenerated yet. **The next `cmake --preset ninja`
-> configure runs the generator and the build will fail** (four emitters still
-> emit date/time as if it were a string; see below). Either finish DT-2.2/2.3
-> or revert `type_map.py` before configuring.
->
-> **DT-2.1 — DONE.** `date`/`dateTime`/`instant`/`time` removed from
-> `STRING_TYPES`; new `DATETIME_TYPES` dict maps each to its permanent tag;
-> `_scalar_recovery_tag` gained the four (so the tag flows through the existing
-> scalar machinery); `TYPE_MAP` gained a `date` descriptor — `cpp: uint64_t`,
-> `data_type: std::string`, `TYPE_SIZE_UINT64`, plus `encode`/`decode` keys —
-> and the other three are projected from it rather than copy-pasted.
->
-> **Verified by regenerating into a scratch tree and diffing (165 files
-> differ).** Three things are already correct: the slot is
-> `ISSUED_S = TYPE_SIZE_UINT64` (**same 8 bytes as the offset it replaces, so no
-> V-Table offset moves** — the DT-1.2 `static_assert` holds), the data-struct
-> member became `std::string`, and the per-field tag is `RECOVER_FF_INSTANT`.
->
-> **DT-2.2 / DT-2.3 — OPEN. The regeneration named exactly five defects:**
-> | Site | Emits now | Must emit |
-> |---|---|---|
-> | reflection + `COMPACT_SLOT_SIZES` + `static_assert` | `FF_FIELD_UNKNOWN` | `FF_FIELD_DATETIME` |
-> | `emit/store.py` size pass | contribution dropped entirely | `SIZE_FF_DATETIME` (the fallback `FF_STRING` needs reserved space) |
-> | `emit/store.py` store pass | `STORE_U64(slot, data.issued)` — a `std::string` into a `u64`, **does not compile** | `ENCODE_FF_DATETIME` |
-> | `emit/deserialize.py` | `data.issued = Decode::scalar<uint64_t>(...)` — **does not compile** | `FF_FORMAT_DATETIME` |
-> | `emit/views.py` accessor | `Decode::scalar<uint64_t>` behind `auto` | decode to text |
->
-> `FF_FIELD_UNKNOWN` is the dangerous one: `ff_slot_width(FF_FIELD_UNKNOWN)` is
-> also 8, so the width `static_assert` **passes by coincidence** while the
-> reflection table is wrong. It would not have failed loudly.
->
-> **Plus one suspected regression to investigate first:** `Observation.effective`
-> is a choice field, and its emitted `child_recovery` changed from
-> `RECOVER_FF_STRING` to `RECOVER_FF_DATETIME` — the choice path picking up its
-> first variant's tag. **RESOLVED 2026-08-21:** the static `child_recovery` for a
-> choice only ever names the first variant, and is *not* the design's error
-> sentinel (`FF_RECOVER_UNDEFINED` stays reserved as an error/absent marker and
-> is never emitted for a real field). The reader now derives the Entry's
-> `target_recovery` from the **runtime variant tag in the slot** (both
-> `standard_node_lookup_field` and `compact_node_lookup_field`), so
-> `print_json`'s `get_choice_suffix` labels `valueDecimal`/`valueCoding`/etc.
-> correctly. Confirmed on the round-trip fixture: extension `value[x]` now emits
-> the right suffix. The static `child_recovery` value remains harmless (it is
-> only a fallback for absent choices, which are rejected earlier).
->
-> **Two decisions the next session must take, neither of them mechanical:**
-> 1. **What the view accessor returns.** Text costs an allocation on a path
->    documented as zero-copy; the raw packed word pushes the fallback-offset
->    resolution onto the caller, which is exactly the DT-1.7 trap (the accessor
->    knows the containing block; the caller may not). Recommend: accessor
->    resolves and returns text, and the zero-copy path stays `Node`/`Entry`.
-> 2. **Consumer fallout is unbounded until measured.** `std::string_view` ->
->    `std::string` on 306 elements across 120 types ripples into tests, tools
->    and the Python bindings. Build after the emitters are fixed and count.
->
-> Then DT-4.3: the witness moves (it records the `TYPE_SIZE_*` constant per
-> field, and `TYPE_SIZE_OFFSET` -> `TYPE_SIZE_UINT64` is exactly the kind of
-> change it exists to catch), so re-baseline it **in the same commit**.
-
-### Locate
-```bash
-grep -n "STRING_TYPES" -A 14 generator/model/type_map.py
-grep -rn "STRING_TYPES" generator/ | grep -v "def \|^generator/model/type_map.py:276"
-```
-**Expect:** `date`, `dateTime`, `instant`, `time` inside `STRING_TYPES`, and
-every consumer testing membership rather than `== "string"`.
-
-- **DT-2.1** Remove the four from `STRING_TYPES`; map them to the new kind and
-  their reserved tags. **Read CLAUDE.md's portability note first**: string-like
-  types must be tested via `fhir_type in STRING_TYPES`, never `== "string"` —
-  the same rule now applies in reverse, so audit every membership test rather
-  than assuming the set is only read in one place.
-- **DT-2.2** `emit/store.py`, `emit/deserialize.py`, `emit/views.py`: inline
-  scalar slot, no `FF_STRING` child, no offset.
-- **DT-2.3** Field keys and reflection carry the new kind so `Node::as<>` and the
-  JSON exporter dispatch on it.
-- **DT-2.4** **Array-typed date/time fields — OPEN, and the reason DT-2's "done
-  when" does not yet hold.** DT-2.1 removed the four types from `STRING_TYPES`,
-  which broke three string-array branches. They were kept compiling by appending
-  `or f["fhir_type"] in DATETIME_TYPES` to the branch condition, which restores
-  the **pre-DT-2** layout verbatim instead of porting it:
-
-  | Site | Emits now | Must emit |
-  |---|---|---|
-  | `emit/store.py:62` (SIZE pass) | `SIZE_FF_STRING` per element | `SIZE_FF_DATETIME` (fallback `FF_STRING` still needs reserved space) |
-  | `emit/store.py:236` (STORE pass) | `FF_ARRAY::OFFSET` + `STORE_FF_STRING` | `FF_ARRAY::INLINE_BLOCK`, stride `TYPE_SIZE_UINT64`, `ENCODE_FF_DATETIME` per element |
-  | `emit/deserialize.py:66` | reads each element back through `FF_STRING` | `FF_FORMAT_DATETIME` off the inline slot |
-
-  The comment above `emit/store.py:236` is now false — it claims "dateTime,
-  markdown, uri and id share this layout," and dateTime has not shared it since
-  DT-2.1. `emit/deserialize.py:70` already documents the symptom: *"DT-2 datetime
-  arrays hold `std::vector<std::string>`."*
-
-  **Scope: two fields in the whole spec** — `Timing.event` (`dateTime`) and
-  `Timing.repeat.timeOfDay` (`time`). They are 2 of the 31 `FF_ARRAY::OFFSET`
-  sites; the other 29 are genuine strings.
-
-  **No effect on `py_roundtrip`** — all 342 Synthea fixtures contain zero
-  `Timing` array elements (`timeOfDay`, `dayOfWeek`, `when`, `timing.event` all
-  absent), so this is correctness work that will not move the diff count. Do it
-  as its own commit, not folded into the round-trip push.
-
-  ⚠ **This activates a dormant path.** An inline 8-byte date/time element with
-  bit 63 set holds an offset *relative to its containing block*, and inside an
-  array the containing block is the array. The array reader must resolve it
-  against the array's own offset while it still holds it — the treatment
-  `ParserOps::code_node` gives code slots. Today that is unreachable only
-  because these arrays are strings. See CLAUDE.md's two offset invariants and
-  architecture.md §5.5; the resolution must land in the **same** commit as the
-  emitter change, never after it.
-
-**Done when:** `python -m generator` is deterministic across two runs and no
-generated file mentions `FF_STRING` for a date/time field. **DT-2.1–2.3 hold for
-scalar slots and choice variants as of 2026-08-22; DT-2.4 is what still fails
-the second half of that sentence.**
-
----
-
 ## AR-1 — Array readers must dispatch on the header tag (P1)
 
 **Biggest single item left in `py_roundtrip`: 136,006 of 195,708 diffs**, all
@@ -1202,211 +1774,6 @@ branch is dead. The one-line fix it proposed changes nothing. Do not re-apply it
 
 **Done when:** the 342-fixture aggregate drops from 195,708 to ~59,700 with no
 new bucket appearing, and no new diffs on `/entry/N/resource/category`.
-
----
-
-## OPQ-1 — Out-of-profile resources are retained, not discarded (P1)
-
-> **DONE 2026-08-23 (working tree, uncommitted).** This closed `py_roundtrip`:
-> **342/342 fixtures clean, 0 diffs**, repeatable across runs.
-
-**Why.** `dispatch_resource` returns a typed handle only for resources compiled
-into `FASTFHIR_PRODUCTION_PROFILE`. Everything else returned a null handle, the
-bundle patcher left the slot unset, and the entry shipped as
-`{"fullUrl":…, "request":{…}}` with **no `resource`** — not valid FHIR in a
-transaction bundle, and real clinical data loss (TASKS.md A26 measured one
-Synthea bundle losing 41 of 250 records at exit 0). It was also the last 30,064
-of the round-trip diffs: 15,032 `DROPPED_RESOURCE` + 15,032 `ADDED_RESOURCE`,
-because a resource-less entry cannot be paired by identity.
-
-**The fix is not "compile every resource."** That answers the corpus, not the
-problem — the next deployment with a resource nobody listed loses it exactly the
-same way. A format that can only carry what its build profile happens to name is
-a format that silently edits documents.
-
-### What it does
-
-The raw JSON of an untyped resource is copied into the arena as a block tagged
-`RECOVER_FF_OPAQUE_JSON` (`0x0007`, **already reserved** — zero ledger impact),
-which is an `FF_STRING` byte for byte, and `print_json` splices those bytes back
-in unquoted. The document round-trips byte-exactly. What is given up is typed
-*access*: no V-Table, so no `Node` navigation into its fields, no query, no
-interior compaction. `Ingestor` reports the count and types on the `FF_Result`
-(the log tag moved `[Skipped]` → `[Retained]`; `retained_summary` greps for it).
-
-### The four sites that had to change together
-
-The recurring defect shape, found by grepping before declaring it done: **a
-resource slot's kind must follow the tag beside its offset.** Three of these
-hardcoded `FF_FIELD_BLOCK`, which is correct only while every resource slot holds
-a generated resource block. An opaque block called a block asks `fields()` for a
-V-Table it has not got, `reflected_fields_view` returns `{}`, the empty field list
-reads as "no members present", and the resource vanishes from the export.
-
-| Site | File |
-|---|---|
-| `ParserOps::standard_entry_as_node` | `src/FF_Parser.cpp` |
-| `ParserOps::compact_entry_as_node` | `src/FF_Parser.cpp` |
-| `ParserOps::array_element` (the 10-byte tuple branch, e.g. `contained`) | `src/FF_Parser.cpp` |
-| `DeepValidator::walk` string branch — must bounds-check the opaque length, or `walk_fields` waves it through on an empty field span | `src/FF_Parser.cpp` |
-
-Plus: `archive_string` in the compactor now carries the source tag (it defaulted
-to `RECOVER_FF_STRING`, which would have downgraded a retained resource to a
-quoted string literal in the compact copy), and the Python bindings return the
-raw JSON text for an opaque resource slot rather than a handle whose every field
-lookup misses.
-
-### The deliberate hole — do not "fix" it
-
-`CMakePresets.json` sets `us-core,billing,medication-admin,supply` and
-**deliberately omits `imaging`**. The corpus has **1,444 `ImagingStudy`
-resources across the 342 fixtures**, so every one takes the fallback, and
-`py_roundtrip` demanding zero diffs is what proves the fallback is lossless on
-real data every single run. Enabling `imaging` would compile the type and
-silently retire that coverage. If you want `ImagingStudy` typed in your own
-build, add it to your profile — do not change the preset.
-
-**Verify:**
-```bash
-python tests/python/roundtrip_aggregate.py    # fixtures=342 clean=342/342 total_diffs=0
-./build/ff_roundtrip build/synthea_fhir_r4/<any>.json 2>&1 >/dev/null | head -1
-# -> "... stored as OPAQUE JSON ... ImagingStudy xN"
-```
-
-### Still open, deliberately
-
-- `Decode::choice` (`include/FF_Ops.hpp`) tests `entry.tag == RECOVER_FF_STRING`
-  and so would not decode an opaque payload. Not reachable today — a resource is
-  never a choice variant — but it is on the same list as that function's existing
-  `RECOVER_FF_CODE` / date-time gaps (handoff §5). Fix them together.
-- Nothing round-trips an opaque block through the **compactor** in the suite.
-  `archive_string` was corrected by inspection, not by a failing test. COV-1.
-
----
-
-## DBG-1 — `to_debug_json()`: the round-trip with its wire metadata (P2)
-
-> **DONE 2026-08-22 (working tree, uncommitted).**
-
-**Why it exists.** Every defect this file has produced was a value that decoded
-to *plausible JSON under a wrong belief*: a `dateTime` tagged
-`RECOVER_FF_STRING` exporting as `effectiveString`, a choice variant labelled
-from the wrong tag, a scalar array element labelled a block. Diffing output JSON
-against input JSON cannot see any of them — either the text matches, or the
-field is simply gone with nothing to compare against. `to_debug_json` prints
-what the reader *believed* next to what it produced, so the mismatch is legible.
-
-**Shape.** Every value becomes an object; `_v` holds exactly what `print_json`
-would have emitted, so the two dumps stay comparable value-for-value.
-
-```json
-"effectiveDateTime":{"_off":40184,"_tag":"RECOVER_FF_DATETIME","_hex":"0x105",
-                     "_kind":"FF_FIELD_DATETIME","_dt_fallback":false,"_v":"2019-04-01"}
-```
-
-| Emitted | Meaning |
-|---|---|
-| `_off` | absolute byte offset of the block or slot — paste into a hex dump |
-| `_tag` / `_hex` | `RECOVERY_TAG` spelling and value (`FF_RecoveryName`) |
-| `_kind` | the `FF_FieldKind` the reader actually dispatched on |
-| `_v` | the value `print_json` would emit |
-| `_schema_tag` | **only when the schema disagrees with the runtime tag** — this is AR-2's six fields, made visible |
-| `_empty` | slot present on the wire, dropped by `is_empty()` — this is AR-1's failure shape |
-| `_suffix` | the choice (`[x]`) suffix chosen, for `valueX` mislabelling |
-| `_code` / `_cc_fallback` | dictionary code id; whether it routed to a `CodeableConcept` |
-| `_dt_fallback` | whether a date/time slot is packed or a bit-63 offset to an `FF_STRING` |
-| `_entry_kind` / `_stride` / `_count` / `_elem` | array header, verbatim |
-
-It deliberately does **not** skip values `print_json` drops — `_empty:true`
-instead. An empty-skipping dump would have hidden AR-1 exactly as `print_json`
-did.
-
-**Where it lives.** `Node::to_debug_json(std::ostream&, int indent = 0)`,
-guarded by `#ifndef NDEBUG` in both the header and the implementation, so
-release builds carry neither the function nor the ~1k tag-name literals.
-`ff_roundtrip` exposes it as `--debug` / `--debug-indent N`, and refuses with a
-clear message under `NDEBUG` rather than silently printing normal JSON.
-
-`FF_RecoveryName()` is **generated**, not hand-written — `generator/emit/recovery_tags.py`
-projects it from `dictionaries/master_tags.json` alongside the enum, so a tag
-can never exist without a name. Also `#ifndef NDEBUG`. Wire witness re-run:
-46/46, no tag moved.
-
-⚠ **ABI note:** a debug-only member function means a Debug consumer linking a
-Release `libfastfhir` gets an undefined symbol. Loud, not silent, but real — if
-that combination is ever supported, this moves behind a CMake option instead of
-`NDEBUG`.
-
-**First use, 2026-08-22 — the audit that motivated it.** Across 25 fixtures, no
-field named `date`/`time`/`instant`/`onset`/`abatement`/`issued`/`effective`/
-`authoredOn`/`recordedDate`/`occurrence` carries `RECOVER_FF_STRING`:
-
-```
-616 start RECOVER_FF_DATETIME     467 issued  RECOVER_FF_INSTANT
-612 end   RECOVER_FF_DATETIME     467 effective RECOVER_FF_DATETIME
- 33 recordedDate RECOVER_FF_DATETIME    1 birthDate RECOVER_FF_DATE
-```
-
-`_dt_fallback` is `false` everywhere sampled, so every date/time Synthea emits
-packs successfully and none fall back to text. **DT-2's scalar path is confirmed
-correct on real data** — which also isolates DT-2.4 (arrays) as the only
-remaining date/time gap, since `Timing` never appears in this corpus.
-
-### DBG-1.4 — wired into `py_roundtrip` (DONE 2026-08-22)
-
-`ctest`'s `py_roundtrip` now runs `--debug`, so a failure names the wire cause
-rather than only the JSON path. New module `tests/python/roundtrip_debug.py`:
-
-- **`strip_debug`** — debug DOM -> (plain DOM, `{path: metadata}`). The plain DOM
-  is shaped exactly like `print_json` output and goes through the **same**
-  `diff_doms`, so the two modes cannot drift apart into different comparisons.
-- **`drop_debug_artifacts`** — the containment rule, applied precisely. What
-  matters is that every source field survives, so keys the envelope adds must not
-  count; but dropping `EXTRA_KEY` **wholesale would be wrong** — it would also
-  silence fabricated fields, which is a real defect this gate exists to catch,
-  and would make the debug run a *weaker* check than the plain one. Only keys
-  whose metadata carries `_empty` are suppressed, identified from the data rather
-  than assumed. **Verified equal: 86 diffs in both modes** on the first fixture.
-- **`_find_siblings`** — pairs a missing `valueInteger` with an emitted
-  `valueUnsignedInt`. A plain diff shows a missing key and an extra key and reads
-  as two unrelated defects; this reports one renamed choice and names the tag
-  that renamed it.
-
-**One `to_debug_json` fix was required for this to work at all:** the dump was
-emitting a choice field under its base name (`value`) where `print_json` emits
-`valueInteger`, so diff paths could not resolve against it — precisely for the
-fields most worth inspecting. It now emits the same key `print_json` does, suffix
-included, and keeps `_suffix` as metadata.
-
-Live output on handoff.md §1c, diagnosed automatically instead of by hand:
-
-```
-[MISSING_KEY     ] /entry/0/resource/extension/0/valueInteger
-    expected: 107
-    ** emitted as 'valueUnsignedInt' instead — tag=RECOVER_FF_UINT32 kind=FF_FIELD_UINT32 off=48850 **
-```
-
-It also confirmed a standing question from handoff.md §1b: a dropped
-out-of-profile resource **does** leave an entry shell on the wire —
-`RECOVER_FF_BUNDLE_ENTRY kind=FF_FIELD_BLOCK off=3040` sits under each
-`DROPPED_RESOURCE`, so the entry is written and only the resource is missing.
-
-⚠ `py_roundtrip` now requires a Debug build. Every preset is Debug, and under
-`NDEBUG` the harness exits 2 with a clear message, so this degrades loudly.
-
-### Follow-ups (not done)
-- **DBG-1.1** No *unit* test covers `to_debug_json`; `py_roundtrip` now exercises
-  it across 342 fixtures, which is coverage but not a targeted assertion. A
-  `ff_test_debug_json` checking a known fixture's `_tag`/`_off` would pin the
-  format; registering it needs the FOUR CMake registrations.
-- **DBG-1.2** Not wired into the Python bindings. `fastfhir` users debugging a
-  stream still shell out to `ff_roundtrip`.
-- **DBG-1.3** Output is large (a 3 MB document becomes ~10 MB minified) and
-  `py_roundtrip` got slower for it — see the timing note in handoff.md. A
-  `--debug-filter <tag|field>` would make whole-corpus audits cheaper.
-- **DBG-1.5** `tag_census()` exists in `roundtrip_debug.py` and nothing calls it.
-  It answers "is anything date-shaped still stored as a string?" in one pass
-  instead of a grep per fixture; wire it into `roundtrip_aggregate.py`.
 
 ---
 
@@ -1565,197 +1932,6 @@ asserted by `ff_test_queue`) when a node is freed with un-consumed entries —
 without aborting, since a throw cannot propagate through the noexcept
 `~NodeRef` and corrupts the refcount mid-advance — release builds compile the
 canary out (no scan, no counter writes), and `ff_test_queue` proves both.
-
----
-
-## REV-1 — PR #6 review fixes (P1) — ✅ DONE 2026-08-23
-
-Copilot filed 14 inline comments on PR #6. **Two were wrong, eleven were right,
-one is unverified.** All eleven are fixed; the verification command is given
-where the claim needed one.
-
-### The two wrong ones, and the doc gap that caused them
-
-Both were wire-format objections. `test_primitives.cpp` asserts
-`RECOVER_FF_CODE == 0x010B` / `RECOVER_FF_RESOURCE == 0x0003`; the review read
-those as *authorising* a renumbering when they exist to **pin the result** of the
-2026-08-19 re-cut so it cannot happen again. The wire-witness `--force` objection
-conflates the golden (a drift detector) with the ledger (the wire record).
-
-**But the reviewer was tripping on a real contradiction.** CLAUDE.md said
-pre-alpha "licenses representation changes, not renumbering… a tag that has been
-assigned still never moves", while `master_tags.json` `_provenance` records a
-renumbering taken under that same allowance. CLAUDE.md now marks both band
-re-cuts (2026-08-14 resources, 2026-08-19 `FF_CODE`) as **closed history, not
-precedent**, which is the standing answer to this review comment.
-
-### The two that mattered
-
-| Fix | Impact |
-|---|---|
-| `Queue::debug_violations()` was inside `#if FASTFHIR_DEBUG`, `ff_test_queue` called it unconditionally | **Every Release build with tests failed to compile** — `FASTFHIR_BUILD_TESTS` defaults ON, so this included the Release recipe in CLAUDE.md's performance section. Gate the canary *writes*, never the reader. Verify: `c++ -std=c++20 -DNDEBUG -Iinclude -Igenerated_src -fsyntax-only tests/cpp/ff_test_queue.cpp` |
-| `ff_roundtrip` pinned `ingestor_info.concurrency = 1`, a leftover "A23 diagnostic" | The 342-fixture corpus gate ran **single-worker**, so it could not see the AR-3 load-sensitive class it exists to catch. Now `--workers N`, default 0 = hardware concurrency. **Re-measured at full concurrency: 342/342 clean, 0 diffs, twice.** |
-
-### The rest
-
-- `/tmp/sealed.ffhr` written unconditionally — raced by the corpus process pool,
-  and Windows has no `/tmp`. Now `--dump-sealed PATH`.
-- `roundtrip_aggregate.py` passed `--harness`/`--arena-size` via module globals,
-  which **`spawn`** (the macOS/Windows default) silently drops — the flags were
-  validated in the parent and ignored in every worker. Now a pool `initializer`;
-  verified by pointing it at a harness that exits 42 and seeing `EXIT 42`.
-  (`roundtrip_failure_report.py` computes its path at import and was never affected.)
-- `tests/tests.bzl` omitted `ff_test_dictionary`, `ff_test_queue`,
-  `ff_test_roundtrip_validate`, `ff_test_compact_roundtrip`. **Registration
-  parity restored; NOT verified by an actual Bazel build.**
-- `generator/library.py` validated against a hardcoded `generated_src/FF_Recovery.hpp`
-  instead of `output_dir`, so the temp-dir wire-format fixture checked the wrong
-  tree (or none, on a clean checkout).
-- `resolve_production_resources` returned on `all` *before* validating tokens, so
-  `all,bililng` silently ignored the typo. Validation now runs first, once.
-- `roundtrip_diff.py` recursed on the input index while `strip_debug` keys wire
-  metadata by output index — after any dropped entry every later annotation named
-  the wrong resource. `DiffEntry.actual_path` / `meta_path()` now carry both.
-- `FF_IsResourceTag`'s comment still named the pre-re-cut band `0x0300-0x0FFF`;
-  the code reads the constants and was always right.
-- `docs/build_docs.sh` orphan check: `-e "${base}"` made `"include::"` a file
-  operand. Measured broken in **opposite directions** per platform — on macOS
-  (BSD grep) it exits 2 and flagged *every* fragment as orphaned; on GNU grep it
-  searches all prose for the bare basename and lets real orphans pass.
-- **`ff_test_roundtrip_validate` only checked that `root` was non-null** while its
-  own comment claimed it walked the document — so the scalar-array regression it
-  names could have passed it. It now traverses the whole document (~70,000 nodes
-  / ~8,200 arrays per fixture, both printed) and fails on any array whose header
-  counts N>0 entries that all read back empty, which is precisely how AR-1
-  presented.
-
-### `wire_witness.py:220` — verified, and it was the sharpest of the fourteen
-
-The gate **accepted an impossible state and rejected the real one.** `order` uses
-a prefix rule ("appending a field is legal growth"), but `header_sizes` was
-checked for **equality** — and a real appended field always grows the block
-header by its slot width. So:
-
-| Mutation | Old rule |
-|---|---|
-| append to `order` + `sizes`, header unchanged — *what the test did, and what the generator can never emit* | **accepted** |
-| append to `order` + `sizes`, header +4 — *what an actual append looks like* | **rejected** |
-
-`header_sizes` is now **monotonic**: growth is legal, shrinkage is fatal. Growth
-is safe precisely because the other two rules pin everything beneath it — shipped
-fields keep their order (prefix rule) and their widths (`sizes` equality), so a
-bigger header can only mean slots appended past the end and no existing offset
-moves. `test_permanence_accepts_field_append` now models a real append, and a new
-`test_permanence_rejects_header_shrink` covers the other half. Wire gate: 47.
-
-### Bazel — verified, contrary to an earlier claim in this file's history
-
-An earlier note said Bazel parity was "registration only, not verified by a
-build". That was wrong: `bazel` 9.2.0 is installed and the suite runs.
-`bazel test //...` → **15/15 pass**, including all four newly registered targets.
-The two corpus suites print `SKIP: no Synthea fixtures` under Bazel (it does not
-download the corpus, CMake does) — loud, not a false pass.
-
----
-
-## REV-2 — PR #6, second review round (P1) — ✅ DONE 2026-08-24
-
-Copilot filed 11 more inline comments. **All 11 were correct** (the first round
-was 12 of 14). Four were incomplete work from REV-1; the rest were independent.
-
-### The wire gate was witnessing the wrong tree — the significant one
-
-`witness()` derives its `vtables` section from the **emitted resource headers**,
-so it only covers the compiled profile. `tests/generator/conftest.py` regenerated
-with `FASTFHIR_PRODUCTION_PROFILE` inherited from the ambient environment —
-i.e. the generator's silent `us-core` default. Measured:
-
-| | blocks |
-|---|---|
-| committed golden | **141** |
-| a preset build (`us-core,billing,medication-admin,supply`) | **209** |
-
-**68 V-Tables were outside "the ONE hard gate" entirely** — every block from
-`billing`, `medication-admin` and `supply` (`FF_CLAIM`, `FF_CLAIMRESPONSE`,
-`FF_EXPLANATIONOFBENEFIT`, `FF_SUPPLYDELIVERY`, `FF_MEDICATIONADMINISTRATION`
-and their backbones). Field order, size constants and header sizes could all
-drift with nothing to catch it. `tags` and `codes` were unaffected — both are
-projected from the committed ledgers and cover the whole spec regardless of
-profile (978 / 5796 either way).
-
-Copilot's separate point was also confirmed: nothing required an emitted constant
-to be **in** the golden, so anything added and not committed was protected by
-nothing — verified by adding a tag to a current-witness copy and renumbering it
-on a later pass, both of which passed `_check_permanence`.
-
-**Fixes, in order — the second depends on the first:**
-
-1. **Pin the profile.** `conftest.py::_shipped_profile()` reads
-   `FASTFHIR_PRODUCTION_PROFILE` out of `CMakePresets.json` and passes it
-   explicitly in the subprocess env. Read, not restated: a duplicated constant
-   is one that drifts, which `FF_MIN_ARENA` had just demonstrated in this same
-   review round.
-2. **Widen the golden** to the shipped profile: 141 → **209** blocks. Verified
-   **purely additive** — `_check_permanence(new, old)` is clean across all three
-   sections, so not one existing constant changed or was removed. (The 882
-   deleted *lines* in the diff are `json.dumps` re-serialisation, not semantics;
-   line counts are the wrong instrument here.)
-3. **Require coverage.** New `test_golden_covers_every_current_wire_constant`
-   fails if the generator emits any tag, code or V-Table the golden lacks, and
-   prints the re-baseline command. CLAUDE.md already *required* the golden to be
-   committed alongside the change; this makes it enforced rather than procedural.
-
-**Verified both directions:** the new test failed against the old 141-block
-golden naming `FF_CLAIM` first, and an unpinned `us-core` regeneration now
-produces **67 `DELETED` errors** against the widened golden instead of passing
-silently. Wire gate: **48**.
-
-`FF_IMAGINGSTUDY` is legitimately absent — `imaging` is deliberately out of the
-presets (OPQ-1), so this build emits no ImagingStudy V-Table to gate. Its
-resources travel as opaque JSON.
-
-### The four that were REV-1's own loose ends
-
-- `roundtrip_debug.py` and `roundtrip_failure_report.py` still called
-  `_find_siblings(d.path, meta)`. REV-1 introduced `DiffEntry.actual_path`
-  precisely because that metadata is keyed by OUTPUT index, and converted the
-  direct lookups — but missed both sibling searches, which is the branch that
-  produces the wire cause. After any dropped entry it found nothing and the
-  diagnosis was silently lost. Now `d.meta_path()`; proven with a shifted-index
-  fixture (old: `NOTHING FOUND`, new: the `valueUnsignedInt` sibling).
-- `roundtrip_diff.py` classified every entry lacking **both** `resource.id` and
-  `fullUrl` as `DROPPED_RESOURCE` *and* `ADDED_RESOURCE`. Both fields are
-  optional in FHIR; **two byte-identical bundles produced 4 diffs.** Synthea
-  populates both on every entry, so it never fired on the corpus and would have
-  surfaced as an inexplicable failure on the first document that did not. Now
-  falls back to ordered pairing for unkeyable entries, after keyed matching, so
-  it can never steal a keyed pairing. Verified: identical → 0, changed field →
-  1 field diff, genuine drop → `DROPPED`, keyed-pairing-across-a-drop intact.
-
-### The rest
-
-- **`Memory::View::operator std::string_view()` dereferenced `m_vma_ref`** while
-  `data()` and `size()` had been made null-safe — so converting an out-view
-  cleared after an API failure **crashed**, inside a `noexcept` function. Now
-  built from `data()`/`size()`. Verified with a null `View`: `data=0x0 size=0`,
-  conversion yields an empty view.
-- **`FF_MIN_ARENA` promoted to `FastFHIR::Ingest::FF_MIN_ARENA`.** It was a
-  function-local constant in `tools/ingestor/FF_Ingest.cpp` (2 MiB) with the
-  value restated as a literal in `test_bundle_ingest.cpp` (**1 MiB**) under a
-  comment claiming to mirror the CLI. One definition now; both use it.
-- **`python/README.md` documented a removed parameter.** `compact()` no longer
-  takes `destination`, but the guide's example passed a `Memory` where a
-  `Checksum` was expected and the API table repeated the old signature. Example
-  rewritten to persist the returned view.
-- **`roundtrip_failure_report.py` shelled out to `date`** — no such executable on
-  Windows, so it raised `FileNotFoundError` *after* both corpus passes, throwing
-  away the completed analysis at the formatting step. Now `datetime`.
-- **`ff_test_queue.cpp`'s intro said the canary "must throw"**, contradicting
-  both the implementation and its own later explanation — documenting the exact
-  unsafe behaviour the design rejects, in the file whose job is to explain it.
-- **`terminology_layer_architecture.md`** described DT-2/DT-3 as pending in two
-  places; scalar and choice date/time have been live since DT-2/DT-3 and only
-  arrays remain (DT-2.4).
 
 ---
 
@@ -2002,123 +2178,53 @@ under a different one — that closes (a) as well as the residue of (b).
 
 ---
 
-## AR-3 — Ingest keeps a different set of resources under load (P1)
+## AR-6 — The two schema tables disagree on 70 of 85 choice slots (P2)
 
-> ## FIXED 2026-08-22 (working tree, uncommitted)
->
-> **Cause: a task-queue consumer was created inside the worker thread instead of
-> before the producer started pushing.**
->
-> `FIFO::Queue::get_consumer()` latches the queue's current head node.
-> `NODE_ENTRIES` is 2000, so once the producer fills a node it advances, and the
-> retirement path (`decrement_node`, `FF_Queue.hpp:191-199`) moves `_weak_head`
-> past the full one. The bundle workers called `get_consumer()` in the thread
-> body, so a worker the OS scheduled late latched the *second* node and never saw
-> the first 2000 tasks. Those entries stayed default-constructed and `print_json`
-> then dropped them as empty, so the loss was completely silent — `FF_SUCCESS`,
-> no warning, a valid but truncated document.
->
-> **Measured on `Angel97_Mraz590` (2,836 entries), 16 concurrent processes:**
->
-> | | before | after |
-> |---|---|---|
-> | chunked / pushed | 2,836 / 2,836 | 2,836 / 2,836 |
-> | processed | **836** in 4 of 16 runs | 2,836 in 16 of 16 |
-> | output entries | 836 or 2,836 | 2,836 always |
-> | 32-way stress | — | 32/32 identical md5 |
->
-> Exactly 2,000 lost — one node — which is what identified the queue as the
-> culprit rather than the profile filter the warning pointed at.
->
-> **Fix:** create every `Consumer` on the spawning thread before the first push,
-> and move it into its worker. That also pins the head node, since each consumer
-> holds a `NodeRef`. The invariant was already known and documented — the
-> predigest pool does exactly this, with the comment *"Acquire Consumer before
-> any Injectors (gets head node reference)"* (`FF_Ingestor.cpp:666`). The bundle
-> pool simply did not follow it, and serial runs always won the race, which is
-> why it never showed up outside a loaded machine.
->
-> **Verified:** three consecutive `roundtrip_aggregate.py` runs now give an
-> identical total (38,876, was 52,232 / 55,302 / 63,272), and the failure report
-> drops from 9 signatures with 5 unstable to **6, all stable**.
->
-> ⚠ **The call-site fix avoids the trigger; it does not fix the defect.** The
-> queue **deletes a node holding 2,000 `ENTRY_PENDING` tasks** — proven by
-> instrumenting `decrement_node` (see **AR-4**, now P1). Retirement is driven by
-> reference count alone and never asks whether the node's work is done. Until
-> AR-4 lands, every `get_consumer()` call site owes this ordering, but that is a
-> convention standing in for an invariant the type should enforce.
+**Found 2026-08-27** while verifying P0-3's review (finding **F1** there). Same class as
+AR-2 below, ~14× the blast radius, and unlike AR-2 one side is affirmatively *wrong*
+rather than merely differently-shaped.
 
-> ### Historical: why this had to be fixed before any round-trip work.
->
-> AR-3 does not merely add noise to the total — it **manufactures failure
-> signatures that do not exist**, and they are the largest ones. Grouping all
-> 328 failing fixtures by signature (2026-08-22, `tests/python/roundtrip_failure_report.py`)
-> gives 9 rows, and running the corpus twice shows most of them are not defects:
->
-> | Rows | Diffs | Reproduces? |
-> |---|---:|---|
-> | `/entry/N/{resource,fullUrl,request}` missing | 68,367 | **PHANTOM** — 4 of 11 fixtures in common between passes |
-> | `DROPPED`/`ADDED_RESOURCE` | 23,850 | real (out-of-profile), 306/311 fixtures stable |
-> | `valueInteger` -> `valueUnsignedInt` | 8,792 | **fully reproducible** — the only clean signature |
-> | `multipleBirthInteger` | 18 | same cause as above |
->
-> The first single-pass report ranked those phantom rows as the top three work
-> items at 105,536 diffs; a re-run found **zero** of them. Anyone triaging from a
-> one-pass measurement will spend the day on a bug at a path where nothing is
-> wrong. Every number in handoff.md §1 inherits this contamination.
-
-**Silent, nondeterministic data loss.** Found while measuring AR-1; it is why the
-342-fixture aggregate cannot produce a repeatable total, and why the failure
-report has to run the corpus twice and label each signature.
-
-### Reproduce
-```bash
-# serial: identical every time
-for i in 1 2 3; do ./build/ff_roundtrip build/synthea_fhir_r4/Angel97_Mraz590*.json \
-  --arena-size 2147483648 2>&1 >/dev/null | head -1; done      # 50 discarded, always
-
-python tests/python/roundtrip_aggregate.py   # run twice; totals differ by thousands
+```
+generated_src/FF_Observation.cpp:741  {"value",     FF_FIELD_CHOICE, …, RECOVER_FF_QUANTITY, true}
+generated_src/FF_FieldKeys.hpp:3029   VALUE{…, FF_FIELD_CHOICE, 164, FF_RECOVER_UNDEFINED, true, "value"}
 ```
 
-### What is and isn't ruled out (all observed 2026-08-22)
-| Suspect | Result |
-|---|---|
-| the Python differ | **ruled out** — deterministic on fixed input, within a process and across processes |
-| `ff_roundtrip`, serial | **ruled out** — byte-identical stdout over 5 runs |
-| `ff_roundtrip`, 8 parallel copies of one fixture | **ruled out** — byte-identical over 8 |
-| `PYTHONHASHSEED` | **ruled out** — pinning it does not stabilise the total |
-| full aggregate load (all 342, pool at CPU count) | **reproduces** — 13–17 fixtures differ between runs |
+The per-block `FIELDS` reflection table stores the StructureDefinition's **first-listed**
+choice variant as `child_recovery`; `FF_FieldKeys.hpp` correctly stores
+`FF_RECOVER_UNDEFINED`. A choice slot has no compile-time type — that is the entire point
+of `[x]` — so `FIELDS` is asserting something it cannot know.
 
-`Angel97_Mraz590` reports **50** discarded entries serially and **12** under load,
-with a different stdout hash. These are separate processes with no shared state,
-so the load-sensitivity is inside one ingest.
+**Scale:** all **85** choice slots in the emitted `FIELDS` tables carry a first-variant
+tag; `FF_FieldKeys.hpp` is UNDEFINED on 70 of the same 85 and first-variant on the 15
+primitive-first ones (11 × `RECOVER_FF_BOOL` + 4 × `RECOVER_FF_STRING` — emitter branch
+order in `_child_recovery_key_expr`, not a semantic decision).
 
-⚠ **`FF_IngestorCreateInfo::concurrency` is honoured in only one of two places.**
-`m_num_threads` gates the pool at `src/FF_Ingestor.cpp:1310`, but
-`FF_PredigestExtensionURLs` sizes its producer pool from
-`std::thread::hardware_concurrency()` directly (`src/FF_Ingestor.cpp:752`). So
-`ff_roundtrip`'s `concurrency = 1` — added as the "A23 diagnostic: force a single
-worker to test the concurrency hypothesis" — **never applied to that pool**, and
-the A23 experiment could not have proven what it was built to prove. Whether
-that pool is the source of this variance is **unverified**: changing it was tried
-and reverted, because `m_num_threads` is not in scope there (it is a free
-function, not an `Ingestor` member) and a real fix must decide whether the
-predigest pool should take the configured count at all.
+```bash
+grep '^\s*{"[^"]*", FF_FIELD_CHOICE' generated_src/FF_*.cpp | grep -c FF_RECOVER_UNDEFINED   # 0 — FIELDS never declines
+grep '^\s*{"[^"]*", FF_FIELD_CHOICE' generated_src/FF_*.cpp | wc -l                         # 85
+grep "FF_FIELD_CHOICE" generated_src/FF_FieldKeys.hpp | grep -c FF_RECOVER_UNDEFINED         # 70
+grep "FF_FIELD_CHOICE" generated_src/FF_FieldKeys.hpp | grep -c -v FF_RECOVER_UNDEFINED      # 15
+```
 
-- **AR-3.1** Make `concurrency` reach every pool, or document why predigest is
-  exempt. Then re-run the aggregate twice with `concurrency = 1` and confirm
-  whether the variance disappears — that is the discriminating test.
-- **AR-3.2** If it persists at one worker, the race is not in the pool sizing;
-  bisect the discard path instead (the count itself varies, so the profile
-  filter or its counter is implicated).
-- **AR-3.3** Whatever the cause, a dropped resource must not be silent. The
-  discard warning already exists; it under-reports.
+Do not grep `FF_FIELD_CHOICE` across `FF_*.cpp` without anchoring to FIELDS rows: 353
+deserializer `case FF_FIELD_CHOICE:` lines inflate the count to 438.
 
-**Done when:** `python tests/python/roundtrip_aggregate.py` produces the same
-total on two consecutive runs.
+**Why it has not bitten yet.** The read path takes the variant tag from the slot's own
+10-byte tuple, never from `FIELDS`, so nothing consults the wrong value today. It becomes
+live the moment anything treats `FIELDS[i].child_recovery` as authoritative — which is
+precisely what a naive recovery implementation would do. P0-3 REC-13 works around it by
+resolving choice/resource slots from the stored tag half.
 
----
+- [ ] **AR-6.1** Decide which table is right. `FF_RECOVER_UNDEFINED` is the honest value;
+  emit it for choice slots in `FIELDS` too, from whichever emitter writes that table.
+- [ ] **AR-6.2** If the first-variant value is deliberate (a fallback for something), say so
+  in a comment at the emitter **and** document what may consult it. An undocumented decoy
+  in a reflection table is how P0-3's recovery design nearly went wrong.
+- [ ] **AR-6.3** Add a generator-side check that the two tables agree on every field, or
+  that each documented divergence is on an allowlist with a reason. AR-2 and AR-6 are the
+  same defect found twice, two months apart, by accident.
+
+**Verify:** `pytest tests/generator` plus the greps above returning 0.
 
 ## AR-2 — `FF_FieldKeys.hpp` disagrees with the wire on 6 array fields (P2)
 
@@ -2307,16 +2413,6 @@ second grep **empty**.
 
 ### XP-1.1 — A path and a visited set
 
-- [x] **XP-1.1 DONE (2026-08-18, working tree, uncommitted).** `ArchiveContext` gained `std::vector<Offset> path`, `std::unordered_map<Offset, Offset> done`
-  (map, not set — step 3 must "return the recorded offset", a set cannot hold it), and
-  `MAX_NODE_DEPTH = 64` (comment cites the measured 8-block deepest chain in the generated
-  model and the uncapped recursive types: Extension.extension, QuestionnaireResponse.item.item,
-  PlanDefinition.action.action). `archive_node` applies the four checks in order; `done` is
-  recorded on completion, never on entry. Node identity (`Node::offset()`) is protected,
-  friend-granted to `ArchiveContext`; the shared-subtree test `tests/cpp/test_compactor.cpp`
-  asserts via slot bytes and output size. Also shipped this session (untracked elsewhere):
-  sealing tail consolidated into `seal_stream()` in `include/FF_Memory.hpp`, used by
-  `Builder::finalize` and `Compactor::archive` — byte-identical output verified.
 
 
 Add to `src/FF_Compactor.cpp`'s `ArchiveContext` (or beside it):
@@ -2902,37 +2998,6 @@ test calls `pytest.skip` — a green pytest run is meaningless. Additionally
 `tests/generator/conftest.py` falls back to a stale in-repo `generated_src/` when the
 generator fails, converting "generator broken" into "tests pass".
 
-- [x] A4.1 Generate and commit the baseline:
-  ```bash
-  python -m generator                      # writes generated_src/ (needs network)
-  python -m tests.generator.wire_witness generated_src tests/generator/golden/wire_witness.json
-  ```
-  Inspect the JSON before committing: it must contain non-empty `recovery_tags`,
-  dictionary code entries, and vtable data. Commit ONLY the JSON (remember
-  `generated_src/` is gitignored and must stay so).
-  > **This criterion was not met (found 2026-08-12).** The committed golden holds
-  > `{'codes': 0, 'tags': 0, 'vtables': 141}` — vtables only. The two empty sections are
-  > structurally unfillable by the current witness, so the JSON could not have satisfied
-  > this line. **A15 fixes it.** Leave this box checked (the vtable half is real and A4.2 /
-  > A4.4 stand); A15 owns the remainder.
-- [x] A4.2 Remove the fallback in `tests/generator/conftest.py`. Current state (lines
-  ~61–64):
-  ```python
-  fallback = _REPO_ROOT / "generated_src"
-  if not fallback.is_dir():
-      pytest.skip("no generated_src/ and `python -m generator` unavailable")
-  return fallback
-  ```
-  Replace the whole fallback branch with a hard failure:
-  ```python
-  raise RuntimeError(
-      "`python -m generator` failed and no fallback is permitted post-cutover; "
-      "fix the generator before running the wire gate"
-  )
-  ```
-  Also make `_try_regenerate` raise (with the subprocess stderr in the message) instead of
-  returning `None` on non-zero exit. Update the module docstring (lines ~3–11), which
-  still describes the fallback.
 - [ ] A4.3 Add a generated-C++ compile smoke test, `tests/generator/test_compiles.py`:
   regenerate into `tmp_path` (reuse the `regenerated_dir` fixture), write a one-line TU
   `#include "FF_Dictionary.hpp"` (plus one resource header, e.g. `FF_Patient.hpp`), and run
@@ -2940,11 +3005,6 @@ generator fails, converting "generator broken" into "tests pass".
   reason) only when `shutil.which("c++")` is None. Rationale: the witness reads constants
   with regex and cannot detect emitter bugs that produce non-compiling C++ — this class of
   bug has shipped before.
-- [x] A4.4 Add a determinism test, `tests/generator/test_determinism.py`: run
-  `python -m generator --output-dir <tmpA>` and `--output-dir <tmpB>`, then assert the
-  trees are byte-identical (`filecmp.dircmp` recursive, assert no diff_files/left_only/
-  right_only). If `--output-dir` is not a supported flag, check
-  `generator/pipeline.py` / `generator/__main__.py` for the actual mechanism first.
 - Acceptance: `pytest tests/generator -q` shows the wire tests RUNNING (not skipped) and
   passing; deleting a key from the golden JSON makes them fail.
 - Verify: `pytest tests/generator -q -rs` — confirm no `SKIPPED` lines for
@@ -3020,7 +3080,6 @@ wire by every reader (`FF_ARRAY::entries_are_pointers`, consumed in
 `ParserOps::standard_entry_as_node` — which overrides the schema flag, and is why
 the read path was always correct despite the inverted value).
 
-- [x] A9.1 Guard deleted; `insert_at_field` now accepts any FF_FIELD_ARRAY target.
 - [ ] A9.2 Follow-up: `array_entries_are_offsets` is now inert everywhere —
       `standard_node_lookup_field` drops it and `as_node()` re-reads the wire, so
       the parser (`FF_Parser.cpp:372,589`) and compactor (`FF_Compactor.cpp:180`)
@@ -3075,10 +3134,6 @@ payload is then parsed in place. Left at 0 it falls back to one padded copy, whi
 logged at Info so the slow path is findable. `ff_ingest` already held a
 `simdjson::padded_string`, so it now declares capacity and copies nothing.
 
-- [x] A13.1 Root parse and splitter share one payload view.
-- [x] A13.2 `IngestRequest::payload_capacity` added; zero-copy when set, logged copy
-      when not. Covered by `ff_test_bundle`, which ingests the same bundle down both
-      paths and asserts the streams agree.
 - [ ] A13.3 Remaining copy: `build_bundle_entry_chunks` still copies every bundle
       entry into its own `padded_string`. Each entry lies inside the padded payload,
       so every entry already has ≥ SIMDJSON_PADDING readable bytes after it and the
@@ -3156,19 +3211,10 @@ Evidence (lldb, `EXC_BAD_ACCESS`, several runs):
 > as *the* trigger: that cliff is the same root cause seen through the single-resource path,
 > and bundles fail well above it.
 
-- [x] A14.1 Give `capacity_hint` a floor and a growth path. A minimum arena (not a magic
-      literal — derive it from `FF_HEADER` size plus a stated minimum block budget, with a
-      comment) plus either a retry-on-capacity or a first-class grow. Decide whether 2× is
-      the right multiplier at all, or whether the estimate should come from the parsed
-      token/element count rather than raw byte length; record the reasoning next to the
-      constant so the next reader does not have to re-derive it.
 - [ ] A14.2 Audit `claim_space()` failure handling on the worker path regardless of A14.1: a
       `FF_NULL_OFFSET` return used as an offset is the `0xffffffff` fault, and under-capacity
       must surface as a clean diagnostic naming the shortfall, never as a crash. This is the
       defect that outlives the sizing fix.
-- [x] A14.3 Check every other `Memory::create` call site for the same pattern —
-      `grep -rn "Memory::create" src/ tools/ python/ tests/` — including the Python bindings,
-      which are the next most likely place a user hits it.
 - [ ] A14.4 Add the tiny-bundle reproducer as a checked-in test (pairs naturally with B7's
       fixture work) and run it under ASan. Without it this regresses silently: no current
       fixture is small enough to catch it.
@@ -3215,9 +3261,6 @@ PEP 604 (`X | None`) in an *evaluated* annotation needs 3.10+. Three modules use
 can join the list silently. `pyproject.toml` already declares the intended floor
 (`target-version = py311` for ruff and black); CMake simply never enforced it.
 
-- [x] A19.1 `find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)` at `CMakeLists.txt:66`,
-  with a comment recording why. Verified: configure then selects 3.14.6 and succeeds.
-  *(Applied during Phase 0; commit alongside the rest of this task.)*
 - [ ] A19.2 Add `from __future__ import annotations` to the 15 modules that lack it, so the
   floor is a declared property of the code rather than an accident of which interpreter
   CMake found. `grep -L "from __future__ import annotations" $(find generator -name '*.py')`
@@ -3248,9 +3291,6 @@ The comment at `:285` records the previous half of this bug ("These were built b
 registered, so they compiled and never ran"). The registration was fixed; the build side was
 not, producing the exact inverse.
 
-- [x] A20.1 Append the six unit-test targets and `ff_roundtrip` to `_BUILD_ALL` inside the
-  `if(FASTFHIR_BUILD_TESTS)` guard. Reuse the same target list the `foreach` at `:287` walks
-  rather than writing it twice — a third copy is how this bug recurs. (6f7c9aa)
 - [ ] A20.2 Extend the comment at `:285` to say that a target must be in **both** places, and
   that `add_ff_cpp_test` does neither for you.
 - Acceptance: from a clean build dir, `cmake --build build --target build_all -j` followed by
@@ -3277,7 +3317,6 @@ Observed masking a real failure: the harness was genuinely missing (A20), and in
 intended "C++ harness not found: … Build with: cmake --build . --target ff_roundtrip", the
 run died with a `NameError`. Classic error-path-never-executed bug.
 
-- [x] A22.1 Add `DiffKind` to the import list. (6f7c9aa)
 - [ ] A22.2 Add a test that exercises both handlers — point the harness path at a
   nonexistent binary, and at a command that sleeps past the timeout — asserting the intended
   message reaches the caller. Without it the fix is unverified: neither branch has ever run.
@@ -3330,11 +3369,6 @@ emit) and the read path (vtable) — most likely the merge precedence A17 warns 
 walk one Encounter's `period` slot in a sealed stream against both the R4 and R5 vtables
 and name the divergent field.
 
-- [x] A23.1 Minimal repro + attribution (DONE 2026-08-13). Repro is now trivial: any
-      Synthea bundle with the 1-worker ingestor is deterministic; with N workers ~90% crash.
-      The element-level bisect (entry[] halving, leave-one-out, singles) found **no single
-      entry that crashes alone** — the corruption is not entry-local, it is the bundle
-      encode path itself.
 - [ ] A23.2 Walk one Encounter's `period` slot in a sealed stream against the R4/R5 vtables
       (`FF_Encounter_internal.hpp`, `FF_DataTypes_internal.hpp`), name the divergent field,
       and fix the generator (likely `generator/model/merge.py` layout precedence — A17's
@@ -3394,39 +3428,6 @@ and name the divergent field.
 > for the original two bugs; that doc's claim that the *scalar*-code case "actually agrees"
 > is true only by coincidence — see A8.2, now re-scoped.
 
-- [x] A23.3 Fix `print_json`'s empty-block emission (`"period":,` → skip or `{}`).
-      DONE 2026-08-14 — root-cause kind fix in `src/FF_Parser.cpp` (see above). Verified:
-      all 111 fixtures emit valid JSON (`for f in build/synthea_fhir_r4/*.json; do
-      ./build/ff_roundtrip "$f" | python3 -m json.tool >/dev/null`); Rodrigo fixture
-      183,572 → 215,274 bytes with `"period":{"start":"1994-01-17T16:25:04+00:00",...}`;
-      299 timestamps emitted. `py_roundtrip` still red on all 111 — now honestly, with
-      real structural diffs (dictionary-`code` value mismatches and choice-type
-      mismatches, write-side, tracked separately); previously the invalid-JSON emission
-      masked the comparison entirely.
-- [x] A23.5 Enforce the SIZE/STORE contract in `Builder::append_obj` (2026-08-14).
-      `TypeTraits<T>::store` now returns the absolute end offset (`generator/model/merge.py`
-      for generated blocks, `generator/library.py` for the hand-written specialisations),
-      and `include/FF_Builder.hpp` throws when `end != offset + data_size`, naming the
-      claimed bytes, the consumed bytes and the recovery tag. Same check on the
-      offset-array append path. **Keep this unconditional** — one comparison per resource
-      against silent cross-resource corruption is not a cost worth optimising away.
-      Note it is *detection*, not *containment*: it fires after the overrun bytes are
-      written, so under the multi-worker ingestor a neighbouring claim may already have
-      been issued. Containment (redzone claim + canary in a hardened build) is A23.8.
-- [x] A23.6 Fix the empty-string SIZE/STORE divergence (2026-08-14).
-      `src/FF_Primitives.cpp` — `SIZE_FF_STRING` no longer special-cases `""`.
-      `generator/emit/store.py` — the choice branch's SIZE dropped its `!arg.empty()`
-      guard, which the STORE side never had (52 regenerated sites). `SIZE_FF_CODE`,
-      `FF_Compactor::archive_string` and the ingestor's URL-segment path all short-circuit
-      on empty *before* delegating, so they are unaffected. Verified: both repro fixtures
-      `rc=0`, controls unchanged, `ctest` 31/32 (`py_roundtrip` red per A23.4).
-- [x] A23.7 Surface the worker fault cause (2026-08-14). `src/FF_Ingestor.cpp` —
-      `fatal_log_lines()` lifts the `[Fatal]` lines out of `ConcurrentLogger` into the
-      returned `FF_Result`. Workers cannot propagate an exception across the thread
-      boundary, so they log it and raise `m_engine_faulted`; nothing drained that buffer,
-      so A23.5's precise message reached every tool as "Ingestion aborted due to worker
-      thread crash. Check ingestor engine logs for error details." A fail-loud check that
-      fails into an unread buffer is a fail-silent check with extra steps.
 - [ ] A23.8 *(optional, decide before hardening further)* Contain rather than detect:
       have `append_obj` claim `data_size + REDZONE`, canary the redzone, and verify it
       after the store, so an overrun lands in dead space instead of the next resource.
@@ -3512,32 +3513,6 @@ echo '{"resourceType":"Bundle","type":"transaction","entry":[{"resource":
 > moved out of `TYPE_MISMATCH` and into `MISSING_KEY` — same defect, new symptom. Fabricated
 > defaults were inflating the apparent pass rate wherever they happened to guess right.
 
-- [x] A24.1 Emit an explicit unset sentinel for every generated code enum
-      (`generator/emit/codesystems.py`), defaulting the POD member to it
-      (`generator/model/merge.py`). No existing enumerator moved: the sentinel is **pinned
-      at 255**, not appended, so adding a code to a ValueSet cannot shift it. Nothing on the
-      wire depends on the ordinal — the wire carries the *dictionary code* from
-      `ENCODE_FF_CODE` — so this is a source-level change only. `codesystems.py` now raises
-      if a ValueSet reaches 255 codes rather than silently colliding (largest today:
-      `FF_FHIRTypes` at 231).
-- [x] A24.2 *(no change required — verified, not edited.)* `generator/emit/store.py` already
-      does the right thing for the sentinel: `serialize_*()` has no case for it and returns
-      `""`, `ENCODE_FF_CODE("")` returns `FF_CODE_NULL` having consumed 0 bytes, and
-      `SIZE_FF_CODE("")` returns 0. SIZE and STORE therefore stay in lockstep (A23.6) with
-      no new branch. The read-side half *did* need a change: `parse_*()`'s fallback returned
-      `static_cast<enum>(0)` for an unrecognised code, silently promoting it to a real one.
-- [x] A24.3 Array form (`code[]`) verified to agree — a sentinel element serialises to `""`
-      and takes the same `FF_CODE_NULL` path.
-- [x] A24.4 Reader verified: `print_json` already omits the key for `FF_CODE_NULL`. No edit
-      needed — the bare-Patient repro now emits exactly its input.
-- [x] A24.6 Make the enum's underlying type adaptive (2026-08-14, found *by* A24.1's guard).
-      `enum_underlying_type()` in `generator/model/type_map.py` picks `uint8_t` below 255
-      codes and `uint16_t` above; `codesystems.py` uses it for both the declaration and the
-      sentinel value. This was a **pre-existing latent corruption**, not sentinel fallout:
-      `FF_SPDXLicense` carries **346** codes, so under `profile=all` a `uint8_t` enum would
-      wrap values 256..345 onto 0..89 and silently alias distinct licences. The A24.1 guard
-      turned it into a build-time `ValueError` naming the enum and the count. No effect on
-      the default profile — all 72 enums remain `uint8_t`, `ctest` 31/32.
 - [ ] A24.5 Chase what the fabrication was masking: `identifier.use`, `priority` and
       `reaction.severity` are not stored at all (319 / 402 / 4 sites), and only looked
       correct because enum value 0 happened to equal the value Synthea writes. Likely the
@@ -3604,39 +3579,6 @@ print(list(src['entry'][0]), '->', list(out['entry'][0]))"
 # ['fullUrl', 'resource', 'request'] -> ['resource']
 ```
 
-- [x] A26.1 **Root cause found 2026-08-14 — it is neither the race nor a sizing bug.** The
-      drop is deterministic (the harness already runs `concurrency=1`) and falls on whole
-      *resource types*, not on individual entries: Claim 16, ExplanationOfBenefit 16,
-      SupplyDelivery 6, ImagingStudy 2, MedicationAdministration 1 — **100% of each**. None
-      of the five is in `US_CORE_RESOURCES` (28 entries,
-      `generator/model/structure.py:resolve_production_resources`), which is the default
-      `FASTFHIR_PRODUCTION_PROFILE=us` set, so the generator never emits a `_from_json` for
-      them. `dispatch_resource` falls through its `else if` chain, logs a warning that named
-      *neither the type nor the reason*, and returns `FF_NULL_OFFSET`;
-      `patch_Bundle_entry_from_json` then simply skips `wrapper[…RESOURCE] = child` and the
-      ingest returns `FF_SUCCESS`. The warning went to `ConcurrentLogger`, which nothing
-      drains — the A23.7 failure mode again, one layer down.
-      *(The earlier hypothesis list here — race, pre-filter count — was wrong; kept in git
-      history. The tell was that the losses were exactly type-aligned.)*
-- [x] A26.2 Make the loss loud (2026-08-14) — **partially: it now reports, it does not yet
-      refuse.** `generator/emit/ingest_mappings.py` tags the line `[Skipped]` and names the
-      type and the reason; `src/FF_Ingestor.cpp:skipped_summary()` aggregates by type and
-      returns it in the `FF_Result` message on the success path; `tests/cpp/ff_roundtrip.cpp`
-      prints a non-empty message to stderr. Verified — stdout still carries only the
-      document, and a bundle with no out-of-profile types produces **zero** stderr bytes:
-      ```
-      FastFHIR: 41 bundle entries were DISCARDED — resource type not in this build's
-      profile: Claim x16, ExplanationOfBenefit x16, ImagingStudy x2,
-      MedicationAdministration x1, SupplyDelivery x6
-      ```
-- [x] A26.2b **Policy decided by Ryan, 2026-08-14: preserve unknown resources verbatim.**
-      "We can't silently drop clinical data. That's a never event." The intended end state
-      is a lookup — consult a module registry for a generated handler for the type, and
-      **fall back to verbatim JSON when there is none** — which is the same shape as the
-      existing `EXT_REF` routing in `FF_Extensions` (registered WASM codec / retained URL /
-      suppression) and the Vulkan-style discovery planned in Block J. Planned in **A27**.
-      Ryan also wants the default profile moved to `all`; see A27's cost note — that is a
-      separate and much larger action, and it does *not* remove the never-event.
 - [ ] A26.3 Store and emit `entry.fullUrl` and `entry.request`. **Root cause found:** this
       is not a store-side gap — those fields are never parsed. The bundle-entry patcher is a
       hardcoded string in `generator/emit/ingest_mappings.py` (~line 495) whose loop body is
@@ -3707,122 +3649,12 @@ which is itself worth fixing.
 - [ ] A27.4 Read path: `print_json` re-emits the stored bytes verbatim, so a bundle
       round-trips to its input. This is what finally makes A23.4 / A26 acceptance reachable
       (`250 -> 250`).
-- [x] A27.5 **Composable resource groupings, not `profile=all`** (2026-08-14). Ryan:
-      "let's make the IG field an array … we can have a number of accepted groupings."
-      `FASTFHIR_PRODUCTION_PROFILE` now takes a comma-separated list and the generator
-      compiles the **union** — real deployments compose (a payer needs US Core *and*
-      claims), which the old mutually-exclusive `us|uk|all` could not express.
-      `RESOURCE_GROUPINGS` in `generator/model/type_map.py` is the single place a grouping
-      is defined; `us`/`uk` stay as aliases. Groupings: `us-core` (28), `uk-core` (23),
-      `billing` (5 — EOB, Claim, ClaimResponse, PaymentNotice, PaymentReconciliation),
-      `all` (275, absorbs everything). CMake option and README updated.
-      Verified: `us-core` alone emits **byte-identical C++** to the old `us` (only
-      `FF_IngestMappings.cpp` differs, by exactly the 1 line A26.2 intended); union
-      deduplicates; names are case- and whitespace-insensitive; an unknown name fails
-      naming the valid set. Order is first-seen rather than sorted precisely so the default
-      profile's output cannot shift — the generator is deterministic and a diff between
-      runs must mean a real change.
-      **Why not `all`:** measured, `billing` costs **61** new recovery tags against 884 for
-      `all`, and `all` does not remove the never-event — any type outside whatever is
-      compiled still hits the same `else`. A27.1–A27.4 remain the actual fix.
-- [x] A27.5c **Band map re-cut for the whole FHIR spec — DONE 2026-08-14.**
-      Ryan: *"we need bound checks for the resource vs scalar tags to make sure we're not
-      overflowing into each other by accident… NO ONE USES FFHR YET. Now is the time."*
-
-      | band | range | slots | used | headroom |
-      |---|---|---|---|---|
-      | Core Primitives | `0x0000–0x00FF` | 256 | 10 | 26× |
-      | Inline Scalars | `0x0100–0x01FF` | 256 | 10 | 26× |
-      | Data Types | `0x0200–0x0FFF` | 3,584 | 66 | 54× |
-      | Resources | `0x1000–0x1FFF` | 4,096 | 178 | 23× |
-      | Sub-elements | `0x2000–0x7FFF` | 24,576 | 711 | 35× |
-
-      "used" is the whole spec (R4 ∪ R5), not the compiled profile. Note the corrected
-      counts: **178** concrete resource types and 711 BackboneElement paths, not the 275
-      reported earlier — `_discover_resource_names` counts 98 profiles/constraints
-      (`derivation == "constraint"`: `ActualGroup`, `CDSHooksGuidanceResponse`,
-      `CQF-Questionnaire`…) as if they were resource types. That over-count is its own bug,
-      filed as A29.1.
-
-      Resources moved `0x0300 → 0x1000` (30 tags), Sub-elements `0x0400 → 0x2000` (87).
-      Primitives and Inline Scalars did **not** move, so the four open-coded
-      `(x & 0xFF00) == RECOVER_FF_SCALAR_BLOCK` tests stayed valid. `FF_IsResourceTag`
-      became a range check — as a high-byte test it would have returned false for every
-      resource above `0x03FF`, i.e. all but 29 of them. Added `FF_IsBackboneTag`.
-
-      **Bound checks, both layers:**
-      - C++ `static_assert`s in `FF_Recovery.hpp`: bands partition `0x0000–0x7FFF` with no
-        gap or overlap; each block base sits in its own band; each band is ≥ what the spec
-        already needs (178 / 711 / 66). These fired for real during the work — a blanket
-        regex rewrote the boundary constants and left `RESOURCE_FIRST=0x1000` with
-        `RESOURCE_LAST=0x0FFF`; the ordering assert caught it.
-      - `generator/utilities.py:validate_recovery_bands()`, wired into `library.py` and run
-        every generate: every tag inside a band, and **no duplicate values** — a C++ enum
-        accepts two enumerators with the same value silently, which would make two block
-        types indistinguishable on the wire. Verified against injected faults: an
-        out-of-band tag and a duplicate value are both caught; the real header passes.
-
-      Verified: `ctest` 31/32, `pytest tests/generator` 46 passed, generator clean.
-      `cpp_ff_test_primitives` pinned the old values and was updated
-      (`RECOVER_FF_PATIENT` `0x0314 → 0x1014`), plus a new
-      `test_recovery_band_classification` covering band edges and the array-bit path.
-- [x] A27.5d **`FF_Recovery.hpp` is now generated from a committed tag ledger — DONE
-      2026-08-14.** Ryan's spec: *"FF_Recovery is generated when a new release of FHIR (like
-      R6) drops. It checks to make sure no drift occurred that causes corruption but yes it
-      stays IN THE REPO. It should keep it all."*
-
-      `dictionaries/master_tags.json` is the ledger — the same model `master_codes.json`
-      already uses for the 5,796 dictionary IDs, which recovery tags had no equivalent of.
-      `generator/emit/recovery_tags.py` reconciles it against the FHIR packages and emits the
-      header; `pipeline.py` runs it before anything that references a tag.
-
-      - **Keeps it all: 166 → 978 tags**, the whole spec (R4 ∪ R5), not the compiled
-        profile — 66 datatypes, 178 resources, 711 backbone paths, plus FastFHIR's own
-        primitives/scalars which are hand-seeded (nothing in a StructureDefinition implies
-        `FF_HEADER` or `FF_CHECKSUM`).
-      - **Stays in the repo**, committed and diff-reviewed, like `dictionaries/`.
-      - **Profile-independent**: byte-identical md5 under `us-core`, `us-core,billing` and
-        `all`. This closes the asymmetry found in A15 — dictionaries were already
-        profile-independent while tags were not. A permanent wire artifact must not depend
-        on build configuration.
-      - **Drift = corruption, and it is checked**: `assert_no_drift()` compares each run
-        against the committed ledger. Verified against injected faults — a renumbered tag
-        (`RECOVER_FF_PATIENT 0x1014 → 0x1099`) and a deleted tag are both caught; an
-        *append* correctly passes. `reconcile_tag_ledger()` refuses rather than spilling
-        past a band boundary, which would silently mis-classify every tag beyond it.
-      - **Deterministic**: two runs produce an identical header; re-running appends 0.
-      - Values are stored as hex strings keyed by enumerator, per Ryan's
-        `"Coding": 202` — `RECOVER_FF_CODING` is `0x0202`, unchanged.
-
-      All 166 pre-existing values are unchanged (verified name-by-name), so this was a pure
-      addition: the wire golden went 166 → 978 tags and updated **without** `--force`,
-      which is the append-only story proving itself. `ctest` 31/32, `pytest tests/generator`
-      46 passed. CLAUDE.md updated — the header is no longer hand-maintained, and is listed
-      under "never hand-edit generated files".
 - [ ] A27.5e Profile-filtered emission is deliberately NOT implemented. Ryan offered it
       ("if that makes compilation more palatable"), but a 978-entry enum costs a compiler
       nothing, and a header whose contents varied with the profile would reintroduce exactly
       the build-configuration dependency this task removed. Revisit only if the enum ever
       becomes a measurable compile cost — and if so, filter the generated *C++ structs*,
       which is already what the profile does, not the tag registry.
-- [x] A27.5f Everything above is *capacity and identity*. The tags for the other 150 resources and ~625
-      backbone paths still have to exist before `all` can be selected. At ~900 hand-written
-      entries this is no longer a hand-maintenance job — decide whether
-      `include/FF_Recovery.hpp` stays hand-maintained (CLAUDE.md's current rule, with the
-      generator only validating) or becomes generated with the *values* pinned by a
-      committed ledger like `master_codes.json`. The ledger model already solved exactly
-      this problem for 5,796 dictionary codes; recovery tags have no equivalent.
-      > **RESOLVED — it became generated, pinned by a ledger.** Decided and shipped by
-      > A27.5c/d (see the DONE note above): `dictionaries/master_tags.json` is the
-      > committed tag ledger, `generator/emit/recovery_tags.py` reconciles it against the
-      > packages append-only and emits `include/FF_Recovery.hpp`, and `assert_no_drift`
-      > fails if an existing value moved or vanished — exactly the `master_codes.json`
-      > model this item asked for. Discovery is whole-spec, so the header no longer
-      > varies with the profile and the tags for every grouping already exist: 978 in the
-      > ledger, including `RECOVER_FF_ACCOUNT` (0x101D), `RECOVER_FF_CLAIM` (0x1030) and
-      > `RECOVER_FF_EXPLANATIONOFBENEFIT` (0x1053) — the very tags A27's error message
-      > cites as missing. Ticked 2026-08-18 as a record of a decision already taken, not
-      > new work.
 - [ ] A27.5c-old **superseded — kept for the reasoning.** Original note: settle the band
       layout before appending ANY tag. Tags are permanent, so a band cannot be re-cut later; appending billing tags at
       `0x03xx` now and discovering the band is too small afterwards is unrecoverable.
@@ -3857,19 +3689,6 @@ which is itself worth fixing.
       keep its identity either way. Nothing dispatches on the sub-element band, so it is the
       cheapest to widen. Whatever is chosen, write it into the header's Convention comment —
       that comment is currently the only specification of the layout.
-- [x] A27.5b Append the 61 `billing` recovery tags so `us-core,billing` can be selected.
-      > **OBSOLETE (2026-08-19) — done by the ledger, not by this task.** Tag discovery is
-      > profile-independent: `dictionaries/master_tags.json` covers the whole R4 ∪ R5 spec
-      > (978 tags), so the billing tags already exist and no manual append is needed.
-      > Verified: `RECOVER_FF_CLAIM = 0x1030`, `RECOVER_FF_EXPLANATIONOFBENEFIT = 0x1053`.
-      > The original text below is kept for the reasoning only.
-      > ~~Permanent wire constants — **append, never
-      renumber**, and get sign-off first. Until then the grouping is defined but
-      unselectable: the generator's tag gate refuses it and names all 61
-      (`FASTFHIR_PRODUCTION_PROFILE=us-core,billing python -m generator` to list them).
-      Note Synthea's other three dropped types (SupplyDelivery, ImagingStudy,
-      MedicationAdministration) belong to no grouping — they are exactly the case A27.1–4
-      exists for, which is why the passthrough is the fix and the grouping is a convenience.
 - [ ] A27.7 Derive the groupings from the published IG packages instead of transcribing
       them. `US_CORE_RESOURCES`/`UK_CORE_RESOURCES` are hand-maintained lists carrying no IG
       **version**, so drift against a republished IG is undetectable, and the version
@@ -4025,33 +3844,6 @@ compares a *value*. The only value pinning anywhere is four hand-written asserti
 `include/FF_Recovery.hpp` declares 168 enumerators. **164 permanent wire values are
 unguarded** — editing one is caught by code review alone.
 
-- [x] A15.1 Extend `witness()` to read tag values from `include/FF_Recovery.hpp` and code
-  values from `dictionaries/FF_Codes.hpp`, in addition to the generated tree. Both are
-  committed, so the witness stops depending on a network regeneration for those sections.
-  Signature change: pass the repo root (or both explicit paths) alongside `generated_dir`;
-  update the two call sites (`test_wire_format.py`, the `__main__` block) and the module
-  docstring, which currently describes only the generated tree.
-- [x] A15.2 Replace the `_CODE` regex with one matching the real emission —
-  `FF_CODE_DEF <NAME> = <int>;` qualified by its enclosing `namespace` so
-  `FF_CODE::UCUM::MMHG` and `FF_CODE::FHIR::…::MALE` are distinct keys. Values are decimal,
-  not hex. Fix the docstring example in the same edit.
-- [x] A15.3 Add `test_witness_sections_are_non_empty` asserting every section of a freshly
-  built witness has entries, with a message naming the regex that stopped matching. This is
-  the check whose absence let A4.1 be marked done against an empty golden; without it, any
-  future emitter rename silently re-empties a section.
-- [x] A15.4 Regenerate the golden and commit it with this change (per `CLAUDE.md`, a golden
-  update needs a corresponding generator or test change in the same commit — A15.1/A15.2
-  are that change). The diff must be **additions only**: `vtables` unchanged, `tags` and
-  `codes` populated from nothing.
-- [x] A15.5 DONE 2026-08-14 — `--force` implemented, and needed immediately: the
-      A27.5c band re-cut is a legitimate pre-release wire change and the tool had no way to
-      record one. Without it, refuses and lists every violation; with it, prints
-      `!! --force: OVERRIDING 115 permanence violation(s) !!` plus each one and a warning
-      that prior archives are now undecodable. Original note: the permanence error tells the user
-  to "use `--force` to override", but `__main__` (`:197`) takes exactly two positional
-  arguments and `grep -rn '\-\-force' generator tests` finds only that message. Either
-  implement the flag or rewrite the message to describe the real procedure (documented in
-  `CLAUDE.md` → Build & test).
 - [ ] A15.6 While in this file: `_OFFSET_FIELD` (`wire_witness.py:45`) requires a line
   ending in `,` or end-of-line, so a vtable entry carrying a trailing `// comment` would
   drop out of the captured field `order` and the gate would still pass on a shorter list.
@@ -4356,6 +4148,14 @@ compile smoke test is the nearest existing relative and is complementary, not a 
   (`"already assigned"`, `"out of bounds"`, `"finalizing"` throws).
 
 Order matters: C1 → C2 → C3…C8. `Blocked on Q1` for C1.
+
+> **Read P0-3 first (top of this file).** Every edge in the format carries two
+> independent witnesses — the parent's slot (offset + compiled `child_recovery`)
+> and the child's `DATA_BLOCK` header (`VALIDATION` + `RECOVERY`) — so a single
+> corruption is reconstructible from the surviving side, in both directions. C3
+> and C4 below are that same reconciliation applied to `FF_HEADER`'s pointer
+> fields; write them against P0-3's vocabulary (`FF_RecoveryReport`, Case 1 /
+> Case 2, the disambiguation ladder) rather than inventing a second one.
 
 - [ ] C1. **`recover_archive(...)` orchestrator** `Unblocked` (Q1 answered: copy-swap per element)
   Add `FF_RecoveryReport recover_archive(Memory&, FF_RecoveryPolicy)` (free function or
@@ -4707,9 +4507,6 @@ cite, quantify, and regression-guard.
   so it catches catastrophic regressions (accidental O(N²), heap allocation on the read
   path) without being flaky on shared CI runners. Full comparative benchmarking stays in
   the benchmark repo; this is a tripwire, not a benchmark.
-- [x] F4. **Keep the benchmark repo honest:** when a task in this file changes the public
-  API or wire format, note the change for FastFHIR-benchmark (open an issue there or
-  re-run it). Codified as Execution contract rule 9 above. (151e025)
 - Verify (block): README benchmark section renders with a working repo link;
   `ctest -R cpp_test_perf_smoke` passes; every performance adjective in README has a
   citation or was scoped.
@@ -4953,22 +4750,33 @@ in FastFHIR targets.
         G4 lands (then G4's commit reverts this).
   - [ ] I3.5 Replace/anchor unquantified performance adjectives with citations to the F2
         benchmark table (do together with F2).
-- [x] I4. **Contribution surface** — done 2026-07-08 alongside I5: `CONTRIBUTING.md`
-  (build prerequisites, two style regimes, wire invariants, TASKS.md claim workflow,
-  DCO sign-off; the FF-SSL right-to-repair path is obsolete under MPL), GitHub issue +
-  PR templates under `.github/`, and a README roadmap link (in the License section).
-- [x] I5. **License migration to MPL-2.0** — done 2026-07-08 per Q10's answer:
-  1. ✔ `LICENSE` replaced with canonical MPL-2.0 text (373 lines, verbatim).
-  2. ✔ Every FF-SSL source-header notice replaced with the MPL Exhibit A notice
-     (`grep -rn 'FF-SSL' src/ include/ tools/ python/ tests/ generator/` → empty).
-     Note: the generator's `auto_header` emitter carries no license line, so generated
-     files (`dictionaries/`, `generated_src/`) needed no change.
-  3. ✔ README badge + License section rewritten; CLAUDE.md license text updated.
-     `pyproject.toml` has no `[project]` table yet — **H1 must set
-     `license = "MPL-2.0"` when it creates the packaging metadata.**
-  4. ✔ H3/H5 unblocked (MPL-2.0 is OSI-approved, registry-friendly).
-  5. ✔ `TRADEMARK.md` conformance policy + `NOTICE` attribution file added.
-  6. ✔ DCO requirement in `CONTRIBUTING.md`; the enforcing PR check lands with CI (E1).
+  - [ ] I3.6 **The orjson citation in § 1 cites a result that does not exist.** README.md:67
+        reads "Measured at 2.4–3.4x the receiver-side throughput of an `orjson` JSON
+        pipeline across 1.7–162 MB bundles (FastFHIR-benchmark, Test 1)." Three defects,
+        reported by the benchmark repo 2026-08-26: (a) **there has never been an orjson
+        arm** — the four arms are FastFHIR, nlohmann+simdjson, HL7v2, protobuf; the string
+        "orjson" appears nowhere in that repo's code; (b) **"receiver-side" is not Test 1**
+        — Test 1 is serialize (sender side), the receive/materialize stage is Test 2
+        (`bench/harness.hpp:38`); (c) **1.7–162 MB are not sweep points** — the ladder is
+        powers of two (1/2/4/8/16/32/64/256 MB) and nothing has been run above 16 MB.
+        Until an orjson arm exists (benchmark handoff.md Instrument A), either drop the
+        ratio or mark it provisional. Do not leave a specific number attributed to a test
+        that did not produce it — that is exactly what rule 9 / F4 exist to prevent.
+  - [ ] I3.7 **The compact-archive size table may itself be a lossy measurement.** The
+        −66 % / −41 % figures in § 7 "Size Savings" entered README.md on 2026-04-27
+        (`d9b086f`) and the bytes have never changed since
+        (`git log -S"1 041" -- README.md` returns that one commit). Compaction was
+        **dropping every scalar array, the whole URL intern table and every
+        `Attachment.data`** until `459e8d8` (2026-08-23, CMP-1). The table's own sparse
+        example is `Patient (id, gender, active, name/given/family)` — `given` is a scalar
+        string array, i.e. one of the dropped categories, so some of that 66 % may be data
+        the compactor deleted rather than packed. Nothing pins those numbers today:
+        `tests/cpp/test_compactor.cpp:147` only asserts `compact_view.size() <
+        twin_view.size()`. Re-measure post-CMP-1 and pin the two figures in
+        `ff_test_compact_roundtrip` (which already requires byte-identical export), or
+        mark them provisional. handoff.md § 3 already says these figures "do not
+        generalise to Synthea"; it does not say they may be wrong for the resource they
+        were measured on.
 - Verify (block): docs render; a reviewer unfamiliar with the code can describe the
   header byte layout from SPEC.md alone; README contains no unscoped claims flagged in I3.
 
@@ -5888,81 +5696,6 @@ pre-existing failure — see the profile/allowlist note in that test).
 
 ---
 
-# ▶ WORK ORDER — FF_* out-params are not cleared on the argument-check path
-
-Written 2026-08-21, found from the Iris side: `Iris::create_memory_arena`
-(`Iris-Headers/priv/IrisMemory.hpp`) was written by copying `FF_CreateMemory`'s
-shape, inherited this ordering with it, and a probe over the new function's
-branches caught it there. The same probe run against these would fail the same
-way. Iris fixed it by clearing first; this is the same fix upstream.
-
-**The defect.** Every out-param entry point promises the handle is emptied when
-the call fails — `@p out_memory is null on failure` (`FastFHIR.hpp:187`),
-`@p out_stream is null on failure` (`:211`), `@p out_parser is invalid (bool
-false) on failure` (`:269`). The clear happens *after* the argument checks, so
-the `FF_Invalid` early return skips it. A caller reusing a handle across calls
-keeps the object it believes was just replaced, and `FF_INVALID_ARGUMENT` is
-precisely the case where a caller is already confused about what it passed.
-
-Nothing is corrupted and nothing leaks — the handles are `shared_ptr` and value
-types. It is a contract the header states and the code does not keep.
-
-**Affected — seven, in two files.** `src/FF_API.cpp`: `FF_CreateMemory` (54
-before 55), `FF_CreateStream` (88/90 before 91), `FF_StreamFinalize` (116
-before 117), `FF_StreamQuery` (126 before 127), `FF_Parse` (137 before 138),
-`FF_Compact` (148 before 149). `src/FF_Ingestor.cpp`: `FF_Ingest` (1446–1449
-before 1450–1451, both out-params).
-
-**Not affected.** `FF_CreateIngestor` (`FF_Ingestor.cpp:1433`) already clears
-first — **it is the precedent, so this is a consistency fix rather than a new
-convention**. `FF_MemoryReset`, `FF_StreamSetRoot` and `FF_IngestInsertAtField`
-take no out-param.
-
-### Precheck
-
-```bash
-cd /Users/ryanlandvater/GitHub/FastFHIR
-awk '/^FF_Result FF_CreateMemory/,/^}/' src/FF_API.cpp
-awk '/^FF_Result FF_CreateIngestor/,/^}/' src/FF_Ingestor.cpp
-```
-
-**Expect:** in the first, `return FF_Invalid(...)` *above* `out_memory.reset();`.
-In the second, `out_ingestor.reset();` as the **first** statement of the body.
-If they already agree, the fix has landed — stop and say so.
-
-### The edit
-
-Move the clear above the argument checks in all seven, so it is the first thing
-every one of them does. One line moved per function; no logic changes, and
-`FF_Guard` is untouched.
-
-- [x] `FF_CreateMemory` — clear first (src/FF_API.cpp)
-- [x] `FF_CreateStream` — clear first (src/FF_API.cpp)
-- [x] `FF_StreamFinalize` — clear first (src/FF_API.cpp)
-- [x] `FF_StreamQuery` — clear first (src/FF_API.cpp)
-- [x] `FF_Parse` — clear first (src/FF_API.cpp)
-- [x] `FF_Compact` — clear first (src/FF_API.cpp)
-- [x] `FF_Ingest` — clear both out-params first (src/FF_Ingestor.cpp)
-- [x] Contract test — `tests/cpp/test_api.cpp` (`ff_test_api` ctest target):
-  passes an already-populated handle into each of the seven with deliberately
-  invalid arguments and asserts the handle is empty afterwards. **All DONE
-  2026-08-21** — verified by `ctest -R ff_test_api`.
-
-**Done when:** a test passes an already-populated handle into each of the seven
-with deliberately invalid arguments — `FF_CreateMemory` with both `shm_name`
-and `filepath` set, `FF_Parse` with a null buffer, and so on — and asserts the
-handle is empty afterwards. **Red before the move, green after**; a test that
-passes both ways is testing nothing, which is how this survived review three
-times (the `docs/api.adoc` sweep above went claim-by-claim over these same
-functions and did not catch it, because the header and the doc agree — it is
-only the code that disagrees with both).
-
-**Rules:** do not commit; do not edit `generated_src/`; verify with
-`cmake --build --preset ninja && ctest --preset ninja` (py_roundtrip is a
-pre-existing failure).
-
----
-
 # ▶ WORK ORDER — TEST REGISTRATION EXTRACTED TO tests/tests.cmake + tests/tests.bzl
 
 Written 2026-08-21. All test registration lived inline in `CMakeLists.txt`
@@ -5970,27 +5703,6 @@ Written 2026-08-21. All test registration lived inline in `CMakeLists.txt`
 Python suite), making the root build file long and hard to read. The Bazel side
 (`BUILD.bazel`) had the same problem in miniature — and only 4 of the 10 C++
 unit suites.
-
-## Done (2026-08-21)
-
-- [x] `tests/tests.cmake` — the entire `if(FASTFHIR_BUILD_TESTS)` block moved
-  verbatim (self-gating include): `add_ff_cpp_test` helper, ASIO FetchContent,
-  Synthea download, `ff_test_readme` + `ff_roundtrip` executables, the 10 unit
-  suites, all CTest entries (standalone foreach, `_add_cpp_test` README
-  sub-tests, dependency chains, resource locks), and the full Python suite
-  (`py_setup`, `py_test_1..10`, `py_roundtrip`, PYTHONPATH, locks).
-- [x] `CMakeLists.txt` — the block replaced with `include(tests/tests.cmake)`;
-  457 lines (was ~700).
-- [x] `tests/tests.bzl` — `fastfhir_tests(copts)` defines all 10 C++ unit
-  suites + `test_readme` + the `ff_roundtrip` cc_binary. Labels are
-  root-package forms (`//:fastfhir`, `//:tests/cpp/test_x.cpp`) — `tests/` has
-  no BUILD file, so `//tests:...` labels are invalid, and .bzl labels resolve
-  against the containing package (`//tests`) anyway.
-- [x] `BUILD.bazel` — inline `cc_test` block replaced with
-  `load("//:tests/tests.bzl", "fastfhir_tests")` + `fastfhir_tests(copts =
-  _COPTS)`; test set completed (added the 6 missing suites: test_amend,
-  test_cc, test_bundle, test_compactor, test_graph_bounds, test_datetime,
-  test_api).
 
 ## Verified
 
@@ -6040,16 +5752,6 @@ reproduces it identically.
    never emitted as a real field's `child_recovery`. The reader fix below
    derives choice `target_recovery` from the **runtime tag in the slot**
    instead — the sentinel stays reserved.
-
-## Already fixed (2026-08-21)
-
-- **Choice `value[x]` mislabeling** (`valueString` for `valueDecimal`): both
-  `standard_node_lookup_field` and `compact_node_lookup_field` now read the
-  runtime variant tag from the slot (`slot + DATA_BLOCK::RECOVERY`) for
-  `FF_FIELD_CHOICE`, so `get_choice_suffix` labels correctly. Verified:
-  extension `value[x]` now emits `"valueDecimal": 42.1426`; fixture diffs
-  4,213 → 4,189. (The earlier proposal to emit `FF_RECOVER_UNDEFINED` as the
-  choice `child_recovery` was wrong — see finding 5.)
 
 ## Remaining defects (≈4,189 diffs per fixture)
 
@@ -6116,3 +5818,441 @@ Real options, both Ryan's call:
 **Scope: zero round-trip impact.** Four fields carry `positiveInt` variants
 (`dosenumber`, `targetitem`, `value`); none appear in the Synthea corpus, so
 neither option moves the diff count.
+
+---
+
+# ▶ WORK ORDER — PUBLIC API GAPS FOUND BY THE FIRST EXTERNAL CONSUMER
+
+**Filed 2026-08-26 from `../FastFHIR-benchmark`**, while porting the four-arm harness to
+the post-`a9fd4e9` API and making it produce numbers again. Field report:
+`../FastFHIR-benchmark/notes.md`.
+
+These are **not** correctness bugs in FastFHIR's own gates — 342/342 round-trip, ctest
+41/41 and the wire gate all pass over every one of them. They are gaps in what a
+*consumer* can do through the **public** surface, and the benchmark is the first code
+outside this repo to lean on that surface hard enough to find them. Three of the six
+(CAPI-1, CAPI-2, CAPI-3) let a consumer produce a **structurally invalid stream with no
+compile error and no validator complaint**, which is the class of defect this project is
+built to make impossible.
+
+Per rule 1, claim one CAPI ID per session. Per rule 2, run the *Locate* line first.
+
+## CAPI-1 — No public API for writing an inline-block array (P1)
+
+**Locate:**
+```bash
+grep -n "STORE_FF_CODEABLECONCEPT" generated_src/FF_DataTypes.hpp generated_src/FF_DataTypes_internal.hpp
+```
+
+**Current state.** Two overloads exist and only the wrong one is public:
+
+| Header | Signature | Visibility |
+|---|---|---|
+| `generated_src/FF_DataTypes.hpp:181` | `STORE_FF_CODEABLECONCEPT(base, start_off, data, ver)` | public, self-contained |
+| `generated_src/FF_DataTypes_internal.hpp:328` | `STORE_FF_CODEABLECONCEPT(base, hdr_off, child_off, data, ver)` | **`_internal`** |
+
+`TypeTraits<T>::store` (e.g. `FF_DataTypes.hpp:650`) forwards only to the 3-argument form.
+An `FF_ARRAY::INLINE_BLOCK` field — `Observation.category` is the one that bit us — stores
+entry *i* as a fixed-size block header at `entries_start + i*HEADER_SIZE` with its
+variable-length tail in child space. Writing that requires the 4-argument overload, which
+a consumer cannot reach.
+
+**What a consumer hits.** The benchmark wrote a `vector<Offset>` into the entries region,
+because that compiles and looks right. The reader then walked 8-byte offsets as inline
+`CodeableConcept` headers and dereferenced payload text as a string offset:
+
+```
+SEGV in FF_STRING::read_view <- FF_CODEABLECONCEPT::deserialize
+     <- FF_OBSERVATION::deserialize <- Node::as<ObservationData>()
+```
+
+No compile error. No validator error (see CAPI-2). The only signal was a segfault three
+layers down in generated code, which reads as a FastFHIR bug, not a caller bug.
+
+**Ask (either is sufficient):**
+1. Promote a typed array writer to the public surface — `Builder::append_array<T>(handle,
+   key, std::span<const T>)` — that owns the header/child split so a caller never computes
+   it; **or**
+2. `static_assert`/reject at the public `TypeTraits<T>::store` when the target field is an
+   inline-block array element, so the wrong path fails to compile instead of emitting a
+   stream that segfaults on read.
+
+**Why it matters here.** Field-by-field resource assembly is what an EHR integration
+actually does, and it is what the benchmark's parity layer must do to keep all four arms
+writing the same field set through the same shape of call. Without this, FastFHIR is the
+one arm that cannot be driven field-by-field, which forces the benchmark to choose between
+parity and correctness. See also CAPI-3 — same root shape, different field kind.
+
+## CAPI-2 — `validate_FFHR_stream()` accepts streams the deserializer segfaults on (P1)
+
+**Current state.** The stream CAPI-1 produced returned `FF_SUCCESS` from
+`validate_FFHR_stream()`. The array header and its offsets are self-consistent by the
+validator's rules; only the *generated deserializer* walks those entries as blocks and
+discovers they are not blocks.
+
+**What a consumer hits.** "It validates" was the only check the benchmark had after Test 1
+(serialize), and it certified a stream that could not be read. A validator that returns
+success on an unreadable stream is worse than no validator, because it terminates the
+search for the bug.
+
+**Ask:** either strengthen the validator to walk arrays the way the deserializer does
+(dispatch on the header tag — this is AR-1's discipline applied to validation), or
+document precisely what `validate_FFHR_stream()` does and does not cover, in the function's
+own doc comment, so a consumer knows it is a structural check and not a readability
+guarantee.
+
+**Note:** `ff_test_roundtrip_validate` already walks ~70k nodes / ~8.2k arrays per fixture
+and fails on arrays whose entries all read back empty. That is the check the validator
+lacks; the gap is that it lives in the test suite, not in the API a consumer can call.
+
+## CAPI-3 — Block-typed `ChoiceEntry` cannot round-trip across arenas (P1)
+
+**Locate:**
+```bash
+grep -n "data.value.value = child_off" generated_src/FF_Observation.cpp
+```
+
+**Current state.** `deserialize` writes the **source arena's** child offset into the
+`uint64_t` alternative of the POCO's `ChoiceEntry` (`generated_src/FF_Observation.cpp:319`,
+`else data.value.value = child_off;`). The POCO carries no base pointer, so that number is
+meaningless anywhere except the arena it came from. `store` then writes it back out as an
+integer. **`deserialize` → `store` is therefore not an identity for block-typed choices**,
+and the failure is silent in both directions.
+
+Three shapes reach the `uint64_t` alternative and only some are portable — the benchmark
+needed three attempts to get this predicate right, because it is not the kind/tag that
+decides portability but a **flag bit inside the payload**:
+
+| Kind | Payload | Portable? |
+|---|---|---|
+| `FF_FIELD_BLOCK` | child offset | **no** |
+| `FF_FIELD_CODE` | dictionary index (MSB clear) | yes |
+| `FF_FIELD_CODE` | packed `FF_CODEABLE_CONCEPT` offset (MSB set) | **no** |
+| `FF_FIELD_DATETIME` | packed civil value (bit 63 clear) | yes |
+| `FF_FIELD_DATETIME` | fallback offset to an `FF_STRING` (bit 63 set) | **no** |
+
+A BLOCK-only test misses ~337 slots per Synthea corpus, because `us-core-race` /
+`us-core-ethnicity` carry `valueCode` — and those corrupt the destination stream just as
+thoroughly.
+
+**Ask, in preference order:**
+1. **Carry the source base in the POCO** (or in `ChoiceEntry`), so a deserialized choice
+   knows where it came from and `store` can deep-copy it into the destination arena. This
+   makes hydrate→rebuild an identity, which is what every consumer will assume it is.
+2. **Provide the deep copy at the API boundary** —
+   `Builder::append_choice(handle, key, const ChoiceEntry&, const Parser& source)` — so the
+   caller supplies the missing base explicitly and the library does the block copy.
+3. **At minimum, make it loud.** `store` should reject a non-portable `ChoiceEntry` whose
+   base is unknown rather than writing a foreign offset into a slot tagged as a block.
+   Silent corruption is the worst available behaviour and is what happens today.
+
+**Scale on real data.** Counted across the 342 Synthea fixtures the benchmark ships,
+2026-08-26 — 246,878 `value[x]` occurrences:
+
+| Variant | Count | Share | Crosses arenas today? |
+|---|---|---|---|
+| `valueQuantity` | 142,517 | 57.7 % | **no** — block |
+| `valueCodeableConcept` | 86,421 | 35.0 % | **no** — block |
+| `valueReference` | 4,845 | 2.0 % | **no** — block |
+| `valueInteger` / `valueString` / `valueBoolean` / `valueDecimal` | 11,751 | 4.8 % | yes — scalar |
+| `valueCoding` / `valueAddress` | 1,008 | 0.4 % | **no** — block |
+| `valueCode` | 336 | 0.1 % | only when the payload is a dictionary index |
+
+**95.1 % of every choice value in a real Synthea corpus is a shape that cannot survive
+`deserialize` → `store`.** This is not an edge case in the consumer's data; it is nearly
+all of it.
+
+**Why it matters here.** This is the single item blocking the benchmark from measuring
+`value[x]` — and `valueQuantity` / `valueString` / `valueCodeableConcept` are exactly the
+fields README § 2 leads with under "Native FHIR Polymorphic Type Support". Verified
+2026-08-26: **protobuf represents these natively** (`ValueX` `oneof`,
+`third_party/google_fhir/.../observation.proto:159`) and **HL7v2 represents them natively**
+(OBX-2 value type + OBX-5), so this is not a case where the competing formats cannot
+follow. The benchmark currently blanks these fields in *every* arm to keep the arms
+byte-identical, which means the most clinically important field in an `Observation` is
+absent from the comparison. The claim FastFHIR leads with is the one its benchmark cannot
+currently demonstrate.
+
+## CAPI-7 — `FF_FieldInfo` has no `name_len`, so reflection costs a `strlen` per field (P2)
+
+**Locate:**
+```bash
+grep -n "struct FF_FieldInfo" -A 8 include/FF_Primitives.hpp
+grep -n "static FF_FieldKey from_cstr" -A 14 include/FF_Primitives.hpp
+```
+
+**Current state.** `Node::fields()` yields `std::span<const FF_FieldInfo>`, and
+`FF_FieldInfo` (`include/FF_Primitives.hpp:1069`) carries `const char* name` with **no
+length**. `Node::operator[]` takes an `FF_FieldKey`, which *requires* `name_len`
+(`:1085`). So a caller walking a block reflectively must call
+`FF_FieldKey::from_cstr(...)`, whose only job at `:1141` is
+`std::char_traits<char>::length(field_name)` — a `strlen` per field, per node.
+
+**The name is then never read.** `ParserOps::standard_node_lookup_field`
+(`src/FF_Parser.cpp:1660`) dispatches entirely on `owner_recovery`, `kind` and
+`field_offset`; it computes `value_offset = n.m_node_offset + key.field_offset` and never
+touches `key.name` or `key.name_len`. The caller is charged for a string measurement the
+lookup discards.
+
+**Cost, measured** (re-measured 2026-08-26 after the walk moved to
+`../FastFHIR-benchmark/bench/walk_diagnostic.hpp`; 7-run medians, `-c opt`,
+`--bundle-targets-mb 64`, 81,844 nodes):
+
+| walk | median | vs baseline |
+|---|---:|---:|
+| baseline (`entries()` + strlen) | 2,318,333 ns | — |
+| `BENCH_WALK=1 BENCH_NO_STRLEN=1` | 1,798,792 ns | **−22.4%** |
+
+Reproduce with `BENCH_WALK=1 BENCH_NO_STRLEN=1`. That is ~22% of a read path whose
+headline property is that it does no work.
+
+**Ask (either):**
+1. Add `std::size_t name_len` to `FF_FieldInfo` — the generator already knows it at emit
+   time, so it costs nothing at runtime; **or**
+2. Add an `operator[](const FF_FieldInfo&)` overload so reflection never has to build an
+   `FF_FieldKey` at all. This is the better shape: the caller has an `FF_FieldInfo` in
+   hand and wants the field, and the key round-trip exists only to satisfy the signature.
+
+**Why it matters here.** § 5's "compiled O(1) typed keys completely bypass runtime string
+hashing" is true of the *typed-key* path, and this is not that path — but it is the path
+any generic consumer takes (a walker, an exporter, a diff tool), and it reintroduces a
+per-field string operation the design is meant to have eliminated.
+
+## CAPI-8 — `entries()` allocates, and there is no non-allocating array iterator (P1)
+
+**Locate:**
+```bash
+grep -n "std::vector<Node> entries" include/FF_Parser.hpp
+```
+
+**Current state.** `Node::entries()` (`include/FF_Parser.hpp:328`, `:473`) returns an
+owning `std::vector<Node>` **by value** — one heap allocation per array node, plus a copy
+of every element into it. README § 1 documents this as the single exception to the
+zero-heap-allocation read path ("one allocation per call, ~1 ns per element at -O3").
+
+**What a consumer hits.** The exception is not rare in practice: it is hit once per array,
+and FHIR resources are dense with arrays. A full traversal of one Synthea bundle in the
+benchmark performs **2,396 allocations for 15,920 nodes** (`BENCH_ARRAYS=1`), and the
+upstream round-trip gate reports a similar shape (~8.2k arrays per fixture). Any consumer
+that walks a document generically — an exporter, a differ, a validator, a search indexer —
+takes this path for every array in the document, so the headline property does not hold
+for the class of code most likely to be written against a reflective API.
+
+**Cost, measured** (benchmark, 128 MB target, `-c opt`). Same traversal, same public API,
+the only change being `node[i]` in place of `entries()`:
+
+| walk | median | vs `entries()` |
+|---|---:|---:|
+| `entries()` | 2,318,333 ns | — |
+| `node[i]` index loop | 1,874,208 ns | **−19.2%** |
+| `node[i]` + no `strlen` (CAPI-7) | 1,853,041 ns | −20.1% |
+
+Re-measured 2026-08-26, 7-run medians, `-c opt`, `--bundle-targets-mb 64`, 81,844 nodes,
+via `BENCH_WALK=1 BENCH_INDEX_WALK=1`. The allocation alone is ~19% of a generic walk.
+**Correction to the earlier figures in this item:** a previous revision claimed −18.5% /
+−35.1%; the first reproduces, the combined −35% does **not** — the two effects do not
+stack, and run-to-run spread is ~±5%. Each is worth ~20% on its own. The earlier numbers
+were taken on a different bundle size and are withdrawn.
+
+**Note the workaround already exists and is faster** — `Node::operator[](size_t)` with
+`Node::size()` resolves an element in place — which is the argument for making it the
+documented path rather than an undocumented one. A consumer reading § 1 will reach for
+`entries()`, because that is the API the README shows.
+
+**Ask (in preference order):**
+1. **A non-owning view**: `std::ranges::view` / a lightweight `ArrayRange` with
+   `begin()`/`end()` that resolves each element on dereference, so
+   `for (auto n : node.entries())` allocates nothing and the published example keeps
+   working unchanged. This is the version that makes the zero-allocation claim true
+   without qualification.
+2. An `entries_into(std::span<Node>)` or `entries(std::pmr::vector<Node>&)` overload so a
+   caller can supply reusable storage across a walk.
+3. Failing both, document `operator[](size_t)` as the traversal path in § 1 beside the
+   `entries()` caveat, so the allocation is opt-in rather than the obvious choice.
+
+**Why it matters here.** The benchmark's Test 2 currently shows FastFHIR ~2.4-3.0x slower
+than simdjson on full traversal. About a third of that gap is CAPI-7 + CAPI-8 — API
+overhead, not architecture. Retiring both makes the comparison a fair one between a
+random-access layout and a sequential tape, which is the honest question.
+
+## CAPI-4 — No zero-copy reader for packed date/time (P2)
+
+**Current state.** Since DT-2, `Node::as<std::string_view>()` throws *"Node is not a string
+or code"* on `Patient.birthDate`. The only public path to the text is `print_json`, which
+costs a stream construction plus JSON escaping that the plain-string case does not pay.
+
+**What a consumer hits.** A query benchmark that reads a date field is measuring FastFHIR's
+JSON printer, not its read path — a real and quantifiable distortion, currently visible in
+the benchmark's Test 3. The workarounds in `../FastFHIR-benchmark/bench/bench_test_3.hpp`:
+`read_text_field()` (print_json) when the text is required, or — cheaper, and enough for
+any query that only counts presence — checking the slot as a falsy `Entry` without decoding
+(CAPI-9 documents the accessor contract gap).
+
+**Ask:** a zero-copy or caller-buffer reader — `Node::as<FF_DateTime>()` returning the
+packed value, and/or a `to_chars`-style `format_datetime(Node, std::span<char>)` that
+writes ISO-8601 into a caller buffer with no allocation and no JSON layer. The zero-heap
+read-path claim in README § 1 does not currently hold for date fields through the public
+API.
+
+## CAPI-5 — `TypeTraits<std::string>` undefined while generated POCOs use `std::string` (P2)
+
+**Current state.** Only `std::string_view` is specialised, so assigning a `std::string`
+fails to compile. The generated date/time POCO fields (`birthdate`, `issued`, …) **are**
+`std::string`, so the mismatch is internal: a consumer that reads a POCO field and assigns
+it back does not compile. The benchmark works around it by converting to `string_view` at
+every assignment site (PORT-8).
+
+**Ask:** specialise `TypeTraits<std::string>` to forward to the `string_view` path. Small,
+and it removes a papercut from every consumer that round-trips a POCO.
+
+## CAPI-6 — Stale doc comment in `FF_Ingestor.hpp` (P3)
+
+**Locate:** `sed -n '69p' include/FF_Ingestor.hpp`
+
+**Current state.** Line 69 shows `IngestRequest req{builder, SourceType::FHIR_JSON, ...}`.
+That name no longer exists; it is `FF_SOURCE_FHIR_JSON` (used correctly two lines up at
+`:57` and again at `:122`). One-line fix; it is in the worked example a new consumer copies
+first.
+
+## CAPI-9 — `as<std::string_view>()` throws on node kinds the docs don't enumerate (P2)
+
+**Locate:** `include/FF_Parser.hpp` — `Reflective::Node::as<>` /
+`Entry::operator std::string_view()`; the exception text is in `FF_Utilities.hpp`.
+
+**Current state.** The reflective string accessor throws
+`std::runtime_error("FastFHIR: Node is not a string or code")` on `FF_FIELD_DATETIME`
+slots. CAPI-4 documents the `Patient.birthDate` case; the header documents **neither
+which kinds are readable per `T`, nor that unsupported kinds throw** — a consumer writing
+a reflective census query (string `code.coding[*]` + datetime `issued` in one loop)
+discovers the boundary as an uncaught exception mid-query. The message is also
+misleading in the other direction: code slots ARE readable (via `FF_ResolveCode`), so
+"not a string or code" names a false subset.
+
+**What a consumer hits.** FastFHIR-benchmark Test 3 (2026-08-26): the lean lens query
+aborted on `Observation.issued` (`FF_FIELD_DATETIME`) with exactly this throw. Two
+workarounds, both now in the benchmark: (a) **presence-only reads** — an absent slot
+reads as a falsy `Entry`, so a census that only counts presence never needs the decode;
+(b) `read_text_field()` (print_json) when the text is actually required (CAPI-4).
+
+**Ask:** document the throwing contract on `Node::as<>` / `Entry::operator T()` — which
+kinds are readable per `T`, and that unsupported kinds throw rather than returning empty
+or a null node. Optionally have the exception name the offending kind and the supported
+set. Small; the "throws on date/time" fact is already known (CAPI-4) — this is the
+"say it on the accessor" half.
+
+## CAPI-10 — `Compactor::archive()` output is write-once, and the doc doesn't say so (P2)
+
+**Locate:** `include/FF_Compactor.hpp` — the class comment ("Post-finalize archival transform ... copies the remaining stream payload unchanged").
+
+**Current state.** The header describes what compaction does but not what it *forbids*: the resulting archive is immutable — `Builder` refuses to open it. The refusal is clear at runtime ("Cannot open Builder on a compact archive. Decompact to a standard stream before append/mutation.") but a consumer reading the compactor doc would reasonably try to enrich the archive it just made; the benchmark did, and only the exception revealed the boundary.
+
+**What a consumer hits.** FastFHIR-benchmark (2026-08-26): the planned `test_4_compact` row (enrich a compacted bundle in place) cannot exist — the API rejects it. That is a defensible design (compact = sealed), but it is a design the docs must state up front, because it interacts with the WF-4.1 "append without touching any other byte" story: enrichment is standard-stream-only.
+
+**Ask:** document on `Compactor::archive` that the result is sealed/read-only (no `Builder`), and — if the round-trip is intended to exist — name the decompaction path the error message implies but the API surface does not provide. P2: it cost a consumer a failed instrument row, not a crash.
+
+## CAPI-11 — Hydrated `ChoiceEntry` exposes the raw packed datetime slot (P2)
+
+**Locate:** `include/FF_Primitives.hpp` — `struct ChoiceEntry` (the `value`
+variant) and `FF_UNPACK_DATETIME`.
+
+**Current state.** A datetime choice (`effective[x]`, `value[x]` dateTime
+variants) hydrates into a POCO `ChoiceEntry` holding the **raw 63-bit packed
+slot value** as `uint64_t` — not the text, and with no doc hint on `ChoiceEntry`
+that the value needs `FF_UNPACK_DATETIME` before it is usable. A consumer that
+treats the POCO as "decoded data" serializes a number.
+
+**What a consumer hits.** FastFHIR-benchmark Test 3 (2026-08-26): the JSON arm
+serialized `"effectiveDateTime":1619552459707908099` (the packed value as a
+JSON number), and the census counted 0 effectiveDateTime against the FF arm's
+692. The fix used the public `FF_UNPACK_DATETIME`/`FF_FORMAT_DATETIME` path;
+the gap is that nothing on `ChoiceEntry` says the value is a slot, not a value.
+
+**Ask:** document on `ChoiceEntry` (or the datetime emitters) that datetime
+choices carry the packed slot and must be decoded via `FF_UNPACK_DATETIME`, and
+that the fallback-flag/offset case resolves through the owning arena.
+
+## CAPI-12 — Cannot append one element to an EXISTING sealed array (P1)
+
+**Locate:** `include/FF_Builder.hpp` — `MutableEntry::operator=(const T_Data&)`,
+`ObjectHandle::operator[](size_t)` (in `src/FF_Builder.cpp`);
+`include/FF_Ingestor.hpp` — `insert_at_field`; `README.md` Example 3.
+
+**Current state.** All three public paths to "append one element to an array
+that already exists in a sealed stream" fail:
+
+1. `root[ARRAY_KEY][n] = element` where `n == size` — `ObjectHandle::operator[](size_t)`
+   throws `std::out_of_range("FastFHIR: Array index out of bounds.")`. The
+   MutableEntry proxy can assign an existing slot or an ABSENT field, but it
+   cannot grow an existing array.
+2. `ingestor.insert_at_field(root, ARRAY_KEY, json)` on an already-assigned
+   slot — FATAL: "Pointer amendment failed — the field at offset X was already
+   assigned. Patching an assigned slot risks orphaning elements of the stream."
+   It appends only to ABSENT fields.
+3. README Example 3's `insert_at_field` on `Patient.telecom` appears to append
+   to an existing array, but it works only when the slot is absent;
+   `tests/cpp/test_readme.cpp` never exercises `insert_at_field` (zero uses),
+   so the example is unvalidated for the existing-array case.
+
+**What a consumer hits.** FastFHIR-benchmark Test 4 (2026-08-26): "append one
+Observation to a Bundle and re-seal" — the WF-4.1 pattern — cannot be done in
+place. The only working path is re-serializing the whole bundle root (POCO
+materialize + `append_obj`), which is why the append delta is O(entry-array)
+(~1.2 MB at 1024 MB target) and the "append without touching any other byte"
+claim is not demonstrable through the public API (benchmark PA-10).
+
+**Ask:** an in-place array append for sealed streams — extend the array block
+at the write head and bump the count (or an explicit "open array" build mode
+where the entry array is buildable incrementally). This is the API the
+"append to the end and reseal" story in §4.1 requires.
+
+## CAPI-14 — Generated POCO string fields are `std::string_view`: assigning a temporary dangles (P2)
+
+**Locate:** `generated_src/FF_Patient.hpp` (and peers) — `std::string_view id;`
+
+**Current state.** The generated POCO string fields are `std::string_view`
+(zero-copy hydration), but nothing on the struct says so. A consumer writing
+`ObservationData o{}; o.id = "x" + std::to_string(i);` binds the view to a
+temporary that dies at the end of the statement — the subsequent write reads
+dangling stack (ASan: stack-use-after-scope in STORE_FF_STRING).
+
+**What a consumer hits.** FastFHIR-benchmark Instrument G test 4 (2026-08-26):
+the concurrent-build worker assigned concatenated temporaries to `obs.id`; ASan
+caught stack-use-after-scope in `STORE_FF_STRING` — the stream validated clean
+and the corruption surfaced only later as nondeterministic crashes. Cost a
+full ASan round to attribute to the test, not the library.
+
+**Ask:** document on the generated structs that string fields are
+`std::string_view` and must outlive the append/write, or provide an owning
+variant. Small doc change; it is a silent footgun for every new consumer.
+
+---
+
+**Verify (block):** each item's *Locate* output still matches the *Current state* quoted
+above before it is claimed. CAPI-1/2/3 should each land with a test that fails before the
+fix: for CAPI-1 a field-by-field-assembled `Observation.category` that reads back; for
+CAPI-2 the CAPI-1 stream rejected by `validate_FFHR_stream()`; for CAPI-3 a
+`valueQuantity` hydrated from arena A, stored into arena B, and read back equal.
+
+
+---
+
+# ▶ COMPLETED — one line each, do not re-open
+
+Detail was deleted deliberately (see the note at the top of this file); git history has it.
+This list exists so finished work is not re-litigated, **not** as a progress log.
+
+| Date | Item | Outcome |
+|---|---|---|
+| 2026-08-26 | **P0-1 / CAPI-13** | `deserialize` emitted no code for singular block fields *and* `FF_FIELD_URL`. 736 dropped fields across 37 files → 0. Fail-loud `else` added. `tests/cpp/test_poco_parity.cpp` pins it. |
+| 2026-08-26 | **CAPI-15** | `Parser(const void*, size_t)` SEGV'd on a corrupted `CHECKSUM_OFFSET`; now bounds-checked before dereference. `FastFHIR::Recovery` shipped alongside. |
+| 2026-08-26 | **REC-1** | `known_resource_tag()` tested a hardcoded 5-tag list; now `FF_IsResourceTag()` over the whole band. |
+| 2026-08-26 | **REC-5** | Resync is type-checked against the parent's stored tag; `tag_conflicts` / `unrecovered` counters added; `Stats::units` was declared and never populated — fixed. |
+| 2026-08-26 | **P0-2 (py_roundtrip)** | Source-containment was implemented but unmeasured. `DiffStats` + `COVERAGE_SHORTFALL` added; 342/342 fixtures, 18,457,492 source values compared, all present. |
+| 2026-08-24 | **GEN-1** | `pytest tests/generator` was regenerating the repo's own `generated_src/`. Fixed + three guards. |
+| 2026-08-23 | **OPQ-1** | Out-of-profile resources retained as opaque JSON instead of dropped. |
+| 2026-08-23/24 | **REV-1, REV-2** | PR #6 review rounds. |
+| 2026-08-22 | **AR-3, DBG-1** | Ingest lost 2,000 entries under load (queue latch ordering); `to_debug_json()` landed. |
+| 2026-08-20 | **DT-0, DT-2** | Date/time band correction; generator stopped routing date/time through `STRING_TYPES`. |
+| 2026-08-21 | **Test registration** | Extracted to `tests/tests.cmake` + `tests/tests.bzl`. |
+| 2026-08-18 | **XP-1** | Stored-graph traversal bounded and cycle-checked. |
+| — | **FF_\* out-params** | Cleared on the argument-check path (8/8). |

@@ -61,7 +61,7 @@ option(FASTFHIR_ENABLE_EXTENSIONS  "Enable WASM extension codec" OFF)
 # Real deployments compose -- a payer needs US Core *and* claims. Accepted names
 # live in RESOURCE_GROUPINGS (generator/model/type_map.py); "us"/"uk" are legacy
 # aliases. NOTE: commas, not semicolons -- CMake treats ';' as its list separator.
-# Adding a grouping requires its RECOVERY_TAGs in generated_src/FF_Recovery.hpp first
+# Adding a grouping requires its RECOVERY_TAGs in generated_src/FF_RecoveryTags.hpp first
 # (permanent wire constants); the generator fails loudly and names the missing
 # ones. See TASKS.md A27.
 set(FASTFHIR_PRODUCTION_PROFILE "us-core" CACHE STRING
@@ -323,7 +323,7 @@ install(FILES
     ${FASTFHIR_INCLUDE_DIR}/FF_Builder.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.hpp
-    ${FASTFHIR_GENERATED_DIR}/FF_Recovery.hpp
+    ${FASTFHIR_GENERATED_DIR}/FF_RecoveryTags.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_ResourceTypes.hpp
     DESTINATION include
 )
@@ -349,7 +349,8 @@ if(FASTFHIR_BUILD_TESTS)
          ff_test_primitives ff_test_memory ff_test_simd
          ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor
          ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary
-         ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue)
+         ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue
+         ff_test_abstraction_parity ff_test_recovery)
 endif()
 if(FASTFHIR_BUILD_PYTHON_BINDINGS)
     list(APPEND _BUILD_ALL fastfhir_python)
@@ -416,7 +417,8 @@ if(FASTFHIR_BUILD_TESTS)
                ff_test_simd ff_test_amend ff_test_cc ff_test_bundle
                ff_test_compactor ff_test_graph_bounds ff_test_datetime
                ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue
-               ff_test_api ff_test_dictionary)
+               ff_test_api ff_test_dictionary ff_test_abstraction_parity
+               ff_test_recovery)
         if(TARGET ${_t})
             set_target_properties(${_t} PROPERTIES FOLDER "Tests")
         endif()
@@ -461,7 +463,8 @@ foreach(_t build_all fastfhir fastfhir_ingestor ff_ingest ff_export ff_compact f
            ff_test_primitives ff_test_memory ff_test_simd ff_test_amend
            ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds
            ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue
-           ff_test_datetime ff_test_api ff_test_dictionary)
+           ff_test_datetime ff_test_api ff_test_dictionary ff_test_abstraction_parity
+           ff_test_recovery)
     if(TARGET ${_t})
         set_target_properties(${_t} PROPERTIES XCODE_GENERATE_SCHEME ON)
     endif()

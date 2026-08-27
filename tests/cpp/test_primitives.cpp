@@ -203,7 +203,7 @@ static void test_recovery_known_tags()
     // Resources moved 0x0300 -> 0x1000 in the 2026-08-14 band re-cut: 256 slots
     // could not hold FHIR's 178 resource types, and sub-elements needed 711
     // against the same 256. Pre-release, one-time, deliberate — see the BAND MAP
-    // in FF_Recovery.hpp. These values are permanent from here.
+    // in FF_RecoveryTags.hpp. These values are permanent from here.
     CHECK_EQ(RECOVER_FF_PATIENT, 0x1014, "PATIENT");
     CHECK_EQ(RECOVER_FF_OBSERVATION, 0x1012, "OBSERVATION");
     CHECK_EQ(RECOVER_FF_BUNDLE, 0x1002, "BUNDLE");

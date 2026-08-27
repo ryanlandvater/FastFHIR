@@ -622,7 +622,7 @@ private:
 // =====================================================================
 // RECOVERY TAG REGISTRY (auto-generated from FHIR StructureDefinitions)
 // =====================================================================
-#include "FF_Recovery.hpp"
+#include "FF_RecoveryTags.hpp"
 
 // =====================================================================
 // TYPE SIZE CONSTANTS

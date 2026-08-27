@@ -31,11 +31,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "tests" / "python"))
 
 from roundtrip_diff import (
+    count_leaves,
     diff_doms,
     filter_allowlisted,
     format_diff_report,
     DiffEntry,
     DiffKind,
+    DiffStats,
 )
 from roundtrip_debug import annotate, drop_debug_artifacts, strip_debug
 
@@ -109,6 +111,10 @@ def run_roundtrip_test(
     In debug mode the check is CONTAINMENT: every field in the source FHIR must
     survive.  The debug dump carries more than print_json does by design, so
     extra keys are not failures.
+
+    Returns (ok, diffs, report, stats).  `stats` carries how much of the SOURCE
+    the comparison actually reached -- see DiffStats: zero diffs over zero
+    compared values is not a passing round-trip, it is an untested one.
     """
     # Load input
     with open(fixture_path, "r") as f:
@@ -230,13 +236,50 @@ def run_roundtrip_test(
     if debug:
         output_dom, meta = strip_debug(output_dom)
 
-    diffs = diff_doms(input_dom, output_dom)
+    # Coverage is measured, not assumed.  `len(diffs) == 0` scores a walk that
+    # compared 38,861 leaves and one that compared none identically --
+    # diff_doms({}, {}) returns zero diffs -- so ask the second question too:
+    # did the comparison actually reach every value in the source document?
+    stats = DiffStats(input_leaves=count_leaves(input_dom))
+    diffs = diff_doms(input_dom, output_dom, stats=stats)
     diffs = filter_allowlisted(diffs)
     if debug:
         diffs = drop_debug_artifacts(diffs, meta)
+    diffs.extend(_coverage_diffs(stats))
 
     report = annotate(diffs, meta) if debug else ""
-    return len(diffs) == 0, diffs, report
+    return len(diffs) == 0, diffs, report, stats
+
+
+def _coverage_diffs(stats: DiffStats) -> list[DiffEntry]:
+    """Turn a shortfall in comparison coverage into ordinary findings.
+
+    Two separate claims, because they fail for different reasons:
+
+    * `input_leaves == 0` -- the fixture carried nothing to compare.  A pass here
+      is a pass on ZERO coverage, which is the reporting failure TASKS.md P0-2 is
+      about, and it is how a corpus that silently stops loading keeps reporting
+      green.
+    * `unvisited > 0` -- the walk never reached part of the source.  Every early
+      return in diff_doms already emits its own finding, so on a healthy corpus
+      this is redundant with those; it fires ALONE only when the walk itself is
+      at fault rather than the data, which is the case nothing else can see.
+    """
+    if stats.input_leaves == 0:
+        return [DiffEntry(
+            path="", kind=DiffKind.COVERAGE_SHORTFALL, expected=0, actual=0,
+            message="source document has no comparable values -- nothing was tested",
+        )]
+    if stats.unvisited > 0:
+        return [DiffEntry(
+            path="", kind=DiffKind.COVERAGE_SHORTFALL,
+            expected=stats.input_leaves, actual=stats.compared,
+            message=(
+                f"comparison reached {stats.compared}/{stats.input_leaves} source values; "
+                f"{stats.unvisited} were never examined"
+            ),
+        )]
+    return []
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
@@ -291,6 +334,7 @@ def main() -> int:
     # Run per-fixture
     passed = 0
     failed = 0
+    total_compared = 0
     errors: list[tuple[Path, list[DiffEntry]]] = []
 
     for fx in fixtures:
@@ -298,15 +342,20 @@ def main() -> int:
         print(f"Fixture: {fx.name}")
         print(f"{'='*60}")
 
-        ok, diffs, report = run_roundtrip_test(fx, harness_path=args.harness, debug=args.debug)
+        ok, diffs, report, stats = run_roundtrip_test(
+            fx, harness_path=args.harness, debug=args.debug)
         # Explaining a failure is worth a second pass; explaining a pass is not.
         # Re-running only the failures keeps the wire diagnostics free once the
         # suite is green, instead of taxing every run forever (DBG-1.4).
         if not ok and not args.debug and args.debug_on_failure:
-            _, _, report = run_roundtrip_test(fx, harness_path=args.harness, debug=True)
+            _, _, report, _ = run_roundtrip_test(fx, harness_path=args.harness, debug=True)
         if ok:
-            print("  PASS")
+            # Printed, not merely asserted: "it passed" and "it compared
+            # anything" are different claims, and this suite has already spent a
+            # session being the second while reading as the first.
+            print(f"  PASS  ({stats.compared} source values compared, all present)")
             passed += 1
+            total_compared += stats.compared
         else:
             print("  FAIL")
             # In debug mode the annotated report supersedes the plain one: it is
@@ -320,7 +369,8 @@ def main() -> int:
     print(f"\n{'='*60}")
     print(f"Results: {passed}/{total} passed, {failed}/{total} failed")
     if failed == 0:
-        print("✅ All round-trip tests passed.")
+        print(f"✅ All round-trip tests passed — {total_compared} source values compared, "
+              f"every one present in the round-trip.")
         return 0
     else:
         print(f"❌ {failed} fixture(s) had unexpected differences.")

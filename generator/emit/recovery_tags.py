@@ -2,7 +2,7 @@
 # FastFHIR Recovery Tag Emitter
 #
 # Projects dictionaries/master_tags.json -- the permanent tag ledger -- into
-# generated_src/FF_Recovery.hpp, and reconciles the ledger against the FHIR packages
+# generated_src/FF_RecoveryTags.hpp, and reconciles the ledger against the FHIR packages
 # so a new FHIR release (R6, ...) appends its new types instead of renumbering
 # anything.
 #
@@ -25,7 +25,7 @@ import os
 from generator.emit.header import write_if_changed
 
 LEDGER_PATH = "dictionaries/master_tags.json"
-HEADER_PATH = "generated_src/FF_Recovery.hpp"
+HEADER_PATH = "generated_src/FF_RecoveryTags.hpp"
 
 # Bands that discovery may append to. Primitive and scalar tags are FastFHIR's
 # own concepts (FF_HEADER, FF_STRING, the inline scalars) and are seeded by hand
@@ -114,7 +114,7 @@ def reconcile_tag_ledger(ledger: dict, discovered: dict[str, set[str]]) -> int:
             if next_id[band] > last:
                 raise RuntimeError(
                     f"recovery-tag band '{band}' is full at 0x{last:04X}; cannot append "
-                    f"{name}. Re-cut the band map in {LEDGER_PATH} and FF_Recovery.hpp "
+                    f"{name}. Re-cut the band map in {LEDGER_PATH} and FF_RecoveryTags.hpp "
                     "together -- and note that moving an existing tag is a wire break."
                 )
             tags[name] = {"value": f"0x{next_id[band]:04X}", "band": band}
@@ -203,7 +203,7 @@ def _band_map_comment(ledger: dict) -> str:
 
 
 def generate_recovery_header(ledger: dict, header_path: str = HEADER_PATH) -> None:
-    """Emit FF_Recovery.hpp from the ledger at the given header_path."""
+    """Emit FF_RecoveryTags.hpp from the ledger at the given header_path."""
     bands = ledger["_bands"]
     b = {name: (v["first"], v["last"]) for name, v in bands.items()}
     counts: dict[str, int] = {name: 0 for name in bands}
@@ -212,7 +212,7 @@ def generate_recovery_header(ledger: dict, header_path: str = HEADER_PATH) -> No
     name_table = _name_table_body(ledger)
 
     hpp = f"""/**
- * @file FF_Recovery.hpp
+ * @file FF_RecoveryTags.hpp
  * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
  * @copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @version 0.1
@@ -240,7 +240,7 @@ def generate_recovery_header(ledger: dict, header_path: str = HEADER_PATH) -> No
 //
 {_band_map_comment(ledger)}//
 // The ledger -- and therefore this header -- covers the WHOLE FHIR spec
-// (R4 union R5), never just the compiled profile. FF_Recovery.hpp is byte
+// (R4 union R5), never just the compiled profile. FF_RecoveryTags.hpp is byte
 // identical for every FASTFHIR_PRODUCTION_PROFILE: a permanent wire artifact
 // must not depend on build configuration. Only which resources get generated
 // C++ varies with the profile; which tags EXIST does not.

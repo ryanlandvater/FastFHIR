@@ -46,14 +46,14 @@ def run(output_dir: str = "generated_src", *, keep_specs: bool = False) -> None:
     # 1. Fetch the FHIR specs as NPM packages.
     fetch_specs.fetch_fhir_specs()
 
-    # 1b. Reconcile the permanent RECOVERY_TAG ledger and emit FF_Recovery.hpp.
+    # 1b. Reconcile the permanent RECOVERY_TAG ledger and emit FF_RecoveryTags.hpp.
     #     Runs before anything that references a tag. Append-only: a new FHIR
     #     release takes the next free value in its band and nothing already
     #     assigned moves. Covers the whole spec, so the header does NOT vary
     #     with FASTFHIR_PRODUCTION_PROFILE.
     n_tags, n_new = generate_recovery_tags(
         specs_dir=_PKG_ROOT,
-        header_path=os.path.join(output_dir, "FF_Recovery.hpp"),
+        header_path=os.path.join(output_dir, "FF_RecoveryTags.hpp"),
     )
     print(f"  Recovery tags: {n_tags} in ledger, {n_new} appended")
 

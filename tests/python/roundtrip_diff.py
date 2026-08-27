@@ -25,6 +25,7 @@ class DiffKind(Enum):
     NULL_VS_ABSENT = auto()    # null vs key-not-present
     DROPPED_RESOURCE = auto()  # Bundle entry in input with no counterpart in output
     ADDED_RESOURCE = auto()    # Bundle entry in output with no counterpart in input
+    COVERAGE_SHORTFALL = auto()  # the walk never reached part of the source document
 
 
 @dataclass
@@ -65,6 +66,40 @@ EXPECTED_ORDER_INSENSITIVE_PATHS: set[str] = {
     # Example:
     # "/Patient/identifier",  # identifier array order is not significant
 }
+
+
+@dataclass
+class DiffStats:
+    """How much of the SOURCE document the comparison actually looked at.
+
+    `len(diffs) == 0` is not evidence of a good round-trip on its own -- a walk
+    that visits nothing scores identically to one that visits every field, and
+    `diff_doms({}, {})` returns zero diffs. So the harness asserts coverage
+    beside correctness: every scalar leaf in the input must have been reached
+    and compared against a counterpart in the output.
+
+    `input_leaves` is counted independently of the walk, by `count_leaves`, so
+    it cannot be wrong in the same direction as the walk it is checking.
+    """
+    input_leaves: int = 0  # scalar leaves in the source document
+    compared: int = 0      # source leaves the walk actually compared
+
+    @property
+    def unvisited(self) -> int:
+        return self.input_leaves - self.compared
+
+
+def count_leaves(node: Any) -> int:
+    """Scalar leaves in a DOM -- the atoms a value comparison can reach.
+
+    Deliberately NOT derived from the diff walk: it is the independent expected
+    total that the walk is measured against.
+    """
+    if isinstance(node, dict):
+        return sum(count_leaves(v) for v in node.values())
+    if isinstance(node, list):
+        return sum(count_leaves(v) for v in node)
+    return 1
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -156,7 +191,8 @@ def _is_entry_array(path: str, expected: Any, actual: Any) -> bool:
     return all(isinstance(e, dict) and ("resource" in e or "fullUrl" in e) for e in both)
 
 
-def _diff_entry_array(expected: list, actual: list, path: str) -> list[DiffEntry]:
+def _diff_entry_array(expected: list, actual: list, path: str,
+                      stats: DiffStats | None = None) -> list[DiffEntry]:
     """Pair entries by identity, then diff only the matched pairs.
 
     Unmatched entries are reported as ONE finding each -- never walked as a
@@ -214,7 +250,7 @@ def _diff_entry_array(expected: list, actual: list, path: str) -> list[DiffEntry
         # meta_path onto the OUTPUT path. Both are needed: the reader wants the
         # source index, the wire-cause annotator needs the output index, and
         # before this they silently shared one field.
-        sub = diff_doms(exp_item, actual[j], item_path)
+        sub = diff_doms(exp_item, actual[j], item_path, stats)
         if i != j:
             actual_prefix = _path_join(path, j)
             for d in sub:
@@ -239,11 +275,18 @@ def diff_doms(
     expected: Any,
     actual: Any,
     path: str = "",
+    stats: DiffStats | None = None,
 ) -> list[DiffEntry]:
     """Recursively compare two JSON-deserialised DOM trees.
 
     Returns a flat list of DiffEntry records describing every difference.
     Order of entries is depth-first traversal order of the expected DOM.
+
+    `stats`, when supplied, records how many SOURCE scalar leaves this walk
+    actually compared.  Every early return below leaves the rest of that subtree
+    uncounted -- which is the point: the shortfall is the part of the input the
+    comparison never reached, and a caller that only checks `len(diffs)` cannot
+    tell "nothing was wrong" from "nothing was examined".
     """
     diffs: list[DiffEntry] = []
 
@@ -251,7 +294,9 @@ def diff_doms(
     if type(expected) is not type(actual):
         # Special case: int vs float (JSON parsers may deserialise 0 as int or float)
         if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
-            # Allow numeric coercion
+            # Allow numeric coercion. Counted: this IS a leaf comparison.
+            if stats is not None:
+                stats.compared += 1
             if float(expected) != float(actual):
                 diffs.append(DiffEntry(
                     path=path, kind=DiffKind.VALUE_MISMATCH,
@@ -285,6 +330,8 @@ def diff_doms(
 
     # Scalars
     if not isinstance(expected, (dict, list)):
+        if stats is not None:
+            stats.compared += 1
         if _stringify(expected) != _stringify(actual):
             diffs.append(DiffEntry(
                 path=path, kind=DiffKind.VALUE_MISMATCH,
@@ -297,7 +344,7 @@ def diff_doms(
     if isinstance(expected, list):
         # Bundle.entry is paired by identity, not by index -- see above.
         if _is_entry_array(path, expected, actual):
-            return _diff_entry_array(expected, actual, path)
+            return _diff_entry_array(expected, actual, path, stats)
         if len(expected) != len(actual):
             diffs.append(DiffEntry(
                 path=path, kind=DiffKind.ARRAY_LENGTH,
@@ -307,7 +354,7 @@ def diff_doms(
         # Compare elementwise up to min length
         for i in range(min(len(expected), len(actual))):
             item_path = _path_join(path, i)
-            diffs.extend(diff_doms(expected[i], actual[i], item_path))
+            diffs.extend(diff_doms(expected[i], actual[i], item_path, stats))
         return diffs
 
     # Objects
@@ -336,7 +383,7 @@ def diff_doms(
         # Keys in both — recurse
         for key in sorted(expected_keys & actual_keys):
             item_path = _path_join(path, key)
-            diffs.extend(diff_doms(expected[key], actual[key], item_path))
+            diffs.extend(diff_doms(expected[key], actual[key], item_path, stats))
 
         return diffs
 

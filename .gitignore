@@ -2,6 +2,7 @@
 .venv/
 .conda
 .vscode/
+.idea/
 build*/
 fhir_specs/
 fhir_packages/

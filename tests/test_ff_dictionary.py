@@ -6,7 +6,7 @@ files produces NO modifications to existing entries.  Only wholly new lines
 (additions for new FHIR codes) are permitted — existing code→value mappings
 must never change.
 
-This is the same permanence guarantee that FF_Recovery.hpp provides:
+This is the same permanence guarantee that FF_RecoveryTags.hpp provides:
 once committed, a wire value is fixed forever.
 """
 

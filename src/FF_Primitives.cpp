@@ -81,8 +81,17 @@ FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
     // if ((engine_ver >> 16) > FF_VERSION_MAJOR) return {FF_VALIDATION_FAILURE, "Unsupported engine."};
 
     // 4. Footer Checksum Validation
+    // CAPI-15: validate_offset() dereferences base + checksum_off BEFORE its
+    // own truncation check, so a corrupted in-bounds CHECKSUM_OFFSET used to
+    // SEGV the Parser ctor instead of failing validation. Bound-check the
+    // offset against the stream size here, before any dereference.
     Offset checksum_off = LOAD_U64(__base + CHECKSUM_OFFSET);
     if (checksum_off != FF_NULL_OFFSET) {
+        if (checksum_off < FF_HEADER::HEADER_SIZE ||
+            checksum_off > __size - FF_CHECKSUM::HEADER_SIZE) {
+            return {FF_VALIDATION_FAILURE,
+                    "FF_HEADER CHECKSUM_OFFSET out of bounds (corrupted header)."};
+        }
         FF_CHECKSUM checksum(checksum_off, __size, fhir_rev, engine_ver);
         auto checksum_result = checksum.validate_full(__base);
         if (checksum_result != FF_SUCCESS) return checksum_result;

@@ -113,13 +113,27 @@ if(FASTFHIR_BUILD_TESTS)
         PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
     target_compile_definitions(ff_test_compact_roundtrip PRIVATE
         $<$<BOOL:${FASTFHIR_DOWNLOAD_SYNTHEA}>:FASTFHIR_SYNTHEA_DIR="${_SYNTHEA_DIR}">)
+    # P0-1/CAPI-13: the POCO (`as<T>()`) must agree with the reflective lens.
+    # Same ingestor/hasher/fixture needs as the two above, same SKIP behaviour --
+    # the lens is the oracle, so it has to be fed real documents.
+    add_ff_cpp_test(ff_test_abstraction_parity tests/cpp/test_abstraction_parity.cpp)
+    target_link_libraries(ff_test_abstraction_parity
+        PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
+    target_compile_definitions(ff_test_abstraction_parity PRIVATE
+        $<$<BOOL:${FASTFHIR_DOWNLOAD_SYNTHEA}>:FASTFHIR_SYNTHEA_DIR="${_SYNTHEA_DIR}">)
+    # Recovery subsystem (TASKS.md REC-12 + review-round-2 regressions): clean
+    # stream zero-false-positives, 1-bit VALIDATION flip, 1-bit offset flip,
+    # both-halves never-silent. Needs the ingestor to build the fixture stream.
+    add_ff_cpp_test(ff_test_recovery tests/cpp/test_recovery.cpp)
+    target_link_libraries(ff_test_recovery
+        PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
     # WO-1 out-param contract test drives FF_Ingest, so it needs the ingestor.
     target_link_libraries(ff_test_api PRIVATE fastfhir_ingestor simdjson::simdjson)
 
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue)
+    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_abstraction_parity ff_test_recovery)
         add_test(NAME "cpp_${_standalone}" COMMAND ${_standalone})
     endforeach()
 

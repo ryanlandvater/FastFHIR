@@ -378,14 +378,14 @@ why `Recovery_to_Kind` maps four tags onto one kind while `Kind_to_Recovery` has
 ### 3.2 `RECOVERY_TAG` — Semantic Identifier
 
 A 16-bit (`uint16_t`) ID embedded at bytes 8–9 of every block (immediately
-after the 8-byte `VALIDATION` word). Emitted into `generated_src/FF_Recovery.hpp` by
+after the 8-byte `VALIDATION` word). Emitted into `generated_src/FF_RecoveryTags.hpp` by
 `generator/emit/recovery_tags.py` from the committed tag ledger
 `dictionaries/master_tags.json`. The header is generated **and** committed —
 it is a permanent wire artifact reviewed in diffs, and must never be
 hand-edited; append to the ledger instead. The ledger covers the whole
 R4 ∪ R5 spec, so the emitted header is byte-identical for every
 `FASTFHIR_PRODUCTION_PROFILE`. The inclusion is at `FF_Primitives.hpp`, which
-includes it as `"FF_Recovery.hpp"`.
+includes it as `"FF_RecoveryTags.hpp"`.
 
 The tag space is partitioned into five **bands**, and the boundaries are
 themselves wire constants — a tag's band is part of its identity:
@@ -413,7 +413,7 @@ unreachable, and the same misbanding silently disabled the code path in the
 Compactor's `write_choice_slot` for the 11 FHIR choice fields that carry a
 `code` variant. It now lives at `0x010B` with the other inline scalars. See
 TASKS.md DT-0.1; the band map with live occupancy counts is emitted at the top
-of `generated_src/FF_Recovery.hpp`.
+of `generated_src/FF_RecoveryTags.hpp`.
 
 Within the block family, the check `base >= RECOVER_FF_DATA_TYPE_BLOCK` groups
 data types and concrete resources together as the `FF_FIELD_BLOCK` family.
@@ -428,7 +428,7 @@ inline constexpr RECOVERY_TAG GetTypeFromTag(RECOVERY_TAG t) { return RECOVERY_T
 inline constexpr RECOVERY_TAG ToArrayTag    (RECOVERY_TAG b) { return RECOVERY_TAG(b | RECOVER_ARRAY_BIT); }
 ```
 
-(Emitted into `FF_Recovery.hpp` by `generator/emit/recovery_tags.py`.)
+(Emitted into `FF_RecoveryTags.hpp` by `generator/emit/recovery_tags.py`.)
 
 The array bit is an **orthogonal modifier**, not a separate enumerator. The
 recovery tag stamped into an `FF_ARRAY` header for an array of `Observation`
@@ -744,7 +744,7 @@ The two bytes at `FF_ARRAY::RECOVERY` are the array's **single source of
 truth** for what its entries are:
 
 ```cpp
-// generated_src/FF_Recovery.hpp:1094–1096
+// generated_src/FF_RecoveryTags.hpp:1094–1096
 constexpr uint16_t RECOVER_ARRAY_BIT  = 0x8000;
 constexpr uint16_t RECOVER_TYPE_MASK  = 0x7FFF;
 IsArrayTag(t)     -> (t & RECOVER_ARRAY_BIT) != 0
@@ -1517,7 +1517,7 @@ The stages:
    only on the first run.
    - **Stage 1b — `emit.recovery_tags.generate_recovery_tags(...)`** —
      reconcile the permanent tag ledger (`dictionaries/master_tags.json`)
-     against the packages and emit `generated_src/FF_Recovery.hpp`. Runs before
+     against the packages and emit `generated_src/FF_RecoveryTags.hpp`. Runs before
      anything that references a tag. **Append-only**, per band. Discovery is
      profile-independent, so the emitted header does not vary with
      `FASTFHIR_PRODUCTION_PROFILE`.
@@ -1547,7 +1547,7 @@ The stages:
 One thing this pipeline does **not** do, contrary to older documentation: it
 does not delete the spec tree. `fhir_packages/` is a cache and is reused.
 
-It *does* generate `generated_src/FF_Recovery.hpp` — stage 1b, before anything that
+It *does* generate `generated_src/FF_RecoveryTags.hpp` — stage 1b, before anything that
 references a tag. `emit.recovery_tags.reconcile_tag_ledger` appends any tag the
 committed ledger lacks (append-only, per band), `assert_no_drift` fails if an
 existing value moved or vanished, and the header is then emitted from the

@@ -83,7 +83,7 @@ PRODUCTION_TYPES: list[str] = [
 # nested BackboneElement. Those are permanent wire constants, but they are no
 # longer a per-grouping cost: dictionaries/master_tags.json covers the whole
 # R4 union R5 spec (978 tags), so the tags for every grouping already exist and
-# generated_src/FF_Recovery.hpp is byte-identical whichever profile is compiled.
+# generated_src/FF_RecoveryTags.hpp is byte-identical whichever profile is compiled.
 # What a grouping still costs is emitted C++ volume and compile time.
 # Historical: before the ledger, BILLING_RESOURCES needed 59 tags appended by
 # hand and profile "all" needed 884 -- see TASKS.md A27.5.

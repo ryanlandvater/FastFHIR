@@ -419,18 +419,18 @@ def compile_fhir_library(
     write_if_changed(os.path.join(output_dir, "FF_AllTypes.hpp"), all_types_hpp)
 
     # --- Validate RECOVERY_TAG references against the permanent header ---
-    # generated_src/FF_Recovery.hpp is GENERATED from dictionaries/master_tags.json at
+    # generated_src/FF_RecoveryTags.hpp is GENERATED from dictionaries/master_tags.json at
     # stage 1b, so every tag the spec needs is already declared by now. The
     # emitters build some tag names by concatenation, though, so this checks
     # every emitted name actually resolves, instead of letting a bad one surface
     # as a wall of C++ "undeclared identifier" errors.
     # Against the header just emitted into output_dir, NOT a hardcoded
-    # "generated_src/FF_Recovery.hpp". The wire-format tests generate into a
+    # "generated_src/FF_RecoveryTags.hpp". The wire-format tests generate into a
     # temporary directory (tests/generator/conftest.py), so the hardcoded path
     # made a clean checkout fail outright and a dirty one validate the temporary
     # sources against an unrelated stale header -- the check silently stopped
     # being about the tree it was checking.
-    recovery_hpp = os.path.join(output_dir, "FF_Recovery.hpp")
+    recovery_hpp = os.path.join(output_dir, "FF_RecoveryTags.hpp")
     n_tags = validate_recovery_tags(output_dir, recovery_hpp)
     print(f"-- Validated {n_tags} RECOVERY_TAG references against {recovery_hpp}")
 

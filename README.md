@@ -210,7 +210,7 @@ are building payer-side, you want `us-core,billing`.
 > Every resource is associated with a permanent and git-tracked
 > `RECOVERY_TAG` — plus one per nested BackboneElement — but tag discovery is
 > deliberately profile-independent: the ledger `dictionaries/master_tags.json`
-> covers the whole R4 ∪ R5 spec, so `generated_src/FF_Recovery.hpp` is byte-identical
+> covers the whole R4 ∪ R5 spec, so `generated_src/FF_RecoveryTags.hpp` is byte-identical
 > whichever groupings you compile. A permanent wire artifact whose contents
 > depend on build configuration is not a permanent wire artifact. Switching
 > profile therefore changes only which resources get C++ emitted. If a newer FHIR
@@ -478,7 +478,12 @@ if (!parser_says_patient || !root_is_patient)
 std::string_view id     = root[FastFHIR::Fields::PATIENT::ID];           // std::string_view
 std::string_view gender = root[FastFHIR::Fields::PATIENT::GENDER];       // Code Field
 bool             active = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>(); // bool
-std::string_view dob    = root[FastFHIR::Fields::PATIENT::BIRTH_DATE];   // std::string_view
+// Date/time slots (birthDate, issued, effective) are PACKED — the string-view
+// reader does not decode them and throws on them ("Node is not a string or
+// code"). Check presence via the slot's truthiness; use print_json when the
+// text is actually required. Zero-copy date reading is tracked upstream as
+// CAPI-4.
+bool has_birth_date = root[FastFHIR::Fields::PATIENT::BIRTH_DATE];     // presence
 
 // Walk structured arrays
 for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
@@ -488,12 +493,59 @@ for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
     std::cout << family << "\n";
 }
 
-// Eagerly materialize into a generated C++ struct (strict schema validation)
+// Eagerly materialize into a generated C++ struct (strict schema validation).
+// Reach for this ONLY when you need the whole resource or its strict
+// validation. For a query that reads a few fields it is the anti-pattern: it
+// deserializes every field of the abstraction — strings, vectors, sub-objects —
+// the exact O(N) work the zero-copy read path exists to avoid (see "Reading data"
+// below).
 PatientData patient_data = root;
 
 // Same API works for polymorphic resource slots (e.g. Bundle.entry.resource):
 // if (resource_node.is<FastFHIR::RESOURCETYPE::OBSERVATION>()) { ... }
 ```
+
+### Reading data — the zero-copy pattern
+
+FastFHIR gives you **two independent readers over the same bytes**. Choosing
+between them is the most consequential read-path decision you make:
+
+| | how you use it | allocates? |
+|---|---|---|
+| **Reflective lens** | `node[FastFHIR::Fields::OBSERVATION::CODE]` | no — reads arena bytes in place |
+| **Abstraction** | `node.as<ObservationData>()` | yes — copies into a struct |
+
+The **abstraction types** are the generated data structs — `PatientData`,
+`ObservationData`, `CodeableConceptData` — ordinary C++ values with public fields
+and no behaviour. `node.as<T>()` and `PatientData p = node;` are the same
+operation: walk the entire block and copy every field out of the arena into one.
+
+The lens hands back a *view* instead. An `Entry`/`Node` is a coordinate into the
+mapped file, so a field read is a vtable-slot lookup plus a bounds check, and the
+`std::string_view` it yields points at the arena's own bytes — nothing is copied
+and nothing is freed.
+
+**Do** — lens reads: navigate to exactly the fields you need and coerce them to
+`std::string_view` / scalars. Nodes are views over the arena, not copies.
+Index-walk arrays (`node[i]`) instead of `entries()` when you don't need the
+materialized list — the index walk allocates nothing.
+
+**Don't** — materialize the whole resource (`PatientData p = root;`) to answer a
+query that needs two fields. The whole abstraction gets deserialized — every field
+the query never touches — which is precisely the O(N) work the format exists to
+avoid, and it is invisible in the timing if you only measure the query. This is
+the single most common misuse of the read API; it is why the benchmark's
+query stage originally ran at parity with a DOM parser despite the O(1) per-field
+access underneath. Whole-resource materialization is for validation and
+whole-record consumers, not for field access.
+
+Two slot kinds need care:
+
+- **Date/time slots** (`birthDate`, `issued`, `effective`) are packed; the
+  string-view reader throws on them. Check presence with the slot's truthiness
+  and use `print_json` only when the text is required (CAPI-4).
+- **Choice slots** (`value[x]`, `effective[x]`) carry their variant type in the
+  slot's recovery tag — read `entry.target_recovery` without expanding the node.
 
 ---
 

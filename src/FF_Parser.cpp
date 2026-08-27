@@ -15,6 +15,7 @@
 #include "FF_SIMD.hpp"
 #include "FF_Dictionary.hpp"
 #include "FF_Reflection.hpp"
+#include "FF_FieldKeys.hpp"  // FastFHIR::Fields (Bundle.entry, BundleEntry.resource) for Recovery
 #include <assert.h>
 #include <algorithm>
 #include <charconv>
@@ -407,7 +408,6 @@ Parser::ChecksumValidation Parser::checksum() const {
         cs.get_hash_view(m_base)
     };
 }
-
 
 // =====================================================================
 // XP-2.3 — Parser::validate_FFHR_stream()

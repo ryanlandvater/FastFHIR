@@ -26,7 +26,7 @@
  *     absent from one version don't pollute the namespace of the other.
  *     The same code string has the same value in both dictionaries.
  *   - This is the same permanent-assignment pattern used by
- *     FF_Recovery.hpp — explicit, auditable, and never silently changed.
+ *     FF_RecoveryTags.hpp — explicit, auditable, and never silently changed.
  */
 
 #pragma once

@@ -804,7 +804,7 @@ opaque to the dispatch mechanism.
    `FF_Primitives.hpp`.
 2. Define `FF_CODEABLE_CONCEPT` block struct in `FF_Primitives.hpp`.
 3. `RECOVER_FF_CODEABLE_CONCEPT = 0x0009` in `dictionaries/master_tags.json`
-   (projected into `generated_src/FF_Recovery.hpp`).
+   (projected into `generated_src/FF_RecoveryTags.hpp`).
 4. Implement `_encode_codeable_concept` and `_pack_code` in
    `FF_Primitives.cpp`.
 5. Update read path in `FF_Parser.cpp` to handle the three-way branch.

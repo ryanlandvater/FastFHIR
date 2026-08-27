@@ -106,10 +106,13 @@
 // ONLY when you need generic reflective keys. It's confusing and not recommended.
 
 // The type layer the FF_* surface references: wire primitives, the Memory
-// arena, the Parser value type, and the Reflective mutation handles.
+// arena, the Parser value type, the Reflective mutation handles, and the
+// archive recovery surface (REC-10…17). Recovery does no work at construction
+// — the scan is explicit — so carrying it on the core surface costs nothing.
 #include "FF_Primitives.hpp"
 #include "FF_Parser.hpp"
 #include "FF_Builder.hpp"
+#include "FF_Recovery.hpp"
 
 #include <functional>
 #include <string_view>
