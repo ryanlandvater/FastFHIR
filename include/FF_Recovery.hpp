@@ -87,11 +87,37 @@ struct StreamMapEntry {
     Size               size   = 0;
 };
 
+/// Why a run of bytes belongs to no entry (REC-18.4).
+enum class GapClass : uint8_t {
+    Hole = 0,     ///< unattributed, and large enough to have been a block. The
+                  ///< REC-18 target: a block whose VALIDATION is broken AND
+                  ///< whose parent reference is broken has NO surviving witness,
+                  ///< so absence is the only evidence it ever existed.
+    VersionSkew,  ///< benign. A newer engine appended V-Table slots, so THIS
+                  ///< reader's reflection table under-sizes every block of that
+                  ///< tag and each one trails a constant few bytes. Never damage.
+    Trailing,     ///< after the last entry, before file_size — arena slack.
+};
+
+/// One run of bytes no map entry claims.
+struct Gap {
+    Offset       start  = FF_NULL_OFFSET;
+    Size         length = 0;
+    RECOVERY_TAG after  = FF_RECOVER_UNDEFINED;  ///< tag of the entry it trails
+    GapClass     class_ = GapClass::Hole;
+    const char*  why    = "";                    ///< why it was classified so
+};
+
 /// Every self-consistent block in the stream, keyed by offset. `upper_bound`
 /// is the "what lives after this write offset" query an in-place repair needs
 /// before overwriting anything (REC-15 apply(), Block C) — std::map provides it.
+///
+/// `gaps` is filled by find_gaps(): the arena TILES once every entry carries a
+/// real extent, so a hole is a block nothing else can see. Measured on a clean
+/// 3.3 MB Synthea stream: 60,664 entries, 0 gaps, 0 overlaps.
 struct StreamMap : public std::map<Offset, StreamMapEntry> {
-    Size file_size = 0;
+    Size             file_size = 0;
+    std::vector<Gap> gaps;
 };
 
 // ---------------------------------------------------------------------------
@@ -158,6 +184,16 @@ struct FF_RecoveryReport {
     /// benchmark fingerprint is built from (F3: parent identity makes
     /// misattachment fail the subset check).
     std::vector<BlockVerdict> blocks;
+
+    /// REC-18. Runs of bytes no block claims. `holes` is the count that means
+    /// damage: a block whose VALIDATION is broken AND whose parent reference is
+    /// broken leaves no witness at all, so absence is the only evidence it
+    /// existed. Version skew and trailing slack are counted apart because
+    /// neither is damage. Populated IN STEP with `gaps` -- an always-empty
+    /// vector is how Stats::units shipped inert (P0-2).
+    std::size_t      holes         = 0;
+    std::size_t      version_skew  = 0;
+    std::vector<Gap> gaps;
 };
 
 // ---------------------------------------------------------------------------
@@ -195,6 +231,12 @@ public:
     /// dereferences a header field at construction.
     explicit Recovery(const Memory& memory) noexcept;
 
+    /// Tile the arena and record every run of bytes no entry claims (REC-18).
+    /// Refuses a COMPACT stream -- that layout has different geometry and this
+    /// analysis would produce nonsense on it -- returning an empty gap list.
+    /// Called by scan(); exposed so a caller can re-run it over a repaired map.
+    void find_gaps(StreamMap& map) const;
+
     /// Byte-wise signature walk (mirrors Iris recover_file_structure). Finds
     /// every self-consistent block; the header is found by MAGIC, not VALIDATION.
     StreamMap scan() const;
@@ -228,6 +270,13 @@ public:
     /// positive costs a rejected candidate; a false negative costs a whole
     /// edge, so the filter errs permissive (REC-1's rationale).
     static bool plausible_tag(RECOVERY_TAG tag) noexcept;
+
+    /// A generated block's V-Table extent, from the COMPILED reflection table
+    /// (REC-18.1). Static and public so the gap sweep, the ranker and the tests
+    /// all size a block the same way. Returns DATA_BLOCK::HEADER_SIZE for a tag
+    /// this build has no table for -- which is also how an OLD reader
+    /// under-sizes a NEWER stream, so gap classification must expect it.
+    static Size derived_block_size(RECOVERY_TAG tag) noexcept;
 
 private:
     bool         valid_validation(Offset off) const noexcept;

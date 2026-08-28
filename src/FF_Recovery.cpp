@@ -141,8 +141,37 @@ bool Recovery::header_is_readable() const noexcept {
 // StreamMap — the two producers
 // =====================================================================
 
+// REC-18.1 — a generated block's V-Table extent, derived from the COMPILED
+// reflection table. No generator change is needed: ff_slot_width() is constexpr
+// and total over FF_FieldKind, so the widest (field_offset + width) is the
+// header size. Verified exact against the compiled constants -- FF_OBSERVATION
+// 288, FF_PATIENT 191, FF_CODING 55.
+//
+// This is also where an OLD parser under-sizes a NEWER stream: a future engine
+// appends slots, so this reader's table is short and every block of that tag
+// trails a small gap. That is benign and classify_gaps() must not call it
+// damage (REC-18.4).
+Size Recovery::derived_block_size(RECOVERY_TAG tag) noexcept {
+    const auto fields = reflected_fields_view(static_cast<uint16_t>(tag));
+    Size widest = DATA_BLOCK::HEADER_SIZE;
+    for (const FF_FieldInfo& f : fields) {
+        const Size end = static_cast<Size>(f.field_offset) + ff_slot_width(f.kind);
+        if (end > widest)
+            widest = end;
+    }
+    return widest;
+}
+
 // Classify one self-consistent block start: which StreamMapEntryType it is and
-// how big it is (0 = not knowable without a walk).
+// how big it is.
+//
+// REC-18.2 — CONTAINMENT. An entry is charged only the bytes NO OTHER ENTRY
+// OWNS. An inline array of self-describing block headers has each element in
+// the map already, so charging the array its whole extent double-counts: doing
+// that produced 11,374 "overlaps" totalling 54 MB in a 3.3 MB stream. Arrays
+// whose elements are their own entries are charged HEADER-ONLY; every other
+// array (raw scalars, resource tuples, the string OFFSET table) is charged its
+// full extent, because nothing else claims those bytes.
 static StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off) {
     const RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + off + DATA_BLOCK::RECOVERY));
     if (IsArrayTagged(tag)) {
@@ -153,6 +182,11 @@ static StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off) 
             const uint32_t count     = LOAD_U32(base + off + FF_ARRAY::ENTRY_COUNT);
             const uint64_t stride    = kind_step & FF_ARRAY::STEP_MASK;
             const uint64_t total     = FF_ARRAY::HEADER_SIZE + static_cast<uint64_t>(count) * stride;
+            // Elements that are themselves self-describing blocks appear in the
+            // map on their own; charging them twice is the overlap above.
+            const ElementShape shape = element_shape_of(GetTypeFromTag(tag), kind_step);
+            if (shape == ElementShape::InlineBlock)
+                return {StreamMapEntryType::Array, off, FF_ARRAY::HEADER_SIZE};
             if (total <= size - static_cast<size_t>(off))
                 return {StreamMapEntryType::Array, off, static_cast<Size>(total)};
         }
@@ -167,7 +201,135 @@ static StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off) 
         }
         return {StreamMapEntryType::String, off, 0};
     }
-    return {StreamMapEntryType::Block, off, 0};
+    // REC-18.1 — the three hand-written primitive blocks have no GENERATED
+    // reflection, so reflected_fields_view() is empty for them and the derived
+    // size would collapse to DATA_BLOCK::HEADER_SIZE. Each carries a compiled
+    // HEADER_SIZE instead. Measured on one Synthea bundle: CODEABLE_CONCEPT
+    // x6593, URL_DIRECTORY x1, CHECKSUM x1 -- three tags cover every one.
+    if (tag == RECOVER_FF_CODEABLE_CONCEPT) {
+        if (static_cast<size_t>(off) + FF_CODEABLE_CONCEPT::HEADER_SIZE <= size) {
+            const uint8_t len = LOAD_U8(base + off + FF_CODEABLE_CONCEPT::LENGTH);
+            const uint64_t total = FF_CODEABLE_CONCEPT::HEADER_SIZE + static_cast<uint64_t>(len);
+            if (total <= size - static_cast<size_t>(off))
+                return {StreamMapEntryType::Block, off, static_cast<Size>(total)};
+        }
+        return {StreamMapEntryType::Block, off, FF_CODEABLE_CONCEPT::HEADER_SIZE};
+    }
+    if (tag == RECOVER_FF_CHECKSUM)
+        return {StreamMapEntryType::Block, off, FF_CHECKSUM::HEADER_SIZE};
+    if (tag == RECOVER_FF_URL_DIRECTORY) {
+        // HEADER_SIZE + ENTRY_COUNT x URL_ENTRY_SIZE -- the exact span the
+        // writer claims (src/FF_Ingestor.cpp, "Write FF_URL_DIRECTORY block").
+        // Charging header-only leaves the whole entry table unattributed, which
+        // is the one gap that survived the REC-18 feasibility probe.
+        if (static_cast<size_t>(off) + FF_URL_DIRECTORY::HEADER_SIZE <= size) {
+            const uint32_t n = LOAD_U32(base + off + FF_URL_DIRECTORY::ENTRY_COUNT);
+            const uint64_t total = FF_URL_DIRECTORY::HEADER_SIZE +
+                                   static_cast<uint64_t>(n) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
+            if (total <= size - static_cast<size_t>(off))
+                return {StreamMapEntryType::Block, off, static_cast<Size>(total)};
+        }
+        return {StreamMapEntryType::Block, off, FF_URL_DIRECTORY::HEADER_SIZE};
+    }
+    return {StreamMapEntryType::Block, off, Recovery::derived_block_size(tag)};
+}
+
+// REC-18.3/.4/.7 — tile the arena; every run of bytes no entry claims is a gap.
+//
+// The map is already offset-ordered (std::map), so this is one O(n) sweep with
+// no sort. Overlap is impossible by construction once REC-18.2's containment
+// rule holds -- an entry is charged only the bytes nothing else owns -- so a
+// cursor that only moves forward is sufficient.
+//
+// Classification, cheapest discriminator first:
+//   1. VERSION GATE. A gap can only be benign skew if the stream was written by
+//      a NEWER engine than this reader. FF_HEADER::VERSION carries it; Parser
+//      has always read that field and never acted on it, and this is the first
+//      place that changes.
+//   2. SYSTEMATICITY. A version gap trails EVERY instance of a tag at the SAME
+//      size; a hole is a one-off. That is self-calibrating -- the reader cannot
+//      know the newer layout, but it can observe that 6,593 CodeableConcepts all
+//      trail exactly 6 bytes and conclude the delta rather than 6,593 holes.
+//   3. SIZE FLOOR. A hole must be at least DATA_BLOCK::HEADER_SIZE; less than
+//      that cannot have been a block. Weak alone -- a large version delta can
+//      exceed a small block -- so it never decides on its own.
+void Recovery::find_gaps(StreamMap& map) const {
+    map.gaps.clear();
+    if (map.empty())
+        return;
+
+    // REC-18.7 — the compact layout is a presence-bitmask rewrite with entirely
+    // different geometry. Refuse rather than emit nonsense.
+    if (header_is_readable()) {
+        const uint32_t encoded = LOAD_U32(m_base + FF_HEADER::VERSION);
+        if ((encoded & FF_STREAM_LAYOUT_MASK) != 0)
+            return;  // compact archive: gap analysis does not apply
+    }
+
+    // Pass 1 — collect the raw runs, remembering which tag each one trails.
+    struct Raw { Offset start; Size len; RECOVERY_TAG after; Offset after_off; };
+    std::vector<Raw> raw;
+    uint64_t cursor = 0;
+    RECOVERY_TAG prev_tag = FF_RECOVER_UNDEFINED;
+    Offset prev_off = FF_NULL_OFFSET;
+    for (const auto& [off, e] : map) {
+        const uint64_t o = static_cast<uint64_t>(off);
+        if (o > cursor)
+            raw.push_back({static_cast<Offset>(cursor), static_cast<Size>(o - cursor),
+                           prev_tag, prev_off});
+        cursor   = std::max(cursor, o + static_cast<uint64_t>(e.size));
+        prev_tag = tag_at(off);
+        prev_off = off;
+    }
+    if (static_cast<uint64_t>(map.file_size) > cursor)
+        raw.push_back({static_cast<Offset>(cursor),
+                       static_cast<Size>(map.file_size - cursor), prev_tag, prev_off});
+
+    // Pass 2 — could this reader be under-sizing blocks at all?
+    bool newer_stream = false;
+    if (header_is_readable()) {
+        // This engine's version, composed exactly as the writer composes it
+        // (src/FF_Primitives.cpp, the STORE_U32 into FF_HEADER::VERSION).
+        constexpr uint32_t kThisEngine =
+            ((static_cast<uint32_t>(FASTFHIR_VERSION_MAJOR) & 0x3FFFu) << 16) |
+             (static_cast<uint32_t>(FASTFHIR_VERSION_MINOR) & 0xFFFFu);
+        const uint32_t stream_engine =
+            FF_HEADER_ENGINE_VERSION(LOAD_U32(m_base + FF_HEADER::VERSION));
+        newer_stream = stream_engine > FF_HEADER_ENGINE_VERSION(kThisEngine);
+    }
+
+    // Pass 3 — per-tag systematicity. A tag whose every instance trails the same
+    // non-zero run is a version delta, not N separate holes.
+    std::unordered_map<uint16_t, std::size_t> instances;
+    for (const auto& [off, e] : map)
+        instances[static_cast<uint16_t>(tag_at(off))]++;
+    std::unordered_map<uint16_t, std::unordered_map<Size, std::size_t>> trail;
+    for (const Raw& r : raw)
+        if (r.after != FF_RECOVER_UNDEFINED)
+            trail[static_cast<uint16_t>(r.after)][r.len]++;
+
+    for (const Raw& r : raw) {
+        Gap g{r.start, r.len, r.after, GapClass::Hole, "unattributed bytes"};
+        if (static_cast<uint64_t>(r.start) + r.len >= static_cast<uint64_t>(map.file_size)) {
+            g.class_ = GapClass::Trailing;
+            g.why    = "arena slack past the last entry";
+        } else if (newer_stream && r.after != FF_RECOVER_UNDEFINED) {
+            const uint16_t t = static_cast<uint16_t>(r.after);
+            const auto it = trail.find(t);
+            const std::size_t same = (it != trail.end() && it->second.count(r.len))
+                                         ? it->second.at(r.len) : 0;
+            // Every instance of the tag trails this exact run -> a V-Table the
+            // writer knows about and this reader does not.
+            if (same > 1 && same == instances[t]) {
+                g.class_ = GapClass::VersionSkew;
+                g.why    = "constant trailing run after every block of this tag; "
+                           "stream engine is newer than this reader";
+            }
+        }
+        if (g.class_ == GapClass::Hole && r.len < DATA_BLOCK::HEADER_SIZE)
+            g.why = "unattributed, but too small to have held a block header";
+        map.gaps.push_back(g);
+    }
 }
 
 StreamMap Recovery::scan() const {
@@ -187,6 +349,7 @@ StreamMap Recovery::scan() const {
             continue;  // the header (and any overlap) is already claimed
         map[off] = classify_block(m_base, m_size, off);
     }
+    find_gaps(map);
     return map;
 }
 
@@ -606,26 +769,40 @@ FF_RecoveryReport Recovery::recover() const {
                         h_inplace = hamming_cost(LOAD_U64(m_base + r.child), static_cast<uint64_t>(r.child));
                 }
 
-                // The repoint cost: cheapest unique orphan (mode 1), if any.
+                // The repoint cost: cheapest unique candidate (mode 1), if any.
                 uint32_t h_off = UINT32_MAX;
                 bool off_unique = false;
+                const auto consider = [&](Offset p) {
+                    const uint32_t c = hamming_cost(static_cast<uint64_t>(r.child),
+                                                    static_cast<uint64_t>(p));
+                    if (c < h_off) {
+                        h_off = c;
+                        off_unique = true;
+                        v.candidates.clear();
+                        v.candidates.push_back(p);
+                    } else if (c == h_off) {
+                        off_unique = false;
+                        v.candidates.push_back(p);
+                    }
+                };
                 if (r.declared != FF_RECOVER_UNDEFINED) {
                     const auto it = orphans.find(r.declared);
-                    if (it != orphans.end()) {
-                        for (const Offset p : it->second) {
-                            const uint32_t c = hamming_cost(static_cast<uint64_t>(r.child),
-                                                            static_cast<uint64_t>(p));
-                            if (c < h_off) {
-                                h_off = c;
-                                off_unique = true;
-                                v.candidates.clear();
-                                v.candidates.push_back(p);
-                            } else if (c == h_off) {
-                                off_unique = false;
-                                v.candidates.push_back(p);
-                            }
-                        }
-                    }
+                    if (it != orphans.end())
+                        for (const Offset p : it->second)
+                            consider(p);
+
+                    // REC-18.6 — a HOLE is also a candidate position, and it is
+                    // the ONLY one available when the child's VALIDATION is
+                    // broken too: such a block is in no orphan bucket because
+                    // scan() never found it. Admit a hole only when its length
+                    // matches what the declared type would occupy, so this adds
+                    // sized evidence rather than a free guess. Budget and tie
+                    // rules below are unchanged -- two candidates at equal cost
+                    // stay Ambiguous.
+                    const Size want = derived_block_size(r.declared);
+                    for (const Gap& g : map.gaps)
+                        if (g.class_ == GapClass::Hole && g.length == want)
+                            consider(g.start);
                 }
 
                 const bool in_place = h_inplace <= FF_RECOVERY_MAX_FLIPS;
@@ -659,6 +836,14 @@ FF_RecoveryReport Recovery::recover() const {
         rep.blocks.push_back(std::move(v));
     }
     rep.blocks_total = rep.blocks.size();
+
+    // REC-18.5 — carry the gaps through, counted by class. A hole is the one
+    // finding neither the scan nor the reachability walk can produce.
+    rep.gaps = map.gaps;
+    for (const Gap& g : rep.gaps) {
+        if (g.class_ == GapClass::Hole)             ++rep.holes;
+        else if (g.class_ == GapClass::VersionSkew) ++rep.version_skew;
+    }
     return rep;
 }
 

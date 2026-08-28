@@ -839,13 +839,13 @@ design.
 
 ### Subtasks
 
-- [ ] **REC-18.1 — extents for every entry.** The three sources above, in
+- [x] **REC-18.1 — extents for every entry.** ✅ **DONE 2026-08-27.** The three sources above, in
   `classify_block()`. **Verify:** on a clean stream `entries with no derivable size == 0`,
   asserted with a **non-zero total-entry floor** first (P0-2).
-- [ ] **REC-18.2 — the containment rule.** Arrays charged per the rule above, reusing
+- [x] **REC-18.2 — the containment rule.** ✅ **DONE 2026-08-27.** Arrays charged per the rule above, reusing
   `element_shape_of()`. **Verify:** `overlaps == 0` on a clean stream. This assertion is
   the one that catches a future array-shape regression.
-- [ ] **REC-18.3 — `Gap` and the sweep.** Linear pass over the ordered map in offset order:
+- [x] **REC-18.3 — `Gap` and the sweep.** ✅ **DONE 2026-08-27.** Linear pass over the ordered map in offset order:
   ```cpp
   struct Gap {
       Offset       start  = FF_NULL_OFFSET;
@@ -856,19 +856,67 @@ design.
   ```
   `std::map` is already ordered, so the sweep is O(n) with no sort. **Verify:** clean
   stream ⇒ `gaps.empty()`.
-- [ ] **REC-18.4 — classification.** The four discriminators, in order. Report the reason a
+- [x] **REC-18.4 — classification.** ✅ **DONE 2026-08-27.** (skew *gate* tested; the systematicity half needs a genuinely version-skewed stream — see below.) The four discriminators, in order. Report the reason a
   gap was called `VersionSkew`, never just the verdict.
-- [ ] **REC-18.5 — surface it.** `StreamMap` carries `std::vector<Gap> gaps`;
+- [x] **REC-18.5 — surface it.** ✅ **DONE 2026-08-27.** `StreamMap` carries `std::vector<Gap> gaps`;
   `FF_RecoveryReport` carries the counts and the list. Populate them **in step** — an
   always-empty vector is how `Stats::units` shipped inert (P0-2, and it happened here
   already).
-- [ ] **REC-18.6 — feed the ranker.** A hole of size N adjacent to an unsatisfied parent
+- [x] **REC-18.6 — feed the ranker.** ✅ **DONE 2026-08-27.** A hole of size N adjacent to an unsatisfied parent
   slot declaring a tag whose derived `HEADER_SIZE` is N is a **candidate position** for
   `H_off`. Today that hypothesis has no candidate when the child's `VALIDATION` is broken.
   Gate it behind the same `FF_RECOVERY_MAX_FLIPS` budget and the same tie rule: two holes
   of the right size ⇒ `Ambiguous`, never a pick.
-- [ ] **REC-18.7 — refuse compact streams.** Read the layout bits; return an empty gap list
+- [x] **REC-18.7 — refuse compact streams.** ✅ **DONE 2026-08-27.** Read the layout bits; return an empty gap list
   with a stated reason rather than garbage.
+
+### Implemented 2026-08-27 — measured result
+
+`src/FF_Recovery.cpp` + `include/FF_Recovery.hpp`. **A clean arena tiles exactly**:
+
+```
+Adrian111_Hodkiewicz467   entries=60664  gaps=0  hole=0 skew=0 trail=0
+Adriene242_Britteny287    entries=67057  gaps=0  hole=0 skew=0 trail=0
+Agnes294_Marks830         entries=65414  gaps=0  hole=0 skew=0 trail=0
+Alberto639_Tromp100       entries=19299  gaps=0  hole=0 skew=0 trail=0
+```
+
+**Eleven tests** in `tests/cpp/test_recovery.cpp`, all five plan cases covered plus two
+Ryan added on review, each **red before, green after** — disabling the extent model and the
+sweep reddens 12 assertions across 6 suites; disabling only the compact guard reddens
+exactly the compact case.
+
+The two review additions matter most, because a hole is only useful if it names the right
+bytes:
+
+- **`holes_locate_and_size_every_entry_shape`** — the extent rules differ per shape, so one
+  victim of each is damaged in turn and the hole must land on the exact range. Reported
+  rather than merely asserted: `covered shapes: Block(96B) Array(16B) String(16B)`. The
+  16-byte Array is the containment rule visible in the output — an `INLINE_BLOCK` array is
+  charged header-only, so its elements are not double-counted.
+- **`broken_blockref_still_locates_and_sizes_the_orphan`** — **both** witnesses destroyed,
+  which is what "truly orphaned" requires: breaking the reference alone leaves the child
+  self-consistent, so `scan()` still finds it and it is an *orphan*, not a hole. Every
+  referenced block is exercised, not one per shape:
+  `blockref breaks exercised: 20 (Array=5 Block=7 String=8 | skipped: last=1
+  slot-collides-with-child=4)`. The skip counters are printed because they are how the test
+  could quietly stop testing anything.
+
+Two notes for whoever picks this up:
+
+- **The URL directory is `HEADER_SIZE + ENTRY_COUNT × URL_ENTRY_SIZE`.** It has no
+  stamped byte-count; charging it header-only leaves its whole entry table
+  unattributed, and that was the single 352-byte gap the feasibility probe left.
+- **A test that damages two witnesses must damage two DISTINCT bytes.** The first
+  version picked a reference whose slot address equalled its child's offset, so two
+  `^= 0xFF` writes cancelled and the "damaged" stream was pristine — the test passed
+  while proving nothing. It now skips such references and *asserts* the block really
+  vanished before checking anything else.
+
+**Still owed:** the systematicity half of REC-18.4. The version *gate* is tested in the
+safety-critical direction (a same-version stream may never excuse a gap as skew), but
+"every instance of a tag trails the same run ⇒ VersionSkew" needs a stream written by a
+genuinely newer engine, which cannot exist yet. Revisit when the format has two versions.
 
 ### Verify (block)
 
