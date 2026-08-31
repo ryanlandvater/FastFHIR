@@ -306,6 +306,17 @@ namespace FastFHIR
         auto allocator = Memory(std::shared_ptr<FF_Memory_t>(
             new FF_Memory_t(base_ptr, capacity, file_handle, os_handle, os_fd, path_str)));
 
+        // Record what the OS says the file is, for an existing one. `capacity` is
+        // the sparse RESERVATION (4 GiB by default) and says nothing about how
+        // many bytes exist, so it cannot bound a reader on its own. A file this
+        // call just created has no meaningful size yet and keeps 0.
+        if (!is_new) {
+            std::error_code ec;
+            const auto on_disk = std::filesystem::file_size(filepath, ec);
+            if (!ec)
+                allocator.m_core->m_disk_size = static_cast<size_t>(on_disk);
+        }
+
         return allocator;
     }
 

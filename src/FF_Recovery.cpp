@@ -1576,6 +1576,30 @@ bool Recovery::plausible_tag(RECOVERY_TAG tag) noexcept {
 }
 
 Recovery::Recovery(const Memory& memory) noexcept
-    : m_base(memory.base()), m_size(memory.size()) {}
+    : m_base(memory.base()),
+      // THE DECLARED SIZE IS A WIRE VALUE, AND THIS CLASS TRUSTS NO WIRE VALUE.
+      //
+      // Memory::size() reads the arena's write head, and the head lives at
+      // byte 8 of the arena (Memory::STREAM_CURSOR_OFFSET) -- the same 8 bytes
+      // FF_HEADER::STREAM_SIZE occupies. That identity is the design: sealing a
+      // stream parks the head at the payload size, so it becomes the declared
+      // file size. It also means that on a DAMAGED stream those 8 bytes are
+      // just corrupted bytes, and size() reports whatever they say.
+      //
+      // Measured: a Synthea artifact with 256 bits flipped reported a size of
+      // 8,591,006,582 for a 1,071,990-byte file, and the byte census walked
+      // 8 GiB of unmapped sparse address space -- SIGSEGV, in the one class
+      // whose entire purpose is surviving bytes it does not trust, and whose
+      // header promises every read is bounds-checked. It killed test 5's sweep
+      // at 256 bits and predates the REC-19 rewrite.
+      //
+      // So bound it by an extent the stream cannot influence. disk_size() is
+      // what the OS reports for the backing file and is the real answer when
+      // there is one; capacity() is only the sparse RESERVATION (4 GiB by
+      // default), so it is the weaker fallback used for an anonymous arena.
+      // Neither is read from the stream, which is the whole point.
+      m_size(std::min<uint64_t>(memory.size(),
+                                memory.disk_size() != 0 ? memory.disk_size()
+                                                        : memory.capacity())) {}
 
 }  // namespace FastFHIR
