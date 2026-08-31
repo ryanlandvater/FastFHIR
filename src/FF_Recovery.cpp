@@ -478,8 +478,19 @@ void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                 // The parent→array reference itself.
                 out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
                                        array_off, f.child_recovery, FF_RECOVER_UNDEFINED});
-                // Element references — only when the array header is self-consistent.
-                if (!valid_validation(array_off))
+                // Element references. The array header's self-offset may be the
+                // damaged half -- the slot above still names this address and
+                // this element type -- so require only that it be REPAIRABLE
+                // under the flip budget, not already correct. Demanding a clean
+                // self-offset here dropped every element of the array from the
+                // census even after the walk had recovered the array itself,
+                // which on the test fixture cost 2 of 24 references from one
+                // flipped bit. Bytes that are not a Hamming neighbour of their
+                // own address are still refused: that is not this array.
+                if (!valid_validation(array_off) &&
+                    (static_cast<size_t>(array_off) + DATA_BLOCK::HEADER_SIZE > m_size ||
+                     hamming_cost(FF_GET_VALIDATION(m_base, array_off),
+                                  static_cast<uint64_t>(array_off)) > FF_RECOVERY_MAX_FLIPS))
                     continue;
                 if (static_cast<size_t>(array_off) + FF_ARRAY::HEADER_SIZE > m_size)
                     continue;
@@ -578,32 +589,102 @@ std::vector<Offset> Recovery::walk_chain(std::vector<BlockRef>* out) const {
     // DFS through INTACT references only, depth- and cycle-bounded. Marking on
     // completion is unnecessary here (the verdict of a reference does not
     // depend on how it was reached), so a simple visited set bounds the work.
+    struct Pending { Offset off; std::size_t depth; RECOVERY_TAG tag; };
     std::unordered_set<Offset> visited;
-    std::vector<std::pair<Offset, std::size_t>> stack{{root, 0}};
+    std::vector<Pending> stack{{root, 0, root_tag}};
     std::vector<BlockRef> scratch;
     while (!stack.empty()) {
-        const auto [off, depth] = stack.back();
+        const auto [off, depth, tag] = stack.back();
         stack.pop_back();
         if (!visited.insert(off).second)
             continue;
         reachable.push_back(off);
 
         // One enumeration per block feeds both the walk (child discovery) and,
-        // when requested, the baseline output — no second pass.
+        // when requested, the baseline output — no second pass. The tag comes
+        // down the stack rather than off the wire: for a child whose own tag
+        // was the damaged half, the parent's declared type is the surviving
+        // witness and the only one that names the right V-Table.
         scratch.clear();
-        enumerate_block_refs(off, tag_at(off), scratch);
+        enumerate_block_refs(off, tag, scratch);
         if (out)
             out->insert(out->end(), scratch.begin(), scratch.end());
         if (depth >= FF_RECOVERY_MAX_DEPTH)
             continue;
 
         for (const BlockRef& r : scratch) {
-            if (r.child == FF_NULL_OFFSET || !valid_validation(r.child))
-                continue;  // damaged references do not extend the walk
+            if (r.child == FF_NULL_OFFSET)
+                continue;
+            // ONE SURVIVING WITNESS IS ENOUGH TO KEEP WALKING.
+            //
+            // This used to require the child to be fully intact -- self-offset
+            // valid AND tag equal to the slot's declared type -- and abandoned
+            // the subtree otherwise. That threw away the whole point of storing
+            // the type twice. A single bit flipped in a child's 10-byte header
+            // left the PARENT still naming both its address and its type, and
+            // the walk stopped there anyway, so every block below it went
+            // unreached and unenumerated. Measured on a 1.05 MB Synthea
+            // artifact: one flip in a block header cost 3 block references, in
+            // a stream where recover() reported zero failures -- the loss never
+            // appeared as a failed repair because the references were never
+            // enumerated to be repaired.
+            //
+            // The rule now matches the redundancy the format actually has: the
+            // pair (child's self-offset, child's tag) is corroborated by the
+            // parent's slot, so descend while EITHER half still agrees, and
+            // stop only when both are gone -- which is the genuine no-witness
+            // hole REC-18 exists to report and no walk can cross.
+            // A BROKEN SELF-OFFSET MUST STILL BE WITHIN THE FLIP BUDGET.
+            //
+            // "the tag corroborates but the self-offset does not" describes two
+            // very different situations, and they must not be treated alike:
+            //   * the child is real and its VALIDATION word took the flip --
+            //     the stored word is then a Hamming neighbour of the address;
+            //   * the PARENT's offset took the flip and now names arbitrary
+            //     bytes whose two tag bytes happen to match -- the stored word
+            //     there is unrelated to the address, so the distance is large.
+            // Descending on the second one enumerates garbage under a real
+            // V-Table. Measured: it invented 13 references and 15 unrecovered
+            // verdicts on a stream with a single bit flipped. The budget is the
+            // same D1/D2 discipline the classifier already applies, so the walk
+            // and the verdict cannot disagree about what is repairable.
+            const bool self_ok = valid_validation(r.child);
+            const bool self_repairable =
+                self_ok || (r.child >= 0 &&
+                            static_cast<size_t>(r.child) + DATA_BLOCK::HEADER_SIZE <= m_size &&
+                            hamming_cost(FF_GET_VALIDATION(m_base, r.child),
+                                         static_cast<uint64_t>(r.child)) <= FF_RECOVERY_MAX_FLIPS);
             const RECOVERY_TAG actual = tag_at(r.child);
-            if (r.declared != FF_RECOVER_UNDEFINED && actual != r.declared)
-                continue;  // tag disagreement — not an intact reference (REC-5)
-            stack.emplace_back(r.child, depth + 1);
+            const bool declared_known = r.declared != FF_RECOVER_UNDEFINED;
+            const RECOVERY_TAG actual_base =
+                (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(actual) : actual;
+            const bool tag_ok = declared_known && actual_base == r.declared;
+            if (!self_repairable && !tag_ok)
+                continue;  // both witnesses gone — a hole, not a reference
+            if (!self_repairable)
+                continue;  // tag matches by coincidence at an unrelated address
+            // Enumerate under the corroborated type. When the child's own tag
+            // is the damaged half, its V-Table would be wrong (or absent), and
+            // enumerating under it silently yields no children at all — the
+            // same subtree loss by another route.
+            // Which tag names the V-Table to walk this child under.
+            //
+            // The wire tag wins when it CORROBORATES the slot, because it is
+            // the one that carries the array bit (`declared` is an ELEMENT
+            // type, and enumerating an array under its element's V-Table reads
+            // the wrong shape entirely). But "plausible" is not "correct": a
+            // flipped tag frequently lands on another live tag, and trusting it
+            // walks the wrong V-Table and silently yields no children. When the
+            // slot declares a type and the wire disagrees, the tag is the
+            // damaged half by definition -- the parent is the surviving witness
+            // -- so follow the parent, restoring the array bit the slot's
+            // element type does not carry.
+            const RECOVERY_TAG use =
+                tag_ok ? actual
+                       : (declared_known
+                              ? (r.kind == FF_FIELD_ARRAY ? ToArrayTag(r.declared) : r.declared)
+                              : actual);
+            stack.emplace_back(r.child, depth + 1, use);
         }
     }
     return reachable;
@@ -672,12 +753,157 @@ FF_RecoveryReport Recovery::recover() const {
     if (chain_error)
         std::rethrow_exception(chain_error);
 
-    // Orphan set: self-consistent ∧ ¬reachable (REC-11), bucketed by tag so a
+    // ADMIT PARENT-ATTESTED BLOCKS BEFORE ENUMERATING, AND ENUMERATE UNDER
+    // THE CORROBORATED TYPE.
+    //
+    // This enumeration used to be driven by the scan census alone, with each
+    // block enumerated under whatever tag was on the wire. Both halves of that
+    // lose subtrees to a single bit flip:
+    //
+    //   * scan() finds a block by its self-offset, so a block whose VALIDATION
+    //     was the damaged half is ABSENT from the census. The reference TO it
+    //     was still classified and repaired -- which is why the report showed
+    //     no failure -- but every reference FROM it was never enumerated.
+    //   * a block whose TAG was the damaged half is present, but enumerating it
+    //     under that tag names the wrong V-Table (or none), so it yields no
+    //     children and the subtree leaves just as quietly.
+    //
+    // Measured on a 1.05 MB Synthea artifact: one flipped bit anywhere in a
+    // block's 10-byte header cost 3 block references while recover() reported
+    // zero ambiguous and zero unrecovered. Finding the hole and leaving it is
+    // not recovery -- the parent slot still names the child's address AND its
+    // type, and that second witness is the whole reason the format stores it.
+    //
+    // So walk from the root, carrying the corroborated type down: a child is
+    // admitted (and enumerated) while EITHER witness still agrees with the
+    // slot, and skipped only when both are gone -- the genuine no-witness hole
+    // REC-18 reports, where inventing a block would be a guess (P0-3: never
+    // guessed). Census blocks the walk never reaches are then enumerated under
+    // their own tag, exactly as before: an orphaned parent's outgoing
+    // references are still real.
+    std::vector<BlockRef> all;
+    std::unordered_set<Offset> enumerated;
+    std::size_t admitted = 0;
+
+    auto corroborated_tag = [this](const BlockRef& r, bool& usable) -> RECOVERY_TAG {
+        usable = false;
+        if (r.child == FF_NULL_OFFSET || r.child < 0 ||
+            static_cast<size_t>(r.child) + DATA_BLOCK::HEADER_SIZE > m_size)
+            return FF_RECOVER_UNDEFINED;
+        const RECOVERY_TAG actual = tag_at(r.child);
+        const RECOVERY_TAG actual_base =
+            (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(actual) : actual;
+        const bool self_ok = valid_validation(r.child);
+        // Same budget as the walk: a self-offset that is not merely wrong but
+        // UNRELATED to this address means the parent's offset is the damaged
+        // half and this is not the child at all.
+        const bool self_repairable =
+            self_ok || hamming_cost(FF_GET_VALIDATION(m_base, r.child),
+                                    static_cast<uint64_t>(r.child)) <= FF_RECOVERY_MAX_FLIPS;
+        const bool tag_ok = r.declared != FF_RECOVER_UNDEFINED && actual_base == r.declared;
+        if (!self_repairable || !tag_ok)
+            return FF_RECOVER_UNDEFINED;
+        // WHY THE TAG MUST CORROBORATE, even though a valid self-offset already
+        // proves a block lives here.
+        //
+        // `self_ok && !tag_ok` is genuinely two situations wearing the same
+        // face: the child's TAG was flipped (a real child, mislabelled), or the
+        // PARENT's offset was flipped onto an innocent, perfectly valid block
+        // of another type. Nothing local separates them. Guessing "the tag was
+        // flipped" and enumerating that block under the slot's declared type
+        // measurably invented 13 references and 15 unrecovered verdicts from a
+        // single flipped bit -- misattachment, which is worse than the loss it
+        // was trying to avoid.
+        //
+        // Ranking those two hypotheses under the flip budget is exactly what
+        // the classifier below does (h_inplace vs H_off, ties -> Ambiguous,
+        // never guessed). The walk does not get to pre-empt it. So a
+        // tag-damaged block is REPORTED as TagRepaired and its subtree stays
+        // unenumerated until that repair is applied (REC-15) and the stream
+        // re-scanned -- a known, bounded cost of about three references per
+        // damaged tag, and honest.
+        usable = true;
+        // Same rule as the walk: the wire tag wins only while it corroborates
+        // the slot; otherwise it is the damaged half and the parent's declared
+        // type is the witness that survived (re-armed with the array bit).
+        return tag_ok ? actual
+                      : (r.declared != FF_RECOVER_UNDEFINED
+                             ? (r.kind == FF_FIELD_ARRAY ? ToArrayTag(r.declared) : r.declared)
+                             : actual);
+    };
+
+    std::vector<std::pair<Offset, RECOVERY_TAG>> frontier;
+    if (header_is_readable()) {
+        const Offset root = FF_HEADER(m_size).get_root(m_base);
+        if (root != FF_NULL_OFFSET && root >= 0 &&
+            static_cast<size_t>(root) + DATA_BLOCK::HEADER_SIZE <= m_size &&
+            plausible_tag(tag_at(root)))
+            frontier.emplace_back(root, tag_at(root));
+    }
+    while (!frontier.empty()) {
+        std::vector<std::pair<Offset, RECOVERY_TAG>> next;
+        for (const auto& [off, use] : frontier) {
+            if (!enumerated.insert(off).second)
+                continue;
+            const auto existing = map.find(off);
+            if (existing == map.end()) {
+                StreamMapEntry e = classify_block(m_base, m_size, off);
+                e.offset = off;
+                if (e.type == StreamMapEntryType::Undefined)
+                    e.type = StreamMapEntryType::Block;
+                if (e.size == 0)
+                    e.size = derived_block_size(use);
+                map[off] = e;
+                ++admitted;
+            } else if (tag_at(off) != use) {
+                // The block IS in the census, but scan() sized it from the tag
+                // on the wire and that tag was the damaged half -- so its
+                // extent is wrong and its own bytes still tile as a hole. Now
+                // that the parent has supplied the real type, re-derive it.
+                const Size sized = derived_block_size(use);
+                if (sized != 0 && sized != existing->second.size) {
+                    existing->second.size = sized;
+                    ++admitted;
+                }
+            }
+            const std::size_t before = all.size();
+            enumerate_block_refs(off, use, all);
+            for (std::size_t i = before; i < all.size(); ++i) {
+                bool usable = false;
+                const RECOVERY_TAG child_tag = corroborated_tag(all[i], usable);
+                if (usable && !enumerated.contains(all[i].child))
+                    next.emplace_back(all[i].child, child_tag);
+            }
+        }
+        frontier.swap(next);
+    }
+
+    // The tiling was computed over the pre-admission census, so every block the
+    // walk just recovered still reads as a hole in it. Re-run the sweep over
+    // the repaired map — which is what find_gaps() is exposed for — so `holes`
+    // counts what is still missing AFTER recovery, not what recovery found.
+    if (admitted != 0)
+        find_gaps(map);
+
+    // ORPHAN SET LAST, NOT FIRST — the ordering is load-bearing.
+    //
+    // Orphans are self-consistent ∧ ¬reachable (REC-11), bucketed by tag so a
     // corrupt slot's search is one bucket lookup, not a per-reference arena
     // sweep. The array bit is STRIPPED: an array block must land in the bucket
     // of its element type, which is what the slot declares (an entry-array slot
-    // declaring BUNDLE_ENTRY must find its orphaned array, not just loose
-    // entry blocks).
+    // declaring BUNDLE_ENTRY must find its orphaned array, not just loose entry
+    // blocks).
+    //
+    // This used to be built straight off the raw census, BEFORE the admission
+    // pass above. That is the wrong order for the repair that consumes it: the
+    // repoint hypothesis (H_off, below) looks for a unique unclaimed orphan of
+    // the declared type, and a block whose VALIDATION was the damaged half is
+    // invisible to scan() — so it was missing from the very pool meant to
+    // receive a re-pointed parent. A corrupt parent offset AND a corrupt child
+    // self-offset therefore failed to reconcile even though each had a witness
+    // the other side could supply. Closing the self-offset holes first makes
+    // the census complete, and only then is the pool the ranker searches the
+    // real one.
     std::unordered_set<Offset> reached(reachable.begin(), reachable.end());
     std::unordered_map<RECOVERY_TAG, std::vector<Offset>> orphans;
     for (const auto& [off, entry] : map) {
@@ -690,11 +916,116 @@ FF_RecoveryReport Recovery::recover() const {
             orphans[t].push_back(off);
     }
 
-    // Enumerate every reference of every self-consistent block — orphaned
-    // parents included, because their outgoing references are still real.
-    std::vector<BlockRef> all;
+    // EXPANSION: a block whose TAG was the damaged half still owns its subtree.
+    //
+    // The walk above descends only when the child's tag CORROBORATES the slot,
+    // because `self-offset valid && tag disagrees` is two situations wearing
+    // one face: the child's tag was flipped, or the parent's offset was flipped
+    // onto an innocent valid block of another type. Guessing there invented 13
+    // references and 15 unrecovered verdicts from one flipped bit.
+    //
+    // But the choice is not the walk's to guess -- it is exactly what the
+    // ranker below decides, under the flip budget, with ties left Ambiguous.
+    // So ask it FIRST, and enumerate the child under the slot's declared type
+    // only where the in-place tag repair wins outright. That is deference to
+    // the ranker, not a second opinion: same inputs, same rule, and where it
+    // declines (a cheaper unique repoint exists, or a tie) nothing is walked.
+    //
+    // Without this, a single flipped tag byte silently cost the ~3 references
+    // hanging below that block, and 1-bit corruption could not be lossless.
+    const auto tag_flip_wins = [&](const BlockRef& r) {
+        if (r.declared == FF_RECOVER_UNDEFINED || r.child == FF_NULL_OFFSET)
+            return false;
+        if (!valid_validation(r.child))
+            return false;  // handled by the admission pass, not here
+        const RECOVERY_TAG actual = tag_at(r.child);
+        const RECOVERY_TAG actual_base =
+            (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(actual) : actual;
+        if (actual_base == r.declared)
+            return false;  // nothing to repair
+        const uint32_t h_inplace = hamming_cost(actual_base, r.declared);
+        if (h_inplace > FF_RECOVERY_MAX_FLIPS)
+            return false;
+        // Cheapest unique repoint, ranked exactly as the classifier ranks it.
+        uint32_t h_off = UINT32_MAX;
+        bool off_unique = false;
+        const auto consider = [&](Offset cand) {
+            const uint32_t c =
+                hamming_cost(static_cast<uint64_t>(r.child), static_cast<uint64_t>(cand));
+            if (c < h_off) { h_off = c; off_unique = true; }
+            else if (c == h_off) { off_unique = false; }
+        };
+        const auto it = orphans.find(r.declared);
+        if (it != orphans.end())
+            for (const Offset cand : it->second)
+                consider(cand);
+        const Size want = derived_block_size(r.declared);
+        for (const Gap& g : map.gaps)
+            if (g.class_ == GapClass::Hole && g.length == want)
+                consider(g.start);
+        const bool in_off = off_unique && h_off <= FF_RECOVERY_MAX_FLIPS;
+        return !in_off || h_inplace < h_off;  // strict: a tie stays Ambiguous
+    };
+
+    // THE EXPANSION VERIFIES ITSELF BEFORE IT IS KEPT.
+    //
+    // The ranker's preference is evidence, not proof. When it is wrong -- the
+    // parent's OFFSET was the damaged half and the child is an innocent block
+    // of another type -- enumerating that child under the slot's declared type
+    // reads a V-Table the block does not have, and every offset it lifts out is
+    // nonsense. Trusting the preference alone invented 13 references from one
+    // flipped bit, which is a worse failure than the loss it was avoiding: a
+    // missing reference is reported, a fabricated one is believed.
+    //
+    // But a wrong V-Table is CHEAP TO DETECT. Read under the correct type, a
+    // block's slots yield children that are themselves well-formed; read under
+    // the wrong one, they yield offsets with no witness at all. So enumerate
+    // into scratch, require every child it produces to still corroborate
+    // something, and discard the whole expansion otherwise. The block then
+    // simply keeps its reported TagRepaired verdict and its subtree waits for
+    // apply() -- the honest outcome, and the one this started from.
+    std::vector<BlockRef> probe;
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        const BlockRef r = all[i];  // by value: `all` grows inside this loop
+        if (!tag_flip_wins(r) || enumerated.contains(r.child))
+            continue;
+        probe.clear();
+        enumerate_block_refs(r.child,
+                             r.kind == FF_FIELD_ARRAY ? ToArrayTag(r.declared) : r.declared,
+                             probe);
+        bool coherent = true;
+        for (const BlockRef& c : probe) {
+            if (c.child == FF_NULL_OFFSET)
+                continue;
+            if (c.child < 0 || static_cast<size_t>(c.child) + DATA_BLOCK::HEADER_SIZE > m_size) {
+                coherent = false;
+                break;
+            }
+            if (valid_validation(c.child))
+                continue;
+            const RECOVERY_TAG ct = tag_at(c.child);
+            const RECOVERY_TAG cb = (c.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(ct) : ct;
+            if (c.declared == FF_RECOVER_UNDEFINED || cb != c.declared) {
+                coherent = false;  // a child with no surviving witness — garbage
+                break;
+            }
+        }
+        if (!coherent)
+            continue;
+        enumerated.insert(r.child);
+        all.insert(all.end(), probe.begin(), probe.end());
+    }
+
+    // ONLY NOW the census sweep: whatever neither the walk nor the expansion
+    // reached is enumerated under its own tag — unchanged behaviour for
+    // orphans. This runs LAST on purpose. It used to run before the expansion,
+    // which meant a tag-damaged block had already been enumerated under the
+    // damaged tag (yielding nothing) and was marked done, so the expansion
+    // skipped the very block it existed to rescue.
     for (const auto& [off, entry] : map) {
         if (entry.type == StreamMapEntryType::Header)
+            continue;
+        if (!enumerated.insert(off).second)
             continue;
         enumerate_block_refs(off, tag_at(off), all);
     }

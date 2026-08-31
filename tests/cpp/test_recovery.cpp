@@ -621,6 +621,69 @@ static void test_broken_blockref_still_locates_and_sizes_the_orphan()
     CHECK(after.scan().gaps.empty(), "restoring leaves the arena tiled again");
 }
 
+// A single damaged witness must cost NOTHING. The format stores a block's
+// identity twice -- the block's own self-offset, and the parent slot that names
+// its address and its type -- so one flip is exactly the case the redundancy
+// exists to absorb.
+//
+// It did not absorb it. recover() enumerated references only from the scan
+// census, and scan() finds a block by its self-offset, so a block whose
+// VALIDATION took the flip was ABSENT: the reference TO it was still classified
+// and repaired (which is why the report showed zero failures), while every
+// reference FROM it was never enumerated. On a 1.05 MB Synthea artifact one
+// flipped bit silently cost 3 block references and opened a hole, with
+// ambiguous=0 and unrecovered=0 throughout -- a loss that could not be seen in
+// the report it was absent from.
+//
+// So this asserts the whole-report shape, not just the verdict on the damaged
+// edge: same reference count as clean, no holes, nothing unrecovered.
+static void test_one_damaged_witness_costs_nothing()
+{
+    auto arena = build_bundle();
+    CHECK(arena != nullptr, "bundle build failed");
+    if (!arena)
+        return;
+
+    Recovery clean(*arena);
+    const FF_RecoveryReport clean_rep = clean.recover();
+    CHECK_EQ(clean_rep.holes, static_cast<size_t>(0), "clean stream reports no holes");
+
+    // A block with children, so the subtree below the damage is what is at
+    // stake -- damaging a leaf would pass even with the walk truncated.
+    std::map<Offset, size_t> children;
+    for (const BlockRef &r : clean.reachable_blocks())
+        if (r.child != FF_NULL_OFFSET)
+            ++children[r.child];  // how many blocks does this one hang below
+    std::map<Offset, size_t> outgoing;
+    for (const BlockRef &r : clean.reachable_blocks())
+        if (r.child != FF_NULL_OFFSET)
+            ++outgoing[r.parent];
+
+    Offset victim = FF_NULL_OFFSET;
+    for (const auto &[off, n] : outgoing)
+        if (n >= 2 && off != 0 && children.contains(off)) {
+            victim = off;  // has a parent that vouches for it AND children to lose
+            break;
+        }
+    CHECK(victim != FF_NULL_OFFSET, "fixture has a block with children to damage");
+    if (victim == FF_NULL_OFFSET)
+        return;
+
+    // ONE witness: the block's own self-offset. The parent slot still names
+    // this address and this type.
+    arena->base()[static_cast<size_t>(victim)] ^= 0x01;
+
+    Recovery rec(*arena);
+    const FF_RecoveryReport rep = rec.recover();
+    CHECK_EQ(rep.blocks_total, clean_rep.blocks_total,
+             "one damaged witness loses no references");
+    CHECK_EQ(rep.holes, static_cast<size_t>(0),
+             "the block the parent still vouches for is not left as a hole");
+    CHECK_EQ(rep.unrecovered, static_cast<size_t>(0), "nothing is unrecovered");
+    CHECK_EQ(rep.ambiguous, static_cast<size_t>(0), "nothing is ambiguous");
+    CHECK(rep.position_repaired >= 1, "the damaged self-offset is reported repaired");
+}
+
 int main(int argc, char **argv)
 {
     const char *filter = (argc > 2 && strcmp(argv[1], "--filter") == 0) ? argv[2] : "";
@@ -650,6 +713,7 @@ int main(int argc, char **argv)
     run("holes_locate_and_size_every_entry_shape", test_holes_locate_and_size_every_entry_shape);
     run("broken_blockref_still_locates_and_sizes_the_orphan",
         test_broken_blockref_still_locates_and_sizes_the_orphan);
+    run("one_damaged_witness_costs_nothing", test_one_damaged_witness_costs_nothing);
 
     std::cout << "\n" << g_tests << " test(s), " << g_failures << " failure(s)\n";
     if (g_tests == 0)
