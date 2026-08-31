@@ -7,9 +7,11 @@ FastFHIR
 ![FHIR R4/R5](https://img.shields.io/badge/FHIR-R4%20%7C%20R5-blueviolet)
 ![License](https://img.shields.io/badge/license-MPL--2.0-brightgreen)
 
-**FastFHIR** is a **wildly fast binary HL7 format** comprising a lock-free binary serializer and C++20 code generation pipeline targeting the HL7 FHIR resources (R4 and R5).
+### The Time has Come to Divorce Semantics and Syntatactics from a Single Stream within Healthcare Serialization (HL7)
 
 Healthcare interoperability has historically relied on formats that are **inherently unsafe**, **computationally expensive**, and **structurally brittle**. FastFHIR replaces traditional parsing with a mathematically strict, offset-based binary layout that guarantees type safety, data recovery, in-stream HL7 enrichment, and blistering speed. It generates strongly-typed C++ structs and a mathematically strict, zero-copy binary architecture directly from official HL7 FHIR Structure Definitions.
+
+**FastFHIR** is a **wildly fast binary HL7 format** comprising a lock-free binary serializer and C++20 code generation pipeline targeting the HL7 FHIR resources (R4, R5, and beyond).
 
 
 ```py
