@@ -1614,10 +1614,26 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
 
         const RECOVERY_TAG tuple_tag = FF_GET_RECOVERY_TAG(n.m_base, item_ptr);
         const RECOVERY_TAG block_tag = FF_GET_RECOVERY_TAG(n.m_base, actual_off);
-        if (tuple_tag != block_tag) throw std::runtime_error(
-            "FastFHIR: inline polymorphic tuple array (RECOVER_FF_RESOURCE) declares tag " +
-            std::to_string(tuple_tag) + " but the block it points at carries " +
-            std::to_string(block_tag));
+        if (tuple_tag != block_tag) {
+            // ONE DAMAGED ELEMENT IS NOT A DAMAGED DOCUMENT.
+            //
+            // The two halves of a tuple disagreeing means this element is
+            // corrupt, and that is worth knowing -- but this used to THROW, and
+            // a throw from a per-element accessor does not stay local. entries()
+            // walks elements in a loop, so the first bad tuple aborted the whole
+            // array; and in a Bundle the entire payload hangs off exactly one
+            // array. Measured: a stream whose references recovery had restored
+            // to 99.9% still yielded ZERO readable values, because one element
+            // of Bundle.entry raised and took the document with it.
+            //
+            // The read path's contract is falsy Nodes and null sentinels, not
+            // exceptions (CLAUDE.md invariant 5); throwing here also broke that.
+            // The disagreement is still reported, loudly and in one place, by
+            // validate_FFHR_stream() -- which is where a structural fault
+            // belongs, because it can name every one of them instead of
+            // stopping at the first.
+            return {};
+        }
 
         // The kind follows the tag for the same reason the tag outranks the array
         // header above: a `contained` resource outside the compiled profile is
