@@ -12,6 +12,7 @@
 #include "FF_Memory.hpp"
 #include "FF_Builder.hpp"
 #include "FF_Parser.hpp"
+#include "FF_Ops.hpp"
 #include "FF_Compactor.hpp"
 #include "FF_Ingestor.hpp"
 #include "FastFHIR.hpp"
@@ -200,7 +201,7 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
             const uint32_t ref = LOAD_U32(entry.base + abs_off);
             if (ref == FF_NULL_UINT32) return py::none();
             // Reconstruct the URL text from the stream's FF_URL_DIRECTORY.
-            const Offset dir_off = LOAD_U64(entry.base + FF_HEADER::URL_DIR_OFFSET);
+            const Offset dir_off = FF_HEADER(arena_size).get_url_dir_offset(entry.base);
             if (dir_off == FF_NULL_OFFSET || dir_off >= arena_size) return py::none();
             std::string url = FF_URL_DIRECTORY(dir_off, arena_size, version).get_url(entry.base, ref);
             return py::str(url);
@@ -229,8 +230,7 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
             // whose every field lookup misses. Return the raw JSON text instead
             // and let the caller decide whether to parse it.
             const Offset abs_off = entry.absolute_offset();
-            const auto slot_tag = static_cast<RECOVERY_TAG>(
-                LOAD_U16(entry.base + abs_off + DATA_BLOCK::RECOVERY));
+            const auto slot_tag = FF_GET_RECOVERY_TAG(entry.base, abs_off);
             if (slot_tag == RECOVER_FF_OPAQUE_JSON) {
                 const Offset child_off = LOAD_U64(entry.base + abs_off);
                 if (child_off == FF_NULL_OFFSET) return py::none();
@@ -254,8 +254,7 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
             // Resolve the polymorphic choice [x] field by reading its actual tag.
             // The choice slot is 10 bytes: [uint64_t data][uint16_t recovery_tag].
             const Offset abs_off = entry.absolute_offset();
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
-                LOAD_U16(entry.base + abs_off + DATA_BLOCK::RECOVERY));
+            RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(entry.base, abs_off);
             if (actual_tag == FF_RECOVER_UNDEFINED) {
                 return py::none(); // No choice selected
             }
@@ -303,8 +302,7 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
                 return py::str(std::string_view(str));
             }
             // Block/resource: read tag from child and wrap as handle
-            RECOVERY_TAG child_tag = static_cast<RECOVERY_TAG>(
-                LOAD_U16(entry.base + child_off + DATA_BLOCK::RECOVERY));
+            RECOVERY_TAG child_tag = FF_GET_RECOVERY_TAG(entry.base, child_off);
             Reflective::ObjectHandle elevated(
                 const_cast<Builder*>(builder),
                 child_off, child_tag);

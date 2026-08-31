@@ -170,7 +170,7 @@ namespace FastFHIR::Decode {
     /// Layout: [8-byte raw_bits | 2-byte RECOVERY_TAG]
     inline ChoiceEntry choice(const BYTE* base, Offset absolute_offset) {
         ChoiceEntry entry;
-        entry.tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + absolute_offset + 8));
+        entry.tag = FF_GET_RECOVERY_TAG(base, absolute_offset);
         if (entry.tag == FF_RECOVER_UNDEFINED) return entry;
         if ((entry.tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) {
             switch (entry.tag) {
@@ -185,21 +185,11 @@ namespace FastFHIR::Decode {
         } else {
             Offset child_off = LOAD_U64(base + absolute_offset);
             if (entry.tag == RECOVER_FF_STRING && child_off != FF_NULL_OFFSET)
-                entry.value = FF_STRING(child_off, 0, 0).read_view(base);
+                entry.value = FF_GET_STRING_VIEW(base, child_off);
             else
                 entry.value = child_off;
         }
         return entry;
-    }
-    /// Read a 16-byte FF_ARRAY header and return (entry_count, entry_recovery).
-    /// The array header layout is: VALIDATION(8) | RECOVERY(2) | PAD(2) | ENTRY_COUNT(4).
-    /// Returns a struct with .count and .block_type members unpacked for structured bindings.
-    struct ArrayHeader { uint32_t count; uint16_t block_type; };
-    inline ArrayHeader array_header(const BYTE* base, Offset absolute_offset) {
-        ArrayHeader h;
-        h.block_type = LOAD_U16(base + absolute_offset + DATA_BLOCK::RECOVERY);
-        h.count = LOAD_U32(base + absolute_offset + FF_ARRAY::ENTRY_COUNT);
-        return h;
     }
 } // namespace FastFHIR::Decode
 

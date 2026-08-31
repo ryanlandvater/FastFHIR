@@ -110,7 +110,7 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
             hpp += "        return FF_STRING(child_off, 0, VERSION).read_view(base);\n"
         elif f["fhir_type"] == "Resource":
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
-            hpp += f"        return ResourceReference{{child_off, static_cast<RECOVERY_TAG>(LOAD_U16(base + offset + {vtable_off} + DATA_BLOCK::RECOVERY))}};\n"
+            hpp += f"        return ResourceReference{{child_off, FF_GET_RECOVERY_TAG(base, offset + {vtable_off})}};\n"
         else:
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
             hpp += f"        return {ret_type}<VERSION>{{base, child_off}};\n"

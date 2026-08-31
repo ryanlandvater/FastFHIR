@@ -9,6 +9,7 @@
 #ifdef FASTFHIR_ENABLE_EXTENSIONS
 
 #include "FF_Extensions.hpp"
+#include "FF_Ops.hpp"
 #include <cstring>
 #include <mutex>
 #include <cassert>

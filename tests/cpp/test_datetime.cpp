@@ -110,7 +110,7 @@ static std::string decode_slot(const BYTE *base, Offset block_offset, uint64_t s
     if (FF_DATETIME_IS_FALLBACK(slot))
     {
         const Offset str = FF_ResolveDateTimeOffset(slot, block_offset);
-        const uint32_t len = LOAD_U32(base + str + FF_STRING::LENGTH);
+        const uint32_t len = FF_GET_STRING_LENGTH(base, str);
         return std::string(reinterpret_cast<const char *>(base + str + FF_STRING::STRING_DATA),
                            len);
     }

@@ -20,6 +20,7 @@
 
 #include <FastFHIR.hpp>
 #include "FF_AllTypes.hpp"
+#include "FF_Ops.hpp"
 #include "FF_Reflection.hpp"   // reflected_fields_view, for the DT-1.5 tripwire
 #include <cstdio>
 #include <sstream>

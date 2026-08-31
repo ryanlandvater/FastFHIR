@@ -18,6 +18,7 @@
  */
 
 #include "FF_Recovery.hpp"
+#include "FF_Ops.hpp"
 
 #include <bit>
 #include <exception>
@@ -61,14 +62,13 @@ inline constexpr bool IsTypedOffsetKind(FF_FieldKind kind) {
 enum class ElementShape : uint8_t {
     None,        // raw scalars — inline, no header, extent not derivable
     InlineBlock, // inline, and +0 IS the element's own offset (walk in place)
-    Tuple,       // inline 10-byte {offset|tag} — +0 is the TARGET's offset (follow it)
+    Tuple,       // inline 10-byte {value|tag} — +0 is the TARGET's offset (follow it)
     OffsetPtr,   // OFFSET table — 8-byte pointers to FF_STRING blocks (strings only)
 };
 
-ElementShape element_shape_of(RECOVERY_TAG element_tag, uint16_t kind_step) noexcept {
+ElementShape element_shape_of(RECOVERY_TAG element_tag, FF_ARRAY::EntryKind kind) noexcept {
     // The top two bits are the wire truth for the physical layout (FF_ARRAY
     // EntryKind, already pre-shifted): OFFSET and SCALAR need no tag help.
-    const uint16_t kind = kind_step & FF_ARRAY::KIND_MASK;
     if (kind == FF_ARRAY::EntryKind::OFFSET)
         return ElementShape::OffsetPtr;
     if (kind == FF_ARRAY::EntryKind::SCALAR)
@@ -121,20 +121,20 @@ bool Recovery::valid_validation(Offset off) const noexcept {
     if (off < 0 || static_cast<size_t>(off) > m_size ||
         m_size - static_cast<size_t>(off) < DATA_BLOCK::HEADER_SIZE)
         return false;
-    return LOAD_U64(m_base + off) == static_cast<uint64_t>(off);
+    return FF_GET_VALIDATION(m_base, off) == static_cast<uint64_t>(off);
 }
 
 RECOVERY_TAG Recovery::tag_at(Offset off) const noexcept {
     if (off < 0 || static_cast<size_t>(off) > m_size ||
         m_size - static_cast<size_t>(off) < DATA_BLOCK::HEADER_SIZE)
         return FF_RECOVER_UNDEFINED;
-    return static_cast<RECOVERY_TAG>(LOAD_U16(m_base + off + DATA_BLOCK::RECOVERY));
+    return FF_GET_RECOVERY_TAG(m_base, off);
 }
 
 bool Recovery::header_is_readable() const noexcept {
     if (m_size < FF_HEADER::HEADER_SIZE)
         return false;
-    return LOAD_U32(m_base + FF_HEADER::MAGIC) == FF_MAGIC_BYTES;
+    return FF_HEADER(m_size).get_magic(m_base) == FF_MAGIC_BYTES;
 }
 
 // =====================================================================
@@ -173,18 +173,18 @@ Size Recovery::derived_block_size(RECOVERY_TAG tag) noexcept {
 // array (raw scalars, resource tuples, the string OFFSET table) is charged its
 // full extent, because nothing else claims those bytes.
 static StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off) {
-    const RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + off + DATA_BLOCK::RECOVERY));
+    const RECOVERY_TAG tag = FF_GET_RECOVERY_TAG(base, off);
     if (IsArrayTagged(tag)) {
         // size = 16 + count x stride, when the header fits and the math lands
         // inside the arena; otherwise the header itself is suspect.
         if (static_cast<size_t>(off) + FF_ARRAY::HEADER_SIZE <= size) {
-            const uint16_t kind_step = LOAD_U16(base + off + FF_ARRAY::KIND_AND_STEP);
-            const uint32_t count     = LOAD_U32(base + off + FF_ARRAY::ENTRY_COUNT);
-            const uint64_t stride    = kind_step & FF_ARRAY::STEP_MASK;
-            const uint64_t total     = FF_ARRAY::HEADER_SIZE + static_cast<uint64_t>(count) * stride;
+            const FF_ARRAY array(off, size, 0);
+            const uint32_t count  = array.entry_count(base);
+            const uint64_t stride = array.entry_step(base);
+            const uint64_t total  = FF_ARRAY::HEADER_SIZE + static_cast<uint64_t>(count) * stride;
             // Elements that are themselves self-describing blocks appear in the
             // map on their own; charging them twice is the overlap above.
-            const ElementShape shape = element_shape_of(GetTypeFromTag(tag), kind_step);
+            const ElementShape shape = element_shape_of(GetTypeFromTag(tag), array.entry_kind(base));
             if (shape == ElementShape::InlineBlock)
                 return {StreamMapEntryType::Array, off, FF_ARRAY::HEADER_SIZE};
             if (total <= size - static_cast<size_t>(off))
@@ -195,7 +195,7 @@ static StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off) 
     if (FF_IsStringLayoutTag(tag)) {
         // FF_STRING stamps its LENGTH at +10; size = STRING_DATA + LENGTH.
         if (static_cast<size_t>(off) + FF_STRING::STRING_DATA <= size) {
-            const uint32_t len = LOAD_U32(base + off + FF_STRING::LENGTH);
+            const uint32_t len = FF_GET_STRING_LENGTH(base, off);
             if (static_cast<uint64_t>(len) <= size - static_cast<size_t>(off) - FF_STRING::STRING_DATA)
                 return {StreamMapEntryType::String, off, static_cast<Size>(FF_STRING::STRING_DATA + len)};
         }
@@ -208,7 +208,7 @@ static StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off) 
     // x6593, URL_DIRECTORY x1, CHECKSUM x1 -- three tags cover every one.
     if (tag == RECOVER_FF_CODEABLE_CONCEPT) {
         if (static_cast<size_t>(off) + FF_CODEABLE_CONCEPT::HEADER_SIZE <= size) {
-            const uint8_t len = LOAD_U8(base + off + FF_CODEABLE_CONCEPT::LENGTH);
+            const uint8_t len = FF_CODEABLE_CONCEPT(off, size, 0).length(base);
             const uint64_t total = FF_CODEABLE_CONCEPT::HEADER_SIZE + static_cast<uint64_t>(len);
             if (total <= size - static_cast<size_t>(off))
                 return {StreamMapEntryType::Block, off, static_cast<Size>(total)};
@@ -223,7 +223,7 @@ static StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off) 
         // Charging header-only leaves the whole entry table unattributed, which
         // is the one gap that survived the REC-18 feasibility probe.
         if (static_cast<size_t>(off) + FF_URL_DIRECTORY::HEADER_SIZE <= size) {
-            const uint32_t n = LOAD_U32(base + off + FF_URL_DIRECTORY::ENTRY_COUNT);
+            const uint32_t n = FF_URL_DIRECTORY(off, size, 0).entry_count(base);
             const uint64_t total = FF_URL_DIRECTORY::HEADER_SIZE +
                                    static_cast<uint64_t>(n) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
             if (total <= size - static_cast<size_t>(off))
@@ -261,8 +261,7 @@ void Recovery::find_gaps(StreamMap& map) const {
     // REC-18.7 — the compact layout is a presence-bitmask rewrite with entirely
     // different geometry. Refuse rather than emit nonsense.
     if (header_is_readable()) {
-        const uint32_t encoded = LOAD_U32(m_base + FF_HEADER::VERSION);
-        if ((encoded & FF_STREAM_LAYOUT_MASK) != 0)
+        if (FF_HEADER(m_size).get_stream_layout(m_base) != FF_STREAM_COMPACTION_NONE)
             return;  // compact archive: gap analysis does not apply
     }
 
@@ -293,8 +292,7 @@ void Recovery::find_gaps(StreamMap& map) const {
         constexpr uint32_t kThisEngine =
             ((static_cast<uint32_t>(FASTFHIR_VERSION_MAJOR) & 0x3FFFu) << 16) |
              (static_cast<uint32_t>(FASTFHIR_VERSION_MINOR) & 0xFFFFu);
-        const uint32_t stream_engine =
-            FF_HEADER_ENGINE_VERSION(LOAD_U32(m_base + FF_HEADER::VERSION));
+        const uint32_t stream_engine = FF_HEADER(m_size).get_engine_version(m_base);
         newer_stream = stream_engine > FF_HEADER_ENGINE_VERSION(kThisEngine);
     }
 
@@ -378,7 +376,7 @@ static uint32_t walk_array_extent(const BYTE* base, size_t size, Offset array_of
             // Elements are blocks at fixed positions: walk their VALIDATION words.
             if (LOAD_U64(base + pos) != pos)
                 return i;
-            if (!Recovery::plausible_tag(static_cast<RECOVERY_TAG>(LOAD_U16(base + pos + DATA_BLOCK::RECOVERY))))
+            if (!Recovery::plausible_tag(FF_GET_RECOVERY_TAG(base, static_cast<Offset>(pos))))
                 return i;
         } else {
             // Tuple / OFFSET entries are POINTERS: validate each target.
@@ -429,7 +427,7 @@ void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                 const uint64_t raw = LOAD_U64(m_base + slot);
                 if (raw == static_cast<uint64_t>(FF_NULL_OFFSET))
                     continue;  // absent (monostate) — not a reference
-                const RECOVERY_TAG stored = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + slot + DATA_BLOCK::RECOVERY));
+                const RECOVERY_TAG stored = FF_GET_RECOVERY_TAG(m_base, static_cast<Offset>(slot));
                 const FF_FieldKind variant_kind = Recovery_to_Kind(stored);
                 if (variant_kind == FF_FIELD_UNKNOWN) {
                     // Tag half is garbage — record with no declared type so
@@ -487,10 +485,10 @@ void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                     continue;
                 const RECOVERY_TAG ah_tag = tag_at(array_off);
                 const RECOVERY_TAG element_tag = GetTypeFromTag(ah_tag);
-                const uint16_t kind_step = LOAD_U16(m_base + array_off + FF_ARRAY::KIND_AND_STEP);
-                const uint16_t stride = static_cast<uint16_t>(kind_step & FF_ARRAY::STEP_MASK);
-                const uint32_t stamped = LOAD_U32(m_base + array_off + FF_ARRAY::ENTRY_COUNT);
-                const ElementShape shape = element_shape_of(element_tag, kind_step);
+                const FF_ARRAY array(array_off, m_size, 0);
+                const uint16_t stride = array.entry_step(m_base);
+                const uint32_t stamped = array.entry_count(m_base);
+                const ElementShape shape = element_shape_of(element_tag, array.entry_kind(m_base));
                 if (shape == ElementShape::None)
                     continue;
                 const uint32_t extent = walk_array_extent(m_base, m_size, array_off,
@@ -506,7 +504,7 @@ void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                         const Offset child = static_cast<Offset>(LOAD_U64(m_base + pos));
                         if (child == FF_NULL_OFFSET)
                             continue;
-                        const RECOVERY_TAG stored = static_cast<RECOVERY_TAG>(LOAD_U16(m_base + pos + DATA_BLOCK::RECOVERY));
+                        const RECOVERY_TAG stored = FF_GET_RECOVERY_TAG(m_base, static_cast<Offset>(pos));
                         out.push_back(BlockRef{array_off, static_cast<Offset>(pos - static_cast<uint64_t>(array_off)),
                                                FF_FIELD_RESOURCE, child,
                                                plausible_tag(stored) ? stored : FF_RECOVER_UNDEFINED,
@@ -570,7 +568,7 @@ std::vector<Offset> Recovery::walk_chain(std::vector<BlockRef>* out) const {
     std::vector<Offset> reachable;
     if (!header_is_readable())
         return reachable;
-    const Offset root = static_cast<Offset>(LOAD_U64(m_base + FF_HEADER::ROOT_OFFSET));
+    const Offset root = FF_HEADER(m_size).get_root(m_base);
     if (!valid_validation(root))
         return reachable;
     const RECOVERY_TAG root_tag = tag_at(root);
@@ -729,14 +727,13 @@ FF_RecoveryReport Recovery::recover() const {
                 // the count is the damaged half.
                 if (r.kind == FF_FIELD_ARRAY &&
                     static_cast<size_t>(r.child) + FF_ARRAY::HEADER_SIZE <= m_size) {
-                    const uint16_t kind_step = LOAD_U16(m_base + r.child + FF_ARRAY::KIND_AND_STEP);
-                    const uint32_t stamped = LOAD_U32(m_base + r.child + FF_ARRAY::ENTRY_COUNT);
+                    const FF_ARRAY array(r.child, m_size, 0);
+                    const uint32_t stamped = array.entry_count(m_base);
                     const RECOVERY_TAG element_tag = GetTypeFromTag(actual);
-                    const ElementShape shape = element_shape_of(element_tag, kind_step);
+                    const ElementShape shape = element_shape_of(element_tag, array.entry_kind(m_base));
                     if (shape != ElementShape::None) {
                         const uint32_t walked = walk_array_extent(
-                            m_base, m_size, r.child, shape,
-                            static_cast<uint16_t>(kind_step & FF_ARRAY::STEP_MASK), stamped);
+                            m_base, m_size, r.child, shape, array.entry_step(m_base), stamped);
                         if (walked != stamped) {
                             v.class_ = RepairClass::ExtentDerived;
                             v.bit_cost = hamming_cost(walked, stamped);

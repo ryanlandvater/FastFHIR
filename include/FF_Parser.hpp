@@ -22,7 +22,6 @@
 
 #include "FF_Dictionary.hpp"
 #include "FF_Memory.hpp"
-#include "FF_Ops.hpp"
 #include "FF_Primitives.hpp"
 #include "FF_ResourceTypes.hpp"
 #include "FF_Utilities.hpp"
@@ -289,11 +288,11 @@ struct Entry {
     }
 
     // Read a fixed-width scalar value at this vtable slot.
+    // Defined in FF_Parser.cpp (via Decode::scalar) — explicitly instantiated
+    // for the six FHIR scalar wire types, so FF_Ops.hpp stays out of headers.
     template <typename T>
     requires std::is_arithmetic_v<T>
-    T as_scalar(RECOVERY_TAG expected_tag) const {
-        return Decode::scalar<T>(base, absolute_offset(), expected_tag);
-    }
+    T as_scalar(RECOVERY_TAG expected_tag) const;
 
     // Serialize an inline scalar (bool, int, uint, float, code) directly to JSON.
     void print_scalar_json(std::ostream& out, uint32_t version) const;
@@ -500,7 +499,7 @@ public:
     T as() const {
         if constexpr (std::is_same_v<T, std::string_view>) {
             if (m_recovery == RECOVER_FF_CODE) {
-                uint32_t raw_code = LOAD_U32(m_base + m_node_offset);
+                uint32_t raw_code = code_word();
                 if (raw_code == FF_CODE_NULL) return "";
 
                 if (const char* label = FF_ResolveCode(raw_code, m_version)) {
@@ -557,7 +556,7 @@ public:
             if (m_recovery != expected) {
                 throw std::runtime_error("Node::as() recovery tag mismatch");
             }
-            return Decode::scalar<T>(m_base, m_node_offset, m_recovery);
+            return read_scalar<T>(expected);
         } else {
             if (m_recovery != TypeTraits<T>::recovery) {
                 throw std::runtime_error("Node::as() recovery tag mismatch");
@@ -567,6 +566,15 @@ public:
     }
 
 public:
+    // Packed code word at this node's slot — out-of-line so the load stays in
+    // FF_Parser.cpp (FF_Ops.hpp is an implementation detail there).
+    uint32_t code_word() const;
+    // Six-wire-scalar typed read at this node's slot — declared here, defined
+    // in FF_Parser.cpp via Decode::scalar, explicitly instantiated.
+    template <typename T>
+    requires std::is_arithmetic_v<T>
+    T read_scalar(RECOVERY_TAG expected_tag) const;
+
     /**
      * @brief Recursively print this node and all children as minified FHIR JSON.
      * @param out The output stream.
@@ -614,25 +622,9 @@ inline Node Entry::as_node() const {
     return as_node(m_size, m_version, target_recovery, kind, m_ops);
 }
 
-inline Entry::operator std::string_view() const {
-    if (kind == FF_FIELD_CODE) {
-        uint32_t raw_code = LOAD_U32(base + absolute_offset());
-        if (raw_code == FF_CODE_NULL) return "";
-
-        if (const char* label = FF_ResolveCode(raw_code, m_version)) {
-            return label;
-        }
-
-        if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
-            Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, parent_offset);
-            return FF_DECODE_CODEABLE_CONCEPT(base, abs_off, m_version).label;
-        }
-
-        return "";
-    }
-
-    return as_node().as<std::string_view>();
-}
+// Entry::operator std::string_view() is defined in FF_Parser.cpp — the
+// code-slot load needs FF_Ops.hpp, which stays an implementation detail of
+// that TU (and primitives / generated code).
 
 template <HasTypeTraits T>
 inline Entry::operator T() const { return as_node().as<T>(); }
