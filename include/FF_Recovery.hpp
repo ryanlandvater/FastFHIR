@@ -46,6 +46,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -236,6 +237,26 @@ struct FF_RecoveryReport {
     std::vector<Gap> gaps;
 };
 
+/// What apply() did. Separate from FF_RecoveryReport because deciding a repair
+/// and performing one are different acts with different failure modes: recover()
+/// can be confident and still be unable to write (a slot outside the buffer, a
+/// candidate that stops verifying once neighbouring repairs land).
+struct FF_ApplyReport {
+    std::size_t applied  = 0;  ///< written AND re-verified
+    std::size_t declined = 0;  ///< not selected, or the class is not a repair
+    std::size_t failed   = 0;  ///< written, did not verify afterwards, reverted
+    /// Child offsets of the edges that failed to verify — a silently-failed
+    /// write is the one outcome a repair tool must never report as success.
+    std::vector<Offset> failed_edges;
+};
+
+/// Predicate selecting which verdicts to apply. Null means every class that is
+/// a confident repair (Corroborated, TagRepaired, PositionRepaired,
+/// ExtentDerived) — never Ambiguous, never Unrecovered: those are reported
+/// precisely because the engine declined to choose, and applying them would
+/// convert a declared uncertainty into a silent one.
+using ApplyFilter = std::function<bool(const BlockVerdict&)>;
+
 // ---------------------------------------------------------------------------
 // Recovery — the scanner's view of untrusted bytes (Instrument G test 5)
 // ---------------------------------------------------------------------------
@@ -291,6 +312,31 @@ public:
     /// (benchmark calc_stream_hash). Shares the per-block enumerator with
     /// recover(), so recovered ⊆ baseline stays like-for-like.
     std::vector<BlockRef> reachable_blocks() const;
+
+    /**
+     * @brief REC-15 — the only mutating entry point. Writes a report's repairs
+     * into a COPY of the stream; the arena this Recovery reads is never touched.
+     *
+     * A copy rather than in-place, deliberately: the damaged original has to
+     * stay readable for a before/after comparison, and a benchmark that mutates
+     * its own input is not reproducible across trials.
+     *
+     * Each class maps to one edit. Corroborated rewrites the PARENT's stored
+     * offset to the candidate the ranker chose; TagRepaired rewrites the CHILD's
+     * recovery tag from the parent's declared type; PositionRepaired rewrites the
+     * child's VALIDATION word to its own address; ExtentDerived rewrites an
+     * array's stamped ENTRY_COUNT to the walked extent. Every write is
+     * bounds-checked, then RE-READ from the copy and verified; one that does not
+     * verify is reverted and counted in `failed`, never reported as applied.
+     *
+     * Never called by a constructor or by recover(). Nothing here is implicit.
+     *
+     * @param report   a report produced by recover() over THIS arena.
+     * @param repaired receives the repaired copy (resized and overwritten).
+     * @param filter   which verdicts to apply; null selects the confident classes.
+     */
+    FF_ApplyReport apply(const FF_RecoveryReport& report, std::vector<BYTE>& repaired,
+                         const ApplyFilter& filter = nullptr) const;
 
     /// The P0-3 reconciliation: enumerate every block reference, classify each
     /// against the two witnesses, and report blocks restored per class. The

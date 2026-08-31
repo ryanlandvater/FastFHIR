@@ -684,6 +684,66 @@ static void test_one_damaged_witness_costs_nothing()
     CHECK(rep.position_repaired >= 1, "the damaged self-offset is reported repaired");
 }
 
+// REC-15 apply(): a repaired COPY that is strictly better than the damaged
+// original, and an original that is byte-for-byte untouched.
+//
+// The copy is the point. A benchmark that mutates its own input cannot repeat a
+// trial, and a before/after comparison needs both halves to still exist.
+//
+// "Strictly better" is asserted on the aggregate, not on the edge that was
+// repaired, because a repair can verify locally and still make the stream worse
+// -- rewriting a tag onto an innocent block relabels real data and takes its
+// whole subtree out of the census. Measured that way, applying every tag
+// rewrite bought 10 intact edges and cost 59 unrecovered ones. Only the
+// aggregate catches that, so only the aggregate is trusted here.
+static void test_apply_repairs_a_copy_and_improves_it()
+{
+    auto arena = build_bundle();
+    CHECK(arena != nullptr, "bundle build failed");
+    if (!arena)
+        return;
+
+    // Damage one witness of a referenced block: the classic repairable edge.
+    Recovery probe(*arena);
+    Offset victim = FF_NULL_OFFSET;
+    for (const BlockRef &r : probe.reachable_blocks())
+        if (r.child != FF_NULL_OFFSET && r.child != 0) { victim = r.child; break; }
+    CHECK(victim != FF_NULL_OFFSET, "fixture has a referenced child to damage");
+    if (victim == FF_NULL_OFFSET)
+        return;
+    arena->base()[static_cast<size_t>(victim)] ^= 0x01;  // VALIDATION damaged
+
+    const std::vector<BYTE> before(arena->base(), arena->base() + arena->size());
+
+    Recovery rec(*arena);
+    const FF_RecoveryReport dmg = rec.recover();
+
+    std::vector<BYTE> fixed;
+    const FF_ApplyReport ar = rec.apply(dmg, fixed);
+
+    // 1. Every verdict is accounted for — nothing silently ignored.
+    CHECK_EQ(ar.applied + ar.declined + ar.failed, dmg.blocks.size(),
+             "apply accounts for every verdict");
+    // 2. A failed write is reverted, never counted as applied.
+    CHECK_EQ(ar.failed_edges.size(), ar.failed, "each failure names its edge");
+    // 3. THE ORIGINAL IS UNTOUCHED.
+    const std::vector<BYTE> after(arena->base(), arena->base() + arena->size());
+    CHECK(before == after, "apply() does not mutate the arena it read");
+    CHECK_EQ(fixed.size(), before.size(), "the repaired copy is the same length");
+
+    // 4. The copy is better, and no worse anywhere that matters.
+    auto copy = Memory::create(std::max<size_t>(fixed.size(), 1));
+    copy.claim_space(fixed.size());
+    std::memcpy(copy.base(), fixed.data(), fixed.size());
+    Recovery rec2(copy);
+    const FF_RecoveryReport rep = rec2.recover();
+    CHECK(rep.intact >= dmg.intact, "repair does not reduce the intact edge count");
+    CHECK(rep.unrecovered <= dmg.unrecovered, "repair does not create unrecoverable edges");
+    CHECK(rep.holes <= dmg.holes, "repair does not open new holes");
+    if (ar.applied > 0)
+        CHECK(rep.intact > dmg.intact, "an applied repair shows up as an intact edge");
+}
+
 int main(int argc, char **argv)
 {
     const char *filter = (argc > 2 && strcmp(argv[1], "--filter") == 0) ? argv[2] : "";
@@ -714,6 +774,7 @@ int main(int argc, char **argv)
     run("broken_blockref_still_locates_and_sizes_the_orphan",
         test_broken_blockref_still_locates_and_sizes_the_orphan);
     run("one_damaged_witness_costs_nothing", test_one_damaged_witness_costs_nothing);
+    run("apply_repairs_a_copy_and_improves_it", test_apply_repairs_a_copy_and_improves_it);
 
     std::cout << "\n" << g_tests << " test(s), " << g_failures << " failure(s)\n";
     if (g_tests == 0)

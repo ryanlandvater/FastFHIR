@@ -692,9 +692,19 @@ never dereference a header field at construction (that is CAPI-15, already paid 
   `(parent_offset, field_offset, child_offset, class, hypothesis, bit_cost)`, plus the
   candidate list for every ambiguity, plus totals per class. This is the type Block C's C1
   orchestrator returns. Define it **once**, here.
-- [ ] **REC-15. `apply()` — the only mutating entry point.** Takes a report, applies only
+- [x] **REC-15. `apply()` — the only mutating entry point.** Takes a report, applies only
   records the caller selected, re-verifies each edge afterwards, and refuses silently-failed
-  writes. Never called implicitly by a constructor or by `recover()`.
+  writes. Never called implicitly by a constructor or by `recover()`. Writes into a **copy**;
+  the arena it read is never touched, so the damaged original stays available for a
+  before/after comparison and a trial can be repeated. A write that does not verify is
+  reverted and counted in `failed`. **`TagRepaired` is applied only when the tag on the wire
+  is already implausible** — the class is decided on `self_ok && !tag_ok`, which is equally
+  "the child's tag was flipped" and "the parent's offset landed on an innocent valid block",
+  and relabelling an innocent block erases the only record of what it was. Measured on a
+  512-flip artifact: applying all 61 tag rewrites bought +10 intact edges and created 59
+  unrecovered ones plus 7 holes; gated, the full apply is +322 intact, unrecovered 4 → 2,
+  no new holes. `ff_test_recovery::apply_repairs_a_copy_and_improves_it` pins the copy
+  semantics and the aggregate improvement.
 - [ ] **REC-16. Retire the half-implementation.** `Recovery::next_valid_resource_of()` and
   the whole-stream `scan_all_resources()` fallback in `src/FF_Parser.cpp` are superseded by
   REC-10/REC-11. Delete them — do not leave two mechanisms (style guide: "consolidate

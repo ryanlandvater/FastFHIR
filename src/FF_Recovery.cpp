@@ -1575,6 +1575,161 @@ bool Recovery::plausible_tag(RECOVERY_TAG tag) noexcept {
     return Recovery_to_Kind(tag) != FF_FIELD_UNKNOWN;
 }
 
+// =====================================================================
+// REC-15 — apply(): the only mutating entry point
+// =====================================================================
+FF_ApplyReport Recovery::apply(const FF_RecoveryReport& report, std::vector<BYTE>& repaired,
+                               const ApplyFilter& filter) const {
+    FF_ApplyReport out;
+    repaired.assign(m_base, m_base + m_size);   // the copy; the arena is untouched
+    BYTE* const dst = repaired.data();
+    const size_t n = repaired.size();
+
+    const auto in_bounds = [n](uint64_t off, size_t width) {
+        return off + width <= n;
+    };
+
+    for (const BlockVerdict& v : report.blocks) {
+        const bool confident = v.class_ == RepairClass::Corroborated ||
+                               v.class_ == RepairClass::TagRepaired ||
+                               v.class_ == RepairClass::PositionRepaired ||
+                               v.class_ == RepairClass::ExtentDerived;
+        if (!(filter ? filter(v) : confident)) {
+            ++out.declined;
+            continue;
+        }
+        // Ambiguous and Unrecovered are never applied even when a filter asks
+        // for them: the engine reported those because it declined to choose,
+        // and writing a guess would turn a declared uncertainty into a silent
+        // one. That is the failure mode the whole class exists to avoid.
+        if (!confident) {
+            ++out.declined;
+            continue;
+        }
+
+        const BlockRef& r = v.block;
+        const RECOVERY_TAG want =
+            r.kind == FF_FIELD_ARRAY ? ToArrayTag(r.declared) : r.declared;
+        bool wrote = false, ok = false;
+        uint64_t slot = 0, before = 0;
+
+        switch (v.class_) {
+            case RepairClass::Corroborated: {
+                // The parent's stored offset was the damaged half.
+                if (v.candidates.empty())
+                    break;
+                const Offset target = v.candidates.front();
+                slot = static_cast<uint64_t>(r.parent) + static_cast<uint64_t>(r.field);
+                if (!in_bounds(slot, 8))
+                    break;
+                before = LOAD_U64(dst + slot);
+                STORE_U64(dst + slot, static_cast<uint64_t>(target));
+                wrote = true;
+                ok = LOAD_U64(dst + slot) == static_cast<uint64_t>(target) &&
+                     valid_validation(dst, n, target) &&
+                     (r.declared == FF_RECOVER_UNDEFINED || tag_at(dst, n, target) == want);
+                break;
+            }
+            case RepairClass::TagRepaired: {
+                // The child's tag was the damaged half; the slot's declared
+                // type is the surviving witness.
+                //
+                // BUT ONLY WHEN THE TAG ON THE WIRE IS ALREADY NONSENSE.
+                //
+                // TagRepaired is decided on `self_ok && !tag_ok`, and that is
+                // two situations wearing one face: the child's tag was flipped,
+                // or the PARENT's offset was flipped onto an innocent, perfectly
+                // valid block of another type. The ranker picks whichever is
+                // cheaper in bits and is sometimes wrong -- which costs nothing
+                // while merely READING (the reader mis-types one block), but is
+                // destructive when WRITING: relabelling an innocent block
+                // erases the only surviving record of what it really was, and
+                // its own references stop being enumerable at all.
+                //
+                // Measured on a 512-flip artifact, applying all 61 tag rewrites
+                // bought +10 intact edges and created 59 unrecovered ones and 7
+                // new holes -- strictly worse than not repairing. Applying the
+                // position and repoint classes alone was clean.
+                //
+                // A tag that is not a plausible type cannot be an innocent
+                // block's real type, so there is nothing to destroy: that is the
+                // case this writes. A plausible-but-different tag stays a
+                // report, and the caller may still opt in through the filter.
+                if (r.declared == FF_RECOVER_UNDEFINED)
+                    break;
+                if (plausible_tag(tag_at(dst, n, r.child)))
+                    break;  // could be an innocent block — report, do not rewrite
+                slot = static_cast<uint64_t>(r.child) + DATA_BLOCK::RECOVERY;
+                if (!in_bounds(slot, 2))
+                    break;
+                before = LOAD_U16(dst + slot);
+                STORE_U16(dst + slot, static_cast<uint16_t>(want));
+                wrote = true;
+                ok = tag_at(dst, n, r.child) == want && valid_validation(dst, n, r.child);
+                break;
+            }
+            case RepairClass::PositionRepaired: {
+                // The child's VALIDATION was the damaged half. A block's
+                // self-offset IS its own address, so the corrected value needs
+                // no candidate — it is the address the parent named.
+                slot = static_cast<uint64_t>(r.child) + DATA_BLOCK::VALIDATION;
+                if (!in_bounds(slot, 8))
+                    break;
+                before = LOAD_U64(dst + slot);
+                STORE_U64(dst + slot, static_cast<uint64_t>(r.child));
+                wrote = true;
+                ok = valid_validation(dst, n, r.child);
+                break;
+            }
+            case RepairClass::ExtentDerived: {
+                // The array's stamped ENTRY_COUNT disagreed with the walk. The
+                // report carries the cost, not the value, so re-derive it here
+                // from the copy — the same walk that produced the verdict.
+                if (!in_bounds(static_cast<uint64_t>(r.child), FF_ARRAY::HEADER_SIZE))
+                    break;
+                const FF_ARRAY arr(r.child, n, 0);
+                const RECOVERY_TAG element = GetTypeFromTag(tag_at(dst, n, r.child));
+                const ElementShape shape = element_shape_of(element, arr.entry_kind(dst));
+                if (shape == ElementShape::None)
+                    break;
+                const uint32_t walked = walk_array_extent(dst, n, r.child, shape,
+                                                          arr.entry_step(dst),
+                                                          arr.entry_count(dst));
+                slot = static_cast<uint64_t>(r.child) + FF_ARRAY::ENTRY_COUNT;
+                if (!in_bounds(slot, 4))
+                    break;
+                before = LOAD_U32(dst + slot);
+                STORE_U32(dst + slot, walked);
+                wrote = true;
+                ok = LOAD_U32(dst + slot) == walked;
+                break;
+            }
+            default:
+                break;
+        }
+
+        if (!wrote) {
+            ++out.declined;
+            continue;
+        }
+        if (ok) {
+            ++out.applied;
+            continue;
+        }
+        // REVERT. A write that does not verify is not a repair, and leaving it
+        // in place would make the copy worse than the damaged original while
+        // reporting success -- the one outcome this must never produce.
+        switch (v.class_) {
+            case RepairClass::TagRepaired:   STORE_U16(dst + slot, static_cast<uint16_t>(before)); break;
+            case RepairClass::ExtentDerived: STORE_U32(dst + slot, static_cast<uint32_t>(before)); break;
+            default:                         STORE_U64(dst + slot, before); break;
+        }
+        ++out.failed;
+        out.failed_edges.push_back(r.child);
+    }
+    return out;
+}
+
 Recovery::Recovery(const Memory& memory) noexcept
     : m_base(memory.base()),
       // THE DECLARED SIZE IS A WIRE VALUE, AND THIS CLASS TRUSTS NO WIRE VALUE.
