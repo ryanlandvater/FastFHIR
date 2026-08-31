@@ -85,7 +85,7 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             elif f["fhir_type"] == "Resource":
                 cpp += f"{indent}        Offset res_off = LOAD_U64(blk_item_ptr);\n"
                 cpp += f"{indent}        if (res_off != FF_NULL_OFFSET) {{\n"
-                cpp += f"{indent}            RECOVERY_TAG res_tag = static_cast<RECOVERY_TAG>(LOAD_U16(blk_item_ptr + DATA_BLOCK::RECOVERY));\n"
+                cpp += f"{indent}            RECOVERY_TAG res_tag = FF_GET_RECOVERY_TAG(__base, static_cast<Offset>(blk_item_ptr - __base));\n"
                 cpp += f"{indent}            data.{f['cpp_name']}.push_back(ResourceReference(res_off, res_tag));\n"
                 cpp += f"{indent}        }}\n"
             elif f["fhir_type"] in SCALAR_PRIMITIVE_TYPES:
@@ -109,7 +109,7 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
         elif kind == "FF_FIELD_RESOURCE":
             cpp += f"{indent}Offset res_off_{f['cpp_name']} = LOAD_U64(__base + {vtable_off});\n"
             cpp += f"{indent}if (res_off_{f['cpp_name']} != FF_NULL_OFFSET) {{\n"
-            cpp += f"{indent}    RECOVERY_TAG res_tag_{f['cpp_name']} = static_cast<RECOVERY_TAG>(LOAD_U16(__base + {vtable_off} + DATA_BLOCK::RECOVERY));\n"
+            cpp += f"{indent}    RECOVERY_TAG res_tag_{f['cpp_name']} = FF_GET_RECOVERY_TAG(__base, {vtable_off});\n"
             cpp += f"{indent}    data.{f['cpp_name']} = ResourceReference(res_off_{f['cpp_name']}, res_tag_{f['cpp_name']});\n"
             cpp += f"{indent}}}\n"
 

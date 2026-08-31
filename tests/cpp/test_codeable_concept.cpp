@@ -15,7 +15,6 @@
 // exactly HEADER_SIZE + payload_len.
 
 #include <FF_Primitives.hpp>
-#include <FF_Ops.hpp>
 #include <FF_Dictionary.hpp>
 
 #include <algorithm>
@@ -93,8 +92,7 @@ int main()
               tag + ": SYSTEM byte");
         CHECK(base[before + FF_CODEABLE_CONCEPT::LENGTH] == c.expect_payload,
               tag + ": LENGTH byte");
-        CHECK(LOAD_U16(base + before + FF_CODEABLE_CONCEPT::RECOVERY) ==
-                  RECOVER_FF_CODEABLE_CONCEPT,
+        CHECK(FF_GET_RECOVERY_TAG(base, before) == RECOVER_FF_CODEABLE_CONCEPT,
               tag + ": RECOVERY tag");
 
         // And it must decode back to the code we put in.

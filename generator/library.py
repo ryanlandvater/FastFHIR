@@ -74,6 +74,7 @@ def compile_fhir_library(
         '#include "FF_Utilities.hpp"\n'
         '#include "FF_Builder.hpp"\n'
         '#include "FF_CodeSystems.hpp"\n'
+        '#include "FF_Ops.hpp"\n'
         "#include <vector>\n#include <string_view>\n#include <memory>\n\n"
     )
     traits_preamble = "template<typename T> struct TypeTraits; \n\n" + _DATA_TYPES_TRAITS
@@ -85,8 +86,10 @@ def compile_fhir_library(
     hpp_head += "\n"
 
     types_hpp = hpp_head
-    types_cpp = f'{auto_header}#include "FF_DataTypes.hpp"\n#include "FF_DataTypes_internal.hpp"\n#include "FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
-    types_int_hpp = f'{auto_header}#pragma once\n#include "FF_DataTypes.hpp"\n\n'
+    types_cpp = f'{auto_header}#include "FF_DataTypes.hpp"\n#include "FF_DataTypes_internal.hpp"\n#include "FF_Ops.hpp"\n#include "FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
+    types_int_hpp = (
+        f'{auto_header}#pragma once\n#include "FF_DataTypes.hpp"\n#include "FF_Ops.hpp"\n\n'
+    )
     types_all = list(_tm.PRODUCTION_TYPES)
     all_blocks: dict[str, dict] = {}
     all_type_blocks: dict[str, dict] = {}
@@ -231,11 +234,12 @@ def compile_fhir_library(
 
         res_int_hpp = f"{auto_header}#pragma once\n"
         res_int_hpp += f'#include "FF_{root_resource}.hpp"\n'
-        res_int_hpp += f'#include "FF_DataTypes_internal.hpp"\n\n'
+        res_int_hpp += '#include "FF_DataTypes_internal.hpp"\n'
+        res_int_hpp += '#include "FF_Ops.hpp"\n\n'
         res_int_hpp += int_hpp
         write_if_changed(os.path.join(output_dir, f"FF_{root_resource}_internal.hpp"), res_int_hpp)
 
-        res_cpp = f'{auto_header}#include "FF_{root_resource}_internal.hpp"\n#include "FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
+        res_cpp = f'{auto_header}#include "FF_{root_resource}_internal.hpp"\n#include "FF_Ops.hpp"\n#include "FF_Utilities.hpp"\n#include "FF_Dictionary.hpp"\n\n'
         res_cpp += cpp_body
         write_if_changed(os.path.join(output_dir, f"FF_{root_resource}.cpp"), res_cpp)
         generated_resources.append(root_resource)
@@ -376,11 +380,19 @@ def compile_fhir_library(
     write_if_changed(os.path.join(output_dir, "FF_FieldKeys.cpp"), field_keys_cpp)
 
     # --- Python field modules + AST path builders + stubs ---
-    emit_python_fields(python_resource_map, output_dir)
-    emit_python_ast(all_blocks, block_key_defs, token_registry, output_dir)
+    # A resource module holds two classes from two emitters (`class Patient` +
+    # `class PATIENT_PATH`), so the AST pass appends -- but only onto files the
+    # field pass truncated in THIS run. It hands that set forward rather than
+    # assuming it, because the field pass does not cover backbone paths
+    # (`bundle_entry.py` vs `bundleentry.py`) and a blind append restacked those
+    # 144 modules on every configure. Same contract on the .pyi side.
+    truncated_py = emit_python_fields(python_resource_map, output_dir)
+    emit_python_ast(
+        all_blocks, block_key_defs, token_registry, output_dir, truncated_by=truncated_py
+    )
     emit_python_fields_init(python_resource_map, output_dir)
-    emit_python_fields_stubs(python_resource_map, output_dir)
-    emit_python_ast_stubs(all_blocks, block_key_defs, output_dir)
+    truncated_pyi = emit_python_fields_stubs(python_resource_map, output_dir)
+    emit_python_ast_stubs(all_blocks, block_key_defs, output_dir, truncated_by=truncated_pyi)
     emit_py_typed_marker(output_dir)
 
     # --- Reflection dispatch ---

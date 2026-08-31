@@ -1193,6 +1193,13 @@ struct FF_EXPORT DATA_BLOCK
 
     FF_Result validate_offset(const BYTE *const __base, const char *type_name, RECOVERY_TAG recovery_tag) const noexcept;
 
+    // The two fields every block carries are read with FF_GET_RECOVERY_TAG /
+    // FF_GET_VALIDATION (declared below, after the block layouts). They are
+    // free functions, not members, because the overwhelmingly common read is
+    // "what is at THIS offset" with no block in hand -- a member would force
+    // callers to conjure a DATA_BLOCK with a fabricated size and version just
+    // to reach two bytes.
+
 #ifdef __EMSCRIPTEN__
     void check_and_fetch_remote(const BYTE *const &__base);
 #endif
@@ -1271,6 +1278,7 @@ struct FF_EXPORT FF_HEADER : DATA_BLOCK
     explicit FF_HEADER(Size file_size) noexcept;
 
     FF_Result validate_full(const BYTE *const __base) const noexcept;
+    uint32_t get_magic(const BYTE *const __base) const noexcept;
     uint32_t get_engine_version(const BYTE *const __base) const;
     FF_StreamCompaction get_stream_layout(const BYTE *const __base) const;
     uint16_t get_fhir_rev(const BYTE *const __base) const;
@@ -1428,6 +1436,11 @@ struct FF_EXPORT FF_STRING : DATA_BLOCK
 
     FF_Result validate_full(const BYTE *const __base) const noexcept;
 
+    // Length-prefixed payload byte count (the field the writer stamps at +10).
+    // Same value as FF_GET_STRING_LENGTH(base, offset); this spelling is for
+    // callers that already hold the block.
+    inline uint32_t length(const BYTE *const __base) const noexcept;
+
     // Zero-Copy Mapped View
     std::string_view read_view(const BYTE *const __base) const;
 
@@ -1496,6 +1509,7 @@ struct FF_EXPORT FF_URL_DIRECTORY : DATA_BLOCK
 
     uint32_t entry_count(const BYTE *base) const;
     uint32_t prior_idx(const BYTE *base, uint32_t entry_idx) const;
+    Offset seg_offset(const BYTE *base, uint32_t entry_idx) const;
     std::string_view seg_string(const BYTE *base, uint32_t entry_idx) const;
     // Reconstructed full URL by walking the prior chain
     std::string get_url(const BYTE *base, uint32_t entry_idx) const;
@@ -1702,6 +1716,81 @@ struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
         return base + __offset + PAYLOAD;
     }
 };
+
+// =====================================================================
+// WIRE FIELD ACCESSORS
+// =====================================================================
+// The one way to read a block header field. These replace hand-written
+// `LOAD_U16(base + off + DATA_BLOCK::RECOVERY)`: a caller names the field it
+// wants and the block it wants it from, and never writes the offset
+// arithmetic that the vtable constants exist to describe. That arithmetic is
+// where the mistakes live, and consumers of the public API have no business
+// doing it.
+//
+// They are FREE FUNCTIONS on purpose. Almost every read in the library is
+// "what is at THIS offset" with no block object in hand, and a member forces
+// the caller to conjure one -- DATA_BLOCK(off, 0, 0).recovery_tag(base) -- in
+// which the size and version arguments are fabricated. Those two zeros are
+// not harmless: FF_STRING::validate_full and FF_ARRAY::validate_full bound
+// their checks against __size, so a block built to peek at two bytes is a
+// block that silently passes its own validation.
+//
+// The bodies assemble bytes rather than calling LOAD_U16 / LOAD_U64 for two
+// reasons. FF_Ops.hpp includes this header, so it cannot be included from it,
+// and pushing these definitions into FF_Primitives.cpp to reach the macros
+// would put an un-inlinable call on the hot read path (no LTO in this build).
+// And the wire is strictly little-endian by definition -- FF_Ops.hpp says so
+// at the top -- so the byte order below IS the format, not a portability
+// hedge. Compilers fold each of these back into a single unaligned load.
+// FF_CODEABLE_CONCEPT::system() and FF_IsFieldEmpty() already read bytes this
+// way; these follow them.
+
+/// Semantic identity (RECOVERY_TAG) of the block at `block_offset`.
+inline constexpr RECOVERY_TAG FF_GET_RECOVERY_TAG(const BYTE *base, Offset block_offset) noexcept
+{
+    const BYTE *const p = base + block_offset + DATA_BLOCK::RECOVERY;
+    return static_cast<RECOVERY_TAG>(static_cast<uint16_t>(p[0]) |
+                                     static_cast<uint16_t>(static_cast<uint16_t>(p[1]) << 8));
+}
+
+/// Self-offset word of the block at `block_offset`. A block is well-formed
+/// only when this equals `block_offset` -- that identity is what makes the
+/// arena scannable, and it is the check the recovery scan is built on.
+inline constexpr uint64_t FF_GET_VALIDATION(const BYTE *base, Offset block_offset) noexcept
+{
+    const BYTE *const p = base + block_offset + DATA_BLOCK::VALIDATION;
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; --i)
+        v = (v << 8) | static_cast<uint64_t>(p[i]);
+    return v;
+}
+
+/// Payload byte count of the FF_STRING (or string-layout block) at `string_offset`.
+/// Valid for every tag FF_IsStringLayoutTag() accepts, opaque JSON included.
+inline constexpr uint32_t FF_GET_STRING_LENGTH(const BYTE *base, Offset string_offset) noexcept
+{
+    const BYTE *const p = base + string_offset + FF_STRING::LENGTH;
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+/// Zero-copy view of the payload of the string-layout block at `string_offset`.
+inline std::string_view FF_GET_STRING_VIEW(const BYTE *base, Offset string_offset) noexcept
+{
+    return std::string_view(reinterpret_cast<const char *>(base + string_offset + FF_STRING::STRING_DATA),
+                            FF_GET_STRING_LENGTH(base, string_offset));
+}
+
+/// Payload byte count of the FF_CODEABLE_CONCEPT at `concept_offset` (1 byte, at +11).
+inline constexpr uint8_t FF_GET_CONCEPT_LENGTH(const BYTE *base, Offset concept_offset) noexcept
+{
+    return base[concept_offset + FF_CODEABLE_CONCEPT::LENGTH];
+}
+
+inline uint32_t FF_STRING::length(const BYTE *const __base) const noexcept
+{
+    return FF_GET_STRING_LENGTH(__base, __offset);
+}
 
 // ── CodeableConcept decode result ──────────────────────────────
 struct FF_CodeableConceptResult {

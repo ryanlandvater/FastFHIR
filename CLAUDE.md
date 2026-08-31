@@ -98,9 +98,13 @@ sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 Without switching, prefix any command with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
 
 ```bash
-# Manual configure, if you are not using a preset
+# Manual configure, if you are not using a preset. ALWAYS pass the profile:
+# it is a per-build-dir cache variable defaulting to `us-core`, but the tree it
+# generates is shared, so omitting it here regenerates `generated_src/` narrow
+# and breaks every other build directory (the configure now refuses instead).
 cmake -S . -B build -DFASTFHIR_BUILD_INGESTOR=ON -DFASTFHIR_BUILD_TESTS=ON \
-      -DFASTFHIR_BUILD_PYTHON_BINDINGS=ON
+      -DFASTFHIR_BUILD_PYTHON_BINDINGS=ON \
+      -DFASTFHIR_PRODUCTION_PROFILE=us-core,billing,medication-admin,supply
 cmake --build build --target build_all -j
 
 # C++ + Python integration tests (names: cpp_*, py_*)
@@ -183,7 +187,11 @@ Measure performance against a Release build (keep the Debug preset for
 debugging):
 
 ```bash
-cmake -S . -B build-opt -DCMAKE_BUILD_TYPE=Release -DFASTFHIR_BUILD_INGESTOR=ON
+# The profile is NOT optional here — see the manual-configure note above. This
+# is a second build directory writing the same shared `generated_src/`, and it
+# is the exact command that broke the tree on 2026-08-29.
+cmake -S . -B build-opt -DCMAKE_BUILD_TYPE=Release -DFASTFHIR_BUILD_INGESTOR=ON \
+      -DFASTFHIR_PRODUCTION_PROFILE=us-core,billing,medication-admin,supply
 cmake --build build-opt -j
 # link: -Iinclude -Igenerated_src -Lbuild-opt -lfastfhir, run with DYLD_LIBRARY_PATH=build-opt
 ```
@@ -427,6 +435,18 @@ generated_src/FF_SupplyDelivery.hpp:35:5: error: unknown type name 'FF_SupplyDel
 
 **`rm -rf generated_src` after any profile change** (reproduced 2026-08-23; a clean
 regenerate fixes it every time).
+
+**The accidental version of that is now blocked (2026-08-31).** The profile is a
+per-build-directory cache variable; `generated_src/` is in the source tree and shared by
+every build directory. So configuring a *second* build directory without naming the
+profile regenerated the shared tree at the `us-core` default and broke the first one —
+with nothing in the command mentioning profiles. The configure now stamps
+`generated_src/.profile` with the profile that produced it and **refuses to regenerate
+under a different one**, naming both and offering the two ways out (pass the stamped
+profile, or `rm -rf generated_src` if the change is deliberate). Consequence worth
+knowing: **two build directories can no longer hold different profiles at once** — they
+never really could, they just failed silently instead. `validate_codesystem_enums` still
+backstops the mixture, but it runs *after* the write, so it only ever reported the damage.
 
 ✅ **GEN-1 is FIXED (2026-08-24), and it was never generator nondeterminism.**
 `pytest tests/generator` was **rewriting the repo's own `generated_src/`**:

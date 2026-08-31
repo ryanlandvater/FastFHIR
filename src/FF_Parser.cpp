@@ -11,6 +11,7 @@
  */
 
 #include "FF_Utilities.hpp"
+#include "FF_Ops.hpp"
 #include "FF_Parser.hpp"
 #include "FF_SIMD.hpp"
 #include "FF_Dictionary.hpp"
@@ -33,6 +34,26 @@ using NodeLookupFieldFn = Entry (*)(const Node&, FF_FieldKey);
 using NodeLookupIndexFn = Node (*)(const Node&, size_t);
 using EntryAsNodeFn = Node (*)(const Entry&, Size, uint32_t, RECOVERY_TAG, FF_FieldKind, const ParserOps*);
 
+// ParserOps is the vtable that makes one parser drive both stream layouts.
+// The FF wire format has two physically different encodings:
+//
+//   STANDARD  — every block carries a compiled V-Table of FF_FieldInfo
+//               (reflected_fields_view), so the reader knows a block's shape
+//               from its RECOVERY_TAG alone and walks slots by offset.
+//   COMPACT   — the V-Table is replaced by a per-type presence bitmap
+//               (compact_presence_bytes) and a denser slot layout, so the
+//               reader must consult the bitmap to know which slots exist and
+//               how wide they are.
+//
+// Same FHIR data, two different ways to read a node: how big it is
+// (node_size), what its children are (node_entries), how a named field or an
+// index resolves (node_lookup_field / node_lookup_index), and how a flat
+// Entry expands into a navigable Node (entry_as_node). Each member has a
+// standard_* and a compact_* implementation below; the ParserOps chosen at
+// construction (standard_ops_ptr / compact_ops_ptr) is the one dispatch point
+// that keeps the rest of the parser layout-agnostic. layout records which
+// branch is active so callers can branch on it (e.g. gap analysis refuses
+// compact streams).
 struct ParserOps {
     FF_StreamCompaction layout;
     NodeSizeFn node_size;
@@ -137,8 +158,7 @@ Entry ParserOps::compact_node_lookup_field(const Node& n, FF_FieldKey key) {
         // slot is authoritative; the static child_recovery only names the
         // first variant. The presence bitmap above guarantees the slot is
         // present, so the runtime tag is valid here — never FF_RECOVER_UNDEFINED.
-        target_tag = static_cast<RECOVERY_TAG>(
-            LOAD_U16(n.m_base + slot_offset + DATA_BLOCK::RECOVERY));
+        target_tag = FF_GET_RECOVERY_TAG(n.m_base, slot_offset);
     } else if (target_tag == FF_RECOVER_UNDEFINED && out_kind != FF_FIELD_UNKNOWN) {
         target_tag = Kind_to_Recovery(out_kind);
     }
@@ -231,7 +251,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
         case FF_FIELD_RESOURCE: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + slot_offset + DATA_BLOCK::RECOVERY));
+            RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, slot_offset);
             // Same rule as the standard path: the kind follows the tag, so an
             // out-of-profile resource retained as opaque JSON is walked as the
             // string-layout block it is.
@@ -256,8 +276,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
             // The stored tag, not RECOVER_FF_STRING assumed: an opaque-JSON
             // payload shares this layout and must keep its own identity, or the
             // render sites quote and escape a whole resource.
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(
-                LOAD_U16(e.base + child_offset + DATA_BLOCK::RECOVERY));
+            RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, child_offset);
             return Node(e.base, size, version, child_offset, actual_tag, schema_kind,
                         FF_RECOVER_UNDEFINED, false, standard_ops_ptr(), e.m_engine_version);
         }
@@ -265,7 +284,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
         default: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + child_offset + DATA_BLOCK::RECOVERY));
+            RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, child_offset);
             // The recovery tag is ground truth, exactly as in the standard path
             // above -- and this branch is missing that rule was a live defect,
             // not a hypothetical. `Attachment.data` declares schema kind
@@ -595,14 +614,13 @@ bool DeepValidator::walk(Offset off, RECOVERY_TAG expected, std::size_t depth,
     // as a CodeableConcept. Bounds were never at risk, but type confusion was.
     // Found by the DT-1.5 flagged-offset test; the contract in the header
     // always claimed this check was per edge.
-    const Offset stored = LOAD_U64(base + off + DATA_BLOCK::VALIDATION);
+    const Offset stored = static_cast<Offset>(FF_GET_VALIDATION(base, off));
     if (stored != off) {
         return fail(out, "block at offset " + std::to_string(off) + " (via " + via +
                     ") has self-offset " + std::to_string(stored) +
                     "; the offset chain is broken");
     }
-    const RECOVERY_TAG actual =
-        static_cast<RECOVERY_TAG>(LOAD_U16(base + off + DATA_BLOCK::RECOVERY));
+    const RECOVERY_TAG actual = FF_GET_RECOVERY_TAG(base, off);
     if (expected != FF_RECOVER_UNDEFINED && actual != expected) {
         return fail(out, "block at offset " + std::to_string(off) + " (via " + via +
                     ") has recovery tag " + std::to_string(actual) + ", expected " +
@@ -623,7 +641,7 @@ bool DeepValidator::walk(Offset off, RECOVERY_TAG expected, std::size_t depth,
         // from walk_fields -- reflected_fields_view returns {} for them and the
         // empty span is an early `return true`. An opaque-JSON block reaching
         // that branch would be waved through with its length unchecked.
-        const uint32_t len = LOAD_U32(base + off + FF_STRING::LENGTH);
+        const uint32_t len = FF_GET_STRING_LENGTH(base, off);
         if (!fits(off, FF_STRING::HEADER_SIZE + len)) {
             r = fail(out, "string at offset " + std::to_string(off) + " (via " + via +
                      ") claims " + std::to_string(len) + " bytes and overruns the stream");
@@ -641,10 +659,10 @@ bool DeepValidator::walk_array(Offset off, RECOVERY_TAG array_tag,
     if (!fits(off, FF_ARRAY::HEADER_SIZE)) {
         return fail(out, "array header at offset " + std::to_string(off) + " overruns the stream");
     }
-    const uint16_t packed = LOAD_U16(base + off + FF_ARRAY::KIND_AND_STEP);
-    const uint16_t step   = packed & FF_ARRAY::STEP_MASK;
-    const auto     kind   = static_cast<FF_ARRAY::EntryKind>(packed & FF_ARRAY::KIND_MASK);
-    const uint32_t count  = LOAD_U32(base + off + FF_ARRAY::ENTRY_COUNT);
+    const FF_ARRAY array(off, size, 0);
+    const uint16_t step   = array.entry_step(base);
+    const auto     kind   = array.entry_kind(base);
+    const uint32_t count  = array.entry_count(base);
     const RECOVERY_TAG element = GetTypeFromTag(array_tag);
 
     if (step == 0 && count != 0) {
@@ -689,8 +707,7 @@ bool DeepValidator::walk_array(Offset off, RECOVERY_TAG array_tag,
     if (element == RECOVER_FF_RESOURCE) {
         for (uint32_t i = 0; i < count; ++i) {
             const Offset slot = entries + static_cast<Size>(i) * step;
-            const auto tgt = static_cast<RECOVERY_TAG>(
-                LOAD_U16(base + slot + DATA_BLOCK::RECOVERY));
+            const auto tgt = FF_GET_RECOVERY_TAG(base, slot);
             if (!walk(LOAD_U64(base + slot), tgt, depth + 1, "resource array entry", out))
                 return false;
         }
@@ -746,8 +763,7 @@ bool DeepValidator::walk_fields(Offset off, RECOVERY_TAG tag,
                 break;
             case FF_FIELD_RESOURCE: {
                 // 10-byte slot: the concrete type is inline beside the offset.
-                const auto tgt = static_cast<RECOVERY_TAG>(
-                    LOAD_U16(base + slot + DATA_BLOCK::RECOVERY));
+                const auto tgt = FF_GET_RECOVERY_TAG(base, slot);
                 if (!walk(LOAD_U64(base + slot), tgt, depth + 1, f.name, out)) return false;
                 break;
             }
@@ -759,8 +775,7 @@ bool DeepValidator::walk_fields(Offset off, RECOVERY_TAG tag,
                 // inert: `FF_IsScalarBlockTag(tgt) -> break` used to skip a
                 // flagged code here, leaving an attacker-controlled offset that
                 // the export path then dereferenced.
-                const auto tgt = static_cast<RECOVERY_TAG>(
-                    LOAD_U16(base + slot + DATA_BLOCK::RECOVERY));
+                const auto tgt = FF_GET_RECOVERY_TAG(base, slot);
                 if (tgt == FF_RECOVER_UNDEFINED) break;
                 if (FF_IsScalarBlockTag(tgt)) {
                     if (tgt == RECOVER_FF_CODE) {
@@ -947,7 +962,7 @@ static std::string_view get_choice_suffix(RECOVERY_TAG tag) {
 static std::string resolve_url_ref(const BYTE* base, Size size, uint32_t version,
                                    uint32_t ref) {
     if (ref == FF_NULL_UINT32) return {};
-    const Offset dir_off = LOAD_U64(base + FF_HEADER::URL_DIR_OFFSET);
+    const Offset dir_off = FF_HEADER(size).get_url_dir_offset(base);
     if (dir_off == FF_NULL_OFFSET || dir_off >= size) return {};
     return FF_URL_DIRECTORY(dir_off, size, version).get_url(base, ref);
 }
@@ -1222,11 +1237,8 @@ void Reflective::Node::to_debug_json(std::ostream& out, int indent) const {
             }
             case FF_FIELD_ARRAY: {
                 const FF_ARRAY arr(n.m_node_offset, n.m_size, n.m_version, n.m_engine_version);
-                const uint16_t packed =
-                    LOAD_U16(n.m_base + n.m_node_offset + FF_ARRAY::KIND_AND_STEP);
-                const auto ekind = static_cast<FF_ARRAY::EntryKind>(packed & FF_ARRAY::KIND_MASK);
-                const RECOVERY_TAG elem = GetTypeFromTag(static_cast<RECOVERY_TAG>(
-                    LOAD_U16(n.m_base + n.m_node_offset + DATA_BLOCK::RECOVERY)));
+                const auto ekind = arr.entry_kind(n.m_base);
+                const RECOVERY_TAG elem = GetTypeFromTag(FF_GET_RECOVERY_TAG(n.m_base, n.m_node_offset));
 
                 out << "{";
                 debug_meta(out, n.m_node_offset, n.m_recovery, n.m_kind);
@@ -1235,7 +1247,7 @@ void Reflective::Node::to_debug_json(std::ostream& out, int indent) const {
                         : ekind == FF_ARRAY::INLINE_BLOCK ? "INLINE_BLOCK"
                         : ekind == FF_ARRAY::SCALAR       ? "SCALAR(unwritten)"
                                                           : "?")
-                    << "\",\"_stride\":" << (packed & FF_ARRAY::STEP_MASK)
+                    << "\",\"_stride\":" << arr.entry_step(n.m_base)
                     << ",\"_count\":" << arr.entry_count(n.m_base)
                     << ",\"_elem\":\"" << FF_RecoveryName(elem) << "\"";
 
@@ -1389,7 +1401,7 @@ Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version,
                                                     Offset parent_offset, Offset value_offset, FF_FieldKind schema_kind,
                                                     const ParserOps* ops) {
     assert(schema_kind == FF_FIELD_CHOICE && "resolve_choice called on non-choice V-Table slot");
-    RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + value_offset + DATA_BLOCK::RECOVERY));
+    RECOVERY_TAG tag = FF_GET_RECOVERY_TAG(base, value_offset);
     
     if ((tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) {
         // A FLAGGED CODE VARIANT IS NOT INLINE. Its low 4 bytes are a signed
@@ -1589,8 +1601,7 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
         // The pointed-to block's own tag outranks even the array header here:
         // a `code` array declares RECOVER_FF_STRING and stores FF_STRINGs, and
         // a dateTime array declares RECOVER_FF_DATETIME and stores them too.
-        const RECOVERY_TAG actual = static_cast<RECOVERY_TAG>(
-            LOAD_U16(n.m_base + child_off + DATA_BLOCK::RECOVERY));
+        const RECOVERY_TAG actual = FF_GET_RECOVERY_TAG(n.m_base, child_off);
         return Node(n.m_base, n.m_size, n.m_version, child_off, actual,
                     Recovery_to_Kind(actual), FF_RECOVER_UNDEFINED, false,
                     n.m_ops, n.m_engine_version);
@@ -1601,10 +1612,8 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
         const Offset actual_off = LOAD_U64(n.m_base + item_ptr);
         if (actual_off == FF_NULL_OFFSET) return {};
 
-        const RECOVERY_TAG tuple_tag = static_cast<RECOVERY_TAG>(
-            LOAD_U16(n.m_base + item_ptr + DATA_BLOCK::RECOVERY));
-        const RECOVERY_TAG block_tag = static_cast<RECOVERY_TAG>(
-            LOAD_U16(n.m_base + actual_off + DATA_BLOCK::RECOVERY));
+        const RECOVERY_TAG tuple_tag = FF_GET_RECOVERY_TAG(n.m_base, item_ptr);
+        const RECOVERY_TAG block_tag = FF_GET_RECOVERY_TAG(n.m_base, actual_off);
         if (tuple_tag != block_tag) throw std::runtime_error(
             "FastFHIR: inline polymorphic tuple array (RECOVER_FF_RESOURCE) declares tag " +
             std::to_string(tuple_tag) + " but the block it points at carries " +
@@ -1631,8 +1640,7 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
 
 // The element type is read from the array header once, not per entry.
 RECOVERY_TAG ParserOps::array_element_tag(const Node& n) {
-    return GetTypeFromTag(static_cast<RECOVERY_TAG>(
-        LOAD_U16(n.m_base + n.m_node_offset + DATA_BLOCK::RECOVERY)));
+    return GetTypeFromTag(FF_GET_RECOVERY_TAG(n.m_base, n.m_node_offset));
 }
 
 std::vector<Node> ParserOps::standard_node_entries(const Node& n) {
@@ -1680,8 +1688,7 @@ Entry ParserOps::standard_node_lookup_field(const Node& n, FF_FieldKey key) {
         // JSON suffix (valueString for valueDecimal). FF_IsFieldEmpty above
         // already rejected absent choices, so the runtime tag is guaranteed
         // valid here — never FF_RECOVER_UNDEFINED.
-        target_tag = static_cast<RECOVERY_TAG>(
-            LOAD_U16(n.m_base + value_offset + DATA_BLOCK::RECOVERY));
+        target_tag = FF_GET_RECOVERY_TAG(n.m_base, value_offset);
     } else if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN) {
         target_tag = Kind_to_Recovery(key.kind);
     }
@@ -1706,6 +1713,61 @@ Node Entry::as_node(Size size, uint32_t version, RECOVERY_TAG expected_tag, FF_F
                     const ParserOps* ops) const {
     const ParserOps* use_ops = ops ? ops : &STANDARD_OPS;
     return use_ops->entry_as_node(*this, size, version, expected_tag, schema_kind, use_ops);
+}
+
+// =====================================================================
+// Typed scalar slot reads — the wire loads live here, not in headers.
+// =====================================================================
+// Declared in FF_Parser.hpp; defined in this TU where FF_Ops.hpp is visible,
+// and explicitly instantiated for the six FHIR scalar wire types. A caller
+// requesting any other arithmetic T fails loudly at link time instead of
+// silently misreading — the honest contract.
+template <typename T>
+    requires std::is_arithmetic_v<T>
+T Entry::as_scalar(RECOVERY_TAG expected_tag) const {
+    return Decode::scalar<T>(base, absolute_offset(), expected_tag);
+}
+template bool     Entry::as_scalar<bool>(RECOVERY_TAG) const;
+template int32_t  Entry::as_scalar<int32_t>(RECOVERY_TAG) const;
+template uint32_t Entry::as_scalar<uint32_t>(RECOVERY_TAG) const;
+template int64_t  Entry::as_scalar<int64_t>(RECOVERY_TAG) const;
+template uint64_t Entry::as_scalar<uint64_t>(RECOVERY_TAG) const;
+template double   Entry::as_scalar<double>(RECOVERY_TAG) const;
+
+template <typename T>
+    requires std::is_arithmetic_v<T>
+T Reflective::Node::read_scalar(RECOVERY_TAG expected_tag) const {
+    return Decode::scalar<T>(m_base, m_node_offset, expected_tag);
+}
+template bool     Reflective::Node::read_scalar<bool>(RECOVERY_TAG) const;
+template int32_t  Reflective::Node::read_scalar<int32_t>(RECOVERY_TAG) const;
+template uint32_t Reflective::Node::read_scalar<uint32_t>(RECOVERY_TAG) const;
+template int64_t  Reflective::Node::read_scalar<int64_t>(RECOVERY_TAG) const;
+template uint64_t Reflective::Node::read_scalar<uint64_t>(RECOVERY_TAG) const;
+template double   Reflective::Node::read_scalar<double>(RECOVERY_TAG) const;
+
+uint32_t Reflective::Node::code_word() const {
+    return LOAD_U32(m_base + m_node_offset);
+}
+
+Entry::operator std::string_view() const {
+    if (kind == FF_FIELD_CODE) {
+        uint32_t raw_code = LOAD_U32(base + absolute_offset());
+        if (raw_code == FF_CODE_NULL) return "";
+
+        if (const char* label = FF_ResolveCode(raw_code, m_version)) {
+            return label;
+        }
+
+        if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
+            Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, parent_offset);
+            return FF_DECODE_CODEABLE_CONCEPT(base, abs_off, m_version).label;
+        }
+
+        return "";
+    }
+
+    return as_node().as<std::string_view>();
 }
 
 Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t version,
@@ -1755,7 +1817,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
         case FF_FIELD_RESOURCE: {
             Offset actual_off = LOAD_U64(e.base + slot_offset);
             if (actual_off == FF_NULL_OFFSET) return {};
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + slot_offset + DATA_BLOCK::RECOVERY));
+            RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, slot_offset);
             // The tag beside the offset is ground truth for the KIND too, not
             // just the type name. This used to hardcode FF_FIELD_BLOCK, which
             // was right only while every resource slot held a generated
@@ -1785,7 +1847,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
             // Standard pointer hop for Blocks and Strings
             Offset child_offset = LOAD_U64(e.base + slot_offset);
             if (child_offset == FF_NULL_OFFSET) return {};
-            RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>(LOAD_U16(e.base + child_offset + DATA_BLOCK::RECOVERY));
+            RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, child_offset);
             // The schema kind can be BLOCK (e.g. dateTime fields resolved through the
             // complex-block mapping) while the stored block is actually an FF_STRING.
             // The recovery tag is ground truth — re-derive the kind so string nodes are

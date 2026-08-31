@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "FF_Compactor.hpp"
+#include "FF_Ops.hpp"
 #include "FF_Queue.hpp"
 #include "FF_Utilities.hpp"
 #include "FF_SIMD.hpp"
@@ -214,7 +215,7 @@ static void write_compact_code_slot(const Reflective::Entry& entry, Memory& dest
     Offset src_cc_off = entry.parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
     const BYTE* src = entry.base;
 
-    uint8_t cc_len = src[src_cc_off + FF_CODEABLE_CONCEPT::LENGTH];
+    uint8_t cc_len = FF_GET_CONCEPT_LENGTH(src, src_cc_off);
     Size total_bytes = FF_CODEABLE_CONCEPT::HEADER_SIZE + cc_len;
 
     Offset dst_cc_off = destination.claim_space(total_bytes);
@@ -243,7 +244,7 @@ static void write_compact_datetime_slot(const Reflective::Entry& entry, Memory& 
     // write_compact_code_slot does for FF_CODEABLE_CONCEPT.
     const Offset src_str_off = FF_ResolveDateTimeOffset(raw, entry.parent_offset);
     const BYTE* src = entry.base;
-    const uint32_t len = LOAD_U32(src + src_str_off + FF_STRING::LENGTH);
+    const uint32_t len = FF_GET_STRING_LENGTH(src, src_str_off);
     const Size total_bytes = FF_STRING::HEADER_SIZE + len;
     const Offset dst_str_off = destination.claim_space(total_bytes);
     std::memcpy(base + dst_str_off, src + src_str_off, total_bytes);
@@ -259,7 +260,7 @@ static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& co
                               Offset compact_parent_off, Offset dense_off, std::size_t depth) {
     BYTE* base = context.destination.base();
     const Offset src_slot = entry.absolute_offset();
-    const RECOVERY_TAG tag = static_cast<RECOVERY_TAG>(LOAD_U16(entry.base + src_slot + DATA_BLOCK::RECOVERY));
+    const RECOVERY_TAG tag = FF_GET_RECOVERY_TAG(entry.base, src_slot);
     STORE_U16(base + dense_off + DATA_BLOCK::RECOVERY, tag);
 
     if (FF_IsScalarBlockTag(tag)) {
@@ -272,7 +273,7 @@ static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& co
                 // Resolve and copy the source CodeableConcept block verbatim
                 int32_t rel_off = static_cast<int32_t>(raw_code << 1) >> 1;
                 Offset src_cc_off = entry.parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
-                uint8_t cc_len = entry.base[src_cc_off + FF_CODEABLE_CONCEPT::LENGTH];
+                uint8_t cc_len = FF_GET_CONCEPT_LENGTH(entry.base, src_cc_off);
                 Size block_total = FF_CODEABLE_CONCEPT::HEADER_SIZE + cc_len;
                 Offset dst_cc_off = context.destination.claim_space(block_total);
                 std::memcpy(context.destination.base() + dst_cc_off, entry.base + src_cc_off, block_total);
@@ -335,7 +336,7 @@ static Offset archive_array(const Reflective::Node& node, ArchiveContext& contex
     const BYTE* const src_base = context.node_base(node);
     const Offset src_off = context.node_offset(node);
     const RECOVERY_TAG element = GetTypeFromTag(
-        static_cast<RECOVERY_TAG>(LOAD_U16(src_base + src_off + DATA_BLOCK::RECOVERY)));
+        FF_GET_RECOVERY_TAG(src_base, src_off));
 
     if (ff_kind_is_inline_scalar(Recovery_to_Kind(element))) {
         const FF_ARRAY src_arr = context.source_array(node);
@@ -732,7 +733,7 @@ static void process_pending_write(ArchiveContext& context, const PendingWrite& p
 // future producer that interns them.
 static Offset archive_url_directory(const Parser& source, ArchiveContext& context) {
     const BYTE* const src = source.data();
-    const Offset src_dir = LOAD_U64(src + FF_HEADER::URL_DIR_OFFSET);
+    const Offset src_dir = FF_HEADER(source.size_bytes()).get_url_dir_offset(src);
     if (src_dir == FF_NULL_OFFSET) return FF_NULL_OFFSET;
 
     const FF_URL_DIRECTORY dir(src_dir, source.size_bytes(), source.version());
@@ -745,10 +746,12 @@ static Offset archive_url_directory(const Parser& source, ArchiveContext& contex
     std::memcpy(dst_base + dst_dir, src + src_dir, total);
     STORE_U64(dst_base + dst_dir + FF_URL_DIRECTORY::VALIDATION, dst_dir);
 
+    const FF_URL_DIRECTORY dst_dir_view(dst_dir, source.size_bytes(), source.version());
+
     std::unordered_map<Offset, Offset> moved;
     for (uint32_t i = 0; i < count; ++i) {
         const Offset entry = dst_dir + header + static_cast<Size>(i) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
-        const Offset src_seg = LOAD_U64(dst_base + entry + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET);
+        const Offset src_seg = dst_dir_view.seg_offset(dst_base, i);
         // An empty segment (the "http://" in a scheme) is stored as no string
         // at all, and seg_string() returns "" for it -- there is nothing to move.
         if (src_seg == FF_NULL_OFFSET) continue;

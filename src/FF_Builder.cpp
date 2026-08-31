@@ -10,6 +10,7 @@
 
 #include "FF_Utilities.hpp"
 #include "FF_Builder.hpp"
+#include "FF_Ops.hpp"
 #include <atomic>
 #include <stdexcept>
 #include <thread>
@@ -172,7 +173,7 @@ Builder::AmendScope Builder::_amend_prepare(Offset object_offset, size_t field_v
     const bool assigned = (probe == AssignedProbe::TagIsZero)
                               // A variant's 8 payload bytes are raw bits, so any
                               // value is legal -- only the tag says "set".
-                              ? LOAD_U16(slot + DATA_BLOCK::RECOVERY) != 0
+                              ? FF_GET_RECOVERY_TAG(m_base, static_cast<Offset>(slot - m_base)) != FF_RECOVER_UNDEFINED
                               : LOAD_U64(slot) != FF_NULL_OFFSET;
     if (assigned) {
         throw std::runtime_error(
@@ -213,6 +214,100 @@ void Builder::amend_variant(Offset object_offset, size_t field_vtable_offset, ui
     STORE_U64(scope.slot(), raw_bits);
     STORE_U16(scope.slot() + DATA_BLOCK::RECOVERY, new_tag);
 }
+
+// The two append/amend bodies live here — not in the header — because they
+// write raw wire bytes and FF_Ops.hpp stays an implementation detail of this
+// TU (and FF_Primitives.cpp / generated code). The header declares them; the
+// stores are visible only where the offset math is done.
+Offset Builder::append(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag)
+{
+    if (!try_begin_mutation())
+    {
+        throw std::runtime_error("FastFHIR: Builder is finalizing; append is no longer allowed.");
+    }
+
+    struct MutationGuard
+    {
+        Builder *self;
+        ~MutationGuard() { self->end_mutation(); }
+    } guard{this};
+
+    // 1. Calculate Size directly
+    uint32_t count = static_cast<uint32_t>(offsets.size());
+    Size data_size = FF_ARRAY::HEADER_SIZE + (count * 8);
+
+    // 2. Thread-safe claim of space
+    Offset offset = m_memory.claim_space(data_size);
+
+    // 3. Thread-safe write of data with the injected tag
+    Offset write_head = offset;
+    STORE_FF_ARRAY_HEADER(m_base, write_head, FF_ARRAY::OFFSET, 8, count, semantic_tag);
+    for (Offset off : offsets)
+    {
+        STORE_U64(m_base + write_head, off);
+        write_head += 8;
+    }
+    if (write_head != offset + data_size) {
+        throw std::runtime_error(
+            "FastFHIR: SIZE/STORE contract violated in offset-array append: claimed " +
+            std::to_string(data_size) + " bytes but wrote " +
+            std::to_string(write_head - offset) + ".");
+    }
+
+    return offset;
+}
+
+template <typename T>
+    requires std::is_arithmetic_v<T>
+void Builder::amend_scalar(Offset object_offset, size_t field_vtable_offset, T val)
+{
+    if (!try_begin_mutation())
+    {
+        throw std::runtime_error("FastFHIR: Builder is finalizing; amend is no longer allowed.");
+    }
+
+    struct MutationGuard
+    {
+        Builder *self;
+        ~MutationGuard() { self->end_mutation(); }
+    } guard{this};
+
+    if (object_offset + field_vtable_offset + sizeof(T) > m_memory.capacity())
+    {
+        throw std::runtime_error("FastFHIR: Scalar amendment out of bounds.");
+    }
+
+    BYTE* const slot_ptr = m_base + object_offset + field_vtable_offset;
+
+    if constexpr (sizeof(T) == 1)
+    {
+        STORE_U8(slot_ptr, static_cast<uint8_t>(val));
+    }
+    else if constexpr (sizeof(T) == 4)
+    {
+        STORE_U32(slot_ptr, static_cast<uint32_t>(val));
+    }
+    else if constexpr (sizeof(T) == 8)
+    {
+        if constexpr (std::is_floating_point_v<T>)
+        {
+            STORE_F64(slot_ptr, static_cast<double>(val));
+        }
+        else
+        {
+            STORE_U64(slot_ptr, static_cast<uint64_t>(val));
+        }
+    }
+}
+
+// The FHIR scalar wire set — the only T amend_scalar is instantiated with.
+template void Builder::amend_scalar<bool>(Offset, size_t, bool);
+template void Builder::amend_scalar<uint8_t>(Offset, size_t, uint8_t);
+template void Builder::amend_scalar<int32_t>(Offset, size_t, int32_t);
+template void Builder::amend_scalar<uint32_t>(Offset, size_t, uint32_t);
+template void Builder::amend_scalar<int64_t>(Offset, size_t, int64_t);
+template void Builder::amend_scalar<uint64_t>(Offset, size_t, uint64_t);
+template void Builder::amend_scalar<double>(Offset, size_t, double);
 
 void Builder::amend_datetime(Offset object_offset, size_t field_vtable_offset,
                              std::string_view text, RECOVERY_TAG tag)
@@ -323,8 +418,7 @@ ObjectHandle MutableEntry::as_handle() const {
         if (target == FF_NULL_OFFSET) 
             return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
             
-        RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
-            (LOAD_U16(base_ptr + m_parent_offset + m_vtable_offset + DATA_BLOCK::RECOVERY));
+        RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(base_ptr, static_cast<Offset>(m_parent_offset + m_vtable_offset));
         
         return ObjectHandle(m_builder, target, actual_tag);
     }
@@ -333,8 +427,7 @@ ObjectHandle MutableEntry::as_handle() const {
     if (target == FF_NULL_OFFSET)
         return ObjectHandle(m_builder, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED);
         
-    RECOVERY_TAG actual_tag = static_cast<RECOVERY_TAG>
-        (LOAD_U16(base_ptr + target + DATA_BLOCK::RECOVERY));
+    RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(base_ptr, target);
     return ObjectHandle(m_builder, target, actual_tag);
 }
 

@@ -7,6 +7,7 @@
 // Main Thread Ingestion Routing & Bundle Parsing
 // ============================================================
 #include "FF_Ingestor.hpp"
+#include "FF_Ops.hpp"
 #include "FastFHIR.hpp"
 #include "FF_Queue.hpp"
 #include "FF_SIMD.hpp"
@@ -456,7 +457,7 @@ namespace FastFHIR::Ingest
                         return cid;
                     continue;
                 }
-                const uint32_t slen = LOAD_U32(base + child.seg_arena_off + FF_STRING::LENGTH);
+                const uint32_t slen = FF_GET_STRING_LENGTH(base, child.seg_arena_off);
                 if (slen == static_cast<uint32_t>(seg.size()))
                 {
                     const char *sdata = reinterpret_cast<const char *>(
@@ -995,8 +996,7 @@ namespace FastFHIR::Ingest
 
                 // Confirm the block at array_off is a genuine FF_ARRAY (RECOVER_ARRAY_BIT set).
                 // This catches any mismatch between owner_recovery and the actual field.
-                RECOVERY_TAG stored_tag = static_cast<RECOVERY_TAG>(
-                    LOAD_U16(base + array_off + DATA_BLOCK::RECOVERY));
+                RECOVERY_TAG stored_tag = FF_GET_RECOVERY_TAG(base, array_off);
                 if ((stored_tag & RECOVER_ARRAY_BIT) == 0)
                     return FF_Result{FF_FAILURE,
                                      std::string("IngestPending: payload is not an FF_ARRAY block for field '") + key.name + "'."};

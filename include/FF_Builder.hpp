@@ -247,43 +247,7 @@ namespace FastFHIR
          * @brief Overload for strongly-typed Offset Arrays.
          * Bypasses TypeTraits to dynamically inject the semantic array tag.
          */
-        Offset append(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag)
-        {
-            if (!try_begin_mutation())
-            {
-                throw std::runtime_error("FastFHIR: Builder is finalizing; append is no longer allowed.");
-            }
-
-            struct MutationGuard
-            {
-                Builder *self;
-                ~MutationGuard() { self->end_mutation(); }
-            } guard{this};
-
-            // 1. Calculate Size directly
-            uint32_t count = static_cast<uint32_t>(offsets.size());
-            Size data_size = FF_ARRAY::HEADER_SIZE + (count * 8);
-
-            // 2. Thread-safe claim of space
-            Offset offset = m_memory.claim_space(data_size);
-
-            // 3. Thread-safe write of data with the injected tag
-            Offset write_head = offset;
-            STORE_FF_ARRAY_HEADER(m_base, write_head, FF_ARRAY::OFFSET, 8, count, semantic_tag);
-            for (Offset off : offsets)
-            {
-                STORE_U64(m_base + write_head, off);
-                write_head += 8;
-            }
-            if (write_head != offset + data_size) {
-                throw std::runtime_error(
-                    "FastFHIR: SIZE/STORE contract violated in offset-array append: claimed " +
-                    std::to_string(data_size) + " bytes but wrote " +
-                    std::to_string(write_head - offset) + ".");
-            }
-
-            return offset;
-        }
+        Offset append(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag);
 
         /**
          * @brief Retain a FHIR resource this build cannot type, verbatim.
@@ -740,48 +704,5 @@ namespace FastFHIR
         throw std::runtime_error(
             "FastFHIR: Root is not set on this Builder. Calling application must set root explicitly "
             "before reading or finalizing the stream.");
-    }
-
-    template <typename T>
-        requires std::is_arithmetic_v<T>
-    void Builder::amend_scalar(Offset object_offset, size_t field_vtable_offset, T val)
-    {
-        if (!try_begin_mutation())
-        {
-            throw std::runtime_error("FastFHIR: Builder is finalizing; amend is no longer allowed.");
-        }
-
-        struct MutationGuard
-        {
-            Builder *self;
-            ~MutationGuard() { self->end_mutation(); }
-        } guard{this};
-
-        if (object_offset + field_vtable_offset + sizeof(T) > m_memory.capacity())
-        {
-            throw std::runtime_error("FastFHIR: Scalar amendment out of bounds.");
-        }
-
-        BYTE *ptr = const_cast<BYTE *>(m_base) + object_offset + field_vtable_offset;
-
-        if constexpr (sizeof(T) == 1)
-        {
-            STORE_U8(ptr, static_cast<uint8_t>(val));
-        }
-        else if constexpr (sizeof(T) == 4)
-        {
-            STORE_U32(ptr, static_cast<uint32_t>(val));
-        }
-        else if constexpr (sizeof(T) == 8)
-        {
-            if constexpr (std::is_floating_point_v<T>)
-            {
-                STORE_F64(ptr, static_cast<double>(val));
-            }
-            else
-            {
-                STORE_U64(ptr, static_cast<uint64_t>(val));
-            }
-        }
     }
 } // namespace FastFHIR

@@ -18,28 +18,29 @@
 #include "FF_Utilities.hpp"
 #include "FF_Primitives.hpp"
 #include "FF_Dictionary.hpp"
+#include "FF_Ops.hpp"
 
 // =====================================================================
 // DATA_BLOCK BASE VALIDATION
 // =====================================================================
-FF_Result DATA_BLOCK::validate_offset(const BYTE *const __base, const char* type_name, RECOVERY_TAG recovery_tag) const noexcept {
+FF_Result DATA_BLOCK::validate_offset(const BYTE *const __base, const char* type_name, RECOVERY_TAG expected_tag) const noexcept {
     if (!*this) {
         return {FF_VALIDATION_FAILURE, std::string("Invalid ") + type_name + ". Offset is NULL."};
     }
 
 #ifndef __EMSCRIPTEN__
-    if (LOAD_U64(__base + __offset + VALIDATION) != __offset) {
+    if (FF_GET_VALIDATION(__base, __offset) != static_cast<uint64_t>(__offset)) {
         return {FF_VALIDATION_FAILURE, std::string(type_name) + " failed absolute offset validation."};
     }
 #else
-    if (LOAD_U64(__base + __offset + VALIDATION) != __remote) {
+    if (FF_GET_VALIDATION(__base, __offset) != static_cast<uint64_t>(__remote)) {
         return {FF_VALIDATION_FAILURE, std::string(type_name) + " failed remote offset validation."};
     }
 #endif
 
-    RECOVERY_TAG actual_recovery = static_cast<RECOVERY_TAG>(LOAD_U16(__base + __offset + RECOVERY));
-    if (actual_recovery != recovery_tag) {
-        return {FF_VALIDATION_FAILURE, std::string(type_name) + " recovery tag mismatch. Expected: " + std::to_string(recovery_tag) + ", Found: " + std::to_string(actual_recovery)};
+    RECOVERY_TAG actual_recovery = FF_GET_RECOVERY_TAG(__base, __offset);
+    if (actual_recovery != expected_tag) {
+        return {FF_VALIDATION_FAILURE, std::string(type_name) + " recovery tag mismatch. Expected: " + std::to_string(expected_tag) + ", Found: " + std::to_string(actual_recovery)};
     }
 
     return FF_SUCCESS;
@@ -61,7 +62,7 @@ FF_HEADER::FF_HEADER(Size file_size) noexcept :
 
 FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
     // 1. Magic Bytes Check
-    if (LOAD_U32(__base + MAGIC) != FF_MAGIC_BYTES) {
+    if (get_magic(__base) != FF_MAGIC_BYTES) {
         return {FF_VALIDATION_FAILURE, "FF_HEADER magic bytes mismatch."};
     }
     
@@ -104,6 +105,9 @@ FF_Result FF_HEADER::validate_full(const BYTE* const __base) const noexcept {
 }
 
 // Accessors correctly split between Engine Version and FHIR Schema
+uint32_t FF_HEADER::get_magic(const BYTE* const __base) const noexcept {
+    return LOAD_U32(__base + MAGIC);
+}
 uint32_t FF_HEADER::get_engine_version(const BYTE* const __base) const {
     return FF_HEADER_ENGINE_VERSION(LOAD_U32(__base + VERSION));
 }
@@ -240,7 +244,7 @@ FF_Result FF_ARRAY::validate_full(const BYTE* const __base) const noexcept {
         default: return {FF_VALIDATION_FAILURE, "FF_ARRAY contains undefined entry kind"};
     }
     
-    uint32_t count = LOAD_U32(__base + __offset + ENTRY_COUNT);
+    uint32_t count = entry_count(__base);
     if (__offset + get_header_size() + static_cast<uint64_t>(step) * count > __size) {
         return {FF_VALIDATION_FAILURE, "FF_ARRAY entries exceed file boundaries."};
     }
@@ -285,7 +289,7 @@ FF_Result FF_STRING::validate_full(const BYTE* const __base) const noexcept {
 #endif
     auto result = validate_offset(__base, type, recovery);
     if (result != FF_SUCCESS) return result;
-    uint32_t len = LOAD_U32(__base + __offset + LENGTH);
+    uint32_t len = length(__base);
     if (__offset + get_header_size() + len > __size) {
         return {FF_VALIDATION_FAILURE, "FF_STRING length exceeds file boundaries."};
     }
@@ -293,9 +297,7 @@ FF_Result FF_STRING::validate_full(const BYTE* const __base) const noexcept {
 }
 // Zero-Copy Mapped View
 std::string_view FF_STRING::read_view(const BYTE* const __base) const {
-    uint32_t len = LOAD_U32(__base + __offset + LENGTH);
-    const char* str_start = reinterpret_cast<const char*>(__base + __offset + STRING_DATA);
-    return std::string_view(str_start, len);
+    return FF_GET_STRING_VIEW(__base, __offset);
 }
 
 // Fallback std::string allocation for dictionary parsers
@@ -850,6 +852,10 @@ uint32_t FF_URL_DIRECTORY::entry_count(const BYTE* base) const {
 uint32_t FF_URL_DIRECTORY::prior_idx(const BYTE* base, uint32_t entry_idx) const {
     Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * URL_ENTRY_SIZE;
     return LOAD_U32(base + ep + URL_ENTRY_PRIOR_IDX);
+}
+Offset FF_URL_DIRECTORY::seg_offset(const BYTE* base, uint32_t entry_idx) const {
+    Offset ep = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * URL_ENTRY_SIZE;
+    return LOAD_U64(base + ep + URL_ENTRY_SEG_OFFSET);
 }
 std::string_view FF_URL_DIRECTORY::seg_string(const BYTE* base, uint32_t entry_idx) const {
     Offset ep      = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * URL_ENTRY_SIZE;

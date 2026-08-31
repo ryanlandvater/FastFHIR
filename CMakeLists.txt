@@ -91,6 +91,58 @@ list(REMOVE_ITEM FASTFHIR_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/FF_Inges
 # always be True on the first configure, making the generator run even
 # when FASTFHIR_RUN_GENERATOR=OFF.
 if(FASTFHIR_RUN_GENERATOR OR NOT EXISTS "${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.hpp")
+    # ── Profile stamp: refuse to regenerate at a different profile ──
+    # The profile is a CACHE variable, so it is remembered PER BUILD
+    # DIRECTORY. generated_src/ is in the SOURCE tree, so it is shared by all
+    # of them. Configuring a second build directory therefore rewrites the
+    # first one's generated code, and because the command that does it says
+    # nothing about profiles -- `cmake -S . -B build-opt
+    # -DCMAKE_BUILD_TYPE=Release` is the documented Release recipe -- nobody
+    # thinks they changed anything.
+    #
+    # What that leaves behind is not a clean narrow tree but a MIXTURE:
+    # write_if_changed never deletes, so a resource the narrower profile does
+    # not emit keeps its wide-profile .cpp at its old mtime, while
+    # FF_CodeSystems.hpp (emitted under every profile) comes back short. The
+    # CONFIGURE_DEPENDS glob below then compiles the orphans against the short
+    # header, hundreds of lines away from the cause:
+    #     error: unknown type name 'FF_Use'
+    #
+    # validate_codesystem_enums catches that mixture, but only AFTER the
+    # generator has already overwritten the header -- it aborts the configure
+    # that did the damage, it does not undo it, and the tree that was hurt is
+    # the OTHER one. So the check has to happen here, before the write.
+    #
+    # A deliberate profile change is still just `rm -rf generated_src`, which
+    # takes the stamp with it. That is the same rule CLAUDE.md already gives
+    # for changing profiles; this only makes the ACCIDENTAL change stop being
+    # silent. Note Bazel reads generated_src/ straight out of the source tree
+    # (BUILD.bazel globs it) and never runs the generator, so it inherits
+    # whatever CMake last wrote -- one more reason the damage must be
+    # prevented rather than detected downstream.
+    set(_FF_PROFILE_STAMP "${FASTFHIR_GENERATED_DIR}/.profile")
+    if(EXISTS "${_FF_PROFILE_STAMP}")
+        file(READ "${_FF_PROFILE_STAMP}" _FF_PRIOR_PROFILE)
+        string(STRIP "${_FF_PRIOR_PROFILE}" _FF_PRIOR_PROFILE)
+        if(NOT _FF_PRIOR_PROFILE STREQUAL FASTFHIR_PRODUCTION_PROFILE)
+            message(FATAL_ERROR
+                "Refusing to regenerate ${FASTFHIR_GENERATED_DIR}.\n"
+                "  It was generated at profile: ${_FF_PRIOR_PROFILE}\n"
+                "  This build directory asks for: ${FASTFHIR_PRODUCTION_PROFILE}\n"
+                "    (${CMAKE_BINARY_DIR})\n"
+                "generated_src/ is shared by every build directory, so continuing "
+                "would rewrite it and break whichever tree was built at "
+                "'${_FF_PRIOR_PROFILE}'.\n"
+                "If you did not mean to change the profile, pass the one already "
+                "in use:\n"
+                "  -DFASTFHIR_PRODUCTION_PROFILE=${_FF_PRIOR_PROFILE}\n"
+                "If you DID mean to change it, clear the tree first -- the "
+                "generator never deletes output it no longer emits, so a "
+                "profile change always needs this:\n"
+                "  rm -rf ${FASTFHIR_GENERATED_DIR}")
+        endif()
+    endif()
+
     # 3.11 is the floor pyproject.toml already targets (ruff/black target-version
     # = py311). Without it CMake takes whatever `python3` it finds first — on macOS
     # that is the Xcode Command Line Tools 3.9, which cannot evaluate the PEP 604
@@ -110,6 +162,11 @@ if(FASTFHIR_RUN_GENERATOR OR NOT EXISTS "${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.
     if(NOT _GEN_RESULT EQUAL 0)
         message(FATAL_ERROR "Code generator failed — see output above")
     endif()
+
+    # Stamp only a generation that SUCCEEDED. A half-written tree that claims a
+    # profile is worse than one that claims nothing: the next configure would
+    # trust the claim and skip straight past the check above.
+    file(WRITE "${_FF_PROFILE_STAMP}" "${FASTFHIR_PRODUCTION_PROFILE}\n")
 endif()
 
 # Single GLOB, always after the generator (or confirmed existing files).
@@ -264,6 +321,13 @@ include(tests/tests.cmake)
 # ── Python bindings ────────────────────────────────────────────
 if(FASTFHIR_BUILD_PYTHON_BINDINGS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+    # Default the Python package install dir to the interpreter's own
+    # site-packages layout under the install prefix. Previously undefined, so
+    # `install` collapsed DESTINATION to an absolute "/fastfhir".
+    if(NOT CMAKE_INSTALL_PYTHON_LIBDIR)
+        set(CMAKE_INSTALL_PYTHON_LIBDIR
+            "lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages")
+    endif()
     set(PYBIND11_FINDPYTHON ON)
     FetchContent_Declare(pybind11
         GIT_REPOSITORY https://github.com/pybind/pybind11.git
@@ -322,9 +386,16 @@ install(FILES
     ${FASTFHIR_INCLUDE_DIR}/FF_Parser.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Builder.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Utilities.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Dictionary.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Memory.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Recovery.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Version.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_RecoveryTags.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_ResourceTypes.hpp
+    ${FASTFHIR_GENERATED_DIR}/FF_Reflection.hpp
+    ${FASTFHIR_GENERATED_DIR}/FF_Codes.hpp
     DESTINATION include
 )
 if(FASTFHIR_BUILD_INGESTOR)

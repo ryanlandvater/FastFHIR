@@ -20,33 +20,10 @@
 #pragma once
 
 #include "FF_Primitives.hpp"
-#include "FF_Ops.hpp"
 
 // =====================================================================
 // FASTFHIR STRUCTURE UTILITIES
 // =====================================================================
-
-/**
- * Standard Header for FastFHIR Arrays
- * Offset 0:  Validation Offset (Self-pointer)
- * Offset 8:  Recovery Tag (RECOVER_ARRAY)
- * Offset 10: Item Step Size (uint16_t)
- * Offset 12: Item Count (uint32_t)
- */
-struct FF_ArrayHeader
-{
-    static constexpr uint64_t SIZE = 16;
-
-    static void Store(uint8_t *const __base, uint64_t &write_head, uint16_t recovery, uint16_t step, uint32_t count)
-    {
-        auto __ptr = __base + write_head;
-        STORE_U64(__ptr + 0, write_head);
-        STORE_U16(__ptr + 8, recovery);
-        STORE_U16(__ptr + 10, step);
-        STORE_U32(__ptr + 12, count);
-        write_head += SIZE;
-    }
-};
 
 /**
  * Choice Resolution Helper
@@ -108,17 +85,24 @@ inline constexpr bool FF_IsScalarBlockTag(RECOVERY_TAG tag) {
  * @brief Zero-allocation raw memory peek to determine if a FastFHIR field is null/empty.
  */
 inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_offset, FF_FieldKind kind) {
+    // All FastFHIR null sentinels are all-ones bit patterns, so "empty" is a
+    // byte test — no endian-aware load needed (FF_Ops.hpp stays internal).
+    const auto slot_all_ones = [base, field_absolute_offset](size_t n) noexcept {
+        for (size_t i = 0; i < n; ++i)
+            if (base[field_absolute_offset + i] != 0xFF) return false;
+        return true;
+    };
     switch (kind) {
 
         case FF_FIELD_RESOURCE:
         case FF_FIELD_CHOICE:
-            if (LOAD_U16(base + field_absolute_offset + DATA_BLOCK::RECOVERY)
+            if (FF_GET_RECOVERY_TAG(base, field_absolute_offset)
                     == FF_RECOVER_UNDEFINED) return true;
             [[fallthrough]];
         case FF_FIELD_STRING:
         case FF_FIELD_ARRAY:
         case FF_FIELD_BLOCK:
-            return LOAD_U64(base + field_absolute_offset) == FF_NULL_OFFSET;
+            return slot_all_ones(8);
             
         // Signedness does not enter into it: the sentinel is a BIT PATTERN
         // (all ones), so int32_t and uint32_t share the test. FF_FIELD_INT32 was
@@ -133,7 +117,7 @@ inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_of
         case FF_FIELD_URL:
         case FF_FIELD_UINT32:
         case FF_FIELD_INT32:
-            return LOAD_U32(base + field_absolute_offset) == FF_NULL_UINT32;
+            return slot_all_ones(4);
 
         // Both are 8 inline bytes whose null is all-ones, so they share a case.
         // Omitting FF_FIELD_DATETIME would not fail loudly: the `default` below
@@ -146,11 +130,11 @@ inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_of
         case FF_FIELD_DATETIME:
         case FF_FIELD_INT64:
         case FF_FIELD_UINT64:
-            return LOAD_U64(base + field_absolute_offset) == FF_NULL_UINT64;
-            
+            return slot_all_ones(8);
+
         case FF_FIELD_BOOL:
-            return LOAD_U8(base + field_absolute_offset) == FF_NULL_UINT8;
-            
+            return slot_all_ones(1);
+
         default:
             return true;
     }
