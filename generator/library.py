@@ -376,11 +376,19 @@ def compile_fhir_library(
     write_if_changed(os.path.join(output_dir, "FF_FieldKeys.cpp"), field_keys_cpp)
 
     # --- Python field modules + AST path builders + stubs ---
-    emit_python_fields(python_resource_map, output_dir)
-    emit_python_ast(all_blocks, block_key_defs, token_registry, output_dir)
+    # A resource module holds two classes from two emitters (`class Patient` +
+    # `class PATIENT_PATH`), so the AST pass appends -- but only onto files the
+    # field pass truncated in THIS run. It hands that set forward rather than
+    # assuming it, because the field pass does not cover backbone paths
+    # (`bundle_entry.py` vs `bundleentry.py`) and a blind append restacked those
+    # 144 modules on every configure. Same contract on the .pyi side.
+    truncated_py = emit_python_fields(python_resource_map, output_dir)
+    emit_python_ast(
+        all_blocks, block_key_defs, token_registry, output_dir, truncated_by=truncated_py
+    )
     emit_python_fields_init(python_resource_map, output_dir)
-    emit_python_fields_stubs(python_resource_map, output_dir)
-    emit_python_ast_stubs(all_blocks, block_key_defs, output_dir)
+    truncated_pyi = emit_python_fields_stubs(python_resource_map, output_dir)
+    emit_python_ast_stubs(all_blocks, block_key_defs, output_dir, truncated_by=truncated_pyi)
     emit_py_typed_marker(output_dir)
 
     # --- Reflection dispatch ---
