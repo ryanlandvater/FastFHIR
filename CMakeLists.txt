@@ -264,6 +264,13 @@ include(tests/tests.cmake)
 # ── Python bindings ────────────────────────────────────────────
 if(FASTFHIR_BUILD_PYTHON_BINDINGS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+    # Default the Python package install dir to the interpreter's own
+    # site-packages layout under the install prefix. Previously undefined, so
+    # `install` collapsed DESTINATION to an absolute "/fastfhir".
+    if(NOT CMAKE_INSTALL_PYTHON_LIBDIR)
+        set(CMAKE_INSTALL_PYTHON_LIBDIR
+            "lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages")
+    endif()
     set(PYBIND11_FINDPYTHON ON)
     FetchContent_Declare(pybind11
         GIT_REPOSITORY https://github.com/pybind/pybind11.git
@@ -322,9 +329,16 @@ install(FILES
     ${FASTFHIR_INCLUDE_DIR}/FF_Parser.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Builder.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Utilities.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Dictionary.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Memory.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Recovery.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Version.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_RecoveryTags.hpp
     ${FASTFHIR_GENERATED_DIR}/FF_ResourceTypes.hpp
+    ${FASTFHIR_GENERATED_DIR}/FF_Reflection.hpp
+    ${FASTFHIR_GENERATED_DIR}/FF_Codes.hpp
     DESTINATION include
 )
 if(FASTFHIR_BUILD_INGESTOR)
