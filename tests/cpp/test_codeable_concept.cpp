@@ -96,7 +96,7 @@ int main()
               tag + ": RECOVERY tag");
 
         // And it must decode back to the code we put in.
-        auto decoded = FF_DECODE_CODEABLE_CONCEPT(base, before, FHIR_VERSION_R5);
+        auto decoded = FF_DECODE_CODEABLE_CONCEPT(base, before, FHIR_VERSION_R5, arena.size());
         CHECK(decoded.system == c.system, tag + ": decoded system matches");
         CHECK(decoded.label == c.code,
               tag + ": round-trips (got '" + std::string(decoded.label) + "')");
@@ -152,7 +152,7 @@ int main()
             // "9" parses under base 10 and 16, fits every width, and is not
             // a dictionary entry (which would take the fast path instead).
             ENCODE_FF_CODE(base, 512, child_off, std::string("9"), FHIR_VERSION_R5, sys);
-            const auto d = FF_DECODE_CODEABLE_CONCEPT(base, 16384, FHIR_VERSION_R5);
+            const auto d = FF_DECODE_CODEABLE_CONCEPT(base, 16384, FHIR_VERSION_R5, arena.size());
             CHECK(d.system == sys && !d.label.empty(),
                   "system " + std::to_string(static_cast<int>(sys)) +
                       " has a codec row (encode+decode agree)");

@@ -293,7 +293,11 @@ static void test_string_block_rw()
     Offset write_off = 0;
     STORE_FF_STRING(buf.data(), write_off, kTestStr);
     // Read back via instance
-    FF_STRING str(0, FF_STRING::HEADER_SIZE, FHIR_VERSION_R5);
+    // The second argument is the BUFFER extent, not the block's header size.
+    // This passed HEADER_SIZE, which reads as "the arena is 14 bytes long" and
+    // is only harmless while nothing bounds-checks against it. It does now, so
+    // the payload was clamped to zero and the mistake surfaced.
+    FF_STRING str(0, static_cast<Size>(buf.size()), FHIR_VERSION_R5);
     std::string_view read = str.read_view(buf.data());
     CHECK_EQ(read, std::string_view(kTestStr), "string content");
 }

@@ -135,9 +135,9 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}    }} else if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {{\n"
             cpp += f"{indent}        Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, __offset);\n"
             if code_enum:
-                cpp += f"{indent}        data.{f['cpp_name']} = {code_enum['parse']}(std::string(FF_DECODE_CODEABLE_CONCEPT(__base, abs_off, __version).label));\n"
+                cpp += f"{indent}        data.{f['cpp_name']} = {code_enum['parse']}(std::string(FF_DECODE_CODEABLE_CONCEPT(__base, abs_off, __version, __size).label));\n"
             else:
-                cpp += f"{indent}        data.{f['cpp_name']} = FF_DECODE_CODEABLE_CONCEPT(__base, abs_off, __version).label;\n"
+                cpp += f"{indent}        data.{f['cpp_name']} = FF_DECODE_CODEABLE_CONCEPT(__base, abs_off, __version, __size).label;\n"
             cpp += f"{indent}    }}\n"
             cpp += f"{indent}}}\n"
 

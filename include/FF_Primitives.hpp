@@ -1745,6 +1745,36 @@ struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
 // FF_CODEABLE_CONCEPT::system() and FF_IsFieldEmpty() already read bytes this
 // way; these follow them.
 
+/// THE bounds test for a wire offset. Every block read goes through this one.
+///
+/// They are all blocks: a string, an array, a codeable concept and a resource
+/// differ only in what follows the header, so "is there a block here" has
+/// exactly one answer and belongs in exactly one function. Writing it per call
+/// site is how a reader ends up with nine guarded hops and a tenth that
+/// segfaults.
+///
+/// `stream_size` is the extent of the STREAM -- the bytes actually written and
+/// present -- not the arena's capacity. Those differ by orders of magnitude:
+/// Memory::create() reserves 4 GiB of sparse address space by default, of which
+/// a 1 MB document occupies 1 MB. Bounding against the reservation permits a
+/// read anywhere in 4 GiB of unmapped pages, which is not a bounds check, it is
+/// the same segfault with extra arithmetic.
+///
+/// `width` is how many bytes the caller is about to touch: the header for a
+/// hop, header + payload for a string.
+///
+/// No `off >= 0` test: Offset is uint64_t, so it cannot be negative and the
+/// comparison is always true. A wrapped-around offset presents as an enormous
+/// positive value and is caught by the upper bound, which is the only test that
+/// was ever doing work.
+inline constexpr bool FF_BLOCK_IN_BOUNDS(Offset off, Size stream_size,
+                                         Size width = DATA_BLOCK::HEADER_SIZE) noexcept
+{
+    return off != FF_NULL_OFFSET &&
+           static_cast<std::size_t>(off) + static_cast<std::size_t>(width) <=
+               static_cast<std::size_t>(stream_size);
+}
+
 /// Semantic identity (RECOVERY_TAG) of the block at `block_offset`.
 inline constexpr RECOVERY_TAG FF_GET_RECOVERY_TAG(const BYTE *base, Offset block_offset) noexcept
 {
@@ -1802,8 +1832,13 @@ struct FF_CodeableConceptResult {
 // Decode a CodeableConcept block.  Returns structured result with
 // system discriminator, raw integer (for fixed-width systems), and
 // human-readable label.  Thread-local buffer for label string.
+/// `stream_size` is the written extent, so this can refuse an offset outside it
+/// -- the same route every other block read takes (FF_BLOCK_IN_BOUNDS).
+/// It is a required parameter, not a defaulted one: a caller that cannot say
+/// how big the buffer is has no business dereferencing into it, and a default
+/// would just reintroduce the unchecked path this exists to remove.
 FF_CodeableConceptResult FF_DECODE_CODEABLE_CONCEPT(
-    const BYTE* base, Offset offset, uint32_t version);
+    const BYTE* base, Offset offset, uint32_t version, Size stream_size);
 
 // Write an unknown-system dynamic block (SYSTEM=0x00) with a 2-byte URL index
 // followed by the raw code string.  Returns packed uint32_t with

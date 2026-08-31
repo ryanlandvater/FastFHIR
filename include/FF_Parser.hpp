@@ -527,7 +527,7 @@ public:
             // arithmetic left to do -- that is the entire point of resolving at
             // construction.
             if (m_recovery == RECOVER_FF_CODEABLE_CONCEPT) {
-                return FF_DECODE_CODEABLE_CONCEPT(m_base, m_node_offset, m_version).label;
+                return FF_DECODE_CODEABLE_CONCEPT(m_base, m_node_offset, m_version, m_size).label;
             }
 
             // Opaque JSON shares the FF_STRING layout exactly, so the DECODE is

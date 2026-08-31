@@ -19,6 +19,7 @@
 #include "FF_Primitives.hpp"
 #include "FF_Dictionary.hpp"
 #include "FF_Ops.hpp"
+#include <algorithm>
 
 // =====================================================================
 // DATA_BLOCK BASE VALIDATION
@@ -297,7 +298,36 @@ FF_Result FF_STRING::validate_full(const BYTE* const __base) const noexcept {
 }
 // Zero-Copy Mapped View
 std::string_view FF_STRING::read_view(const BYTE* const __base) const {
-    return FF_GET_STRING_VIEW(__base, __offset);
+    // THE one place every string read converges, so it is the one place the
+    // bound belongs. A block carries its own __size; nothing that reads a
+    // string should have to remember to check separately, and on a damaged
+    // stream both halves of a string are wire values: the OFFSET that got us
+    // here and the LENGTH stamped at +10. Measured, an offset of
+    // 18446487311142218605 in a 1,071,990-byte stream walked straight off the
+    // arena from Node::as<string_view>() -- a SEGV out of the read path, on
+    // exactly the input it exists to survive.
+    //
+    // Out of range reads as empty; an over-long length is CLAMPED to what the
+    // arena actually holds rather than refused, because a truncated string is
+    // recoverable data and a crash is not.
+    // __size == 0 means NO EXTENT WAS SUPPLIED, which is not the same as an
+    // extent of zero. The generated lazy views carry only {base, offset} and
+    // construct FF_STRING(child_off, 0, VERSION), so they cannot say how big
+    // the buffer is; checking them against 0 would reject every string in the
+    // document rather than validate it. Where an extent IS given -- every path
+    // through Parser/Node/Recovery -- it is enforced.
+    //
+    // That gap is the views' to close, not this function's: a reader that
+    // cannot state the buffer size cannot be made safe here. Threading the
+    // extent into the generated view API is TASKS.md REC-20.
+    if (__size != 0 && !FF_BLOCK_IN_BOUNDS(__offset, __size, STRING_DATA))
+        return {};
+    const std::size_t len =
+        __size == 0 ? length(__base)
+                    : std::min<std::size_t>(length(__base),
+                                            static_cast<std::size_t>(__size) -
+                                                static_cast<std::size_t>(__offset) - STRING_DATA);
+    return std::string_view(reinterpret_cast<const char*>(__base + __offset + STRING_DATA), len);
 }
 
 // Fallback std::string allocation for dictionary parsers
@@ -803,8 +833,12 @@ uint64_t ENCODE_FF_DATETIME(BYTE* const __base, Offset block_offset, Offset& chi
 // the unified FF_CODEABLE_CONCEPT.  Returns the code as a human-readable
 // string_view (thread-local buffer for fixed-width types).
 FF_CodeableConceptResult FF_DECODE_CODEABLE_CONCEPT(
-    const BYTE* base, Offset offset, uint32_t version)
+    const BYTE* base, Offset offset, uint32_t version, Size stream_size)
 {
+    // Same gate as every other block hop; a CodeableConcept is a block.
+    if (!FF_BLOCK_IN_BOUNDS(offset, stream_size, FF_CODEABLE_CONCEPT::HEADER_SIZE))
+        return {};
+
     using S = FF_CodeableConceptSystem;
     const S sys = static_cast<S>(base[offset + FF_CODEABLE_CONCEPT::SYSTEM]);
     const uint8_t len = base[offset + FF_CODEABLE_CONCEPT::LENGTH];
