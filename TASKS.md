@@ -723,6 +723,83 @@ finding, not an embarrassment.
 
 ---
 
+# ▶ REC-19 — REBUILD THE RECOVERY ROUTINE: TWO PRODUCERS, TOP→BOTTOM FILE
+
+**Filed 2026-08-31** (handoff §5, next-session plan). `recover()` grew into a ~1,300-line
+file whose entrance sits at the bottom; admission/classification logic lives in lambdas
+inside `recover()`. REC-19 restructures `src/FF_Recovery.cpp` so the call stack reads
+top→bottom — inline helpers predeclared at the top, the entrance `recover()` at the top of
+the call stack, each callee below its caller, leaf helpers last — and makes the two
+producers (hierarchical walk, parallel scan) first-class, each returning the
+`<offset, entry>` map plus its holes and typed failures.
+
+**Ground rules — the handoff's measured lessons are the acceptance test (do not regress):**
+- One-surviving-witness descent (defect 1); enumeration driven by parent attestation +
+  corroborated type, never the scan census alone (defects 2, 5); array elements survive a
+  damaged array header (defect 3); orphan buckets built AFTER holes close, hole candidates
+  sized via `derived_block_size` (defect 4, REC-18.6).
+- Never trust the wire tag over the slot's declared type (wrong turn 1). The ranker's
+  preference is evidence, not proof — the reapply's child corroboration is the acceptance
+  test (wrong turn 2). Tie → `Ambiguous`, never guessed (P0-3).
+- Clean-stream behavior is invariant: `clean_stream_zero_false_positives`,
+  `clean_stream_tiles_with_no_gaps`, `same_version_stream_never_reports_skew`, and the
+  reachable-blocks baseline (`60639/67032/65389/19274` refs) must not move.
+
+- [x] **REC-19.1 — File structure, top→bottom.** Inline helpers defined at the top
+  (`IsArrayTagged`, `IsTupleKind`, `IsTypedOffsetKind`, `element_shape_of`, the leaf reads
+  `tag_at` / `valid_validation` / `header_is_readable` as free functions,
+  `corroborated_tag`, `recover_follow_ref_chain`), then the entrance `recover()`, then
+  each callee below its caller (`reachable_blocks_map` → `scan` → `walk_chain` →
+  `enumerate_block_refs` → `classify_block` → `walk_array_extent` → `find_gaps`), leaf
+  helpers last. **Verify:** reading the file top→bottom traces `recover()`'s execution with
+  no forward reference below the inline block.
+- [x] **REC-19.2 — Producer payloads.** `StreamMapEntry` gains the wire `recovery` tag;
+  `StreamMap` gains `failures`; new `ProducerFailure { kind, at, expected, actual, why }`
+  with kinds `ScanTagInvalid` (scan: self-offset consistent but the recovery tag is not a
+  known type), `VTableRecoveryMismatch` (vtable/1c or tuple-tag-half expectation vs the
+  wire tag disagree), `InvalidSelfRef` (slot names a block that does not self-validate).
+  Both producers fill the same payload; the report carries the merged failure list.
+- [x] **REC-19.3 — `recover_follow_ref_chain` inline routine.** The one routine a
+  reference is judged by: child self-validation, then expected recovery (1c for
+  typed-offset kinds; the tuple's stored tag half for choice/resource — F1). Damaged →
+  failure recorded + caller queues the repair; coherent → caller walks deeper. Callable
+  from the initial walk (hierarchical audit) and the reapply loop.
+- [x] **REC-19.4 — `reachable_blocks_map()` as the hierarchical producer.** The walk with
+  the corroborated type carried down, sized per visited block via `classify_block` (the
+  walk alone returns bare offsets — sizes are the delta), failures recorded via
+  REC-19.3, gaps computed over the walk's own coverage.
+- [x] **REC-19.5 — `scan()` as the scanned producer.** Chunked parallel census (arena
+  split across hardware-concurrency threads, per-chunk candidate vectors merged after
+  join; sequential below 1 MiB); per-entry tag audit → `ScanTagInvalid`. The offered tag
+  is a single witness: recorded, never trusted to decide a type (defect 5).
+- [x] **REC-19.6 — Two-word hamming rank.** The ranker costs both words: the self-offset
+  word AND the recovery word (wire tag at the child vs expected). Per-word budget stays
+  `FF_RECOVERY_MAX_FLIPS` (D1/D2 discipline is per flip site); the sum orders hypotheses;
+  tie → `Ambiguous`. Typed-kind behavior is unchanged (a coherent target has tag cost 0);
+  choice/resource tuples now pay the tag distance too. Repoint cost unchanged: orphan
+  candidates are bucketed BY the declared type, so their tag distance is 0 by
+  construction; sized holes remain the REC-18.6 evidence.
+- [x] **REC-19.7 — Reapply loop (the report-side half of REC-15).** After classification,
+  every `Corroborated` / `TagRepaired` / `PositionRepaired` block is re-enumerated under
+  the corrected type; each ref is judged by `recover_follow_ref_chain` — damaged ones are
+  classified immediately, coherent ones descend. Visited-set + `FF_RECOVERY_MAX_DEPTH`
+  bound. Doubles as wrong-turn-2's self-verification: a wrong repair yields children with
+  no surviving witness and they classify `Unrecovered` instead of being believed. The gap
+  sweep re-runs on the augmented map (holes shrink when a repoint claims bytes).
+- [x] **REC-19.8 — `find_gaps` semantics unchanged.** `Hole` vs `VersionSkew` vs
+  `Trailing`; a decoder older than the builder yields per-tag systematic trailing runs —
+  counted apart from damage ("small bytes at the end as allowed holes"); compact archives
+  still refused.
+- [ ] **REC-19.9 — Test + benchmark audit.** All 11 `test_recovery.cpp` tests stay green;
+  clean-stream numbers unchanged; benchmark `--mode report` over ≥200 single-bit seeds
+  (`../FastFHIR-benchmark`, execution contract rule 9): `blocks_total` vs baseline,
+  invention = 0 (handoff §5.3).
+
+**Verify (block).** `cmake --build build --target build_all -j` clean, `ctest --preset
+ninja` 43/43, `pytest tests/generator -q` 48 passed, then the probe per REC-19.9.
+
+---
+
 # ▶ CONSUMER-API FINDINGS — INDEX (CAPI-1…13)
 
 Filed 2026-08-26 from FastFHIR-benchmark, the first code outside this repo to drive the

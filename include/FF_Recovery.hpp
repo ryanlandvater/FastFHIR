@@ -82,9 +82,15 @@ enum class StreamMapEntryType : uint8_t {
 /// is only knowable by walking them — the caller asks the block, as the Iris
 /// FileMap contract does.
 struct StreamMapEntry {
-    StreamMapEntryType type   = StreamMapEntryType::Undefined;
-    Offset             offset = FF_NULL_OFFSET;
-    Size               size   = 0;
+    StreamMapEntryType type     = StreamMapEntryType::Undefined;
+    Offset             offset   = FF_NULL_OFFSET;
+    Size               size     = 0;
+    /// The wire RECOVERY tag read at the offset (REC-19.2). A SINGLE witness:
+    /// the scan offers it up, and the hierarchical walk records what it found,
+    /// but neither trusts it — the classifier compares it against the slot's
+    /// expected recovery and the reapply loop re-reads blocks under corrected
+    /// types. Corrupted tags are flagged in `failures`, never believed.
+    RECOVERY_TAG       recovery = FF_RECOVER_UNDEFINED;
 };
 
 /// Why a run of bytes belongs to no entry (REC-18.4).
@@ -108,6 +114,31 @@ struct Gap {
     const char*  why    = "";                    ///< why it was classified so
 };
 
+/// Why a producer could not fully account for a located block or reference
+/// (REC-19.2). Failures are audit records, not repair verdicts: the classifier
+/// is the only authority that decides how a damaged reference is restored, and
+/// a corrupted-but-plausible tag is caught there (VTableRecoveryMismatch), not
+/// here — this list exists so a driver can see what each producer doubted.
+enum class ProducerFailureKind : uint8_t {
+    ScanTagInvalid,         ///< scan: self-offset is consistent but the recovery
+                            ///< tag is not a known type (single witness — offered,
+                            ///< never trusted to decide a type, defect 5)
+    VTableRecoveryMismatch, ///< hierarchical: the slot's expected recovery (1c, or
+                            ///< the tuple's stored tag half for choice/resource — F1)
+                            ///< disagrees with the wire tag at the child
+    InvalidSelfRef,         ///< hierarchical: the slot names a block that does not
+                            ///< self-validate
+};
+
+/// One producer's doubt, recorded at the moment the producer saw it.
+struct ProducerFailure {
+    ProducerFailureKind kind     = ProducerFailureKind::ScanTagInvalid;
+    Offset              at       = FF_NULL_OFFSET;  ///< the child/block offset in question
+    RECOVERY_TAG        expected = FF_RECOVER_UNDEFINED;
+    RECOVERY_TAG        actual   = FF_RECOVER_UNDEFINED;
+    const char*         why      = "";
+};
+
 /// Every self-consistent block in the stream, keyed by offset. `upper_bound`
 /// is the "what lives after this write offset" query an in-place repair needs
 /// before overwriting anything (REC-15 apply(), Block C) — std::map provides it.
@@ -118,6 +149,10 @@ struct Gap {
 struct StreamMap : public std::map<Offset, StreamMapEntry> {
     Size             file_size = 0;
     std::vector<Gap> gaps;
+    /// REC-19.2 — each producer's doubts about its own findings (scan: tag
+    /// audit; walk: reference judgment via recover_follow_ref_chain). recover()
+    /// merges both producers' lists into the report.
+    std::vector<ProducerFailure> failures;
 };
 
 // ---------------------------------------------------------------------------
@@ -184,6 +219,11 @@ struct FF_RecoveryReport {
     /// benchmark fingerprint is built from (F3: parent identity makes
     /// misattachment fail the subset check).
     std::vector<BlockVerdict> blocks;
+
+    /// REC-19.2 — the merged producer failure lists (scan tag audit +
+    /// hierarchical reference judgment). Audit only; the verdicts are the
+    /// repair record.
+    std::vector<ProducerFailure> failures;
 
     /// REC-18. Runs of bytes no block claims. `holes` is the count that means
     /// damage: a block whose VALIDATION is broken AND whose parent reference is
@@ -279,10 +319,6 @@ public:
     static Size derived_block_size(RECOVERY_TAG tag) noexcept;
 
 private:
-    bool         valid_validation(Offset off) const noexcept;
-    RECOVERY_TAG tag_at(Offset off) const noexcept;
-    bool         header_is_readable() const noexcept;
-
     /// Enumerate the block references of one block (V-Table slots + array
     /// elements), bounds-checked. Appends to `out`.
     void enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
@@ -291,8 +327,11 @@ private:
     /// The ONE offset-chain walk: DFS from the root through intact references,
     /// depth- and cycle-bounded. Returns every reachable block offset (the
     /// orphan test's other half); when `out` is non-null, also appends each
-    /// visited block's references (the clean-stream baseline enumeration).
-    std::vector<Offset> walk_chain(std::vector<BlockRef>* out) const;
+    /// visited block's references (the clean-stream baseline enumeration); when
+    /// `failures` is non-null, also records each damaged reference it meets
+    /// (REC-19.3, the hierarchical producer's audit).
+    std::vector<Offset> walk_chain(std::vector<BlockRef>* out,
+                                   std::vector<ProducerFailure>* failures = nullptr) const;
 
     const BYTE* m_base = nullptr;
     size_t      m_size = 0;
