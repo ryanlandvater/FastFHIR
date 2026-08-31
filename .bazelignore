@@ -1,0 +1,8 @@
+# Agent worktrees are full copies of this repo. Without this, `bazel test //...`
+# discovers their BUILD files too and builds/tests a duplicate of everything
+# (30 targets instead of 15), doubling build time and reporting results for a
+# tree nobody is editing.
+.claude
+build
+build-xcode
+build-opt

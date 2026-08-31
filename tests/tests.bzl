@@ -66,9 +66,18 @@ def fastfhir_tests(copts = []):
     # Without FASTFHIR_SYNTHEA_DIR they print SKIP instead of passing on zero
     # coverage, so they are safe to register unconditionally here even though
     # Bazel does not download the corpus.
+    #
+    # test_recovery belongs here for the same reason and was simply missing:
+    # ctest ran it as cpp_ff_test_recovery (tests/tests.cmake:127) while Bazel
+    # had no target at all, so the whole recovery engine -- the two-sided
+    # reconciliation, the hole analysis, the repair ranker -- built and ran on
+    # exactly one of the two build systems. A defect reachable only through the
+    # Bazel arm (which is what the benchmark repo links) would have been
+    # invisible.
     for name, src in [
         ("test_roundtrip_validate", "ff_test_roundtrip_validate.cpp"),
         ("test_compact_roundtrip", "ff_test_compact_roundtrip.cpp"),
+        ("test_recovery", "test_recovery.cpp"),
     ]:
         cc_test(
             name = name,
