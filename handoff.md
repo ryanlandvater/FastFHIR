@@ -1,4 +1,4 @@
-# FastFHIR handoff — 2026-08-31 (rev 2, post-REC-19 rewrite)
+# FastFHIR handoff — 2026-09-01 (rev 3, post-REC-20 + bounds contract)
 
 **Read this before touching recovery, the benchmark, or the build.** It replaces the
 2026-08-24 note that used to live at this path (that one was addressed to
@@ -7,8 +7,13 @@ note was read in full before being replaced; everything still true in it is eith
 restated below or already in `CLAUDE.md`, and the benchmark repo keeps its own,
 longer `handoff.md` which is the live one for that side.
 
-Head is `c4ca82c`. PR #7 is **merged**. There is **uncommitted work in two repos** — see
-§0.
+Head is `d0066ff` on `fix/recovery-holes-and-bounds`. PR #7 is **merged**. The FastFHIR
+tree is **clean**; the benchmark repo has uncommitted work — see §0.
+
+**Rev 3 adds:** the read-path bounds contract (§2.12), the block-extent contract restored
+to the Iris design (§2.13), REC-20 (§2.14), and a build-system defect that makes recovery
+results differ between CMake and Bazel (§2.15 — read this one before trusting any hole
+number).
 
 **Rev 2 note.** `src/FF_Recovery.cpp` was rebuilt end-to-end under **REC-19** (two
 producers on two threads, top→bottom call stack, `recover_follow_ref_chain`). The rewrite
@@ -27,25 +32,20 @@ This document has two audiences and tries to serve both:
 
 ## 0. State of the working tree, right now
 
+**FastFHIR is clean** at `d0066ff` on `fix/recovery-holes-and-bounds`, 11 commits ahead of
+`main` and not yet in a PR.
+
 | Repo | File | Status |
 |---|---|---|
-| FastFHIR | `src/FF_Recovery.cpp` | **uncommitted** — the REC-19 rewrite + the §2.7 fix |
-| FastFHIR | `include/FF_Recovery.hpp` | **uncommitted** — REC-19 producer payloads |
-| FastFHIR | `TASKS.md` | **uncommitted** — REC-19 section, boxes checked |
-| FastFHIR | `tests/tests.bzl` | **uncommitted** — registers `test_recovery` (§2.8) |
-| FastFHIR | `.bazelignore` | **uncommitted, new** (§2.8) |
-| FastFHIR-benchmark | `bench/corruption_probe.cpp` | **uncommitted** (baseline fix + `--mode report`) |
+| FastFHIR-benchmark | `bench/corruption_probe.cpp` | **uncommitted** — `--mode extract` / `--mode verify`, the four-outcome content check (§3.1) |
 | FastFHIR-benchmark | `bench/bench_test_5.hpp`, `handoff.md` | **uncommitted, NOT MINE** — pre-existing WIP from an earlier session |
-
-Nothing in this session was committed after `894e9be`. The recovery work is one coherent
-change and wants its own branch and PR.
 
 Verification at the moment of writing:
 
 ```
 cmake --build build --target build_all -j     # 0 errors
-ctest --preset ninja                          # 43/43
-bazelisk test //...                           # 16/16  (was 15 — test_recovery added)
+ctest --preset ninja                          # 44/44
+bazelisk test //...                           # 17/17  (test_recovery + test_views added)
 pytest tests/generator -q                     # 48 passed
 black --check generator tests/generator       # clean
 bazelisk build //bench:corruption_probe       # clean (benchmark repo)
@@ -468,6 +468,102 @@ FastFHIR is scored far more strictly (every parent→child edge reconciled again
 witnesses) on a linked structure where one lost block takes its subtree (~3.7 refs). Before
 publishing anything: fix the units, add pipe corruption to the HL7v2 arm, and prefer the
 per-flip table over the percentage curve.
+
+### 2.12 The read path had no bounds discipline at all
+
+Ten sites lifted a child pointer out of a slot and dereferenced it to read the child's
+tag. The only check was against `FF_NULL_OFFSET`, which catches "absent" and nothing else.
+On a damaged stream that pointer is corrupted bytes: measured, one flipped bit produced a
+child offset of **9,049,496,092,671** in a 1,071,990-byte stream and the reader walked off
+the arena — SIGSEGV, from `Parser`, on exactly the input it exists to survive.
+
+Fixed by one predicate, `FF_BLOCK_IN_BOUNDS`, applied at every hop. Also:
+`FF_DECODE_CODEABLE_CONCEPT` had no arena parameter so it *could not* check — it now takes
+one, and it is required rather than defaulted, because a caller that cannot say how big
+the buffer is has no business dereferencing into it.
+
+### 2.13 `__size` was vestigial — the Iris contract had decayed
+
+FastFHIR's `DATA_BLOCK` carries the same four members as an Iris generated block
+(`__offset`, `__size`, `__version`, `__engine_version`). But:
+
+```
+constructions passing a real extent :     5
+constructions passing literal 0     : 1,647   (1,645 generated, 2 hand-written)
+```
+
+**99.7% of blocks were constructed with a fabricated extent.** `__size` was written by
+every constructor and read by essentially nothing — `validate_full()` is its only consumer,
+called five times, all on `FF_HEADER` at file-open. A field nobody reads can hold anything.
+
+It was never abandoned deliberately. The old generator (`tools/generator/ffc.py`) threads
+`__size` correctly in the deserializers and fabricates `0` in the lazy views, **in the same
+file**: the deserializers are free functions with the size in scope, and the view struct was
+declared `{base, offset}` with no extent, so `0` was the only thing that compiled. The
+June 2026 package refactor carried those three lines over verbatim.
+
+Restored in the order that made it a no-op:
+1. the view gains `const Size stream_size` and threads it — 1,645 sites, one emitter;
+2. the three hand-written sites pass the real extent;
+3. `DATA_BLOCK::operator bool()` becomes `fits(HEADER_SIZE)`.
+
+Step 3 surfaced **nothing**, because steps 1–2 had already removed everything it would have
+caught. Enforced first it would have taken down `py_roundtrip` and every view accessor at
+once. **Order the cleanup before the rule.**
+
+The views also had **zero tests** — which is the whole explanation for how they drifted.
+`tests/cpp/test_views.cpp` now covers them.
+
+### 2.14 REC-20 — ranked, cross-referenced hole matching
+
+Implemented; see TASKS.md `^# ▶ REC-20` for the design. Isolated against `b7b6dcb` by
+stashing the change and re-running the same artifacts:
+
+| artifact | refs | holes | ambiguous | unrecovered |
+|---|---:|---:|---:|---:|
+| 256 flips | 16009 → 16009 | 15 → **12** | 5 → **1** | 3 → **2** |
+| 512 flips | 15946 → 15946 | 35 → **30** | 10 → **2** | 4 → **2** |
+
+Reference counts are flat; **the gain is certainty** — ambiguous edges fall 5x. 40
+single-bit trials: 2 deviating, **0 inventing**.
+
+Two things not to relearn. **The match must stay inside `classify_one`**, competing with
+the orphan repoint on one metric: moved to a pass after classification it saw 4 refs
+against 44 holes, because the orphan path had already resolved everything else. And
+**scoring the offset term against the candidate's exact position beats tuple-against-tuple**
+(15946 refs vs 15944): the position is noise-free, and comparing one noisy observation to a
+known value beats comparing two noisy ones.
+
+### 2.15 CMake and Bazel compile DIFFERENT ENGINE VERSIONS — read before trusting a hole count
+
+```
+header default (what Bazel compiles) : engine 2026.1
+CMake's -D (CMakeLists.txt:201,348)  : engine 2026.0
+```
+
+`include/FF_Version.hpp` falls back to `MAJOR 2026 / MINOR 1`; `CMakeLists.txt` sets
+`MINOR 0` and passes it as a compile definition. **`BUILD.bazel` defines neither**, so it
+takes the header default. The two build systems therefore produce libraries that disagree
+about the engine version — and `find_gaps` classifies a gap as `VersionSkew` (benign,
+expected trailing bytes from a newer writer) rather than `Hole` based on exactly that
+comparison.
+
+Consequence, measured on the same artifact with both builds:
+
+| build | `rep.gaps` | `rep.holes` |
+|---|---:|---:|
+| CMake (2026.0, older than the stream) | 30 | **8** |
+| Bazel (2026.1, same as the stream) | 30 | **30** |
+
+Same source, same input, same `recover()`. The benchmark links the **Bazel** build; the
+test suite runs the **CMake** build. Every hole figure in this document from the
+`corruption_probe` is the Bazel reading; the 8 is what `ctest` sees.
+
+Neither is wrong given its version — the skew allowance is deliberate, and Ryan named it in
+the REC-20 brief ("if the decoder is older than the builder we can expect some small bytes
+at the end as allowed holes"). What is wrong is that the two builds disagree at all. The
+engine version is written into every stream's `FF_HEADER`, so **which value is correct is a
+wire decision and Ryan's alone** — do not just make one match the other.
 
 ## 3. What is still not good enough
 
