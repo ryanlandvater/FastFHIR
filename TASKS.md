@@ -24,6 +24,7 @@ Everything currently open, most urgent first. Deep detail lives in the sections 
 | Priority | Item | What it is | Where |
 |---|---|---|---|
 | **P0** | **P0-3 / REC-10…17** | Recovery: stream map, bit-similarity edge restoration, `src/FF_Recovery.cpp` | `^# ▶ P0-3` |
+| **P0** | **REC-20** | Recovery: cross-reference the two producers' holes, match 10-byte tuples by Hamming | `^# ▶ REC-20` |
 | **P0** | **AMEND/APPEND** | Amend + append must take the abstraction types, not only JSON (CAPI-12) | `^# ▶ P0 — AMEND` |
 | **P1** | CAPI-1, 2, 3, 8 | Consumer-API gaps: inline-block array writes, validator/deserializer disagreement, `ChoiceEntry` across arenas, allocating `entries()` | `^# ▶ WORK ORDER — PUBLIC API` |
 | **P1** | Block C | Archive recovery subsystem — **governed by P0-3; do not start before REC-10** | `^## Block C` |
@@ -6320,6 +6321,78 @@ fix: for CAPI-1 a field-by-field-assembled `Observation.category` that reads bac
 CAPI-2 the CAPI-1 stream rejected by `validate_FFHR_stream()`; for CAPI-3 a
 `valueQuantity` hydrated from arena A, stored into arena B, and read back equal.
 
+
+---
+
+# ▶ REC-20 — TWO PRODUCERS, CROSS-REFERENCED HOLES, RANKED TUPLE MATCHING
+
+**Ryan, 2026-09-01. Design, not yet built.** Read this before touching the hole
+matching in `src/FF_Recovery.cpp`; the current pass is a weaker first cut of it.
+
+## The two streams are complementary, and neither is sufficient
+
+Run in parallel, as they already do:
+
+| producer | finds | misses |
+|---|---|---|
+| **hierarchy walk** | broken `BlockRef`s — a parent slot whose target does not resolve | a block nothing points at |
+| **block scan** | orphans — self-consistent blocks nothing references | a block whose VALIDATION is damaged |
+
+Each sees what the other cannot. **Both locate holes, and the two hole lists must
+be cross-referenced** rather than either being taken alone: a run of bytes the
+walk cannot attribute and the scan cannot claim is a hole with high confidence;
+one only the walk misses may simply be an orphan the scan holds.
+
+## The matching is an assignment problem, not a search
+
+After the orphan pass has consumed what it can, what remains is `x` broken block
+refs and `y` holes, and in practice **x == y**. Do not treat the leftovers as
+independent searches — match them.
+
+1. **CANDIDATES (the x side).** Every broken ref that orphan-hamming did not
+   correct contributes a **10-byte tuple**: `{corrupted offset (8) | expected
+   recovery (2)}`. The expected recovery comes from the V-Table for a
+   typed-offset slot and from the stored tag half for a choice/resource tuple.
+2. **HOLE SIGNATURES (the y side).** Sweep each hole byte by byte. At every
+   position take the `uint64` and hamming it against the position itself — a
+   block encodes its own offset, so a damaged VALIDATION word is still a Hamming
+   neighbour of where it sits. **Rank positions by that likelihood.** The
+   distribution is sharply bimodal: measured over 12,227 hole bytes on a
+   512-flip artifact, `1:35 2:14` then a flat coincidence floor `3:7 4:15 5:14
+   6:15 7:10 8:10`. Hole bytes are not random — the arena is full of offset
+   words that share high bits with their own position — so the signal is the
+   spike, not the tail.
+3. **Match tuple against tuple.** For each ranked hole position, collect the
+   **10 bytes** there (`{validation-ish (8) | recovery-ish (2)}`) and hamming
+   that whole 10-byte block against each CANDIDATE's 10-byte tuple. One metric
+   over the full tuple, not three separate distances added together as the
+   current code does. Cheapest unique match under the flip budget wins; ties
+   stay `Ambiguous` and are never guessed (P0-3).
+4. **Iterate.** A repaired block is admitted to the census, `find_gaps` re-runs,
+   and a hole that held more than one lost block shows its remainder for the
+   next round. Repeat to a fixed point.
+
+## What exists today, and how it falls short
+
+`src/FF_Recovery.cpp` already has the hole-candidate sweep (step 2) and a
+three-distance score, gated at 2 bits. It does **not**: build the CANDIDATE
+tuple list explicitly, match tuple-against-tuple as one Hamming distance, or
+cross-reference the two producers' hole lists. Measured on the 512-flip
+artifact the current cut closes 27 of 44 holes and recovers 103 of the 228 lost
+references — the remainder is what step 3 is for.
+
+- [ ] **REC-20.1** Cross-reference the hierarchy and scan hole lists; a hole
+      both agree on ranks above one only the walk reports.
+- [ ] **REC-20.2** Build the CANDIDATE list: 10-byte `{offset|recovery}` tuples
+      from every uncorrected broken ref.
+- [ ] **REC-20.3** Rank hole positions by `hamming(u64 at p, p)`, tight band.
+- [ ] **REC-20.4** Match the 10 bytes at each ranked position against the
+      CANDIDATE tuples as a single Hamming distance; unique winner under budget.
+- [ ] **REC-20.5** Iterate to a fixed point, re-tiling between rounds.
+
+**Verify.** Holes closed and references recovered on the 512-flip artifact must
+both improve on 27/44 and 103/228, with **zero invented references** — that
+constraint is not negotiable and has regressed twice (handoff §2.7, §2.4).
 
 ---
 
