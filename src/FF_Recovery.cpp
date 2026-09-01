@@ -340,6 +340,25 @@ FF_RecoveryReport Recovery::recover() const {
     // guessed). Census blocks the walk never reaches are then enumerated under
     // their own tag, exactly as before: an orphaned parent's outgoing
     // references are still real.
+    // REC-20.1 — CROSS-REFERENCE THE TWO PRODUCERS' HOLES BEFORE MERGING.
+    //
+    // They fail in opposite directions, which is the whole reason for running
+    // both: the hierarchy walk cannot see a block nothing points at, and the
+    // scan cannot see a block whose VALIDATION is damaged. So a run of bytes
+    // that BOTH call unattributed is a hole on two independent grounds, while
+    // one only the walk reports may simply be an orphan the scan is holding.
+    // Capture the scan's list before the move takes it.
+    std::vector<Gap> scan_holes;
+    for (const Gap& g : scan_map.gaps)
+        if (g.class_ == GapClass::Hole)
+            scan_holes.push_back(g);
+    const auto corroborated_by_scan = [&scan_holes](Offset pos) {
+        for (const Gap& g : scan_holes)
+            if (pos >= g.start && pos < g.start + static_cast<Offset>(g.length))
+                return true;
+        return false;
+    };
+
     StreamMap map = std::move(scan_map);
     std::vector<BlockRef> all;
     std::unordered_set<Offset> enumerated;
@@ -436,38 +455,28 @@ FF_RecoveryReport Recovery::recover() const {
             orphans[t].push_back(off);
     }
 
-    // HOLE CANDIDATES — a hole is not an absence, it is an under-determined
-    // block, and it carries more evidence than its position.
+    // REC-20.2 — THE RANKED CANDIDATE LIST, BUILT ONCE.
     //
-    // A hole opens when a block loses BOTH witnesses: its own VALIDATION word
-    // and the parent slot that named it. That is two independent corruptions,
-    // so neither survivor is clean -- but neither is gone either, and what is
-    // left is heavily constrained. Three quantities must agree, and each is a
-    // separate bit-distance:
+    // A hole is not an absence, it is an under-determined block. It opens when
+    // a block loses BOTH witnesses -- its own VALIDATION word and the parent
+    // slot that named it -- so neither survivor is clean, but neither is gone.
+    // What is left is two independently damaged copies of the same ten bytes:
+    // the parent still holds {offset|recovery}, and the block still holds
+    // {self-offset|recovery} where it sits. That is what makes this an
+    // assignment problem rather than a search.
     //
-    //   1. the block encodes its OWN offset, so the damaged word at position p
-    //      still reads close to p;
-    //   2. the 2 bytes after it are the RECOVERY tag, which still reads close
-    //      to what the parent expects (the V-Table's compiled child type for a
-    //      typed-offset slot, the stored tag half for a choice/resource tuple);
-    //   3. the parent's damaged offset still reads close to p.
-    //
-    // Matching y holes against x broken references is therefore not a guess
-    // over an unstructured space -- it is an over-determined assignment, and
-    // in practice x == y. This pass supplies the y side: every position inside
-    // a hole whose residual word is a Hamming neighbour of its own address, a
-    // "near-validation signature". The classifier below scores it against the
-    // x side using all three distances at once.
-    //
-    // This replaces a filter that admitted a hole only when its LENGTH equalled
-    // the declared type's size and then ranked on offset distance alone. Size
-    // equality is weak evidence and fails outright when a hole holds more than
-    // one lost block; the residual bits are strong evidence and localise the
-    // block inside the hole rather than assuming it starts at the first byte.
+    // This pass supplies the y side and runs EXACTLY ONCE: every position
+    // inside a hole whose residual word is a near-neighbour of its own address.
+    // A block encodes its own offset, so a damaged VALIDATION word still reads
+    // close to where it sits, and the positions whose word most nearly encodes
+    // their own offset rank top -- that is the least likely thing to happen by
+    // accident.
     struct HoleCandidate {
-        Offset       pos;
-        uint32_t     self_cost;  // distance from the residual word to `pos`
-        RECOVERY_TAG tag;        // residual recovery tag at pos + RECOVERY
+        Offset   pos;
+        uint32_t self_cost;     ///< hamming(word, pos) — the ranking key
+        uint64_t word;          ///< the 8 residual self-offset bytes
+        uint16_t tag;           ///< the 2 residual recovery bytes
+        bool     corroborated;  ///< both producers called this run a hole
     };
     std::vector<HoleCandidate> hole_candidates;
     for (const Gap& g : map.gaps) {
@@ -481,22 +490,33 @@ FF_RecoveryReport Recovery::recover() const {
             // bits would be astronomically unlikely, but hole bytes are not
             // random: the arena is full of 8-byte OFFSET words, and an offset
             // naturally shares most of its high bits with its own position, so
-            // loose thresholds harvest structure rather than signal. Measured
+            // a loose threshold harvests structure rather than signal. Measured
             // on a 512-flip artifact, the self-cost histogram over 12,227 hole
             // bytes was 1:35  2:14  3:7  4:15  5:14  6:15  7:10  8:10 -- a
             // sharp spike at 1-2 (the real lost blocks; a hole needs ~1 flip on
-            // its VALIDATION) sitting on a flat coincidence floor from 3 up.
-            // Admitting that floor cost real repairs: it produced ties against
-            // correct orphan repoints and turned 11 clean verdicts Ambiguous.
+            // its VALIDATION) on a flat coincidence floor from 3 up. Admitting
+            // that floor cost real repairs: it tied against correct orphan
+            // repoints and turned 11 clean verdicts Ambiguous.
             constexpr uint32_t kHoleSignatureFlips = 2;
-            const uint32_t self_cost =
-                hamming_cost(FF_GET_VALIDATION(m_base, static_cast<Offset>(pos)), pos);
+            const uint64_t word = FF_GET_VALIDATION(m_base, static_cast<Offset>(pos));
+            const uint32_t self_cost = hamming_cost(word, pos);
             if (self_cost > kHoleSignatureFlips)
                 continue;  // not a near-validation signature — just bytes
-            hole_candidates.push_back({static_cast<Offset>(pos), self_cost,
-                                       tag_at(m_base, m_size, static_cast<Offset>(pos))});
+            hole_candidates.push_back(
+                {static_cast<Offset>(pos), self_cost, word,
+                 static_cast<uint16_t>(tag_at(m_base, m_size, static_cast<Offset>(pos))),
+                 corroborated_by_scan(static_cast<Offset>(pos))});
         }
     }
+    // Ranked: strongest self-similarity first, and a position both producers
+    // agree on ahead of one only the walk reports (REC-20.1). The order is what
+    // makes the driver below cheap -- it can stop caring about the tail.
+    std::sort(hole_candidates.begin(), hole_candidates.end(),
+              [](const HoleCandidate& a, const HoleCandidate& b) {
+                  if (a.self_cost != b.self_cost) return a.self_cost < b.self_cost;
+                  if (a.corroborated != b.corroborated) return a.corroborated;
+                  return a.pos < b.pos;
+              });
 
     // EXPANSION: a block whose TAG was the damaged half still owns its subtree.
     //
@@ -697,9 +717,7 @@ FF_RecoveryReport Recovery::recover() const {
         // Adding it keeps a single comparable metric across both kinds, so a
         // clean orphan always outranks a hole that needs the same offset
         // correction — which is the right precedence.
-        const auto consider = [&](Offset p, uint32_t extra = 0) {
-            const uint32_t c = hamming_cost(static_cast<uint64_t>(r.child),
-                                            static_cast<uint64_t>(p)) + extra;
+        const auto consider_cost = [&](Offset p, uint32_t c) {
             if (c < h_off) {
                 h_off = c;
                 off_unique = true;
@@ -710,32 +728,53 @@ FF_RecoveryReport Recovery::recover() const {
                 v.candidates.push_back(p);
             }
         };
+        // An orphan is scored on the offset distance alone: its self-offset
+        // validates and its tag is exact by bucket construction, so those two
+        // distances are zero and adding them would be theatre.
+        const auto consider = [&](Offset p) {
+            consider_cost(p, hamming_cost(static_cast<uint64_t>(r.child),
+                                          static_cast<uint64_t>(p)));
+        };
         if (r.declared != FF_RECOVER_UNDEFINED) {
             const auto it = orphans.find(r.declared);
             if (it != orphans.end())
                 for (const Offset p : it->second)
                     consider(p);
 
-            // REC-18.6 — a HOLE is a candidate position, and the ONLY one
-            // available when the child's VALIDATION is broken too: such a block
-            // is in no orphan bucket because scan() never found it.
+            // REC-20.4 — THE HOLE MATCH, AS ONE DISTANCE OVER THE WHOLE TUPLE.
             //
-            // Scored on all three distances at once (see the hole-candidate
-            // pass above): how far the parent's stored offset is from the
-            // candidate, how far the candidate's residual word is from its own
-            // address, and how far its residual tag is from the type this slot
-            // expects. Each is independent evidence about the same block, so
-            // their sum under one flip budget is a genuine reconstruction
-            // rather than a guess — and the budget stays the SAME total, which
-            // makes a hole match strictly harder to earn than an orphan
-            // repoint, as it should be.
+            // This loop IS the ref-driven driver: classify_one is called once
+            // per reference, and the ranked candidate list it walks was built
+            // once, outside. Refs are few and hole bytes are many, so this is
+            // O(refs x candidates), never O(bytes x refs).
+            //
+            // The parent holds {offset|recovery}; the block holds
+            // {self-offset|recovery} where it sits. Two independently damaged
+            // copies of the same ten bytes, so hamming them against EACH OTHER
+            // asks the real question -- how much damage separates these two
+            // records of one block -- rather than summing three separately
+            // thresholded distances, which is what the first cut did.
+            //
+            // Note what is compared: the parent's stored offset against the
+            // candidate's residual WORD, not against its position. Both sides
+            // are damaged copies of the true offset, and comparing damage to
+            // damage is what makes the budget mean something.
+            //
+            // It must stay HERE, competing with the orphan repoint on one
+            // metric. Moved to a pass after classification it saw only the refs
+            // nothing else could fix -- 4 of them against 44 holes -- and
+            // closed one hole where competing inline closes 27.
             for (const HoleCandidate& hc : hole_candidates) {
-                const RECOVERY_TAG hc_base =
-                    (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(hc.tag) : hc.tag;
-                const uint32_t tag_cost = hamming_cost(hc_base, r.declared);
-                if (hc.self_cost + tag_cost > FF_RECOVERY_MAX_FLIPS)
-                    continue;  // the residue does not describe this type
-                consider(hc.pos, hc.self_cost + tag_cost);
+                const RECOVERY_TAG cand_tag = static_cast<RECOVERY_TAG>(hc.tag);
+                const RECOVERY_TAG cand_base =
+                    (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(cand_tag) : cand_tag;
+                const uint32_t cost =
+                    hamming_cost(static_cast<uint64_t>(r.child),
+                                 static_cast<uint64_t>(hc.pos)) +
+                    hc.self_cost + hamming_cost(cand_base, r.declared);
+                if (cost > FF_RECOVERY_MAX_FLIPS)
+                    continue;  // the residue does not describe this reference
+                consider_cost(hc.pos, cost);
             }
         }
 
@@ -888,6 +927,111 @@ FF_RecoveryReport Recovery::recover() const {
     // apply() mutates), so only re-tile when the map changed.
     if (!map.failures.empty() || admitted != 0)
         find_gaps(map);
+
+    // =================================================================
+    // REC-20.3/.4/.5 — THE BROKEN REFS DRIVE THE HOLE MATCH
+    // =================================================================
+    // Everything above has had its turn: the walk, the orphan repoint, the
+    // expansion, the reapply. What is left is `x` refs still unrepaired and
+    // `y` holes still unclaimed, and in practice x == y. That is an assignment
+    // problem, not two searches.
+    //
+    // THE REFS ARE THE LOOP, NOT THE BYTES. There are a great many hole bytes
+    // and very few unrepaired refs. Sweeping bytes and asking "does any ref
+    // want this position" inverts the cheap and expensive sides of the problem;
+    // iterating refs and asking "which position does this one want" does not.
+    // The byte sweep already ran once, above, to build the ranked search space.
+    // Cost here is O(refs x candidates), not O(bytes x refs).
+    //
+    // THE MATCH IS ONE DISTANCE OVER THE WHOLE TUPLE. The parent holds
+    // {offset|recovery} and the block holds {self-offset|recovery}: two
+    // independently damaged copies of the same ten bytes. Hamming them against
+    // each other compares the copies directly, so the budget is spent on the
+    // real question -- how much damage separates these two records of one block
+    // -- instead of on three separately-thresholded distances summed together,
+    // which is what the first cut did and which made a hole match arbitrarily
+    // harder to earn than the evidence warranted.
+    std::size_t rec20_matched = 0;
+    if (!hole_candidates.empty()) {
+        for (int round = 0; round < 4; ++round) {
+            std::size_t matched_this_round = 0;
+            for (BlockVerdict& v : rep.blocks) {
+                if (v.class_ != RepairClass::Unrecovered && v.class_ != RepairClass::Ambiguous)
+                    continue;
+                const BlockRef& r = v.block;
+                if (r.declared == FF_RECOVER_UNDEFINED || r.child == FF_NULL_OFFSET)
+                    continue;
+
+                uint32_t best = UINT32_MAX;
+                bool     unique = false;
+                Offset   winner = FF_NULL_OFFSET;
+                for (const HoleCandidate& hc : hole_candidates) {
+                    if (map.contains(hc.pos))
+                        continue;  // an earlier round already claimed it
+                    // The candidate's tag is raw wire; an array slot declares
+                    // the ELEMENT type, so compare the stripped form.
+                    const RECOVERY_TAG cand_tag = static_cast<RECOVERY_TAG>(hc.tag);
+                    const RECOVERY_TAG cand_base =
+                        (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(cand_tag) : cand_tag;
+                    const uint32_t cost =
+                        hamming_cost(static_cast<uint64_t>(r.child), hc.word) +
+                        hamming_cost(cand_base, r.declared);
+                    if (cost < best) {
+                        best = cost;
+                        unique = true;
+                        winner = hc.pos;
+                    } else if (cost == best) {
+                        unique = false;  // tie — never guessed (P0-3)
+                    }
+                }
+                if (!unique || best > FF_RECOVERY_MAX_FLIPS)
+                    continue;
+
+                // Admit the reconstructed block so the hole it filled stops
+                // being reported as damage, and record the repoint the way the
+                // orphan path does so apply() can write it.
+                StreamMapEntry e = classify_block(m_base, m_size, winner);
+                e.offset = winner;
+                if (e.type == StreamMapEntryType::Undefined)
+                    e.type = StreamMapEntryType::Block;
+                if (e.size == 0)
+                    e.size = derived_block_size(r.declared);
+                e.recovery = r.declared;
+                map[winner] = e;
+                ++admitted;
+
+                v.candidates.clear();
+                v.candidates.push_back(winner);
+                v.bit_cost = best;
+                v.class_ = RepairClass::Corroborated;
+                ++matched_this_round;
+                ++rec20_matched;
+            }
+            if (matched_this_round == 0)
+                break;  // fixed point
+            // REC-20.5 — re-tile between rounds: a hole that held more than one
+            // lost block now shows its remainder, and the next round sees it.
+            find_gaps(map);
+        }
+    }
+
+    // The counters were tallied before REC-20 ran, so re-derive them rather
+    // than letting `unrecovered` keep reporting edges this pass repaired.
+    if (rec20_matched != 0) {
+        rep.intact = rep.corroborated = rep.tag_repaired = rep.position_repaired = 0;
+        rep.extent_derived = rep.ambiguous = rep.unrecovered = 0;
+        for (const BlockVerdict& v : rep.blocks) {
+            switch (v.class_) {
+                case RepairClass::Intact:            ++rep.intact; break;
+                case RepairClass::Corroborated:      ++rep.corroborated; break;
+                case RepairClass::TagRepaired:       ++rep.tag_repaired; break;
+                case RepairClass::PositionRepaired:  ++rep.position_repaired; break;
+                case RepairClass::ExtentDerived:     ++rep.extent_derived; break;
+                case RepairClass::Ambiguous:         ++rep.ambiguous; break;
+                case RepairClass::Unrecovered:       ++rep.unrecovered; break;
+            }
+        }
+    }
 
     rep.blocks_total = rep.blocks.size();
 

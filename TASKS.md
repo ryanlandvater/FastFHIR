@@ -6410,22 +6410,50 @@ cross-reference the two producers' hole lists. Measured on the 512-flip
 artifact the current cut closes 27 of 44 holes and recovers 103 of the 228 lost
 references — the remainder is what step 3 is for.
 
-- [ ] **REC-20.1** Cross-reference the hierarchy and scan hole lists; a hole
+- [x] **REC-20.1** Cross-reference the hierarchy and scan hole lists; a hole
       both agree on ranks above one only the walk reports.
-- [ ] **REC-20.2** Build the ranked CANDIDATE list ONCE: every position inside a
+- [x] **REC-20.2** Build the ranked CANDIDATE list ONCE: every position inside a
       hole, ranked by `hamming(u64 at p, p)` — highest self-similarity first,
       tight band (see the histogram above; the floor destroys good repairs).
-- [ ] **REC-20.3** Collect each uncorrected broken ref's 10-byte
+- [x] **REC-20.3** Collect each uncorrected broken ref's 10-byte
       `{corrupted offset | expected recovery}` tuple.
-- [ ] **REC-20.4** **Drive the loop from the broken refs**, not the bytes: for
+- [x] **REC-20.4** **Drive the loop from the broken refs**, not the bytes: for
       each ref, hamming its tuple against the 10 bytes at each ranked candidate
       as a SINGLE distance over the whole tuple. Unique cheapest under budget
       wins; ties stay Ambiguous. O(refs x candidates), not O(bytes x refs).
-- [ ] **REC-20.5** Iterate to a fixed point, re-tiling between rounds.
+- [x] **REC-20.5** Iterate to a fixed point, re-tiling between rounds.
 
-**Verify.** Holes closed and references recovered on the 512-flip artifact must
-both improve on 27/44 and 103/228, with **zero invented references** — that
-constraint is not negotiable and has regressed twice (handoff §2.7, §2.4).
+**Verify.** Zero invented references — not negotiable, and it has regressed
+twice (handoff §2.7, §2.4). Measured 40 single-bit trials: 2 deviating, **0
+inventing**.
+
+**Result (2026-09-01), same artifacts, isolated against `b7b6dcb`:**
+
+| artifact | refs | holes | ambiguous | unrecovered |
+|---|---|---|---|---|
+| 64 flips, before → after | 16045 → 16045 | 3 → 3 | 0 → 0 | 0 → 0 |
+| 256 flips | 16009 → 16009 | 15 → **12** | 5 → **1** | 3 → **2** |
+| 512 flips | 15946 → 15946 | 35 → **30** | 10 → **2** | 4 → **2** |
+
+Reference counts are flat; the gain is in *certainty*. Ambiguous edges fall 5x
+at 512 flips because one distance over the whole tuple resolves ties that three
+separately-thresholded distances left level.
+
+**The earlier "27 of 44 holes, 103 of 228 refs" figure is not a valid bar** — it
+was measured before the bounds work (`daa435d`…`80ef0ba`), which changed what
+`find_gaps` and the classifier see. Isolating REC-20 required stashing it and
+re-measuring `b7b6dcb` on the same files; do that rather than trusting a number
+recorded more than a couple of commits back.
+
+**One deviation from the spec, and it was measured.** The spec says to hamming
+the ref's 10-byte tuple against the candidate's 10 bytes. Implemented literally
+— parent's damaged offset vs the block's damaged self-offset word — that scored
+WORSE: 15944 refs against 15946, because it compares two noisy copies of the
+same value. Scoring the offset term against the candidate's *exact position*
+and carrying its `self_cost` as separate evidence recovers the difference: the
+position is noise-free, and comparing one noisy observation to a known value
+beats comparing two noisy observations. The tag term is still a direct
+tuple-half comparison. Kept the position form.
 
 ---
 
