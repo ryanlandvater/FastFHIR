@@ -269,13 +269,17 @@ static void test_field_key_array_offsets()
 static void test_array_header_rw()
 {
     TEST("FF_ARRAY header read/write");
-    std::vector<uint8_t> buf(FF_ARRAY::HEADER_SIZE + 16, 0);
+    // 3 entries of stride 8 need 24 payload bytes; this allocated 16 and
+    // stamped a count of 3 into it. Harmless only while nothing compared the
+    // count against the space -- entry_count() now does, and clamped to 2.
+    std::vector<uint8_t> buf(FF_ARRAY::HEADER_SIZE + 3 * 8, 0);
     Offset write_off = 0;
     STORE_FF_ARRAY_HEADER(buf.data(), write_off, FF_ARRAY::OFFSET, 8, 3,
                           ToArrayTag(RECOVER_FF_STRING));
     CHECK_EQ(write_off, FF_ARRAY::HEADER_SIZE, "write head advanced");
     // Read back via instance
-    FF_ARRAY arr(0, FF_ARRAY::HEADER_SIZE, FHIR_VERSION_R5);
+    // Buffer extent, not header size -- same mislabel as the string test below.
+    FF_ARRAY arr(0, static_cast<Size>(buf.size()), FHIR_VERSION_R5);
     CHECK_EQ(arr.entry_count(buf.data()), uint32_t(3), "element count");
     CHECK_EQ(arr.entry_step(buf.data()), uint16_t(8), "stride");
     auto arr_tag = static_cast<RECOVERY_TAG>(LOAD_U16(buf.data() + FF_ARRAY::RECOVERY));

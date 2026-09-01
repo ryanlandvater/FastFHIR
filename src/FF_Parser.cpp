@@ -1344,7 +1344,7 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
             if (raw == FF_DATETIME_NULL) { out << "null"; break; }
             std::string dt_text;
             if (FF_DATETIME_IS_FALLBACK(raw)) {
-                FF_STRING s(FF_ResolveDateTimeOffset(raw, parent_offset), 0, version);
+                FF_STRING s(FF_ResolveDateTimeOffset(raw, parent_offset), m_size, version);
                 dt_text = std::string(s.read_view(base));
             } else {
                 dt_text = FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(raw), target_recovery);

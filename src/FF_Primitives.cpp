@@ -262,7 +262,34 @@ bool FF_ARRAY::entries_are_pointers(const BYTE *const base) const
 {return entry_kind(base) == OFFSET;}
 
 uint32_t FF_ARRAY::entry_count(const BYTE* const __base) const
-{ return LOAD_U32(__base + __offset + ENTRY_COUNT); }
+{
+    // The stamped count is a WIRE VALUE with no second witness (F4), so it is
+    // clamped to what the stream can actually hold. Iris does the same thing
+    // structurally -- ArrayHeader::fits() requires stride*count to fit inside
+    // the file -- and the reason is not tidiness: a corrupted count is not a
+    // wrong number, it is an unbounded loop. Measured, a 256-flip artifact
+    // turned the reader from a segfault into a HANG once the offsets were
+    // bounds-checked but the count still was not.
+    //
+    // Clamped, not rejected: a truncated array is recoverable data, and the
+    // element-by-element walk (walk_array_extent) is what says how many are
+    // really there.
+    const uint32_t stamped = LOAD_U32(__base + __offset + ENTRY_COUNT);
+    const Size header = get_header_size();
+    if (!FF_BLOCK_IN_BOUNDS(__offset, __size, header))
+        return 0;
+    const uint16_t step = entry_step(__base);
+    if (step == 0)
+        return 0;  // no stride: nothing in this array is addressable, so it
+                   // holds nothing readable. Returning the stamped count here
+                   // was an unbounded loop wearing a clamp -- up to 4 billion
+                   // iterations over entries that are all at the same address.
+                   // DeepValidator already treats step==0 with count!=0 as
+                   // damage; the reader must not disagree with it.
+    const std::size_t room =
+        (static_cast<std::size_t>(__size) - static_cast<std::size_t>(__offset) - header) / step;
+    return static_cast<uint32_t>(std::min<std::size_t>(stamped, room));
+}
 
 const BYTE* FF_ARRAY::entries(const BYTE* const __base) const
 { return __base + __offset + get_header_size(); }
@@ -298,37 +325,34 @@ FF_Result FF_STRING::validate_full(const BYTE* const __base) const noexcept {
 }
 // Zero-Copy Mapped View
 std::string_view FF_STRING::read_view(const BYTE* const __base) const {
-    // THE one place every string read converges, so it is the one place the
-    // bound belongs. A block carries its own __size; nothing that reads a
-    // string should have to remember to check separately, and on a damaged
-    // stream both halves of a string are wire values: the OFFSET that got us
-    // here and the LENGTH stamped at +10. Measured, an offset of
-    // 18446487311142218605 in a 1,071,990-byte stream walked straight off the
-    // arena from Node::as<string_view>() -- a SEGV out of the read path, on
-    // exactly the input it exists to survive.
+    // REFUSE, DO NOT CLAMP -- the Iris contract (ByteArrayHeader::fits requires
+    // count <= size - (off + header_size); a block that does not fit is simply
+    // not a block).
     //
-    // Out of range reads as empty; an over-long length is CLAMPED to what the
-    // arena actually holds rather than refused, because a truncated string is
-    // recoverable data and a crash is not.
-    // __size == 0 means NO EXTENT WAS SUPPLIED, which is not the same as an
-    // extent of zero. The generated lazy views carry only {base, offset} and
-    // construct FF_STRING(child_off, 0, VERSION), so they cannot say how big
-    // the buffer is; checking them against 0 would reject every string in the
-    // document rather than validate it. Where an extent IS given -- every path
-    // through Parser/Node/Recovery -- it is enforced.
+    // Both halves of a string are wire values: the OFFSET that got us here and
+    // the LENGTH stamped at +10. An earlier version of this clamped an
+    // over-long length to the remaining arena, on the reasoning that a
+    // truncated string beats a crash. That was wrong twice over. Clamping to
+    // the rest of the buffer is not a truncation, it INVENTS a string -- up to
+    // a megabyte of arbitrary bytes that were never this field's -- and
+    // print_json then dutifully JSON-escapes every one of them. Measured on a
+    // 256-flip artifact, that turned a segfault into a process that never
+    // finished, burning all its time in escape_json_string.
     //
-    // That gap is the views' to close, not this function's: a reader that
-    // cannot state the buffer size cannot be made safe here. Threading the
-    // extent into the generated view API is TASKS.md REC-20.
-    if (__size != 0 && !FF_BLOCK_IN_BOUNDS(__offset, __size, STRING_DATA))
-        return {};
-    const std::size_t len =
-        __size == 0 ? length(__base)
-                    : std::min<std::size_t>(length(__base),
-                                            static_cast<std::size_t>(__size) -
-                                                static_cast<std::size_t>(__offset) - STRING_DATA);
-    return std::string_view(reinterpret_cast<const char*>(__base + __offset + STRING_DATA), len);
+    // A length that does not fit is damage. Empty is the honest answer, and
+    // validate_FFHR_stream() is what reports it.
+    if (__size != 0) {
+        if (!FF_BLOCK_IN_BOUNDS(__offset, __size, STRING_DATA))
+            return {};
+        const std::size_t avail =
+            static_cast<std::size_t>(__size) - static_cast<std::size_t>(__offset) - STRING_DATA;
+        if (static_cast<std::size_t>(length(__base)) > avail)
+            return {};
+    }
+    return std::string_view(reinterpret_cast<const char*>(__base + __offset + STRING_DATA),
+                            length(__base));
 }
+
 
 // Fallback std::string allocation for dictionary parsers
 std::string FF_STRING::read(const BYTE* const __base) const {
@@ -895,7 +919,11 @@ std::string_view FF_URL_DIRECTORY::seg_string(const BYTE* base, uint32_t entry_i
     Offset ep      = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * URL_ENTRY_SIZE;
     Offset seg_off = LOAD_U64(base + ep + URL_ENTRY_SEG_OFFSET);
     if (seg_off == FF_NULL_OFFSET) return {};
-    return FF_STRING(seg_off, 0, __version).read_view(base);
+    // __size, not 0. This block knows the stream extent -- it is a member --
+    // and passing 0 told the string "you have no idea how big the buffer is",
+    // which switched off the only bounds check on the payload. Live code, and
+    // the URL directory is read for every Extension.url and fullUrl.
+    return FF_STRING(seg_off, __size, __version).read_view(base);
 }
 std::string FF_URL_DIRECTORY::get_url(const BYTE* base, uint32_t entry_idx) const {
     // Walk the prior chain, collecting segments from leaf → root.
