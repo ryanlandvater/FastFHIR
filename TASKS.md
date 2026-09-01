@@ -6343,34 +6343,63 @@ be cross-referenced** rather than either being taken alone: a run of bytes the
 walk cannot attribute and the scan cannot claim is a hole with high confidence;
 one only the walk misses may simply be an orphan the scan holds.
 
-## The matching is an assignment problem, not a search
+## The matching is an assignment problem, and the BROKEN REFS drive it
 
 After the orphan pass has consumed what it can, what remains is `x` broken block
 refs and `y` holes, and in practice **x == y**. Do not treat the leftovers as
 independent searches — match them.
 
-1. **CANDIDATES (the x side).** Every broken ref that orphan-hamming did not
-   correct contributes a **10-byte tuple**: `{corrupted offset (8) | expected
-   recovery (2)}`. The expected recovery comes from the V-Table for a
-   typed-offset slot and from the stored tag half for a choice/resource tuple.
-2. **HOLE SIGNATURES (the y side).** Sweep each hole byte by byte. At every
-   position take the `uint64` and hamming it against the position itself — a
-   block encodes its own offset, so a damaged VALIDATION word is still a Hamming
-   neighbour of where it sits. **Rank positions by that likelihood.** The
-   distribution is sharply bimodal: measured over 12,227 hole bytes on a
-   512-flip artifact, `1:35 2:14` then a flat coincidence floor `3:7 4:15 5:14
-   6:15 7:10 8:10`. Hole bytes are not random — the arena is full of offset
-   words that share high bits with their own position — so the signal is the
-   spike, not the tail.
-3. **Match tuple against tuple.** For each ranked hole position, collect the
-   **10 bytes** there (`{validation-ish (8) | recovery-ish (2)}`) and hamming
-   that whole 10-byte block against each CANDIDATE's 10-byte tuple. One metric
-   over the full tuple, not three separate distances added together as the
-   current code does. Cheapest unique match under the flip budget wins; ties
-   stay `Ambiguous` and are never guessed (P0-3).
-4. **Iterate.** A repaired block is admitted to the census, `find_gaps` re-runs,
-   and a hole that held more than one lost block shows its remainder for the
-   next round. Repeat to a fixed point.
+**The broken refs are the event loop, not the bytes.** There are a great many
+hole bytes and very few broken refs, so the refs are the entry point and the
+outer iteration. Sweeping bytes and asking "does any ref want this position"
+inverts the cheap and expensive sides of the problem; iterating refs and asking
+"which position does this one want" does not. The byte sweep runs **once**, up
+front, to build the ranked search space — it is not part of the loop.
+
+Two vocabularies, kept apart because both are natural and they mean opposite
+things:
+
+- **BROKEN REF** — the x side, the driver. A parent slot whose target does not
+  resolve, carrying a **10-byte tuple** `{corrupted offset (8) | expected
+  recovery (2)}`. The expected recovery comes from the V-Table for a
+  typed-offset slot (compiled, uncorruptible) and from the stored tag half for a
+  choice/resource tuple (on the wire, and therefore itself suspect).
+- **CANDIDATE** — the y side, the search space. A position inside a hole where a
+  block plausibly started.
+
+### 1. Build the ranked CANDIDATE list once
+
+Sweep each hole byte by byte. At every position take the `uint64` and hamming it
+against the position itself — **a block encodes its own offset**, so a damaged
+VALIDATION word is still a Hamming neighbour of where it sits. **Rank by that
+self-similarity**: the positions whose word most nearly encodes their own offset
+rank top, because that is the least likely thing to happen by accident and the
+most likely thing to be a corrupted validation word.
+
+The distribution is sharply bimodal. Measured over 12,227 hole bytes on a
+512-flip artifact: `1:35  2:14`, then a flat coincidence floor `3:7  4:15  5:14
+6:15  7:10  8:10`. Hole bytes are not random — the arena is full of offset words
+that share high bits with their own position — so the signal is the spike, not
+the tail, and the band must be tight. Admitting the floor measurably destroyed
+good repairs: it tied against correct orphan repoints and turned 11 clean
+verdicts `Ambiguous`.
+
+### 2. Drive the loop from the broken refs
+
+For each broken ref, hamming its 10-byte tuple against the **10 bytes** at each
+ranked candidate (`{validation-ish (8) | recovery-ish (2)}`) — one distance over
+the whole tuple, not three separate distances summed as the current code does.
+Cheapest unique match under the flip budget wins; ties stay `Ambiguous` and are
+never guessed (P0-3).
+
+Cost is O(refs x candidates) with candidates already pruned by the ranking band,
+rather than O(bytes x refs).
+
+### 3. Iterate
+
+A repaired block is admitted to the census, `find_gaps` re-runs, and a hole that
+held more than one lost block shows its remainder for the next round. Repeat to
+a fixed point.
 
 ## What exists today, and how it falls short
 
@@ -6383,11 +6412,15 @@ references — the remainder is what step 3 is for.
 
 - [ ] **REC-20.1** Cross-reference the hierarchy and scan hole lists; a hole
       both agree on ranks above one only the walk reports.
-- [ ] **REC-20.2** Build the CANDIDATE list: 10-byte `{offset|recovery}` tuples
-      from every uncorrected broken ref.
-- [ ] **REC-20.3** Rank hole positions by `hamming(u64 at p, p)`, tight band.
-- [ ] **REC-20.4** Match the 10 bytes at each ranked position against the
-      CANDIDATE tuples as a single Hamming distance; unique winner under budget.
+- [ ] **REC-20.2** Build the ranked CANDIDATE list ONCE: every position inside a
+      hole, ranked by `hamming(u64 at p, p)` — highest self-similarity first,
+      tight band (see the histogram above; the floor destroys good repairs).
+- [ ] **REC-20.3** Collect each uncorrected broken ref's 10-byte
+      `{corrupted offset | expected recovery}` tuple.
+- [ ] **REC-20.4** **Drive the loop from the broken refs**, not the bytes: for
+      each ref, hamming its tuple against the 10 bytes at each ranked candidate
+      as a SINGLE distance over the whole tuple. Unique cheapest under budget
+      wins; ties stay Ambiguous. O(refs x candidates), not O(bytes x refs).
 - [ ] **REC-20.5** Iterate to a fixed point, re-tiling between rounds.
 
 **Verify.** Holes closed and references recovered on the 512-flip artifact must
