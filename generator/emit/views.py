@@ -18,7 +18,14 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
     hpp = "template <uint32_t VERSION = FHIR_VERSION_R5>\n"
     hpp += f"struct {view_name} {{\n"
     hpp += "    const BYTE* const base;\n"
-    hpp += "    const Offset offset;\n\n"
+    hpp += "    const Offset offset;\n"
+    # The stream extent. Iris's generated blocks carry __base/__offset/__size/
+    # __version for exactly this reason: a reader that cannot state how many
+    # bytes exist cannot bounds-check anything it reads. Without it every
+    # accessor below had to invent an extent, and `0` was what compiled --
+    # 1,645 fabricated extents across 83 headers, every one of them switching
+    # off the only check on a wire value.
+    hpp += "    const Size stream_size;\n\n"
     hpp += "    inline bool is_null() const { return offset == FF_NULL_OFFSET; }\n\n"
 
     for f in layout:
@@ -71,18 +78,18 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
             ]
             if ret_type in scalar_types or f.get("raw_scalar"):
                 if ret_type == "FF_ARRAY":
-                    hpp += "            return FF_ARRAY(FF_NULL_OFFSET, 0, VERSION);\n"
+                    hpp += "            return FF_ARRAY(FF_NULL_OFFSET, stream_size, VERSION);\n"
                 else:
                     hpp += f"            return {f['cpp_type'] if f.get('raw_scalar') else ret_type}{{}};\n"
             else:
-                hpp += f"            return {ret_type}<VERSION>{{base, FF_NULL_OFFSET}};\n"
+                hpp += f"            return {ret_type}<VERSION>{{base, FF_NULL_OFFSET, stream_size}};\n"
             hpp += "        }\n"
 
         vtable_off = f"{block_struct_name}::{f['name']}"
 
         if f["is_array"]:
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
-            hpp += "        return FF_ARRAY(child_off, 0, VERSION);\n"
+            hpp += "        return FF_ARRAY(child_off, stream_size, VERSION);\n"
         elif f.get("is_choice"):
             hpp += f"        return Decode::choice(base, offset + {vtable_off});\n"
         elif f.get("raw_scalar"):
@@ -93,7 +100,7 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
             hpp += f"        const uint64_t __dt_raw = LOAD_U64(base + offset + {vtable_off});\n"
             hpp += "        if (__dt_raw == FF_DATETIME_NULL) return std::string();\n"
             hpp += "        if (FF_DATETIME_IS_FALLBACK(__dt_raw)) {\n"
-            hpp += f"            return std::string(FF_STRING(FF_ResolveDateTimeOffset(__dt_raw, offset), 0, VERSION).read_view(base));\n"
+            hpp += f"            return std::string(FF_STRING(FF_ResolveDateTimeOffset(__dt_raw, offset), stream_size, VERSION).read_view(base));\n"
             hpp += "        }\n"
             hpp += f"        return FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(__dt_raw), {_st._child_recovery_expr(f, block_struct_name)});\n"
         elif f["fhir_type"] in _tm.TYPE_MAP and f["fhir_type"] not in (
@@ -107,13 +114,13 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
         elif f["fhir_type"] in ("string", "code") or f["fhir_type"] in STRING_TYPES:
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
             hpp += "        if (child_off == FF_NULL_OFFSET) return std::string_view();\n"
-            hpp += "        return FF_STRING(child_off, 0, VERSION).read_view(base);\n"
+            hpp += "        return FF_STRING(child_off, stream_size, VERSION).read_view(base);\n"
         elif f["fhir_type"] == "Resource":
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
             hpp += f"        return ResourceReference{{child_off, FF_GET_RECOVERY_TAG(base, offset + {vtable_off})}};\n"
         else:
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
-            hpp += f"        return {ret_type}<VERSION>{{base, child_off}};\n"
+            hpp += f"        return {ret_type}<VERSION>{{base, child_off, stream_size}};\n"
 
         hpp += "    }\n"
 

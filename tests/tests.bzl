@@ -78,6 +78,9 @@ def fastfhir_tests(copts = []):
         ("test_roundtrip_validate", "ff_test_roundtrip_validate.cpp"),
         ("test_compact_roundtrip", "ff_test_compact_roundtrip.cpp"),
         ("test_recovery", "test_recovery.cpp"),
+        # The generated lazy-view layer -- untested until 2026-09-01, which is
+        # how it accumulated 1,645 fabricated stream extents.
+        ("test_views", "test_views.cpp"),
     ]:
         cc_test(
             name = name,
