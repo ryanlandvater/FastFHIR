@@ -473,8 +473,8 @@ MutableEntry ObjectHandle::operator[](size_t index) const
         throw std::out_of_range("FastFHIR: Array index out of bounds.");
 
     // 2. Low-level geometry calculation
-    FF_ARRAY array_block(m_offset, 0, 0);
     auto base = m_builder->memory().base();
+    FF_ARRAY array_block(m_offset, m_builder->memory().size(), 0);
     
     uint16_t step = array_block.entry_step(base);
     const BYTE* entries_ptr = array_block.entries(base);

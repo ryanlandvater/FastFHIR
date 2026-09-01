@@ -1186,10 +1186,41 @@ struct FF_EXPORT DATA_BLOCK
     uint32_t __engine_version = 0; // FastFHIR engine version (for primitive blocks)
 
     explicit DATA_BLOCK() = default;
-    explicit DATA_BLOCK(Offset off, Size total_size, uint32_t fhir_rev, uint32_t engine_ver = 0)
+    // constexpr so fits() can be evaluated at compile time and so the free
+    // FF_BLOCK_IN_BOUNDS can delegate here without giving up constant folding.
+    explicit constexpr DATA_BLOCK(Offset off, Size total_size, uint32_t fhir_rev,
+                                  uint32_t engine_ver = 0)
         : __offset(off), __size(total_size), __version(fhir_rev), __engine_version(engine_ver) {}
 
-    operator bool() const { return __offset != FF_NULL_OFFSET; }
+    /// Whether `width` bytes actually exist at this block's offset.
+    ///
+    /// The bounds test lives on the block because every block has the same
+    /// question and the same two facts to answer it with. This is the Iris
+    /// contract (BlockHeader::fits): a block that does not fit is not a block.
+    [[nodiscard]] constexpr bool fits(Size width = HEADER_SIZE) const noexcept
+    {
+        return __offset != FF_NULL_OFFSET &&
+               static_cast<std::size_t>(__offset) + static_cast<std::size_t>(width) <=
+                   static_cast<std::size_t>(__size);
+    }
+
+    /// A block is truthy only if its HEADER IS ACTUALLY THERE.
+    ///
+    /// This used to be `__offset != FF_NULL_OFFSET` -- present-vs-absent, and
+    /// nothing about whether the bytes exist. Iris carries the same comparison
+    /// and describes that exact form as the one it retired: "checked only that
+    /// the offset is in range: requiring the whole header to fit makes a
+    /// truncated file fail at construction rather than mid-read."
+    ///
+    /// It matters because `if (block)` is the guard every caller already
+    /// writes. Making it mean what it looks like it means turns thousands of
+    /// existing call sites into bounds checks for free, instead of asking each
+    /// one to remember a separate test it will eventually forget.
+    ///
+    /// A block whose `__size` is 0 is now falsy, which is the intended
+    /// consequence: it says "no extent was supplied", and a reader that cannot
+    /// say how big the buffer is has no business dereferencing into it.
+    operator bool() const { return fits(); }
 
     FF_Result validate_offset(const BYTE *const __base, const char *type_name, RECOVERY_TAG recovery_tag) const noexcept;
 
@@ -1770,9 +1801,11 @@ struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
 inline constexpr bool FF_BLOCK_IN_BOUNDS(Offset off, Size stream_size,
                                          Size width = DATA_BLOCK::HEADER_SIZE) noexcept
 {
-    return off != FF_NULL_OFFSET &&
-           static_cast<std::size_t>(off) + static_cast<std::size_t>(width) <=
-               static_cast<std::size_t>(stream_size);
+    // Delegates to DATA_BLOCK::fits so there is one implementation, not two.
+    // This spelling exists for the callers that hold a loose (offset, size)
+    // pair and no block -- the parser's hops, which are deciding whether to
+    // build one at all.
+    return DATA_BLOCK(off, stream_size, 0).fits(width);
 }
 
 /// Semantic identity (RECOVERY_TAG) of the block at `block_offset`.
