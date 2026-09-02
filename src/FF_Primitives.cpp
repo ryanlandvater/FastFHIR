@@ -19,6 +19,7 @@
 #include "FF_Primitives.hpp"
 #include "FF_Dictionary.hpp"
 #include "FF_Ops.hpp"
+#include <algorithm>
 
 // =====================================================================
 // DATA_BLOCK BASE VALIDATION
@@ -261,7 +262,34 @@ bool FF_ARRAY::entries_are_pointers(const BYTE *const base) const
 {return entry_kind(base) == OFFSET;}
 
 uint32_t FF_ARRAY::entry_count(const BYTE* const __base) const
-{ return LOAD_U32(__base + __offset + ENTRY_COUNT); }
+{
+    // The stamped count is a WIRE VALUE with no second witness (F4), so it is
+    // clamped to what the stream can actually hold. Iris does the same thing
+    // structurally -- ArrayHeader::fits() requires stride*count to fit inside
+    // the file -- and the reason is not tidiness: a corrupted count is not a
+    // wrong number, it is an unbounded loop. Measured, a 256-flip artifact
+    // turned the reader from a segfault into a HANG once the offsets were
+    // bounds-checked but the count still was not.
+    //
+    // Clamped, not rejected: a truncated array is recoverable data, and the
+    // element-by-element walk (walk_array_extent) is what says how many are
+    // really there.
+    const uint32_t stamped = LOAD_U32(__base + __offset + ENTRY_COUNT);
+    const Size header = get_header_size();
+    if (!FF_BLOCK_IN_BOUNDS(__offset, __size, header))
+        return 0;
+    const uint16_t step = entry_step(__base);
+    if (step == 0)
+        return 0;  // no stride: nothing in this array is addressable, so it
+                   // holds nothing readable. Returning the stamped count here
+                   // was an unbounded loop wearing a clamp -- up to 4 billion
+                   // iterations over entries that are all at the same address.
+                   // DeepValidator already treats step==0 with count!=0 as
+                   // damage; the reader must not disagree with it.
+    const std::size_t room =
+        (static_cast<std::size_t>(__size) - static_cast<std::size_t>(__offset) - header) / step;
+    return static_cast<uint32_t>(std::min<std::size_t>(stamped, room));
+}
 
 const BYTE* FF_ARRAY::entries(const BYTE* const __base) const
 { return __base + __offset + get_header_size(); }
@@ -297,8 +325,34 @@ FF_Result FF_STRING::validate_full(const BYTE* const __base) const noexcept {
 }
 // Zero-Copy Mapped View
 std::string_view FF_STRING::read_view(const BYTE* const __base) const {
-    return FF_GET_STRING_VIEW(__base, __offset);
+    // REFUSE, DO NOT CLAMP -- the Iris contract (ByteArrayHeader::fits requires
+    // count <= size - (off + header_size); a block that does not fit is simply
+    // not a block).
+    //
+    // Both halves of a string are wire values: the OFFSET that got us here and
+    // the LENGTH stamped at +10. An earlier version of this clamped an
+    // over-long length to the remaining arena, on the reasoning that a
+    // truncated string beats a crash. That was wrong twice over. Clamping to
+    // the rest of the buffer is not a truncation, it INVENTS a string -- up to
+    // a megabyte of arbitrary bytes that were never this field's -- and
+    // print_json then dutifully JSON-escapes every one of them. Measured on a
+    // 256-flip artifact, that turned a segfault into a process that never
+    // finished, burning all its time in escape_json_string.
+    //
+    // A length that does not fit is damage. Empty is the honest answer, and
+    // validate_FFHR_stream() is what reports it.
+    if (__size != 0) {
+        if (!FF_BLOCK_IN_BOUNDS(__offset, __size, STRING_DATA))
+            return {};
+        const std::size_t avail =
+            static_cast<std::size_t>(__size) - static_cast<std::size_t>(__offset) - STRING_DATA;
+        if (static_cast<std::size_t>(length(__base)) > avail)
+            return {};
+    }
+    return std::string_view(reinterpret_cast<const char*>(__base + __offset + STRING_DATA),
+                            length(__base));
 }
+
 
 // Fallback std::string allocation for dictionary parsers
 std::string FF_STRING::read(const BYTE* const __base) const {
@@ -803,8 +857,12 @@ uint64_t ENCODE_FF_DATETIME(BYTE* const __base, Offset block_offset, Offset& chi
 // the unified FF_CODEABLE_CONCEPT.  Returns the code as a human-readable
 // string_view (thread-local buffer for fixed-width types).
 FF_CodeableConceptResult FF_DECODE_CODEABLE_CONCEPT(
-    const BYTE* base, Offset offset, uint32_t version)
+    const BYTE* base, Offset offset, uint32_t version, Size stream_size)
 {
+    // Same gate as every other block hop; a CodeableConcept is a block.
+    if (!FF_BLOCK_IN_BOUNDS(offset, stream_size, FF_CODEABLE_CONCEPT::HEADER_SIZE))
+        return {};
+
     using S = FF_CodeableConceptSystem;
     const S sys = static_cast<S>(base[offset + FF_CODEABLE_CONCEPT::SYSTEM]);
     const uint8_t len = base[offset + FF_CODEABLE_CONCEPT::LENGTH];
@@ -861,7 +919,11 @@ std::string_view FF_URL_DIRECTORY::seg_string(const BYTE* base, uint32_t entry_i
     Offset ep      = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * URL_ENTRY_SIZE;
     Offset seg_off = LOAD_U64(base + ep + URL_ENTRY_SEG_OFFSET);
     if (seg_off == FF_NULL_OFFSET) return {};
-    return FF_STRING(seg_off, 0, __version).read_view(base);
+    // __size, not 0. This block knows the stream extent -- it is a member --
+    // and passing 0 told the string "you have no idea how big the buffer is",
+    // which switched off the only bounds check on the payload. Live code, and
+    // the URL directory is read for every Extension.url and fullUrl.
+    return FF_STRING(seg_off, __size, __version).read_view(base);
 }
 std::string FF_URL_DIRECTORY::get_url(const BYTE* base, uint32_t entry_idx) const {
     // Walk the prior chain, collecting segments from leaf → root.

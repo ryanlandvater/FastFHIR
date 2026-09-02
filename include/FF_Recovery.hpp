@@ -46,6 +46,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -82,9 +83,15 @@ enum class StreamMapEntryType : uint8_t {
 /// is only knowable by walking them — the caller asks the block, as the Iris
 /// FileMap contract does.
 struct StreamMapEntry {
-    StreamMapEntryType type   = StreamMapEntryType::Undefined;
-    Offset             offset = FF_NULL_OFFSET;
-    Size               size   = 0;
+    StreamMapEntryType type     = StreamMapEntryType::Undefined;
+    Offset             offset   = FF_NULL_OFFSET;
+    Size               size     = 0;
+    /// The wire RECOVERY tag read at the offset (REC-19.2). A SINGLE witness:
+    /// the scan offers it up, and the hierarchical walk records what it found,
+    /// but neither trusts it — the classifier compares it against the slot's
+    /// expected recovery and the reapply loop re-reads blocks under corrected
+    /// types. Corrupted tags are flagged in `failures`, never believed.
+    RECOVERY_TAG       recovery = FF_RECOVER_UNDEFINED;
 };
 
 /// Why a run of bytes belongs to no entry (REC-18.4).
@@ -108,6 +115,31 @@ struct Gap {
     const char*  why    = "";                    ///< why it was classified so
 };
 
+/// Why a producer could not fully account for a located block or reference
+/// (REC-19.2). Failures are audit records, not repair verdicts: the classifier
+/// is the only authority that decides how a damaged reference is restored, and
+/// a corrupted-but-plausible tag is caught there (VTableRecoveryMismatch), not
+/// here — this list exists so a driver can see what each producer doubted.
+enum class ProducerFailureKind : uint8_t {
+    ScanTagInvalid,         ///< scan: self-offset is consistent but the recovery
+                            ///< tag is not a known type (single witness — offered,
+                            ///< never trusted to decide a type, defect 5)
+    VTableRecoveryMismatch, ///< hierarchical: the slot's expected recovery (1c, or
+                            ///< the tuple's stored tag half for choice/resource — F1)
+                            ///< disagrees with the wire tag at the child
+    InvalidSelfRef,         ///< hierarchical: the slot names a block that does not
+                            ///< self-validate
+};
+
+/// One producer's doubt, recorded at the moment the producer saw it.
+struct ProducerFailure {
+    ProducerFailureKind kind     = ProducerFailureKind::ScanTagInvalid;
+    Offset              at       = FF_NULL_OFFSET;  ///< the child/block offset in question
+    RECOVERY_TAG        expected = FF_RECOVER_UNDEFINED;
+    RECOVERY_TAG        actual   = FF_RECOVER_UNDEFINED;
+    const char*         why      = "";
+};
+
 /// Every self-consistent block in the stream, keyed by offset. `upper_bound`
 /// is the "what lives after this write offset" query an in-place repair needs
 /// before overwriting anything (REC-15 apply(), Block C) — std::map provides it.
@@ -118,6 +150,10 @@ struct Gap {
 struct StreamMap : public std::map<Offset, StreamMapEntry> {
     Size             file_size = 0;
     std::vector<Gap> gaps;
+    /// REC-19.2 — each producer's doubts about its own findings (scan: tag
+    /// audit; walk: reference judgment via recover_follow_ref_chain). recover()
+    /// merges both producers' lists into the report.
+    std::vector<ProducerFailure> failures;
 };
 
 // ---------------------------------------------------------------------------
@@ -158,6 +194,23 @@ enum class RepairClass : uint8_t {
     Unrecovered,       ///< no candidate within the flip budget
 };
 
+/// WHICH COPY OF A TAG SURVIVED.
+///
+/// A choice/resource reference is a 10-byte tuple {offset(8), tag(2)}, so its
+/// type is written TWICE -- beside the offset, and in the header of the block
+/// it points at. Damage to either is detectable by comparing them, but not
+/// resolvable by comparing them: with two copies and no third opinion, nothing
+/// says which one survived. Adjudication supplies the third (REC-22.2).
+///
+/// Only tuple kinds have two WIRE copies. For a plain block/string slot the
+/// expectation comes from the compiled schema, which damage cannot reach, so
+/// the child's header is the only copy and there is nothing to adjudicate.
+enum class TagCopy : uint8_t {
+    Undecided = 0,  ///< no decisive reading — reported, never guessed
+    ParentSlot,     ///< the tuple's tag half is damaged; the child's is true
+    ChildHeader,    ///< the child's header is damaged; the tuple's half is true
+};
+
 /// One block reference plus its verdict. `blocks` in the report carries every
 /// reference so the benchmark's anchored check can verify recovered ⊆ baseline
 /// over (parent, field, child, tag) — the unit that can audit attachment (F3).
@@ -165,6 +218,17 @@ struct BlockVerdict {
     BlockRef                block;
     RepairClass             class_    = RepairClass::Unrecovered;
     uint32_t                bit_cost  = 0;  ///< Hamming cost of the repair, 0 = intact
+    /// ExtentDerived only: the array ENTRY_COUNT the classifier settled on.
+    /// It is carried rather than re-derived because the classifier is the sole
+    /// owner of that fact — it weighs an in-place walk against the distance to
+    /// the next known block, and an applier repeating only half of that reasoning
+    /// silently disagrees with the verdict it is supposed to be enacting.
+    uint32_t                derived_extent = 0;
+    /// TagRepaired only: the tag adjudication settled on, and which of the two
+    /// wire copies it found damaged. Carried, not re-derived — apply() enacts
+    /// the verdict rather than re-running the reasoning behind it.
+    RECOVERY_TAG            consensus_tag  = FF_RECOVER_UNDEFINED;
+    TagCopy                 damaged_copy   = TagCopy::Undecided;
     std::vector<Offset>     candidates;    ///< populated for Ambiguous
 };
 
@@ -185,6 +249,11 @@ struct FF_RecoveryReport {
     /// misattachment fail the subset check).
     std::vector<BlockVerdict> blocks;
 
+    /// REC-19.2 — the merged producer failure lists (scan tag audit +
+    /// hierarchical reference judgment). Audit only; the verdicts are the
+    /// repair record.
+    std::vector<ProducerFailure> failures;
+
     /// REC-18. Runs of bytes no block claims. `holes` is the count that means
     /// damage: a block whose VALIDATION is broken AND whose parent reference is
     /// broken leaves no witness at all, so absence is the only evidence it
@@ -195,6 +264,26 @@ struct FF_RecoveryReport {
     std::size_t      version_skew  = 0;
     std::vector<Gap> gaps;
 };
+
+/// What apply() did. Separate from FF_RecoveryReport because deciding a repair
+/// and performing one are different acts with different failure modes: recover()
+/// can be confident and still be unable to write (a slot outside the buffer, a
+/// candidate that stops verifying once neighbouring repairs land).
+struct FF_ApplyReport {
+    std::size_t applied  = 0;  ///< written AND re-verified
+    std::size_t declined = 0;  ///< not selected, or the class is not a repair
+    std::size_t failed   = 0;  ///< written, did not verify afterwards, reverted
+    /// Child offsets of the edges that failed to verify — a silently-failed
+    /// write is the one outcome a repair tool must never report as success.
+    std::vector<Offset> failed_edges;
+};
+
+/// Predicate selecting which verdicts to apply. Null means every class that is
+/// a confident repair (Corroborated, TagRepaired, PositionRepaired,
+/// ExtentDerived) — never Ambiguous, never Unrecovered: those are reported
+/// precisely because the engine declined to choose, and applying them would
+/// convert a declared uncertainty into a silent one.
+using ApplyFilter = std::function<bool(const BlockVerdict&)>;
 
 // ---------------------------------------------------------------------------
 // Recovery — the scanner's view of untrusted bytes (Instrument G test 5)
@@ -252,6 +341,31 @@ public:
     /// recover(), so recovered ⊆ baseline stays like-for-like.
     std::vector<BlockRef> reachable_blocks() const;
 
+    /**
+     * @brief REC-15 — the only mutating entry point. Writes a report's repairs
+     * into a COPY of the stream; the arena this Recovery reads is never touched.
+     *
+     * A copy rather than in-place, deliberately: the damaged original has to
+     * stay readable for a before/after comparison, and a benchmark that mutates
+     * its own input is not reproducible across trials.
+     *
+     * Each class maps to one edit. Corroborated rewrites the PARENT's stored
+     * offset to the candidate the ranker chose; TagRepaired rewrites the CHILD's
+     * recovery tag from the parent's declared type; PositionRepaired rewrites the
+     * child's VALIDATION word to its own address; ExtentDerived rewrites an
+     * array's stamped ENTRY_COUNT to the walked extent. Every write is
+     * bounds-checked, then RE-READ from the copy and verified; one that does not
+     * verify is reverted and counted in `failed`, never reported as applied.
+     *
+     * Never called by a constructor or by recover(). Nothing here is implicit.
+     *
+     * @param report   a report produced by recover() over THIS arena.
+     * @param repaired receives the repaired copy (resized and overwritten).
+     * @param filter   which verdicts to apply; null selects the confident classes.
+     */
+    FF_ApplyReport apply(const FF_RecoveryReport& report, std::vector<BYTE>& repaired,
+                         const ApplyFilter& filter = nullptr) const;
+
     /// The P0-3 reconciliation: enumerate every block reference, classify each
     /// against the two witnesses, and report blocks restored per class. The
     /// byte census (scan) and the offset-chain reachability walk run on two
@@ -279,20 +393,45 @@ public:
     static Size derived_block_size(RECOVERY_TAG tag) noexcept;
 
 private:
-    bool         valid_validation(Offset off) const noexcept;
-    RECOVERY_TAG tag_at(Offset off) const noexcept;
-    bool         header_is_readable() const noexcept;
-
     /// Enumerate the block references of one block (V-Table slots + array
     /// elements), bounds-checked. Appends to `out`.
+    /// Enumerate the entries of an ARRAY at `array_off`, whose header names the
+    /// element type. Arrays are not datablocks and are not recovered like one:
+    /// a datablock is a V-Table of slots, an array is a stride and a count over
+    /// inline entries, and the entries carry no witnesses of their own — the
+    /// array's VALIDATION and RECOVERY cover all of them. Walking one with the
+    /// V-Table walker finds nothing, because an array tag has no reflected
+    /// fields.
+    void enumerate_array_entries(Offset array_off, RECOVERY_TAG array_tag,
+                                 std::vector<BlockRef>& out) const;
+
     void enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                               std::vector<BlockRef>& out) const;
+
+    /// Does the block at `off` READ COHERENTLY as `tag`?
+    ///
+    /// A type is a hypothesis about a V-Table. Enumerate the block's slots
+    /// under that hypothesis and every child must corroborate: a wrong V-Table
+    /// reads real offsets out of positions that hold something else, and what
+    /// comes back does not vouch for itself. A block with no enumerable
+    /// children answers NEITHER way — that is not evidence, and it reports as
+    /// such rather than passing vacuously.
+    bool reads_as(Offset off, RECOVERY_TAG tag) const;
+
+    /// THE THIRD OPINION. Given a tuple's two disagreeing tag copies, decide
+    /// which one the bytes actually support. Decisive only when exactly one
+    /// reading is coherent; otherwise Undecided, which is never a guess.
+    TagCopy adjudicate_tag(Offset child, RECOVERY_TAG slot_tag,
+                           RECOVERY_TAG child_tag) const;
 
     /// The ONE offset-chain walk: DFS from the root through intact references,
     /// depth- and cycle-bounded. Returns every reachable block offset (the
     /// orphan test's other half); when `out` is non-null, also appends each
-    /// visited block's references (the clean-stream baseline enumeration).
-    std::vector<Offset> walk_chain(std::vector<BlockRef>* out) const;
+    /// visited block's references (the clean-stream baseline enumeration); when
+    /// `failures` is non-null, also records each damaged reference it meets
+    /// (REC-19.3, the hierarchical producer's audit).
+    std::vector<Offset> walk_chain(std::vector<BlockRef>* out,
+                                   std::vector<ProducerFailure>* failures = nullptr) const;
 
     const BYTE* m_base = nullptr;
     size_t      m_size = 0;

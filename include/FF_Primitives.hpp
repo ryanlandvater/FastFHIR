@@ -1186,10 +1186,41 @@ struct FF_EXPORT DATA_BLOCK
     uint32_t __engine_version = 0; // FastFHIR engine version (for primitive blocks)
 
     explicit DATA_BLOCK() = default;
-    explicit DATA_BLOCK(Offset off, Size total_size, uint32_t fhir_rev, uint32_t engine_ver = 0)
+    // constexpr so fits() can be evaluated at compile time and so the free
+    // FF_BLOCK_IN_BOUNDS can delegate here without giving up constant folding.
+    explicit constexpr DATA_BLOCK(Offset off, Size total_size, uint32_t fhir_rev,
+                                  uint32_t engine_ver = 0)
         : __offset(off), __size(total_size), __version(fhir_rev), __engine_version(engine_ver) {}
 
-    operator bool() const { return __offset != FF_NULL_OFFSET; }
+    /// Whether `width` bytes actually exist at this block's offset.
+    ///
+    /// The bounds test lives on the block because every block has the same
+    /// question and the same two facts to answer it with. This is the Iris
+    /// contract (BlockHeader::fits): a block that does not fit is not a block.
+    [[nodiscard]] constexpr bool fits(Size width = HEADER_SIZE) const noexcept
+    {
+        return __offset != FF_NULL_OFFSET &&
+               static_cast<std::size_t>(__offset) + static_cast<std::size_t>(width) <=
+                   static_cast<std::size_t>(__size);
+    }
+
+    /// A block is truthy only if its HEADER IS ACTUALLY THERE.
+    ///
+    /// This used to be `__offset != FF_NULL_OFFSET` -- present-vs-absent, and
+    /// nothing about whether the bytes exist. Iris carries the same comparison
+    /// and describes that exact form as the one it retired: "checked only that
+    /// the offset is in range: requiring the whole header to fit makes a
+    /// truncated file fail at construction rather than mid-read."
+    ///
+    /// It matters because `if (block)` is the guard every caller already
+    /// writes. Making it mean what it looks like it means turns thousands of
+    /// existing call sites into bounds checks for free, instead of asking each
+    /// one to remember a separate test it will eventually forget.
+    ///
+    /// A block whose `__size` is 0 is now falsy, which is the intended
+    /// consequence: it says "no extent was supplied", and a reader that cannot
+    /// say how big the buffer is has no business dereferencing into it.
+    operator bool() const { return fits(); }
 
     FF_Result validate_offset(const BYTE *const __base, const char *type_name, RECOVERY_TAG recovery_tag) const noexcept;
 
@@ -1745,6 +1776,38 @@ struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
 // FF_CODEABLE_CONCEPT::system() and FF_IsFieldEmpty() already read bytes this
 // way; these follow them.
 
+/// THE bounds test for a wire offset. Every block read goes through this one.
+///
+/// They are all blocks: a string, an array, a codeable concept and a resource
+/// differ only in what follows the header, so "is there a block here" has
+/// exactly one answer and belongs in exactly one function. Writing it per call
+/// site is how a reader ends up with nine guarded hops and a tenth that
+/// segfaults.
+///
+/// `stream_size` is the extent of the STREAM -- the bytes actually written and
+/// present -- not the arena's capacity. Those differ by orders of magnitude:
+/// Memory::create() reserves 4 GiB of sparse address space by default, of which
+/// a 1 MB document occupies 1 MB. Bounding against the reservation permits a
+/// read anywhere in 4 GiB of unmapped pages, which is not a bounds check, it is
+/// the same segfault with extra arithmetic.
+///
+/// `width` is how many bytes the caller is about to touch: the header for a
+/// hop, header + payload for a string.
+///
+/// No `off >= 0` test: Offset is uint64_t, so it cannot be negative and the
+/// comparison is always true. A wrapped-around offset presents as an enormous
+/// positive value and is caught by the upper bound, which is the only test that
+/// was ever doing work.
+inline constexpr bool FF_BLOCK_IN_BOUNDS(Offset off, Size stream_size,
+                                         Size width = DATA_BLOCK::HEADER_SIZE) noexcept
+{
+    // Delegates to DATA_BLOCK::fits so there is one implementation, not two.
+    // This spelling exists for the callers that hold a loose (offset, size)
+    // pair and no block -- the parser's hops, which are deciding whether to
+    // build one at all.
+    return DATA_BLOCK(off, stream_size, 0).fits(width);
+}
+
 /// Semantic identity (RECOVERY_TAG) of the block at `block_offset`.
 inline constexpr RECOVERY_TAG FF_GET_RECOVERY_TAG(const BYTE *base, Offset block_offset) noexcept
 {
@@ -1763,6 +1826,28 @@ inline constexpr uint64_t FF_GET_VALIDATION(const BYTE *base, Offset block_offse
     for (int i = 7; i >= 0; --i)
         v = (v << 8) | static_cast<uint64_t>(p[i]);
     return v;
+}
+
+/// Whether a block VOUCHES FOR ITSELF: it fits, and its VALIDATION word holds
+/// its own offset.
+///
+/// Every block is written with that self-offset witness, and both the explicit
+/// validator and the recovery engine test it -- the NAVIGATION path never did.
+/// FF_BLOCK_IN_BOUNDS asks only whether the bytes exist, so a corrupted slot
+/// aiming at arbitrary in-range bytes was followed without question and
+/// whatever those bytes claimed (tag, entry count, length) was believed.
+///
+/// Measured on a 1 MB Synthea bundle at 512 flipped bits: the recovery report
+/// said ZERO invented references -- correctly, it refused those very targets --
+/// while the exported document gained 20,057 fabricated leaf values the reader
+/// had walked to anyway. The engine was right and nobody asked it. Checking the
+/// witness costs one 8-byte load on the cache line the header read is about to
+/// touch, and drops those 20,057 to 18.
+[[nodiscard]] inline bool FF_BLOCK_VOUCHES(const BYTE* base, Offset off, Size stream_size,
+                                           Size width = DATA_BLOCK::HEADER_SIZE) noexcept
+{
+    return FF_BLOCK_IN_BOUNDS(off, stream_size, width) &&
+           FF_GET_VALIDATION(base, off) == static_cast<uint64_t>(off);
 }
 
 /// Payload byte count of the FF_STRING (or string-layout block) at `string_offset`.
@@ -1802,8 +1887,13 @@ struct FF_CodeableConceptResult {
 // Decode a CodeableConcept block.  Returns structured result with
 // system discriminator, raw integer (for fixed-width systems), and
 // human-readable label.  Thread-local buffer for label string.
+/// `stream_size` is the written extent, so this can refuse an offset outside it
+/// -- the same route every other block read takes (FF_BLOCK_IN_BOUNDS).
+/// It is a required parameter, not a defaulted one: a caller that cannot say
+/// how big the buffer is has no business dereferencing into it, and a default
+/// would just reintroduce the unchecked path this exists to remove.
 FF_CodeableConceptResult FF_DECODE_CODEABLE_CONCEPT(
-    const BYTE* base, Offset offset, uint32_t version);
+    const BYTE* base, Offset offset, uint32_t version, Size stream_size);
 
 // Write an unknown-system dynamic block (SYSTEM=0x00) with a 2-byte URL index
 // followed by the raw code string.  Returns packed uint32_t with

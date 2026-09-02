@@ -216,7 +216,7 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
             }
             std::string dt_text;
             if (FF_DATETIME_IS_FALLBACK(raw)) {
-                FF_STRING s(FF_ResolveDateTimeOffset(raw, entry.parent_offset), 0, version);
+                FF_STRING s(FF_ResolveDateTimeOffset(raw, entry.parent_offset), arena_size, version);
                 dt_text = std::string(s.read_view(entry.base));
             } else {
                 dt_text = FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(raw), entry.target_recovery);

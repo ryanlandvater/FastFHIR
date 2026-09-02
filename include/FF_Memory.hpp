@@ -102,6 +102,19 @@ namespace FastFHIR
         size_t capacity() const;
 
         /**
+         * @brief On-disk size of the backing file as the OS reports it, or 0 when
+         * unknown (anonymous arena, or a file this call created).
+         *
+         * The authority for "how many bytes are really there". size() cannot serve
+         * that role for untrusted input: the write head lives at STREAM_CURSOR_OFFSET,
+         * which is the same 8 bytes as FF_HEADER::STREAM_SIZE, so on a damaged stream
+         * size() returns a corrupted wire value. A reader that must not walk off the
+         * end -- FastFHIR::Recovery above all -- bounds itself by this when it is
+         * available, and by capacity() when it is not.
+         */
+        size_t disk_size() const;
+
+        /**
          * @brief Returns the SHM segment name, the file path, or an empty string if anonymous.
          */
         std::string name() const;
@@ -313,6 +326,11 @@ namespace FastFHIR
 
         std::string m_name;
         size_t m_capacity = 0;
+        // Size the OS reports for the backing file, when this arena was mapped
+        // from an EXISTING one; 0 for an anonymous arena or a freshly created
+        // file. It is the only extent that does not come from the stream's own
+        // bytes -- see Memory::disk_size().
+        size_t m_disk_size = 0;
 
         uint8_t *m_base = nullptr;
         uint64_t *m_head_ptr = nullptr;
@@ -332,6 +350,7 @@ namespace FastFHIR
     inline std::optional<Memory::StreamHead> Memory::try_acquire_stream() const { return m_core->try_acquire_stream(); }
     inline uint8_t *Memory::base() const { return m_core->m_base; }
     inline size_t Memory::capacity() const { return m_core->m_capacity; }
+    inline size_t Memory::disk_size() const { return m_core->m_disk_size; }
     inline std::string Memory::name() const { return m_core->m_name; }
     inline void Memory::reset(size_t committed_size) const { m_core->reset(committed_size); }
     inline void Memory::truncate_file(size_t size) const { m_core->truncate_file(size); }

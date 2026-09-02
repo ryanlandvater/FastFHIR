@@ -269,13 +269,17 @@ static void test_field_key_array_offsets()
 static void test_array_header_rw()
 {
     TEST("FF_ARRAY header read/write");
-    std::vector<uint8_t> buf(FF_ARRAY::HEADER_SIZE + 16, 0);
+    // 3 entries of stride 8 need 24 payload bytes; this allocated 16 and
+    // stamped a count of 3 into it. Harmless only while nothing compared the
+    // count against the space -- entry_count() now does, and clamped to 2.
+    std::vector<uint8_t> buf(FF_ARRAY::HEADER_SIZE + 3 * 8, 0);
     Offset write_off = 0;
     STORE_FF_ARRAY_HEADER(buf.data(), write_off, FF_ARRAY::OFFSET, 8, 3,
                           ToArrayTag(RECOVER_FF_STRING));
     CHECK_EQ(write_off, FF_ARRAY::HEADER_SIZE, "write head advanced");
     // Read back via instance
-    FF_ARRAY arr(0, FF_ARRAY::HEADER_SIZE, FHIR_VERSION_R5);
+    // Buffer extent, not header size -- same mislabel as the string test below.
+    FF_ARRAY arr(0, static_cast<Size>(buf.size()), FHIR_VERSION_R5);
     CHECK_EQ(arr.entry_count(buf.data()), uint32_t(3), "element count");
     CHECK_EQ(arr.entry_step(buf.data()), uint16_t(8), "stride");
     auto arr_tag = static_cast<RECOVERY_TAG>(LOAD_U16(buf.data() + FF_ARRAY::RECOVERY));
@@ -293,7 +297,11 @@ static void test_string_block_rw()
     Offset write_off = 0;
     STORE_FF_STRING(buf.data(), write_off, kTestStr);
     // Read back via instance
-    FF_STRING str(0, FF_STRING::HEADER_SIZE, FHIR_VERSION_R5);
+    // The second argument is the BUFFER extent, not the block's header size.
+    // This passed HEADER_SIZE, which reads as "the arena is 14 bytes long" and
+    // is only harmless while nothing bounds-checks against it. It does now, so
+    // the payload was clamped to zero and the mistake surfaced.
+    FF_STRING str(0, static_cast<Size>(buf.size()), FHIR_VERSION_R5);
     std::string_view read = str.read_view(buf.data());
     CHECK_EQ(read, std::string_view(kTestStr), "string content");
 }

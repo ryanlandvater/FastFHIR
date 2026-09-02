@@ -14,7 +14,14 @@
 #  define FASTFHIR_VERSION_MAJOR 2026
 #endif
 #ifndef FASTFHIR_VERSION_MINOR
-#  define FASTFHIR_VERSION_MINOR 1
+// MUST match CMakeLists.txt's default (CMake is primary; CLAUDE.md:170). It
+// said 1 while CMake said 0, and BUILD.bazel defined neither -- so the two
+// build systems compiled DIFFERENT ENGINE VERSIONS from one source. That is
+// not cosmetic: the engine version is written into every stream's FF_HEADER,
+// and Recovery::find_gaps classifies a gap as benign VersionSkew rather than
+// as damage by comparing the stream's version against the reader's. Measured
+// on one artifact, the CMake build reported 8 holes and the Bazel build 30.
+#  define FASTFHIR_VERSION_MINOR 0
 #endif
 #ifndef FASTFHIR_VERSION_BUILD
 #  define FASTFHIR_VERSION_BUILD 0

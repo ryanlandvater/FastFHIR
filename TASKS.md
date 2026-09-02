@@ -24,6 +24,11 @@ Everything currently open, most urgent first. Deep detail lives in the sections 
 | Priority | Item | What it is | Where |
 |---|---|---|---|
 | **P0** | **P0-3 / REC-10…17** | Recovery: stream map, bit-similarity edge restoration, `src/FF_Recovery.cpp` | `^# ▶ P0-3` |
+| **P0** | **REC-20** | Recovery: cross-reference the two producers' holes, match 10-byte tuples by Hamming | `^# ▶ REC-20` |
+| **P1** | **REC-21** | Recovery: arrays in holes — bound the count by geometry, propose then confirm | `^# ▶ REC-21` |
+| **P0** | **REC-22** | The reader must check the self-offset witness the engine already checks | `^# ▶ REC-22` |
+| **P0** | **REC-23** | Repoints mis-attach: a unique candidate is not a corroborated one | `^# ▶ REC-23` |
+| **P1** | **BENCH-1** | Test 5 readiness: content metric, protobuf arm, sweep migration, HL7v2 pipes | `^# ▶ BENCH-1` |
 | **P0** | **AMEND/APPEND** | Amend + append must take the abstraction types, not only JSON (CAPI-12) | `^# ▶ P0 — AMEND` |
 | **P1** | CAPI-1, 2, 3, 8 | Consumer-API gaps: inline-block array writes, validator/deserializer disagreement, `ChoiceEntry` across arenas, allocating `entries()` | `^# ▶ WORK ORDER — PUBLIC API` |
 | **P1** | Block C | Archive recovery subsystem — **governed by P0-3; do not start before REC-10** | `^## Block C` |
@@ -692,9 +697,19 @@ never dereference a header field at construction (that is CAPI-15, already paid 
   `(parent_offset, field_offset, child_offset, class, hypothesis, bit_cost)`, plus the
   candidate list for every ambiguity, plus totals per class. This is the type Block C's C1
   orchestrator returns. Define it **once**, here.
-- [ ] **REC-15. `apply()` — the only mutating entry point.** Takes a report, applies only
+- [x] **REC-15. `apply()` — the only mutating entry point.** Takes a report, applies only
   records the caller selected, re-verifies each edge afterwards, and refuses silently-failed
-  writes. Never called implicitly by a constructor or by `recover()`.
+  writes. Never called implicitly by a constructor or by `recover()`. Writes into a **copy**;
+  the arena it read is never touched, so the damaged original stays available for a
+  before/after comparison and a trial can be repeated. A write that does not verify is
+  reverted and counted in `failed`. **`TagRepaired` is applied only when the tag on the wire
+  is already implausible** — the class is decided on `self_ok && !tag_ok`, which is equally
+  "the child's tag was flipped" and "the parent's offset landed on an innocent valid block",
+  and relabelling an innocent block erases the only record of what it was. Measured on a
+  512-flip artifact: applying all 61 tag rewrites bought +10 intact edges and created 59
+  unrecovered ones plus 7 holes; gated, the full apply is +322 intact, unrecovered 4 → 2,
+  no new holes. `ff_test_recovery::apply_repairs_a_copy_and_improves_it` pins the copy
+  semantics and the aggregate improvement.
 - [ ] **REC-16. Retire the half-implementation.** `Recovery::next_valid_resource_of()` and
   the whole-stream `scan_all_resources()` fallback in `src/FF_Parser.cpp` are superseded by
   REC-10/REC-11. Delete them — do not leave two mechanisms (style guide: "consolidate
@@ -720,6 +735,83 @@ slots and array headers, or mode 1 stays untestable (**F2**). `StreamFingerprint
 edge-level for the FFHR arm (**F3**). The other three arms keep entry-extraction semantics;
 the figure must say so, because the redundancy is FastFHIR-only and that asymmetry is the
 finding, not an embarrassment.
+
+---
+
+# ▶ REC-19 — REBUILD THE RECOVERY ROUTINE: TWO PRODUCERS, TOP→BOTTOM FILE
+
+**Filed 2026-08-31** (handoff §5, next-session plan). `recover()` grew into a ~1,300-line
+file whose entrance sits at the bottom; admission/classification logic lives in lambdas
+inside `recover()`. REC-19 restructures `src/FF_Recovery.cpp` so the call stack reads
+top→bottom — inline helpers predeclared at the top, the entrance `recover()` at the top of
+the call stack, each callee below its caller, leaf helpers last — and makes the two
+producers (hierarchical walk, parallel scan) first-class, each returning the
+`<offset, entry>` map plus its holes and typed failures.
+
+**Ground rules — the handoff's measured lessons are the acceptance test (do not regress):**
+- One-surviving-witness descent (defect 1); enumeration driven by parent attestation +
+  corroborated type, never the scan census alone (defects 2, 5); array elements survive a
+  damaged array header (defect 3); orphan buckets built AFTER holes close, hole candidates
+  sized via `derived_block_size` (defect 4, REC-18.6).
+- Never trust the wire tag over the slot's declared type (wrong turn 1). The ranker's
+  preference is evidence, not proof — the reapply's child corroboration is the acceptance
+  test (wrong turn 2). Tie → `Ambiguous`, never guessed (P0-3).
+- Clean-stream behavior is invariant: `clean_stream_zero_false_positives`,
+  `clean_stream_tiles_with_no_gaps`, `same_version_stream_never_reports_skew`, and the
+  reachable-blocks baseline (`60639/67032/65389/19274` refs) must not move.
+
+- [x] **REC-19.1 — File structure, top→bottom.** Inline helpers defined at the top
+  (`IsArrayTagged`, `IsTupleKind`, `IsTypedOffsetKind`, `element_shape_of`, the leaf reads
+  `tag_at` / `valid_validation` / `header_is_readable` as free functions,
+  `corroborated_tag`, `recover_follow_ref_chain`), then the entrance `recover()`, then
+  each callee below its caller (`reachable_blocks_map` → `scan` → `walk_chain` →
+  `enumerate_block_refs` → `classify_block` → `walk_array_extent` → `find_gaps`), leaf
+  helpers last. **Verify:** reading the file top→bottom traces `recover()`'s execution with
+  no forward reference below the inline block.
+- [x] **REC-19.2 — Producer payloads.** `StreamMapEntry` gains the wire `recovery` tag;
+  `StreamMap` gains `failures`; new `ProducerFailure { kind, at, expected, actual, why }`
+  with kinds `ScanTagInvalid` (scan: self-offset consistent but the recovery tag is not a
+  known type), `VTableRecoveryMismatch` (vtable/1c or tuple-tag-half expectation vs the
+  wire tag disagree), `InvalidSelfRef` (slot names a block that does not self-validate).
+  Both producers fill the same payload; the report carries the merged failure list.
+- [x] **REC-19.3 — `recover_follow_ref_chain` inline routine.** The one routine a
+  reference is judged by: child self-validation, then expected recovery (1c for
+  typed-offset kinds; the tuple's stored tag half for choice/resource — F1). Damaged →
+  failure recorded + caller queues the repair; coherent → caller walks deeper. Callable
+  from the initial walk (hierarchical audit) and the reapply loop.
+- [x] **REC-19.4 — `reachable_blocks_map()` as the hierarchical producer.** The walk with
+  the corroborated type carried down, sized per visited block via `classify_block` (the
+  walk alone returns bare offsets — sizes are the delta), failures recorded via
+  REC-19.3, gaps computed over the walk's own coverage.
+- [x] **REC-19.5 — `scan()` as the scanned producer.** Chunked parallel census (arena
+  split across hardware-concurrency threads, per-chunk candidate vectors merged after
+  join; sequential below 1 MiB); per-entry tag audit → `ScanTagInvalid`. The offered tag
+  is a single witness: recorded, never trusted to decide a type (defect 5).
+- [x] **REC-19.6 — Two-word hamming rank.** The ranker costs both words: the self-offset
+  word AND the recovery word (wire tag at the child vs expected). Per-word budget stays
+  `FF_RECOVERY_MAX_FLIPS` (D1/D2 discipline is per flip site); the sum orders hypotheses;
+  tie → `Ambiguous`. Typed-kind behavior is unchanged (a coherent target has tag cost 0);
+  choice/resource tuples now pay the tag distance too. Repoint cost unchanged: orphan
+  candidates are bucketed BY the declared type, so their tag distance is 0 by
+  construction; sized holes remain the REC-18.6 evidence.
+- [x] **REC-19.7 — Reapply loop (the report-side half of REC-15).** After classification,
+  every `Corroborated` / `TagRepaired` / `PositionRepaired` block is re-enumerated under
+  the corrected type; each ref is judged by `recover_follow_ref_chain` — damaged ones are
+  classified immediately, coherent ones descend. Visited-set + `FF_RECOVERY_MAX_DEPTH`
+  bound. Doubles as wrong-turn-2's self-verification: a wrong repair yields children with
+  no surviving witness and they classify `Unrecovered` instead of being believed. The gap
+  sweep re-runs on the augmented map (holes shrink when a repoint claims bytes).
+- [x] **REC-19.8 — `find_gaps` semantics unchanged.** `Hole` vs `VersionSkew` vs
+  `Trailing`; a decoder older than the builder yields per-tag systematic trailing runs —
+  counted apart from damage ("small bytes at the end as allowed holes"); compact archives
+  still refused.
+- [ ] **REC-19.9 — Test + benchmark audit.** All 11 `test_recovery.cpp` tests stay green;
+  clean-stream numbers unchanged; benchmark `--mode report` over ≥200 single-bit seeds
+  (`../FastFHIR-benchmark`, execution contract rule 9): `blocks_total` vs baseline,
+  invention = 0 (handoff §5.3).
+
+**Verify (block).** `cmake --build build --target build_all -j` clean, `ctest --preset
+ninja` 43/43, `pytest tests/generator -q` 48 passed, then the probe per REC-19.9.
 
 ---
 
@@ -6233,6 +6325,551 @@ fix: for CAPI-1 a field-by-field-assembled `Observation.category` that reads bac
 CAPI-2 the CAPI-1 stream rejected by `validate_FFHR_stream()`; for CAPI-3 a
 `valueQuantity` hydrated from arena A, stored into arena B, and read back equal.
 
+
+---
+
+# ▶ REC-20 — TWO PRODUCERS, CROSS-REFERENCED HOLES, RANKED TUPLE MATCHING
+
+**Ryan, 2026-09-01. Design, not yet built.** Read this before touching the hole
+matching in `src/FF_Recovery.cpp`; the current pass is a weaker first cut of it.
+
+## The two streams are complementary, and neither is sufficient
+
+Run in parallel, as they already do:
+
+| producer | finds | misses |
+|---|---|---|
+| **hierarchy walk** | broken `BlockRef`s — a parent slot whose target does not resolve | a block nothing points at |
+| **block scan** | orphans — self-consistent blocks nothing references | a block whose VALIDATION is damaged |
+
+Each sees what the other cannot. **Both locate holes, and the two hole lists must
+be cross-referenced** rather than either being taken alone: a run of bytes the
+walk cannot attribute and the scan cannot claim is a hole with high confidence;
+one only the walk misses may simply be an orphan the scan holds.
+
+## The matching is an assignment problem, and the BROKEN REFS drive it
+
+After the orphan pass has consumed what it can, what remains is `x` broken block
+refs and `y` holes, and in practice **x == y**. Do not treat the leftovers as
+independent searches — match them.
+
+**The broken refs are the event loop, not the bytes.** There are a great many
+hole bytes and very few broken refs, so the refs are the entry point and the
+outer iteration. Sweeping bytes and asking "does any ref want this position"
+inverts the cheap and expensive sides of the problem; iterating refs and asking
+"which position does this one want" does not. The byte sweep runs **once**, up
+front, to build the ranked search space — it is not part of the loop.
+
+Two vocabularies, kept apart because both are natural and they mean opposite
+things:
+
+- **BROKEN REF** — the x side, the driver. A parent slot whose target does not
+  resolve, carrying a **10-byte tuple** `{corrupted offset (8) | expected
+  recovery (2)}`. The expected recovery comes from the V-Table for a
+  typed-offset slot (compiled, uncorruptible) and from the stored tag half for a
+  choice/resource tuple (on the wire, and therefore itself suspect).
+- **CANDIDATE** — the y side, the search space. A position inside a hole where a
+  block plausibly started.
+
+### 1. Build the ranked CANDIDATE list once
+
+Sweep each hole byte by byte. At every position take the `uint64` and hamming it
+against the position itself — **a block encodes its own offset**, so a damaged
+VALIDATION word is still a Hamming neighbour of where it sits. **Rank by that
+self-similarity**: the positions whose word most nearly encodes their own offset
+rank top, because that is the least likely thing to happen by accident and the
+most likely thing to be a corrupted validation word.
+
+The distribution is sharply bimodal. Measured over 12,227 hole bytes on a
+512-flip artifact: `1:35  2:14`, then a flat coincidence floor `3:7  4:15  5:14
+6:15  7:10  8:10`. Hole bytes are not random — the arena is full of offset words
+that share high bits with their own position — so the signal is the spike, not
+the tail, and the band must be tight. Admitting the floor measurably destroyed
+good repairs: it tied against correct orphan repoints and turned 11 clean
+verdicts `Ambiguous`.
+
+### 2. Drive the loop from the broken refs
+
+For each broken ref, hamming its 10-byte tuple against the **10 bytes** at each
+ranked candidate (`{validation-ish (8) | recovery-ish (2)}`) — one distance over
+the whole tuple, not three separate distances summed as the current code does.
+Cheapest unique match under the flip budget wins; ties stay `Ambiguous` and are
+never guessed (P0-3).
+
+Cost is O(refs x candidates) with candidates already pruned by the ranking band,
+rather than O(bytes x refs).
+
+### 3. Follow every repair immediately — this is the design, not a detail
+
+**The moment a reference is repaired, assess the block it names.** Not on a later
+pass: right there, inside the loop, before the next reference is considered.
+
+The reason is that the repaired block is not merely *reachable* now — it is a
+**parent**. Nothing has ever looked at its outgoing references. The hierarchy
+walk could not reach it and the scan could not identify it, so its slots were
+never enumerated, and any damage inside them was never counted, never reported,
+and never repaired. Those references are invisible damage until the block
+rejoins the chain, and they become visible at exactly one moment: this one.
+
+So enumerate it through `recover_follow_ref_chain` — the same router the
+hierarchy walk uses, so a break found inside a just-recovered block is judged
+and reported identically to one the walk found itself — and let whatever comes
+back broken join **this** work list. One repair exposes a parent, that parent
+exposes its children, and a chain of losses unwinds from a single recovered
+edge.
+
+**The batch test here must be the weak one.** `refs_are_coherent` refuses a
+batch containing any witness-less child. That is correct for "did I read this
+under the right type" and exactly wrong here, because a damaged child is the
+thing being hunted and refusing the batch discards it. Use
+`batch_passes(..., BatchTest::NoWildPointers)`: is anything a wild pointer? A
+wrong V-Table lifts offsets out of positions that hold none and they are
+overwhelmingly outside the stream; a correct read of a damaged block yields
+children that are addressable but some of them broken. Getting this backwards silences the feedback loop
+entirely — it only fires when the recovered block happens to be undamaged, which
+is the case that needed no help.
+
+### 4. Then widen, and iterate
+
+A repaired block is admitted to the census, `find_gaps` re-runs, and a hole that
+held more than one lost block shows its remainder. When the loop stalls with
+references still broken, **widen the signature band by one bit and try the
+remainder** — capped at `FF_RECOVERY_MAX_FLIPS` so one budget governs the whole
+engine.
+
+Widening is safe only because it happens last, against a pool earlier rounds
+have emptied. At 2 bits the band is a clean signal across the whole arena; the
+3+ band is a flat coincidence floor over 12,227 hole bytes, and admitting it up
+front turned 11 clean verdicts `Ambiguous`. Eight holes is a different
+proposition from twelve thousand bytes: the same 4-bit band that is noise across
+the arena is decisive across a handful of runs nothing else could claim.
+
+## What exists today, and how it falls short
+
+`src/FF_Recovery.cpp` already has the hole-candidate sweep (step 2) and a
+three-distance score, gated at 2 bits. It does **not**: build the CANDIDATE
+tuple list explicitly, match tuple-against-tuple as one Hamming distance, or
+cross-reference the two producers' hole lists. Measured on the 512-flip
+artifact the current cut closes 27 of 44 holes and recovers 103 of the 228 lost
+references — the remainder is what step 3 is for.
+
+- [x] **REC-20.1** Cross-reference the hierarchy and scan hole lists; a hole
+      both agree on ranks above one only the walk reports.
+- [x] **REC-20.2** Build the ranked CANDIDATE list ONCE: every position inside a
+      hole, ranked by `hamming(u64 at p, p)` — highest self-similarity first,
+      tight band (see the histogram above; the floor destroys good repairs).
+- [x] **REC-20.3** Collect each uncorrected broken ref's 10-byte
+      `{corrupted offset | expected recovery}` tuple.
+- [x] **REC-20.4** **Drive the loop from the broken refs**, not the bytes: for
+      each ref, hamming its tuple against the 10 bytes at each ranked candidate
+      as a SINGLE distance over the whole tuple. Unique cheapest under budget
+      wins; ties stay Ambiguous. O(refs x candidates), not O(bytes x refs).
+- [x] **REC-20.5** Follow every repair IMMEDIATELY: enumerate the newly
+      recovered block through `recover_follow_ref_chain`, because it is now a
+      parent whose own references have never been seen, and feed whatever is
+      broken back into this same loop. Gate with `BatchTest::NoWildPointers`,
+      never `EveryChildCorroborates` — the latter discards exactly the broken
+      references the loop consumes.
+- [x] **REC-20.6** Widen the signature band by one bit when the loop stalls with
+      references still broken, capped at `FF_RECOVERY_MAX_FLIPS`. Safe only
+      because the pool has shrunk by then.
+- [x] **REC-20.7** Iterate to a fixed point, re-tiling between rounds.
+
+**Verify.** Zero invented references — not negotiable, and it has regressed
+twice (handoff §2.7, §2.4). Measured 40 single-bit trials: 2 deviating, **0
+inventing**.
+
+**Result (2026-09-02), same artifacts, isolated against `b7b6dcb`.** Note the
+hole counts moved once more when the CMake/Bazel engine-version split was fixed
+(`6d823df`): gaps the older reader had excused as `VersionSkew` are now counted
+honestly by both builds, so compare only figures taken after that commit.
+
+| artifact | refs | holes | version skew | ambiguous | unrecovered |
+|---|---|---|---|---|---|
+| 64 flips | 16045 | 3 | 0 | 0 | 0 |
+| 256 flips | 16009 → **16015** | 15 → **4** | 8 | 5 → **0** | 3 |
+| 512 flips | 15946 → **15987** | 35 → **8** | 22 | 10 → **1** | 3 → **24** |
+
+`unrecovered` RISING at 512 flips is the feedback loop working, not a
+regression. Following each repair into the structure enumerates references that
+had never been seen — +41 of them — and 21 are damaged beyond repair. They were
+always lost; the difference is that they are now counted and reported instead of
+being invisible. A missing reference that is reported is honest; one nothing
+knows about is not.
+
+Reference counts are flat; the gain is in *certainty*. Ambiguous edges fall 5x
+at 512 flips because one distance over the whole tuple resolves ties that three
+separately-thresholded distances left level.
+
+**The earlier "27 of 44 holes, 103 of 228 refs" figure is not a valid bar** — it
+was measured before the bounds work (`daa435d`…`80ef0ba`), which changed what
+`find_gaps` and the classifier see. Isolating REC-20 required stashing it and
+re-measuring `b7b6dcb` on the same files; do that rather than trusting a number
+recorded more than a couple of commits back.
+
+**One deviation from the spec, and it was measured.** The spec says to hamming
+the ref's 10-byte tuple against the candidate's 10 bytes. Implemented literally
+— parent's damaged offset vs the block's damaged self-offset word — that scored
+WORSE: 15944 refs against 15946, because it compares two noisy copies of the
+same value. Scoring the offset term against the candidate's *exact position*
+and carrying its `self_cost` as separate evidence recovers the difference: the
+position is noise-free, and comparing one noisy observation to a known value
+beats comparing two noisy observations. The tag term is still a direct
+tuple-half comparison. Kept the position form.
+
+---
+
+# ▶ REC-21 — ARRAYS IN HOLES: PROPOSE, THEN CONFIRM
+
+**Ryan, 2026-09-02. Design, not started.** REC-20 recovers a block by matching a
+broken reference to a position. This is the constraint-propagation half: what to
+do once the thing in the hole is an ARRAY, whose entry count is unknown because
+its header went with it.
+
+## The sudoku framing
+
+`walk_array_extent` today walks entries and stops at the first that does not
+validate. That is right when the entries are intact and gives up early when they
+are not — which is precisely the damaged case. Replace "walk until something
+fails" with "propose, then confirm", and let the constraints tighten each other:
+
+- **Hole length bounds the count from above.** A hole holding an array admits at
+  most `(hole_length - FF_ARRAY::HEADER_SIZE) / stride` entries. That is a real
+  ceiling even when `ENTRY_COUNT` is destroyed, and it costs nothing to compute.
+- **A confirmed entry back-solves the array's address.** An entry confirmed at
+  position `p` as index `i` puts the array header at
+  `p - FF_ARRAY::HEADER_SIZE - i * stride`. One good entry locates the array
+  even when the array's own two witnesses are gone.
+- **Every confirmation shrinks the hole**, which tightens the bound on whatever
+  else is in it, which makes the next proposal cheaper. This is the same
+  iterate-to-a-fixed-point loop REC-20 already runs; these are additional
+  constraints to feed it.
+
+Provisional entries are candidates, not facts: later rounds confirm them (their
+targets resolve) or drop them. **Nothing provisional may reach the report as a
+recovered reference** — the standing constraint is zero invented references, and
+a proposal that cannot be confirmed is exactly an invention if it is counted.
+
+## Why arrays specifically
+
+The format concentrates witnesses at the array on purpose. Entries are inline
+and carry no validation of their own — they are not pointers to distant objects,
+so the array's VALIDATION (where it is) and RECOVERY (what is inside) cover all
+of them at once. Efficient, and it means the blast radius of losing an array is
+its entire contents: **N references from a two-bit event**, not one.
+
+That is why a single broken generation in
+`ff_test_recovery::generational_holes_recover_from_the_root` costs three
+references rather than one, and why the array case is worth more than its share
+of the code.
+
+## Known asymmetry, worth its own coverage
+
+An **inline-block array element has one witness, not two**: the slot that names
+it IS its own header (`parent + field == child`, because +0 of an inline entry is
+the element's own offset). A single flip there destroys the only witness, which
+makes inline elements strictly less recoverable than a pointed-to block — and
+makes "destroy both witnesses" impossible to express for them. The generational
+test skips such links deliberately (`two_witnesses`); the case deserves a test
+of its own that asserts the weaker guarantee rather than pretending it is the
+same one.
+
+## Also here, because it is the same shape
+
+- **Byte arrays** (`FF_STRING` and everything sharing its layout, opaque JSON
+  included) are a third shape: an extent and no children.
+  `enumerate_block_refs` now dispatches them to "no references", which is a
+  different answer from "unknown tag". Their extent recovery — a damaged LENGTH
+  against a hole boundary — is unexamined.
+- **CANDIDATES are a flat vector**, scanned in full by every reference. Fine for
+  a few refs against a few thousand candidates; if the pool grows, bucket by
+  declared tag the way orphans already are.
+
+- [x] **REC-21.1** Bound a hole-resident array's entry count by hole geometry.
+      Done. `classify_one` bounds a stamped ENTRY_COUNT by the distance to the
+      next census-known block (`StreamMap::upper_bound`), not by the arena --
+      *it must fit in the hole, not merely in the file*. The bound applies to
+      every shape EXCEPT `InlineBlock`, whose elements legitimately are map
+      entries inside the region; applying it there flagged 3 clean arrays.
+      `ElementShape::None` (raw scalars) gains its first bound ever, having
+      nothing walkable. The verdict now CARRIES the derived count
+      (`BlockVerdict::derived_extent`) instead of making `apply()` re-derive it
+      by a different route -- one owner per fact.
+- [ ] **REC-21.2** Back-solve the array address from a confirmed entry.
+- [ ] **REC-21.3** Provisional entries: propose, confirm in later rounds, drop
+      the unconfirmed. Never report a proposal as recovered.
+- [ ] **REC-21.4** A test for the single-witness guarantee on inline elements.
+- [ ] **REC-21.5** Byte-array extent recovery against a hole boundary.
+
+---
+
+# ▶ REC-22 — THE READER MUST ASK THE WITNESS THE ENGINE ALREADY ASKS
+
+**P0.** Two facts sit on every block: a self-offset witness (`VALIDATION` ==
+its own offset) and a `RECOVERY_TAG`. `validate_FFHR_stream()` checks the
+witness. `Recovery` checks the witness. The **navigation path never did** --
+`FF_BLOCK_IN_BOUNDS` asked only whether the bytes existed.
+
+So the two halves of the system disagreed about which references are real, and
+the credulous half is the one every consumer calls. On a 1 MB Synthea bundle
+with 512 flipped bits, the recovery report was *correct* -- zero invented
+references, because it refused those targets -- while the exported document
+carried **20,057 fabricated leaf values** the reader had walked to anyway. A
+single flipped bit made an ABSENT `Observation.triggeredBy` read as a present
+array of 29,303 entries.
+
+**Reference-level integrity is not content-level integrity.** A recovery
+benchmark that measures only the former will report a number that is true and
+worthless. Measure the leaves.
+
+- [x] **REC-22.1** `FF_BLOCK_VOUCHES(base, off, size, width)` in
+      `FF_Primitives.hpp` -- fits AND vouches -- at all 10 navigation hops in
+      `FF_Parser.cpp`. Spurious values at 512 flips: **20,057 -> 18**; clean
+      baseline unchanged (16,071 refs / 10,503 values); ctest 44/44.
+
+- [x] **REC-22.2 Tag consensus.** Done. A resource/choice reference is a
+      10-byte tuple `{offset(8), tag(2)}`, so the type is on the wire TWICE --
+      beside the offset, and in the header of the block it names. `BlockRef`
+      already carried both (`declared` = the slot half, `actual` = the child's),
+      and the classifier compared only `actual` against the schema.
+
+      Measured, both directions, on single bit flips of the same bundle:
+
+      | seed | flipped copy | ranker's verdict | outcome |
+      |---|---|---|---|
+      | 19 | slot copy `0x1012 -> 0x1010` | TagRepaired, **wrong way** | 6 fields lost, 3 invented |
+      | 33 | child header, identically | TagRepaired, right way | suppressed by the gate |
+
+      Both cost exactly 1 bit, so the ranker broke the tie by preferring the
+      parent -- right half the time -- and `apply()`'s plausibility gate then
+      suppressed the write either way. That gate was the blunt stand-in for an
+      adjudication that did not exist, which is why blanket tag rewrites once
+      measured *strictly worse than not repairing* (+10 intact, -59, +7 holes).
+
+      **The third opinion is coherence, and the machinery already existed.**
+      A type is a hypothesis about a V-Table: `enumerate_block_refs` takes the
+      tag as a parameter, and `batch_passes(EveryChildCorroborates)` already
+      says whether a hypothesised V-Table yields children that vouch for
+      themselves. `Recovery::reads_as()` asks that question; `adjudicate_tag()`
+      asks it of both candidates and is decisive only when exactly one is
+      coherent. A block with no enumerable children answers neither way and
+      reports `Undecided` rather than passing vacuously.
+
+      The verdict CARRIES the result (`consensus_tag`, `damaged_copy`) and
+      `apply()` enacts it -- including writing the tuple's own tag half, which
+      nothing could repair before. Only tuple kinds are adjudicated: a plain
+      block/string slot takes its expectation from the compiled schema, which
+      damage cannot reach, so there is no second wire copy and nothing to weigh.
+
+      Result -- **spurious fabrication is now zero across the whole sweep**, and
+      all 40 single-bit seeds recover the document perfectly:
+
+      | flips | correct | lost | wrong | spurious | was (spurious) |
+      |---|---|---|---|---|---|
+      | 0 | 10503 | 0 | 0 | 0 | 0 |
+      | 1 | 10503 | 0 | 0 | 0 | 0 |
+      | 8 | 10503 | 0 | 0 | 0 | 0 |
+      | 64 | 10489 | 14 | 0 | 0 | 0 |
+      | 256 | 10383 | 112 | 8 | **0** | 3 |
+      | 512 | 10134 | 347 | 22 | **0** | 18 |
+      | 2048 | 0 | 10503 | 0 | 0 | 0 |
+
+      Covered by `ff_test_recovery::tag_consensus_resolves_either_damaged_copy`,
+      which damages each half of every resource tuple in turn and asserts both
+      that a decisive verdict is never wrong AND that it is decisive at all --
+      the second half matters, since checking only the first passes trivially by
+      never deciding anything.
+
+      Residual: `wrong` (a value that reads back as a different value) is still
+      8 and 22 at 256/512 flips. Diagnosed — it is misattribution, not damage.
+      See REC-23.
+
+---
+
+# ▶ REC-23 — A UNIQUE CANDIDATE IS NOT A CORROBORATED ONE
+
+**P0.** The `wrong` column — a field that reads back as a *different* value —
+is the most dangerous outcome the format produces. It is not fabrication (the
+bytes are genuine) and not loss (nothing is missing): it is **misattribution**,
+real clinical data hung on the wrong entry, and it reads as perfectly valid
+FHIR. A lab result silently moved to another encounter is worse than a lab
+result that is visibly gone.
+
+**Diagnosed at 512 flips.** All 22 wrong values come from **11 mis-attached
+repoints** out of 206 `Corroborated` verdicts (94.7% correct). Tag repairs were
+on the right address 70/70, so this is entirely the repoint path. All 11 are the
+same slot — `Bundle.entry[].resource` (field 50) — and they change *coherently*:
+`entry[1180]` swapped category, display, effective, issued and id together,
+because the whole entry now points at a different Observation.
+
+**The mechanism.** The flip budget IS enforced, so distance is not the problem.
+In 10 of 11 the **true child was not a candidate at all**: at 512 flips its own
+witness was destroyed too, so the byte scan never listed it as an orphan. Some
+*other* orphan then sat within 8 bits of the damaged offset, and with
+`cands=1` the `off_unique` test was trivially satisfied and the repoint applied
+with full confidence.
+
+> **Uniqueness is a property of the SEARCH, not of the evidence.** `cands == 1`
+> means "the search found one thing", not "the search discriminated". In a
+> stream full of structurally identical orphans it is nearly no evidence at all,
+> yet it currently carries the same weight as corroboration.
+
+Coherence — the REC-22.2 adjudicator — cannot help here: every Observation
+reads coherently as an Observation. The discriminator has to be **locality**.
+
+**Locality is the unused witness, and it is strong.** The writer appends
+children as it walks entries, so a resource array's targets ascend with parent
+order: measured **1471/1472 = 99.9%** monotonic on a clean Synthea bundle. The
+mis-attachments violate it grossly — offsets like 80307 and 166438 chosen where
+the neighbours bracket ~750000.
+
+Bracketing each repoint by its nearest INTACT neighbours (evidence recovery
+already holds — 1037 intact anchors in that field):
+
+| | count | locality rejects |
+|---|---|---|
+| mis-attached | 11 | **10** |
+| correct | 195 | **0** |
+
+Ten of eleven caught, zero false positives. This is the "sudoku" constraint:
+the neighbours constrain the cell.
+
+- [ ] **REC-23.1** Bracket a repoint candidate by the nearest intact same-field
+      references on either side in parent order; reject candidates outside it.
+      A rejected sole candidate makes the verdict `Unrecovered`, not a guess —
+      losing a reference honestly beats attaching the wrong patient's data.
+- [ ] **REC-23.2** Exclusive assignment. One of the 11 was **contention**: two
+      refs chose the same orphan, and the greedy per-ref pick let one steal the
+      child the other needed. Resolve claims globally rather than per-reference.
+- [ ] **REC-23.3** Stop treating `cands == 1` as confidence. A sole candidate
+      with no corroborating witness should rank below a corroborated one and
+      may need its own report class ("only possibility, unverified").
+- [ ] **REC-23.4** Test: mis-attribution must be measured, not just fabrication.
+      The four-outcome check already separates `wrong` from `spurious`; the
+      recovery suite should assert on it directly against a known denominator.
+
+**Verify.** `wrong` must fall at 256/512 flips with `correct` rising and
+`spurious` staying at 0; the clean baseline (16,071 refs / 10,503 values) must
+not move; and no repoint that is currently correct may be rejected.
+
+- [ ] **REC-22.3** A reader-side test that a block failing its witness reads as
+      absent -- the `test_views.cpp` shape, on the navigation path.
+
+- [ ] **REC-22.4** Silent-degradation review. The style guide forbids returning
+      empty and hoping the caller notices; CLAUDE.md invariant 5 makes the read
+      path deliberately falsy-not-throwing. Both cannot be fully satisfied, so a
+      refused hop should be COUNTABLE -- a per-parse counter the caller may read,
+      the `FIFO::Queue::debug_violations()` pattern.
+
+**Verify.** Clean baseline unchanged; four-outcome sweep; and the 40-seed
+single-bit gate, where fabrication must be zero:
+
+| flips | correct | lost | wrong | spurious |
+|---|---|---|---|---|
+| 0 | 10503 | 0 | 0 | 0 |
+| 1 | 10503 | 0 | 0 | 0 |
+| 8 | 10503 | 0 | 0 | 0 |
+| 64 | 10489 | 14 | 0 | 0 |
+| 256 | 10383 | 112 | 8 | 0 |
+| 512 | 10134 | 347 | 22 | 0 |
+| 2048 | 0 | 10503 | 0 | 0 |
+
+2048 flips lose everything and invent nothing -- the format fails honestly.
+With REC-22.1 and REC-22.2 both in, **spurious is zero at every flip count**
+and all 40 single-bit seeds recover the document perfectly.
+
+**Verify.** `ff_test_recovery::generational_holes_recover_from_the_root` is the
+acceptance test and is **currently RED**: 21 of 24 references, 1 surviving hole,
+the grandchild generation not recovered. It asserts against a denominator taken
+before the damage, which is the point — every earlier measurement in this area
+was taken against a corpus whose damage was never enumerated, so numbers going
+up read as discoveries when they should have been assertions.
+
+**And check the CLEAN baseline every time.** Giving arrays their own routine
+without also giving them sole ownership of their entries counted each entry
+twice and inflated a clean stream from 16,071 references to 21,566 — which on
+damaged streams would have looked like a 34% improvement. The clean count is the
+control.
+
+Current figures, for comparison: clean 16,071; 256 flips 16,035 (4 holes);
+512 flips 16,001 (8 holes); 40 single-bit trials, 0 invented.
+
+---
+
+# ▶ BENCH-1 — WHAT TEST 5 STILL NEEDS BEFORE THE RECOVERY STUDY
+
+**2026-09-02.** The engine side is ready; the instrument is not. `corruption_probe`
+now has `corrupt / count / recover / report / extract / verify` and the four-outcome
+content check (`correct / lost / wrong / spurious`) works end to end for three of four
+arms. What remains is listed in the order it blocks publication.
+
+## Blocking — a number published today would be wrong
+
+- [ ] **BENCH-1.1 — the FFHR arm fabricates content at high damage.** Reference-level
+      recovery reports **0 invented references**, and the content check disagrees
+      violently:
+
+      | flips | correct | lost | wrong | **spurious** |
+      |---:|---:|---:|---:|---:|
+      | 8 | 10503 | 0 | 0 | 0 |
+      | 64 | 10470 | 33 | 0 | 0 |
+      | 256 | 10260 | 239 | 4 | 2 |
+      | 512 | 9975 | 513 | 15 | **29307** |
+
+      29,307 fabricated leaf values against a 10,503-value baseline. The jump between
+      256 and 512 is too sharp to be diffuse damage; the shape fits a corrupted array
+      `ENTRY_COUNT` that the READ path trusts, walking thousands of entries that were
+      never written. **Reference-level integrity does not imply content-level
+      integrity** — the recovery engine invents no references while the reader invents
+      29k values. Diagnose before anything is published; the honest headline of this
+      whole study is the `wrong` and `spurious` columns.
+- [ ] **BENCH-1.2 — no protobuf extractor.** Three of four arms can answer the content
+      question. Protobuf needs its own (reflection or `TextFormat`), or the study
+      publishes a three-arm comparison and says so.
+- [ ] **BENCH-1.3 — `recovery_sweep.py` still emits the count ratio.** It writes
+      `recovered_pct` from `--mode count` / `--mode recover`. The sweep must drive
+      `extract` + `verify` and emit all four outcomes per trial, or the CSV keeps saying
+      the thing the content check exists to replace.
+
+## Blocking — the comparison is not valid without these
+
+- [ ] **BENCH-1.4 — the HL7v2 corruptor never touches a pipe.** Its structural positions
+      are `'\r'` and the first three characters of each segment; its recovery check asks
+      only whether a line still starts with a known segment name. The failure mode HL7v2
+      is notorious for is neither injected nor detected. Measured, HL7v2 loses exactly
+      **1.000 segments per flip** at every level from the first bit — it recovers
+      nothing, and only looks good because 8,939 is a large denominator.
+- [ ] **BENCH-1.5 — publish the per-flip normalization, not the percentage curve.** The
+      arms count different units against different denominators (block references
+      16,071; segments 8,939; resource markers 1,473), so percentages are not
+      comparable. Units lost per flipped bit are:
+
+      | flips | fastfhir | hl7v2 | json | protobuf |
+      |---:|---:|---:|---:|---:|
+      | 1 | **0.000** | 1.000 | 1.399 | 39.7 |
+      | 8 | **0.100** | 1.000 | 1.040 | 21.9 |
+      | 512 | **0.719** | 0.978 | 0.818 | 2.6 |
+
+## Non-blocking, but the study is weaker without them
+
+- [ ] **BENCH-1.6 — `bench_test_5.hpp` is still dead code.** No arm TU includes it, no
+      driver, no BUILD target. Its parent-anchored `UnitRef{parent, offset, tag}` is the
+      only design that can detect MISATTACHMENT — a resync onto the wrong parent that
+      the current count ratio scores as success. Either wire it up or drop it; leaving a
+      designed-but-unbuilt second instrument in the tree invites someone to trust it.
+- [ ] **BENCH-1.7 — record the corruption model's narrowness.** Across 15 single-bit
+      seeds the FFHR corruptor hit exactly two structures (a `0x1012` block header, or
+      +50…+58 inside a `0x2005` block), and it targets only 29,514 of 1,071,990 bytes
+      (2.7%). 512 flips there is adversarially equivalent to roughly 19,000 random
+      flips. Say so beside any curve.
+- [ ] **BENCH-1.8 — pin the engine version in published results.** CMake and Bazel
+      compiled different engine versions until `6d823df`, and `find_gaps` classifies
+      `VersionSkew` vs `Hole` on that comparison. Any figure taken before that commit is
+      one build's answer, unlabelled.
+
+**Ready today:** the engine. `ctest` 44/44, `bazel test //...` 17/17, clean baseline
+16,071 references unchanged, 40 single-bit trials with 0 invented references, and
+`generational_holes_recover_from_the_root` passing at 24/24 with zero holes.
 
 ---
 

@@ -56,7 +56,16 @@ cc_binary(
     name = "ff_compact",
     srcs = ["tools/compactor/FF_Compact.cpp"],
     copts = _COPTS,
-    defines = ["FASTFHIR_HAS_OPENSSL"],
+    # The engine version must match CMakeLists.txt and FF_Version.hpp exactly.
+    # Leaving it to the header fallback is what let Bazel compile 2026.1 while
+    # CMake compiled 2026.0, which made the same recover() call disagree about
+    # what is a hole and what is version skew.
+    defines = [
+        "FASTFHIR_HAS_OPENSSL",
+        "FASTFHIR_VERSION_MAJOR=2026",
+        "FASTFHIR_VERSION_MINOR=0",
+        "FASTFHIR_VERSION_BUILD=0",
+    ],
     deps = [":fastfhir", "@boringssl//:crypto"],
 )
 

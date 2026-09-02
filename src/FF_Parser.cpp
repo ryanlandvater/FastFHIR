@@ -250,7 +250,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
 
         case FF_FIELD_RESOURCE: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (child_offset == FF_NULL_OFFSET) return {};
+            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
             RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, slot_offset);
             // Same rule as the standard path: the kind follows the tag, so an
             // out-of-profile resource retained as opaque JSON is walked as the
@@ -263,7 +263,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
 
         case FF_FIELD_ARRAY: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (child_offset == FF_NULL_OFFSET) return {};
+            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
             FF_ARRAY arr_hdr(child_offset, size, version, e.m_engine_version);
             bool entries_are_offsets = arr_hdr.entries_are_pointers(e.base);
             return Node(e.base, size, version, child_offset, expected_tag, schema_kind,
@@ -272,7 +272,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
 
         case FF_FIELD_STRING: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (child_offset == FF_NULL_OFFSET) return {};
+            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
             // The stored tag, not RECOVER_FF_STRING assumed: an opaque-JSON
             // payload shares this layout and must keep its own identity, or the
             // render sites quote and escape a whole resource.
@@ -283,7 +283,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
 
         default: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (child_offset == FF_NULL_OFFSET) return {};
+            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
             RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, child_offset);
             // The recovery tag is ground truth, exactly as in the standard path
             // above -- and this branch is missing that rule was a live defect,
@@ -1317,7 +1317,7 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
                 // it were ASCII -- raw bytes straight into the JSON.
                 const Offset block_off =
                     FF_ResolveCodeableConceptOffset(raw, parent_offset);
-                const auto decoded = FF_DECODE_CODEABLE_CONCEPT(base, block_off, version);
+                const auto decoded = FF_DECODE_CODEABLE_CONCEPT(base, block_off, version, m_size);
                 if (decoded.label.empty()) {
                     out << "null";
                 } else {
@@ -1344,7 +1344,7 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
             if (raw == FF_DATETIME_NULL) { out << "null"; break; }
             std::string dt_text;
             if (FF_DATETIME_IS_FALLBACK(raw)) {
-                FF_STRING s(FF_ResolveDateTimeOffset(raw, parent_offset), 0, version);
+                FF_STRING s(FF_ResolveDateTimeOffset(raw, parent_offset), m_size, version);
                 dt_text = std::string(s.read_view(base));
             } else {
                 dt_text = FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(raw), target_recovery);
@@ -1444,7 +1444,7 @@ Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version,
     }
     
     Offset child_off = LOAD_U64(base + value_offset);
-    if (child_off == FF_NULL_OFFSET) return {}; 
+    if (!FF_BLOCK_VOUCHES(base, child_off, size)) return {};
     
     FF_FieldKind dynamic_kind = FF_FIELD_BLOCK;
     switch (tag) {
@@ -1597,7 +1597,7 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
     // --- POINTER TABLE (variable-length elements: every FF_STRING-backed field) ---
     if (arr.entries_are_pointers(n.m_base)) {
         const Offset child_off = LOAD_U64(n.m_base + item_ptr);
-        if (child_off == FF_NULL_OFFSET) return {};
+        if (!FF_BLOCK_VOUCHES(n.m_base, child_off, n.m_size)) return {};
         // The pointed-to block's own tag outranks even the array header here:
         // a `code` array declares RECOVER_FF_STRING and stores FF_STRINGs, and
         // a dateTime array declares RECOVER_FF_DATETIME and stores them too.
@@ -1610,14 +1610,30 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
     // --- INLINE POLYMORPHIC TUPLE (10 bytes: offset + concrete tag) ---
     if (elem == RECOVER_FF_RESOURCE) {
         const Offset actual_off = LOAD_U64(n.m_base + item_ptr);
-        if (actual_off == FF_NULL_OFFSET) return {};
+        if (!FF_BLOCK_VOUCHES(n.m_base, actual_off, n.m_size)) return {};
 
         const RECOVERY_TAG tuple_tag = FF_GET_RECOVERY_TAG(n.m_base, item_ptr);
         const RECOVERY_TAG block_tag = FF_GET_RECOVERY_TAG(n.m_base, actual_off);
-        if (tuple_tag != block_tag) throw std::runtime_error(
-            "FastFHIR: inline polymorphic tuple array (RECOVER_FF_RESOURCE) declares tag " +
-            std::to_string(tuple_tag) + " but the block it points at carries " +
-            std::to_string(block_tag));
+        if (tuple_tag != block_tag) {
+            // ONE DAMAGED ELEMENT IS NOT A DAMAGED DOCUMENT.
+            //
+            // The two halves of a tuple disagreeing means this element is
+            // corrupt, and that is worth knowing -- but this used to THROW, and
+            // a throw from a per-element accessor does not stay local. entries()
+            // walks elements in a loop, so the first bad tuple aborted the whole
+            // array; and in a Bundle the entire payload hangs off exactly one
+            // array. Measured: a stream whose references recovery had restored
+            // to 99.9% still yielded ZERO readable values, because one element
+            // of Bundle.entry raised and took the document with it.
+            //
+            // The read path's contract is falsy Nodes and null sentinels, not
+            // exceptions (CLAUDE.md invariant 5); throwing here also broke that.
+            // The disagreement is still reported, loudly and in one place, by
+            // validate_FFHR_stream() -- which is where a structural fault
+            // belongs, because it can name every one of them instead of
+            // stopping at the first.
+            return {};
+        }
 
         // The kind follows the tag for the same reason the tag outranks the array
         // header above: a `contained` resource outside the compiled profile is
@@ -1761,7 +1777,7 @@ Entry::operator std::string_view() const {
 
         if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
             Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, parent_offset);
-            return FF_DECODE_CODEABLE_CONCEPT(base, abs_off, m_version).label;
+            return FF_DECODE_CODEABLE_CONCEPT(base, abs_off, m_version, m_size).label;
         }
 
         return "";
@@ -1816,7 +1832,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
 
         case FF_FIELD_RESOURCE: {
             Offset actual_off = LOAD_U64(e.base + slot_offset);
-            if (actual_off == FF_NULL_OFFSET) return {};
+            if (!FF_BLOCK_VOUCHES(e.base, actual_off, size)) return {};
             RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, slot_offset);
             // The tag beside the offset is ground truth for the KIND too, not
             // just the type name. This used to hardcode FF_FIELD_BLOCK, which
@@ -1834,7 +1850,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
 
         case FF_FIELD_ARRAY: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (child_offset == FF_NULL_OFFSET) return {};
+            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
             // m_recovery is unused on array Nodes (fields() returns {} for non-objects).
             // expected_tag already encodes the element type exactly — no memory read needed.
             FF_ARRAY arr_hdr(child_offset, size, version, e.m_engine_version);
@@ -1846,7 +1862,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
         default: {
             // Standard pointer hop for Blocks and Strings
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (child_offset == FF_NULL_OFFSET) return {};
+            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
             RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, child_offset);
             // The schema kind can be BLOCK (e.g. dateTime fields resolved through the
             // complex-block mapping) while the stored block is actually an FF_STRING.
