@@ -297,6 +297,22 @@ That discipline costs nothing to keep now, and it is the habit that has to alrea
 place when the format freezes — which is precisely when it stops being recoverable.
 Relaxing invariant 1 would be a separate decision, and it is Ryan's alone.
 
+**A block that does not vouch for itself is not a block.** Every block carries a
+self-offset witness — its `VALIDATION` word holds its own offset — and both
+`validate_FFHR_stream()` and `Recovery` test it. The **navigation path did not**:
+`FF_BLOCK_IN_BOUNDS` asks whether the bytes exist, not whether they are the block
+they claim to be, so a corrupted slot aiming anywhere in range was followed and
+believed. The two halves of the system therefore disagreed about which references
+are real, and the credulous half is the one every consumer calls — at 512 flipped
+bits the recovery report said *zero invented references*, correctly, while the
+exported document carried **20,057 fabricated leaf values**. `FF_BLOCK_VOUCHES`
+(`FF_Primitives.hpp`) is the single gate at all ten hops in `FF_Parser.cpp`, and it
+dropped those to 18. **Reference-level integrity is not content-level integrity**:
+a recovery benchmark measuring only references reports a number that is true and
+worthless. Measure the leaves. The residue is tag consensus — the tag is stored
+twice, in the slot tuple and in the target's header, and reconciling them needs the
+parent's declared type, which only the recovery engine holds (TASKS.md REC-22).
+
 **A flagged offset is an offset, whatever slot it lives in.** `validate_FFHR_stream()`
 skips inline scalars because they cannot aim the reader at memory it does not own — but a
 scalar slot whose MSB flags a *fallback offset* is not inline data, and it is validated
@@ -410,6 +426,45 @@ decide whether a version gate is wanted.
    protects it.
 7. **The two SHA-256 roles in the WASM registry are never conflated:** `sha256(url)` is a
    disk metadata filename only; `sha256(wasm_bytes)` is module identity on the wire.
+
+8. **Never fabricate a block extent.** `DATA_BLOCK::__size` is the STREAM extent — the
+   bytes actually present — never the arena's capacity (`Memory::create` reserves 4 GiB
+   by default) and never a value read from the stream (`Memory::size()` reads the write
+   head, which lives at the same 8 bytes as `FF_HEADER::STREAM_SIZE`, so on damaged
+   input it IS corrupted data). `operator bool` is `fits(HEADER_SIZE)`, so a block that
+   does not fit is falsy and `if (block)` is the bounds check every caller already
+   writes. Constructing with `0` says "no extent supplied" and is now falsy by design.
+   This decayed once: 1,647 of 1,652 constructions fabricated it, because the lazy view
+   was declared `{base, offset}` and every accessor that needed an extent had to invent
+   one. Restored 2026-09-01; **order any cleanup before enforcing a rule like this** —
+   enforcing first would have taken down `py_roundtrip` and every view accessor at once.
+
+9. **Wire field reads go through the named accessors.** `FF_GET_RECOVERY_TAG`,
+   `FF_GET_VALIDATION`, `FF_GET_STRING_LENGTH`, `FF_GET_STRING_VIEW`,
+   `FF_GET_CONCEPT_LENGTH` in `FF_Primitives.hpp`, and `FF_BLOCK_IN_BOUNDS` (which
+   delegates to `DATA_BLOCK::fits`, so there is one implementation) before any
+   dereference. `FF_Ops.hpp` is INTERNAL — it is not reachable from `FastFHIR.hpp`, and
+   putting it back there hands consumers the offset arithmetic that caused three
+   documented defects. Hand-writing `LOAD_U16(base + off + VTABLE::FIELD)` is the
+   antipattern these replaced.
+
+10. **The read path degrades; it does not throw.** Invariant 5 says absent fields return
+    falsy Nodes — damaged ones do too. A per-element accessor that throws does not stay
+    local: `entries()` walks in a loop, so one bad tuple aborted an entire array, and a
+    Bundle's whole payload hangs off one. `validate_FFHR_stream()` is where a structural
+    fault is reported, because it can name every occurrence instead of stopping at the
+    first.
+
+11. **Three block shapes, three recovery routines.** A DATABLOCK is a V-Table of slots;
+    an ARRAY is a stride and a count over inline entries and has **no V-Table at all**; a
+    BYTE ARRAY (`FF_STRING` and everything sharing its layout) is an extent with no
+    children. `enumerate_block_refs` dispatches on shape — walking an array with the
+    V-Table walker silently returns nothing. Entries carry no witnesses of their own by
+    design, so the array's VALIDATION and RECOVERY are the only ones for all of them:
+    the blast radius of losing an array is its entire contents. And **emitting
+    references is not deriving an extent** — bounding emission with a walk that stops at
+    the first invalid entry means an array whose first element is the broken one emits
+    nothing, so nothing looks for it.
 
 ## Working a task from TASKS.md
 

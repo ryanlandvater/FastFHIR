@@ -201,6 +201,12 @@ struct BlockVerdict {
     BlockRef                block;
     RepairClass             class_    = RepairClass::Unrecovered;
     uint32_t                bit_cost  = 0;  ///< Hamming cost of the repair, 0 = intact
+    /// ExtentDerived only: the array ENTRY_COUNT the classifier settled on.
+    /// It is carried rather than re-derived because the classifier is the sole
+    /// owner of that fact — it weighs an in-place walk against the distance to
+    /// the next known block, and an applier repeating only half of that reasoning
+    /// silently disagrees with the verdict it is supposed to be enacting.
+    uint32_t                derived_extent = 0;
     std::vector<Offset>     candidates;    ///< populated for Ambiguous
 };
 

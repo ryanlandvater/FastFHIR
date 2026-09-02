@@ -46,15 +46,13 @@ namespace {
 // ---- and version change what validate_full checks) ----
 
 inline bool valid_validation(const BYTE* base, size_t size, Offset off) noexcept {
-    if (off < 0 || static_cast<size_t>(off) > size ||
-        size - static_cast<size_t>(off) < DATA_BLOCK::HEADER_SIZE)
+    if (!FF_BLOCK_IN_BOUNDS(off, size))
         return false;
     return FF_GET_VALIDATION(base, off) == static_cast<uint64_t>(off);
 }
 
 inline RECOVERY_TAG tag_at(const BYTE* base, size_t size, Offset off) noexcept {
-    if (off < 0 || static_cast<size_t>(off) > size ||
-        size - static_cast<size_t>(off) < DATA_BLOCK::HEADER_SIZE)
+    if (!FF_BLOCK_IN_BOUNDS(off, size))
         return FF_RECOVER_UNDEFINED;
     return FF_GET_RECOVERY_TAG(base, off);
 }
@@ -164,57 +162,49 @@ inline ElementShape element_shape_of(RECOVERY_TAG element_tag, FF_ARRAY::EntryKi
 //
 // Keeping garbage is strictly worse than dropping a subtree: a missing
 // reference is reported and therefore honest, a fabricated one is believed.
-inline bool refs_are_coherent(const BYTE* base, size_t size,
-                              const std::vector<BlockRef>& refs) noexcept {
+// How strictly must a freshly enumerated batch of references hold up?
+//
+// Two questions, one predicate, because they differ only in strictness and a
+// family of near-identical functions is how a caller ends up picking by vibe.
+// Using the wrong strength does not fail loudly -- it silently disables the
+// caller, which is how the generational cascade stayed broken.
+enum class BatchTest : uint8_t {
+    /// Every child must corroborate. The type is a HYPOTHESIS here, so a wrong
+    /// V-Table -- which yields nothing but nonsense -- has to be thrown out
+    /// whole before any of it is believed.
+    EveryChildCorroborates,
+    /// No child may be a wild pointer, and damage is expected. The type is
+    /// already CORROBORATED by the tuple distance, so the V-Table is trusted
+    /// and the only remaining question is whether the read produced nonsense.
+    NoWildPointers,
+};
+
+// Demanding corroboration where only addressability is warranted is what
+// silenced the generational cascade: a block whose one child is itself damaged
+// has no corroborating child BY DEFINITION, so its batch was discarded and the
+// chain stopped at the first repair. Parent broken, child broken, grandchild
+// broken is exactly what that loop exists to unwind.
+//
+// A wrong V-Table still cannot survive NoWildPointers: it lifts offsets out of
+// positions that hold none, and those are overwhelmingly outside the stream.
+// One that happens to land in bounds yields references that classify as
+// Unrecovered -- reported, never believed -- and repairing them would demand
+// the same tuple evidence over again.
+inline bool batch_passes(const BYTE* base, size_t size,
+                         const std::vector<BlockRef>& refs, BatchTest test) noexcept {
     for (const BlockRef& c : refs) {
         if (c.child == FF_NULL_OFFSET)
             continue;
-        if (c.child < 0 || static_cast<size_t>(c.child) + DATA_BLOCK::HEADER_SIZE > size)
-            return false;
+        if (!FF_BLOCK_IN_BOUNDS(c.child, static_cast<Size>(size)))
+            return false;  // a wild pointer fails both tests
+        if (test == BatchTest::NoWildPointers)
+            continue;
         if (valid_validation(base, size, c.child))
             continue;
         const RECOVERY_TAG ct = tag_at(base, size, c.child);
         const RECOVERY_TAG cb = (c.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(ct) : ct;
         if (c.declared == FF_RECOVER_UNDEFINED || cb != c.declared)
             return false;  // a child with no surviving witness — garbage
-    }
-    return true;
-}
-
-// Does this batch of references read as a block at all — WITHOUT demanding that
-// any of them be healthy?
-//
-// Three strengths of test are needed in three places, and using the wrong one
-// silently disables the caller:
-//
-//   refs_are_coherent      every child corroborates. Correct for the EXPANSION
-//                          pass, where the type is a hypothesis and a wrong
-//                          V-Table must be thrown out whole.
-//   this                   no child is a wild pointer. Correct after a hole
-//                          match, where the type is already CORROBORATED by the
-//                          tuple distance, so the V-Table is trusted and the
-//                          only question left is whether the read produced
-//                          nonsense.
-//
-// Requiring corroboration here is what silenced the generational cascade: a
-// block whose one child is itself damaged has no corroborating child by
-// definition, so the batch was discarded and the chain stopped at the first
-// repair. That is the exact case the loop exists to unwind -- parent broken,
-// child broken, grandchild broken -- and the guard was refusing it.
-//
-// A wrong V-Table still cannot survive: it lifts offsets out of positions that
-// hold no offsets, and those are overwhelmingly out of the stream. One that
-// happens to land in bounds produces references that classify as Unrecovered,
-// which is reported rather than believed, and repairing them would demand the
-// same tuple evidence all over again.
-inline bool batch_is_addressable(const BYTE* base, size_t size,
-                                 const std::vector<BlockRef>& refs) noexcept {
-    (void)base;
-    for (const BlockRef& c : refs) {
-        if (c.child == FF_NULL_OFFSET)
-            continue;
-        if (!FF_BLOCK_IN_BOUNDS(c.child, static_cast<Size>(size)))
-            return false;
     }
     return true;
 }
@@ -236,9 +226,8 @@ inline Offset repaired_target(const BlockVerdict& v) noexcept {
 
 inline bool recover_follow_ref_chain(const BYTE* base, size_t size, const BlockRef& r,
                                      std::vector<ProducerFailure>* failures) noexcept {
-    if (r.child == FF_NULL_OFFSET || r.child < 0 ||
-        static_cast<size_t>(r.child) + DATA_BLOCK::HEADER_SIZE > size)
-        return false;  // absent or out of arena — no reference to judge
+    if (!FF_BLOCK_IN_BOUNDS(r.child, size))
+        return false;  // absent or out of stream — no reference to judge
     const bool self_ok = valid_validation(base, size, r.child);
     if (self_ok) {
         const RECOVERY_TAG actual = tag_at(base, size, r.child);
@@ -277,8 +266,7 @@ inline bool recover_follow_ref_chain(const BYTE* base, size_t size, const BlockR
 inline RECOVERY_TAG corroborated_tag(const BYTE* base, size_t size, const BlockRef& r,
                                      bool& usable) noexcept {
     usable = false;
-    if (r.child == FF_NULL_OFFSET || r.child < 0 ||
-        static_cast<size_t>(r.child) + DATA_BLOCK::HEADER_SIZE > size)
+    if (!FF_BLOCK_IN_BOUNDS(r.child, size))
         return FF_RECOVER_UNDEFINED;
     const RECOVERY_TAG actual = tag_at(base, size, r.child);
     const RECOVERY_TAG actual_base =
@@ -512,7 +500,8 @@ FF_RecoveryReport Recovery::recover() const {
     struct HoleCandidate {
         Offset   pos;
         uint32_t self_cost;     ///< hamming(word, pos) — the ranking key
-        uint64_t word;          ///< the 8 residual self-offset bytes
+        uint64_t word;          ///< the location's offset encoding — the block's
+                                ///< own (possibly damaged) record of the true offset
         uint16_t tag;           ///< the 2 residual recovery bytes
         bool     corroborated;  ///< both producers called this run a hole
     };
@@ -633,7 +622,7 @@ FF_RecoveryReport Recovery::recover() const {
         enumerate_block_refs(r.child,
                              r.kind == FF_FIELD_ARRAY ? ToArrayTag(r.declared) : r.declared,
                              probe);
-        if (!refs_are_coherent(m_base, m_size, probe))
+        if (!batch_passes(m_base, m_size, probe, BatchTest::EveryChildCorroborates))
             continue;
         enumerated.insert(r.child);
         all.insert(all.end(), probe.begin(), probe.end());
@@ -694,13 +683,57 @@ FF_RecoveryReport Recovery::recover() const {
                 const uint32_t stamped = array.entry_count(m_base);
                 const RECOVERY_TAG element_tag = GetTypeFromTag(actual);
                 const ElementShape shape = element_shape_of(element_tag, array.entry_kind(m_base));
-                if (shape != ElementShape::None) {
-                    const uint32_t walked = walk_array_extent(
-                        m_base, m_size, r.child, shape, array.entry_step(m_base), stamped);
+
+                const uint16_t step = array.entry_step(m_base);
+
+                if (shape == ElementShape::InlineBlock) {
+                    // The elements ARE blocks, sitting inside the entry region
+                    // and carrying their own self-offset witness. Walking them
+                    // in place derives the count directly, and it is the only
+                    // shape that can be walked.
+                    const uint32_t walked =
+                        walk_array_extent(m_base, m_size, r.child, shape, step, stamped);
                     if (walked != stamped) {
                         v.class_ = RepairClass::ExtentDerived;
                         v.bit_cost = hamming_cost(walked, stamped);
+                        v.derived_extent = walked;
                     }
+                    return;
+                }
+
+                // IT MUST FIT IN THE HOLE, NOT MERELY IN THE ARENA.
+                //
+                // Every other shape stores offsets, 10-byte tuples, or raw
+                // scalars -- nothing inside the entry region is a block start.
+                // So the first block the census knows about after this header
+                // is a NEIGHBOUR, and the array may not reach it. That run of
+                // bytes is the hole this array has to fit inside; the size of
+                // the file has nothing to do with it.
+                //
+                // Measured: one flipped bit made an ABSENT `Observation.
+                // triggeredBy` read as a present OFFSET array of 29,303
+                // entries. Honouring that count needs 234,440 bytes -- which
+                // fits a 1 MB arena comfortably and overruns its neighbours
+                // immediately. The recovery report said zero invented
+                // REFERENCES while the document gained 29,303 fabricated leaf
+                // values, because reference integrity is not content integrity.
+                //
+                // For raw scalars (None) this is the ONLY bound there is:
+                // headerless elements leave nothing to walk, so before this
+                // their stamped count was accepted unconditionally.
+                const uint64_t entries_at =
+                    static_cast<uint64_t>(r.child) + FF_ARRAY::HEADER_SIZE;
+                const auto next = map.upper_bound(r.child);
+                const uint64_t boundary = (next != map.end())
+                                              ? static_cast<uint64_t>(next->first)
+                                              : static_cast<uint64_t>(m_size);
+                const uint64_t room =
+                    (step != 0 && boundary > entries_at) ? (boundary - entries_at) / step : 0;
+
+                if (static_cast<uint64_t>(stamped) > room) {
+                    v.class_ = RepairClass::ExtentDerived;
+                    v.bit_cost = hamming_cost(room, static_cast<uint64_t>(stamped));
+                    v.derived_extent = static_cast<uint32_t>(room);
                 }
             }
             return;
@@ -779,24 +812,26 @@ FF_RecoveryReport Recovery::recover() const {
                 for (const Offset p : it->second)
                     consider(p);
 
-            // REC-20.4 — THE HOLE MATCH, AS ONE DISTANCE OVER THE WHOLE TUPLE.
+            // REC-20.4 — THE HOLE MATCH, INSIDE THE CLASSIFIER, ON ONE METRIC.
             //
             // This loop IS the ref-driven driver: classify_one is called once
             // per reference, and the ranked candidate list it walks was built
             // once, outside. Refs are few and hole bytes are many, so this is
             // O(refs x candidates), never O(bytes x refs).
             //
-            // The parent holds {offset|recovery}; the block holds
-            // {self-offset|recovery} where it sits. Two independently damaged
-            // copies of the same ten bytes, so hamming them against EACH OTHER
-            // asks the real question -- how much damage separates these two
-            // records of one block -- rather than summing three separately
-            // thresholded distances, which is what the first cut did.
-            //
-            // Note what is compared: the parent's stored offset against the
-            // candidate's residual WORD, not against its position. Both sides
-            // are damaged copies of the true offset, and comparing damage to
-            // damage is what makes the budget mean something.
+            // Each hole candidate is dual-indexed: `pos` is the location — the
+            // noise-free expected address — and `word` is the offset encoding
+            // actually stored there, the block's own (possibly damaged) record
+            // of the same true offset the parent's slot also holds; self_cost
+            // = hamming(word, pos) is the distance between the two indexes.
+            // The corrupted parent value is hammed against the LOCATION
+            // (item 14: comparing one noisy observation to a known value beats
+            // comparing two noisy observations — tuple-against-tuple measured
+            // strictly worse, 15,944 refs vs 15,946), while the location's own
+            // damage is carried as separate evidence and the tag term stays a
+            // direct comparison (neither side has a noise-free version).
+            // `word` rides along so a corroboration pass can still ask how
+            // well the two damaged copies of the one value agree.
             //
             // It must stay HERE, competing with the orphan repoint on one
             // metric. Moved to a pass after classification it saw only the refs
@@ -914,7 +949,7 @@ FF_RecoveryReport Recovery::recover() const {
             //
             // This once kept whatever the corrected type produced, so a wrong
             // repair became believed verdicts (handoff wrong-turn 2). The fix
-            // was to verify first. But verifying with refs_are_coherent, which
+            // was to verify first. But verifying with EveryChildCorroborates,
             // demands that EVERY child corroborate, over-corrects: a block whose
             // one child is itself damaged has no corroborating child by
             // definition, so its batch was discarded and the chain stopped dead
@@ -930,7 +965,7 @@ FF_RecoveryReport Recovery::recover() const {
             // One that lands in bounds yields references that classify as
             // Unrecovered: reported, not believed, and repairing them would
             // demand the same evidence over again.
-            if (!batch_is_addressable(m_base, m_size, scratch))
+            if (!batch_passes(m_base, m_size, scratch, BatchTest::NoWildPointers))
                 continue;
             for (const BlockRef& r : scratch) {
                 if (r.child == FF_NULL_OFFSET)
@@ -1130,11 +1165,12 @@ FF_RecoveryReport Recovery::recover() const {
                 // later pass would mean matching against a hole set that no
                 // longer describes the stream.
                 //
-                // The batch test is deliberately the weak one. refs_are_coherent
+                // The batch test is deliberately the weak one.
+                // EveryChildCorroborates
                 // refuses a batch containing any witness-less child, which is
                 // correct for "did I read this under the right type" and exactly
                 // wrong here: a damaged child is what the search is hunting, and
-                // rejecting the batch discards it. batch_is_addressable asks
+                // rejecting the batch discards it. NoWildPointers asks
                 // only whether anything corroborates, which still catches a
                 // wrong V-Table (uniformly nonsense) without throwing away the
                 // broken references this loop exists to consume.
@@ -1144,7 +1180,7 @@ FF_RecoveryReport Recovery::recover() const {
                                                  : r.declared;
                     std::vector<BlockRef> exposed;
                     enumerate_block_refs(winner, use, exposed);
-                    if (batch_is_addressable(m_base, m_size, exposed)) {
+                    if (batch_passes(m_base, m_size, exposed, BatchTest::NoWildPointers)) {
                         for (const BlockRef& child : exposed) {
                             if (child.child == FF_NULL_OFFSET)
                                 continue;
@@ -1486,9 +1522,32 @@ void Recovery::enumerate_array_entries(Offset array_off, RECOVERY_TAG array_tag,
             const ElementShape shape = element_shape_of(element_tag, array.entry_kind(m_base));
             if (shape == ElementShape::None)
                 return;
-            const uint32_t extent = walk_array_extent(m_base, m_size, array_off,
-                                                      shape, stride, stamped);
-            const uint64_t entries = static_cast<uint64_t>(array_off) + FF_ARRAY::HEADER_SIZE;
+    // EMITTING REFERENCES IS NOT DERIVING AN EXTENT, and conflating them is
+    // what stopped the generational recovery dead.
+    //
+    // walk_array_extent answers "how many entries are demonstrably intact" by
+    // walking until one fails to validate. That is the right answer for SIZING
+    // the array in the census. It is the wrong bound for emitting references,
+    // because it stops at the first DAMAGED entry -- and a damaged entry is
+    // precisely what recovery is hunting. An array whose first element is the
+    // broken one emitted no references at all, so nothing was looking for that
+    // element and its hole survived every round.
+    //
+    // Bound by GEOMETRY instead (REC-21.1): the stamped count when the arena
+    // has room for it, and the walked extent when it does not, so a corrupted
+    // ENTRY_COUNT cannot conjure thousands of references out of a small array.
+    // Each emitted reference is then judged on its own merits -- an intact one
+    // classifies Intact, a damaged one becomes work for the matcher.
+    const uint64_t entries = static_cast<uint64_t>(array_off) + FF_ARRAY::HEADER_SIZE;
+    const uint64_t width = (shape == ElementShape::Tuple)       ? 10
+                           : (shape == ElementShape::OffsetPtr) ? 8
+                                                                : stride;
+    const uint64_t room = (width != 0 && m_size > entries)
+                              ? (static_cast<uint64_t>(m_size) - entries) / width
+                              : 0;
+    const uint32_t walked = walk_array_extent(m_base, m_size, array_off,
+                                              shape, stride, stamped);
+    const uint32_t extent = (static_cast<uint64_t>(stamped) <= room) ? stamped : walked;
             for (uint32_t i = 0; i < extent; ++i) {
                 const uint64_t pos = entries + static_cast<uint64_t>(i) * (shape == ElementShape::Tuple ? 10
                                                                   : shape == ElementShape::OffsetPtr ? 8
@@ -1523,7 +1582,9 @@ void Recovery::enumerate_array_entries(Offset array_off, RECOVERY_TAG array_tag,
 
 void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                                     std::vector<BlockRef>& out) const {
-    if (block_offset < 0 || static_cast<size_t>(block_offset) > m_size)
+    // Was `> m_size`, which let an offset within a header's width of the end
+    // through to code that immediately reads that header.
+    if (!FF_BLOCK_IN_BOUNDS(block_offset, m_size))
         return;
 
     // DISPATCH ON SHAPE. There are three, and they are recovered differently:
@@ -2045,26 +2106,19 @@ FF_ApplyReport Recovery::apply(const FF_RecoveryReport& report, std::vector<BYTE
                 break;
             }
             case RepairClass::ExtentDerived: {
-                // The array's stamped ENTRY_COUNT disagreed with the walk. The
-                // report carries the cost, not the value, so re-derive it here
-                // from the copy — the same walk that produced the verdict.
-                if (!in_bounds(static_cast<uint64_t>(r.child), FF_ARRAY::HEADER_SIZE))
-                    break;
-                const FF_ARRAY arr(r.child, n, 0);
-                const RECOVERY_TAG element = GetTypeFromTag(tag_at(dst, n, r.child));
-                const ElementShape shape = element_shape_of(element, arr.entry_kind(dst));
-                if (shape == ElementShape::None)
-                    break;
-                const uint32_t walked = walk_array_extent(dst, n, r.child, shape,
-                                                          arr.entry_step(dst),
-                                                          arr.entry_count(dst));
+                // Write the count the CLASSIFIER settled on. This arm used to
+                // re-run walk_array_extent, which quietly enacted a different
+                // verdict than the one reported: the walk cannot see the
+                // distance to the next block, so for an OFFSET array it left a
+                // 29,303-entry count in place and the repaired document kept
+                // every fabricated leaf. One owner per fact.
                 slot = static_cast<uint64_t>(r.child) + FF_ARRAY::ENTRY_COUNT;
                 if (!in_bounds(slot, 4))
                     break;
                 before = LOAD_U32(dst + slot);
-                STORE_U32(dst + slot, walked);
+                STORE_U32(dst + slot, v.derived_extent);
                 wrote = true;
-                ok = LOAD_U32(dst + slot) == walked;
+                ok = LOAD_U32(dst + slot) == v.derived_extent;
                 break;
             }
             default:

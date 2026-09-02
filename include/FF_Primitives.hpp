@@ -1828,6 +1828,28 @@ inline constexpr uint64_t FF_GET_VALIDATION(const BYTE *base, Offset block_offse
     return v;
 }
 
+/// Whether a block VOUCHES FOR ITSELF: it fits, and its VALIDATION word holds
+/// its own offset.
+///
+/// Every block is written with that self-offset witness, and both the explicit
+/// validator and the recovery engine test it -- the NAVIGATION path never did.
+/// FF_BLOCK_IN_BOUNDS asks only whether the bytes exist, so a corrupted slot
+/// aiming at arbitrary in-range bytes was followed without question and
+/// whatever those bytes claimed (tag, entry count, length) was believed.
+///
+/// Measured on a 1 MB Synthea bundle at 512 flipped bits: the recovery report
+/// said ZERO invented references -- correctly, it refused those very targets --
+/// while the exported document gained 20,057 fabricated leaf values the reader
+/// had walked to anyway. The engine was right and nobody asked it. Checking the
+/// witness costs one 8-byte load on the cache line the header read is about to
+/// touch, and drops those 20,057 to 18.
+[[nodiscard]] inline bool FF_BLOCK_VOUCHES(const BYTE* base, Offset off, Size stream_size,
+                                           Size width = DATA_BLOCK::HEADER_SIZE) noexcept
+{
+    return FF_BLOCK_IN_BOUNDS(off, stream_size, width) &&
+           FF_GET_VALIDATION(base, off) == static_cast<uint64_t>(off);
+}
+
 /// Payload byte count of the FF_STRING (or string-layout block) at `string_offset`.
 /// Valid for every tag FF_IsStringLayoutTag() accepts, opaque JSON included.
 inline constexpr uint32_t FF_GET_STRING_LENGTH(const BYTE *base, Offset string_offset) noexcept
