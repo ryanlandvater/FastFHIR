@@ -367,6 +367,16 @@ public:
 private:
     /// Enumerate the block references of one block (V-Table slots + array
     /// elements), bounds-checked. Appends to `out`.
+    /// Enumerate the entries of an ARRAY at `array_off`, whose header names the
+    /// element type. Arrays are not datablocks and are not recovered like one:
+    /// a datablock is a V-Table of slots, an array is a stride and a count over
+    /// inline entries, and the entries carry no witnesses of their own — the
+    /// array's VALIDATION and RECOVERY cover all of them. Walking one with the
+    /// V-Table walker finds nothing, because an array tag has no reflected
+    /// fields.
+    void enumerate_array_entries(Offset array_off, RECOVERY_TAG array_tag,
+                                 std::vector<BlockRef>& out) const;
+
     void enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                               std::vector<BlockRef>& out) const;
 

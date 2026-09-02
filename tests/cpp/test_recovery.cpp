@@ -20,6 +20,7 @@
 #include <FastFHIR.hpp>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <map>
@@ -744,6 +745,134 @@ static void test_apply_repairs_a_copy_and_improves_it()
         CHECK(rep.intact > dmg.intact, "an applied repair shows up as an intact edge");
 }
 
+// GENERATIONAL RECOVERY, AGAINST A KNOWN DENOMINATOR.
+//
+// Every other measurement in this area has been taken against a corpus whose
+// damage we did not enumerate first, so a number going UP read as a discovery
+// ("the loop found 21 more broken references!") when it should have been an
+// assertion. In a test we choose the corruption, so the answer is known before
+// the run: this breaks exactly three links and expects exactly three back.
+//
+// The shape is what the recovery engine is actually for. Take a chain
+//
+//      root ─► A ─► B ─► C
+//
+// and destroy BOTH witnesses of A, B and C: the parent slot that names each one
+// AND the block's own VALIDATION word. Each becomes a true hole -- invisible to
+// scan(), which finds blocks by their self-offset, and invisible to the walk,
+// which cannot follow a broken slot. Nothing in the stream points at them and
+// nothing in the stream identifies them.
+//
+// They must come back GENERATIONALLY. Nothing can find B until A is repaired,
+// because A is the only block that names B; nothing can find C until B is. So
+// this is the test that a single recovered edge unwinds a chain: fix the parent,
+// discover the child, fix the child, discover the grandchild. A recovery engine
+// that repairs one generation and stops looks identical to a correct one on any
+// single-generation fixture, which is why every earlier fixture missed it.
+static void test_generational_holes_recover_from_the_root()
+{
+    auto arena = build_bundle();
+    CHECK(arena != nullptr, "bundle build failed");
+    if (!arena)
+        return;
+
+    // The known denominator, taken BEFORE any damage.
+    Recovery clean(*arena);
+    const FF_RecoveryReport baseline = clean.recover();
+    CHECK_EQ(baseline.holes, static_cast<size_t>(0), "baseline has no holes");
+    const std::size_t expected_refs = baseline.blocks_total;
+
+    // Find a three-generation chain: a ref whose child is itself a parent whose
+    // child is a parent. Indexed by parent so the descent is a lookup.
+    const std::vector<BlockRef> refs = clean.reachable_blocks();
+    std::map<Offset, std::vector<BlockRef>> by_parent;
+    for (const BlockRef &r : refs)
+        if (r.child != FF_NULL_OFFSET)
+            by_parent[r.parent].push_back(r);
+
+    BlockRef gen1{}, gen2{}, gen3{};
+    bool found = false;
+    for (const BlockRef &a : refs) {
+        if (a.child == FF_NULL_OFFSET || !by_parent.count(a.child))
+            continue;
+        for (const BlockRef &b : by_parent[a.child]) {
+            if (b.child == FF_NULL_OFFSET || !by_parent.count(b.child))
+                continue;
+            for (const BlockRef &c : by_parent[b.child]) {
+                if (c.child == FF_NULL_OFFSET)
+                    continue;
+                // Distinct blocks, so three separate holes rather than one
+                // block damaged three times.
+                if (a.child == b.child || b.child == c.child || a.child == c.child)
+                    continue;
+                // TWO WITNESSES, NOT ONE. An inline-block array element lives AT
+                // the slot that names it -- `parent + field == child`, because
+                // +0 of an inline entry is the element's own offset. There is
+                // only one witness there, and "destroy both" would flip the
+                // same byte twice and cancel. (That is not a test artifact: a
+                // single flip in an inline element destroys its only witness,
+                // which makes those elements strictly less recoverable than a
+                // pointed-to block. Worth its own coverage; see REC-21.)
+                const auto two_witnesses = [](const BlockRef &r) {
+                    return r.parent + r.field != r.child;
+                };
+                if (!two_witnesses(a) || !two_witnesses(b) || !two_witnesses(c))
+                    continue;
+                gen1 = a; gen2 = b; gen3 = c; found = true;
+                break;
+            }
+            if (found) break;
+        }
+        if (found) break;
+    }
+    CHECK(found, "fixture contains a three-generation chain");
+    if (!found)
+        return;
+
+    // FULL HOLES: both witnesses of each generation destroyed.
+    //   - the parent's stored offset (the slot no longer names the child)
+    //   - the child's VALIDATION word (scan can no longer find it)
+    BYTE *const base = arena->base();
+    const BlockRef chain[3] = {gen1, gen2, gen3};
+    for (const BlockRef &r : chain) {
+        base[static_cast<size_t>(r.parent) + static_cast<size_t>(r.field)] ^= 0x01;
+        base[static_cast<size_t>(r.child)] ^= 0x01;
+    }
+
+    Recovery rec(*arena);
+    const FF_RecoveryReport rep = rec.recover();
+
+    // The assertions are against the KNOWN quantity, not against whatever the
+    // previous run happened to produce.
+    CHECK_EQ(rep.blocks_total, expected_refs,
+             "every reference is accounted for after three generations of damage");
+    CHECK_EQ(rep.holes, static_cast<size_t>(0), "no hole survives recovery");
+    CHECK_EQ(rep.unrecovered, static_cast<size_t>(0), "nothing is left unrecovered");
+    CHECK_EQ(rep.ambiguous, static_cast<size_t>(0), "nothing is left ambiguous");
+
+    // And specifically that the DEEPER generations came back -- a engine that
+    // repairs only the first would still satisfy a naive reference count if the
+    // subtree happened to be small.
+    // A repaired reference still carries the CORRUPTED offset in block.child --
+    // the repair is the candidate the ranker chose, in `candidates`. Checking
+    // block.child alone would miss every successful repoint, which is exactly
+    // the outcome being asserted.
+    const auto reached = [&rep](Offset target) {
+        for (const BlockVerdict &v : rep.blocks) {
+            if (v.block.child == target)
+                return true;
+            for (const Offset cand : v.candidates)
+                if (cand == target)
+                    return true;
+        }
+        return false;
+    };
+    const bool g2 = reached(gen2.child);
+    const bool g3 = reached(gen3.child);
+    CHECK(g2, "the child generation was rediscovered through its repaired parent");
+    CHECK(g3, "the grandchild generation was rediscovered through its repaired child");
+}
+
 int main(int argc, char **argv)
 {
     const char *filter = (argc > 2 && strcmp(argv[1], "--filter") == 0) ? argv[2] : "";
@@ -775,6 +904,8 @@ int main(int argc, char **argv)
         test_broken_blockref_still_locates_and_sizes_the_orphan);
     run("one_damaged_witness_costs_nothing", test_one_damaged_witness_costs_nothing);
     run("apply_repairs_a_copy_and_improves_it", test_apply_repairs_a_copy_and_improves_it);
+    run("generational_holes_recover_from_the_root",
+        test_generational_holes_recover_from_the_root);
 
     std::cout << "\n" << g_tests << " test(s), " << g_failures << " failure(s)\n";
     if (g_tests == 0)

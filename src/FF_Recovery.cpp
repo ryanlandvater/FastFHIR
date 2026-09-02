@@ -181,6 +181,44 @@ inline bool refs_are_coherent(const BYTE* base, size_t size,
     return true;
 }
 
+// Does this batch of references read as a block at all — WITHOUT demanding that
+// any of them be healthy?
+//
+// Three strengths of test are needed in three places, and using the wrong one
+// silently disables the caller:
+//
+//   refs_are_coherent      every child corroborates. Correct for the EXPANSION
+//                          pass, where the type is a hypothesis and a wrong
+//                          V-Table must be thrown out whole.
+//   this                   no child is a wild pointer. Correct after a hole
+//                          match, where the type is already CORROBORATED by the
+//                          tuple distance, so the V-Table is trusted and the
+//                          only question left is whether the read produced
+//                          nonsense.
+//
+// Requiring corroboration here is what silenced the generational cascade: a
+// block whose one child is itself damaged has no corroborating child by
+// definition, so the batch was discarded and the chain stopped at the first
+// repair. That is the exact case the loop exists to unwind -- parent broken,
+// child broken, grandchild broken -- and the guard was refusing it.
+//
+// A wrong V-Table still cannot survive: it lifts offsets out of positions that
+// hold no offsets, and those are overwhelmingly out of the stream. One that
+// happens to land in bounds produces references that classify as Unrecovered,
+// which is reported rather than believed, and repairing them would demand the
+// same tuple evidence all over again.
+inline bool batch_is_addressable(const BYTE* base, size_t size,
+                                 const std::vector<BlockRef>& refs) noexcept {
+    (void)base;
+    for (const BlockRef& c : refs) {
+        if (c.child == FF_NULL_OFFSET)
+            continue;
+        if (!FF_BLOCK_IN_BOUNDS(c.child, static_cast<Size>(size)))
+            return false;
+    }
+    return true;
+}
+
 // The address a repaired reference should be FOLLOWED to.
 //
 // Not always the one the slot names. Corroborated means the REPOINT hypothesis
@@ -871,13 +909,28 @@ FF_RecoveryReport Recovery::recover() const {
             }
             std::vector<BlockRef> scratch;
             enumerate_block_refs(step.off, step.tag, scratch);
-            // The comment above claimed this loop was wrong-turn-2's
-            // self-verification made continuous. It was not: it classified and
-            // KEPT whatever the corrected type produced, so a wrong repair
-            // turned into believed verdicts. Verify first, exactly as the
-            // expansion does, and drop the batch whole when the V-Table plainly
-            // does not belong to this block.
-            if (!refs_are_coherent(m_base, m_size, scratch))
+            // THE ADDRESSABLE TEST, NOT THE COHERENT ONE — and the difference
+            // is the whole generational cascade.
+            //
+            // This once kept whatever the corrected type produced, so a wrong
+            // repair became believed verdicts (handoff wrong-turn 2). The fix
+            // was to verify first. But verifying with refs_are_coherent, which
+            // demands that EVERY child corroborate, over-corrects: a block whose
+            // one child is itself damaged has no corroborating child by
+            // definition, so its batch was discarded and the chain stopped dead
+            // at the first repair. Parent broken, child broken, grandchild
+            // broken is precisely what this loop exists to unwind, and the
+            // guard was refusing it.
+            //
+            // The type here is not a hypothesis -- it came from a classified
+            // repair, corroborated under the flip budget -- so the V-Table is
+            // trusted and the only question left is whether the read produced
+            // wild pointers. A wrong V-Table lifts offsets out of positions
+            // that hold none, and those are overwhelmingly outside the stream.
+            // One that lands in bounds yields references that classify as
+            // Unrecovered: reported, not believed, and repairing them would
+            // demand the same evidence over again.
+            if (!batch_is_addressable(m_base, m_size, scratch))
                 continue;
             for (const BlockRef& r : scratch) {
                 if (r.child == FF_NULL_OFFSET)
@@ -929,67 +982,121 @@ FF_RecoveryReport Recovery::recover() const {
         find_gaps(map);
 
     // =================================================================
-    // REC-20.3/.4/.5 — THE BROKEN REFS DRIVE THE HOLE MATCH
+    // REC-20.5/.6 — PROGRESSIVE BAND EXPANSION, DRIVEN BY THE BROKEN REFS
     // =================================================================
-    // Everything above has had its turn: the walk, the orphan repoint, the
-    // expansion, the reapply. What is left is `x` refs still unrepaired and
-    // `y` holes still unclaimed, and in practice x == y. That is an assignment
-    // problem, not two searches.
+    // The signature band has to start tight and cannot stay there.
     //
-    // THE REFS ARE THE LOOP, NOT THE BYTES. There are a great many hole bytes
-    // and very few unrepaired refs. Sweeping bytes and asking "does any ref
-    // want this position" inverts the cheap and expensive sides of the problem;
-    // iterating refs and asking "which position does this one want" does not.
-    // The byte sweep already ran once, above, to build the ranked search space.
-    // Cost here is O(refs x candidates), not O(bytes x refs).
+    // A candidate is a position whose residual word is within `band` bits of
+    // its own address. At 2 bits that is a clean signal across the whole arena
+    // -- but it is also BLIND to a block whose VALIDATION took 3 or more flips,
+    // and measured on a 512-flip artifact that is 6 of the 8 surviving holes.
+    // Widening the band up front is not the answer: over 12,227 hole bytes the
+    // 3+ band is a flat coincidence floor, and admitting it turned 11 clean
+    // verdicts Ambiguous by tying against correct orphan repoints.
     //
-    // THE MATCH IS ONE DISTANCE OVER THE WHOLE TUPLE. The parent holds
-    // {offset|recovery} and the block holds {self-offset|recovery}: two
-    // independently damaged copies of the same ten bytes. Hamming them against
-    // each other compares the copies directly, so the budget is spent on the
-    // real question -- how much damage separates these two records of one block
-    // -- instead of on three separately-thresholded distances summed together,
-    // which is what the first cut did and which made a hole match arbitrarily
-    // harder to earn than the evidence warranted.
+    // What makes widening safe is doing it LAST, against a pool that earlier
+    // rounds have already emptied. Eight holes is a different proposition from
+    // twelve thousand bytes: the same 4-bit band that is noise across the arena
+    // is decisive across a handful of runs nothing else could claim.
+    //
+    // So: match at the tightest band, follow every repaired block INTO the
+    // structure to pick up the references it now exposes, and only when that
+    // stalls with references still broken widen by one bit and try the
+    // remainder. Capped at FF_RECOVERY_MAX_FLIPS so one budget governs the
+    // whole engine.
+    const auto build_candidates = [&](uint32_t band) {
+        std::vector<HoleCandidate> out;
+        for (const Gap& g : map.gaps) {
+            if (g.class_ != GapClass::Hole || g.length < DATA_BLOCK::HEADER_SIZE)
+                continue;
+            const uint64_t last =
+                static_cast<uint64_t>(g.start) + g.length - DATA_BLOCK::HEADER_SIZE;
+            for (uint64_t pos = static_cast<uint64_t>(g.start); pos <= last; ++pos) {
+                if (pos + DATA_BLOCK::HEADER_SIZE > m_size)
+                    break;
+                const uint64_t word = FF_GET_VALIDATION(m_base, static_cast<Offset>(pos));
+                const uint32_t self_cost = hamming_cost(word, pos);
+                if (self_cost > band)
+                    continue;
+                out.push_back(
+                    {static_cast<Offset>(pos), self_cost, word,
+                     static_cast<uint16_t>(tag_at(m_base, m_size, static_cast<Offset>(pos))),
+                     corroborated_by_scan(static_cast<Offset>(pos))});
+            }
+        }
+        std::sort(out.begin(), out.end(),
+                  [](const HoleCandidate& a, const HoleCandidate& b) {
+                      if (a.self_cost != b.self_cost) return a.self_cost < b.self_cost;
+                      if (a.corroborated != b.corroborated) return a.corroborated;
+                      return a.pos < b.pos;
+                  });
+        return out;
+    };
+
+    // One reference against the current candidate pool. Same metric as the
+    // classifier: the offset term is scored against the candidate's EXACT
+    // position (noise-free) with its self_cost carried as separate evidence,
+    // because comparing one noisy observation to a known value beats comparing
+    // two noisy observations -- measured, tuple-against-tuple lost 2 refs.
+    const auto match_ref = [&](const BlockRef& r, const std::vector<HoleCandidate>& cands,
+                               uint32_t& best_cost) -> Offset {
+        best_cost = UINT32_MAX;
+        Offset winner = FF_NULL_OFFSET;
+        bool unique = false;
+        for (const HoleCandidate& hc : cands) {
+            if (map.contains(hc.pos))
+                continue;  // already claimed by an earlier round
+            const RECOVERY_TAG cand_tag = static_cast<RECOVERY_TAG>(hc.tag);
+            const RECOVERY_TAG cand_base =
+                (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(cand_tag) : cand_tag;
+            const uint32_t cost = hamming_cost(static_cast<uint64_t>(r.child),
+                                               static_cast<uint64_t>(hc.pos)) +
+                                  hc.self_cost + hamming_cost(cand_base, r.declared);
+            if (cost < best_cost) { best_cost = cost; winner = hc.pos; unique = true; }
+            else if (cost == best_cost) { unique = false; }
+        }
+        if (!unique || best_cost > FF_RECOVERY_MAX_FLIPS)
+            return FF_NULL_OFFSET;  // no match, or a tie -- never guessed (P0-3)
+        return winner;
+    };
+
     std::size_t rec20_matched = 0;
-    if (!hole_candidates.empty()) {
-        for (int round = 0; round < 4; ++round) {
-            std::size_t matched_this_round = 0;
-            for (BlockVerdict& v : rep.blocks) {
+    for (uint32_t band = 2; band <= FF_RECOVERY_MAX_FLIPS; ++band) {
+        // Any references still looking? If not, no band needs trying.
+        bool any_broken = false;
+        for (const BlockVerdict& v : rep.blocks)
+            if ((v.class_ == RepairClass::Unrecovered || v.class_ == RepairClass::Ambiguous) &&
+                v.block.declared != FF_RECOVER_UNDEFINED && v.block.child != FF_NULL_OFFSET) {
+                any_broken = true;
+                break;
+            }
+        if (!any_broken)
+            break;
+
+        std::vector<HoleCandidate> cands = build_candidates(band);
+        if (cands.empty())
+            continue;
+
+        bool progress = true;
+        while (progress) {
+            progress = false;
+            // Index-based: repairing a block appends the references it exposes,
+            // and those are themselves candidates for the next sweep.
+            for (std::size_t vi = 0; vi < rep.blocks.size(); ++vi) {
+                BlockVerdict& v = rep.blocks[vi];
                 if (v.class_ != RepairClass::Unrecovered && v.class_ != RepairClass::Ambiguous)
                     continue;
-                const BlockRef& r = v.block;
+                const BlockRef r = v.block;  // by value: rep.blocks may reallocate
                 if (r.declared == FF_RECOVER_UNDEFINED || r.child == FF_NULL_OFFSET)
                     continue;
 
-                uint32_t best = UINT32_MAX;
-                bool     unique = false;
-                Offset   winner = FF_NULL_OFFSET;
-                for (const HoleCandidate& hc : hole_candidates) {
-                    if (map.contains(hc.pos))
-                        continue;  // an earlier round already claimed it
-                    // The candidate's tag is raw wire; an array slot declares
-                    // the ELEMENT type, so compare the stripped form.
-                    const RECOVERY_TAG cand_tag = static_cast<RECOVERY_TAG>(hc.tag);
-                    const RECOVERY_TAG cand_base =
-                        (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(cand_tag) : cand_tag;
-                    const uint32_t cost =
-                        hamming_cost(static_cast<uint64_t>(r.child), hc.word) +
-                        hamming_cost(cand_base, r.declared);
-                    if (cost < best) {
-                        best = cost;
-                        unique = true;
-                        winner = hc.pos;
-                    } else if (cost == best) {
-                        unique = false;  // tie — never guessed (P0-3)
-                    }
-                }
-                if (!unique || best > FF_RECOVERY_MAX_FLIPS)
+                uint32_t cost = UINT32_MAX;
+                const Offset winner = match_ref(r, cands, cost);
+                if (winner == FF_NULL_OFFSET)
                     continue;
 
-                // Admit the reconstructed block so the hole it filled stops
-                // being reported as damage, and record the repoint the way the
-                // orphan path does so apply() can write it.
+                // Admit the reconstructed block: the reference chain, the
+                // self-offset and the recovery tag now agree again.
                 StreamMapEntry e = classify_block(m_base, m_size, winner);
                 e.offset = winner;
                 if (e.type == StreamMapEntryType::Undefined)
@@ -1000,23 +1107,71 @@ FF_RecoveryReport Recovery::recover() const {
                 map[winner] = e;
                 ++admitted;
 
-                v.candidates.clear();
-                v.candidates.push_back(winner);
-                v.bit_cost = best;
-                v.class_ = RepairClass::Corroborated;
-                ++matched_this_round;
+                rep.blocks[vi].candidates.assign(1, winner);
+                rep.blocks[vi].bit_cost = cost;
+                rep.blocks[vi].class_ = RepairClass::Corroborated;
                 ++rec20_matched;
+                progress = true;
+
+                // FOLLOW THE REPAIRED BLOCK IMMEDIATELY. THIS IS THE DESIGN.
+                //
+                // The moment a reference is repaired, the block it names is
+                // back in the hierarchy chain — and it is not merely reachable,
+                // it is now a PARENT. Its own outgoing references have never
+                // been seen by anything: the walk could not reach it, the scan
+                // could not identify it, so its slots were never enumerated and
+                // any damage in them was never counted, let alone repaired.
+                //
+                // So assess it right here, through the same router every other
+                // producer uses (recover_follow_ref_chain), and let whatever it
+                // finds broken join THIS work list. One repair exposes a parent,
+                // that parent exposes its children, and a chain of losses
+                // unwinds from a single recovered edge. Deferring this to a
+                // later pass would mean matching against a hole set that no
+                // longer describes the stream.
+                //
+                // The batch test is deliberately the weak one. refs_are_coherent
+                // refuses a batch containing any witness-less child, which is
+                // correct for "did I read this under the right type" and exactly
+                // wrong here: a damaged child is what the search is hunting, and
+                // rejecting the batch discards it. batch_is_addressable asks
+                // only whether anything corroborates, which still catches a
+                // wrong V-Table (uniformly nonsense) without throwing away the
+                // broken references this loop exists to consume.
+                if (enumerated.insert(winner).second) {
+                    const RECOVERY_TAG use = r.kind == FF_FIELD_ARRAY
+                                                 ? ToArrayTag(r.declared)
+                                                 : r.declared;
+                    std::vector<BlockRef> exposed;
+                    enumerate_block_refs(winner, use, exposed);
+                    if (batch_is_addressable(m_base, m_size, exposed)) {
+                        for (const BlockRef& child : exposed) {
+                            if (child.child == FF_NULL_OFFSET)
+                                continue;
+                            // The single router: judges the reference and
+                            // records which witness failed, so a break inside a
+                            // just-recovered block is reported the same way as
+                            // one the hierarchy walk found itself.
+                            recover_follow_ref_chain(m_base, m_size, child, &map.failures);
+                            BlockVerdict cv;
+                            classify_one(child, cv);
+                            count(cv);
+                            rep.blocks.push_back(std::move(cv));
+                        }
+                    }
+                }
             }
-            if (matched_this_round == 0)
-                break;  // fixed point
-            // REC-20.5 — re-tile between rounds: a hole that held more than one
-            // lost block now shows its remainder, and the next round sees it.
-            find_gaps(map);
+            if (progress) {
+                // Re-tile: a hole that held more than one lost block now shows
+                // its remainder, and the next sweep sees it.
+                find_gaps(map);
+                cands = build_candidates(band);
+            }
         }
     }
 
-    // The counters were tallied before REC-20 ran, so re-derive them rather
-    // than letting `unrecovered` keep reporting edges this pass repaired.
+    // The counters were tallied as verdicts were produced, so re-derive them
+    // rather than letting `unrecovered` keep reporting edges this pass repaired.
     if (rec20_matched != 0) {
         rep.intact = rep.corroborated = rep.tag_repaired = rep.position_repaired = 0;
         rep.extent_derived = rep.ambiguous = rep.unrecovered = 0;
@@ -1281,10 +1436,121 @@ std::vector<Offset> Recovery::walk_chain(std::vector<BlockRef>* out,
     return reachable;
 }
 
+
+// =====================================================================
+// An ARRAY is not a datablock, and is not recovered like one.
+// =====================================================================
+// A datablock is a V-Table of slots; an array is a stride and a count over
+// inline entries. The entries carry no witnesses of their own -- that is the
+// format's design, not an omission: they are not pointers to distant objects,
+// so the array's VALIDATION (where it is) and RECOVERY (what is inside) cover
+// all of them at once.
+//
+// Which means the array is the ONLY way back to its contents, and walking it
+// with the V-Table walker finds nothing at all: reflected_fields_view of an
+// array tag is empty, so enumerate_block_refs returns immediately. That is
+// exactly what happened when a repaired array reference was followed -- the
+// address was recovered correctly and every entry stayed lost, because the
+// only code that reads entries was a branch inside the PARENT's walk, run
+// earlier against the corrupted address.
+//
+// So it lives here, callable, and both paths use it: the parent's walk when it
+// reaches an FF_FIELD_ARRAY slot, and the repair path when the thing repaired
+// IS the array. The concentration of witnesses at the array is what makes this
+// matter -- lose the pointer and the array's self-offset together and every
+// entry goes with them, N references from a two-bit event.
+void Recovery::enumerate_array_entries(Offset array_off, RECOVERY_TAG array_tag,
+                                       std::vector<BlockRef>& out) const {
+    if (array_off == FF_NULL_OFFSET)
+        return;
+            // Element references. The array header's self-offset may be the
+            // damaged half -- the slot above still names this address and
+            // this element type -- so require only that it be REPAIRABLE
+            // under the flip budget, not already correct. Demanding a clean
+            // self-offset here dropped every element of the array from the
+            // census even after the walk had recovered the array itself,
+            // which on the test fixture cost 2 of 24 references from one
+            // flipped bit. Bytes that are not a Hamming neighbour of their
+            // own address are still refused: that is not this array.
+            if (!valid_validation(m_base, m_size, array_off) &&
+                (static_cast<size_t>(array_off) + DATA_BLOCK::HEADER_SIZE > m_size ||
+                 hamming_cost(FF_GET_VALIDATION(m_base, array_off),
+                              static_cast<uint64_t>(array_off)) > FF_RECOVERY_MAX_FLIPS))
+                return;
+            if (static_cast<size_t>(array_off) + FF_ARRAY::HEADER_SIZE > m_size)
+                return;
+            const RECOVERY_TAG element_tag = GetTypeFromTag(array_tag);
+            const FF_ARRAY array(array_off, m_size, 0);
+            const uint16_t stride = array.entry_step(m_base);
+            const uint32_t stamped = array.entry_count(m_base);
+            const ElementShape shape = element_shape_of(element_tag, array.entry_kind(m_base));
+            if (shape == ElementShape::None)
+                return;
+            const uint32_t extent = walk_array_extent(m_base, m_size, array_off,
+                                                      shape, stride, stamped);
+            const uint64_t entries = static_cast<uint64_t>(array_off) + FF_ARRAY::HEADER_SIZE;
+            for (uint32_t i = 0; i < extent; ++i) {
+                const uint64_t pos = entries + static_cast<uint64_t>(i) * (shape == ElementShape::Tuple ? 10
+                                                                  : shape == ElementShape::OffsetPtr ? 8
+                                                                  : stride);
+                if (pos + (shape == ElementShape::Tuple ? 10 : 8) > m_size)
+                    break;
+                if (shape == ElementShape::Tuple) {
+                    const Offset child = static_cast<Offset>(LOAD_U64(m_base + pos));
+                    if (child == FF_NULL_OFFSET)
+                        return;
+                    const RECOVERY_TAG stored = FF_GET_RECOVERY_TAG(m_base, static_cast<Offset>(pos));
+                    out.push_back(BlockRef{array_off, static_cast<Offset>(pos - static_cast<uint64_t>(array_off)),
+                                           FF_FIELD_RESOURCE, child,
+                                           plausible_tag(stored) ? stored : FF_RECOVER_UNDEFINED,
+                                           FF_RECOVER_UNDEFINED});
+                } else {
+                    // OFFSET entries point at string blocks; inline blocks
+                    // sit at `pos` itself. Both are single-witness-ish
+                    // references whose declared type is the array's element tag.
+                    const Offset child = (shape == ElementShape::OffsetPtr)
+                                             ? static_cast<Offset>(LOAD_U64(m_base + pos))
+                                             : static_cast<Offset>(pos);
+                    if (child == FF_NULL_OFFSET)
+                        return;
+                    out.push_back(BlockRef{array_off, static_cast<Offset>(pos - static_cast<uint64_t>(array_off)),
+                                           shape == ElementShape::OffsetPtr ? FF_FIELD_STRING : FF_FIELD_BLOCK,
+                                           child, element_tag, FF_RECOVER_UNDEFINED});
+                }
+            }
+
+}
+
 void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                                     std::vector<BlockRef>& out) const {
     if (block_offset < 0 || static_cast<size_t>(block_offset) > m_size)
         return;
+
+    // DISPATCH ON SHAPE. There are three, and they are recovered differently:
+    //
+    //   ARRAY       stride + count over inline entries. No V-Table at all --
+    //               reflected_fields_view of an array tag is empty -- so the
+    //               walk below would return nothing and silently lose every
+    //               entry. Its own routine.
+    //   BYTE ARRAY  a length and an opaque payload (FF_STRING and everything
+    //               sharing its layout, opaque JSON included). It has an
+    //               extent but no children, so there is nothing to enumerate;
+    //               saying so here is the difference between "no references"
+    //               and "unknown tag", which is not the same answer.
+    //   DATABLOCK   a V-Table of slots. The walk below.
+    //
+    // Callers ask for "the references of the block at X" and get the right
+    // answer for what X actually is. Leaving the array case as a branch inside
+    // the datablock walk meant only the parent could reach it, and the repair
+    // path -- which needs exactly that walk against a corrected address --
+    // could not.
+    if (IsArrayTagged(block_tag)) {
+        enumerate_array_entries(block_offset, block_tag, out);
+        return;
+    }
+    if (FF_IsStringLayoutTag(block_tag))
+        return;  // byte array: an extent, no references
+
     const auto fields = reflected_fields_view(static_cast<uint16_t>(block_tag));
     if (fields.empty())
         return;  // unknown tag — nothing the compiled table can walk
@@ -1358,65 +1624,18 @@ void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                 const Offset array_off = static_cast<Offset>(LOAD_U64(m_base + slot));
                 if (array_off == FF_NULL_OFFSET)
                     continue;
-                // The parent→array reference itself.
+                // The parent→array reference itself...
                 out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
                                        array_off, f.child_recovery, FF_RECOVER_UNDEFINED});
-                // Element references. The array header's self-offset may be the
-                // damaged half -- the slot above still names this address and
-                // this element type -- so require only that it be REPAIRABLE
-                // under the flip budget, not already correct. Demanding a clean
-                // self-offset here dropped every element of the array from the
-                // census even after the walk had recovered the array itself,
-                // which on the test fixture cost 2 of 24 references from one
-                // flipped bit. Bytes that are not a Hamming neighbour of their
-                // own address are still refused: that is not this array.
-                if (!valid_validation(m_base, m_size, array_off) &&
-                    (static_cast<size_t>(array_off) + DATA_BLOCK::HEADER_SIZE > m_size ||
-                     hamming_cost(FF_GET_VALIDATION(m_base, array_off),
-                                  static_cast<uint64_t>(array_off)) > FF_RECOVERY_MAX_FLIPS))
-                    continue;
-                if (static_cast<size_t>(array_off) + FF_ARRAY::HEADER_SIZE > m_size)
-                    continue;
-                const RECOVERY_TAG ah_tag = tag_at(m_base, m_size, array_off);
-                const RECOVERY_TAG element_tag = GetTypeFromTag(ah_tag);
-                const FF_ARRAY array(array_off, m_size, 0);
-                const uint16_t stride = array.entry_step(m_base);
-                const uint32_t stamped = array.entry_count(m_base);
-                const ElementShape shape = element_shape_of(element_tag, array.entry_kind(m_base));
-                if (shape == ElementShape::None)
-                    continue;
-                const uint32_t extent = walk_array_extent(m_base, m_size, array_off,
-                                                          shape, stride, stamped);
-                const uint64_t entries = static_cast<uint64_t>(array_off) + FF_ARRAY::HEADER_SIZE;
-                for (uint32_t i = 0; i < extent; ++i) {
-                    const uint64_t pos = entries + static_cast<uint64_t>(i) * (shape == ElementShape::Tuple ? 10
-                                                                      : shape == ElementShape::OffsetPtr ? 8
-                                                                      : stride);
-                    if (pos + (shape == ElementShape::Tuple ? 10 : 8) > m_size)
-                        break;
-                    if (shape == ElementShape::Tuple) {
-                        const Offset child = static_cast<Offset>(LOAD_U64(m_base + pos));
-                        if (child == FF_NULL_OFFSET)
-                            continue;
-                        const RECOVERY_TAG stored = FF_GET_RECOVERY_TAG(m_base, static_cast<Offset>(pos));
-                        out.push_back(BlockRef{array_off, static_cast<Offset>(pos - static_cast<uint64_t>(array_off)),
-                                               FF_FIELD_RESOURCE, child,
-                                               plausible_tag(stored) ? stored : FF_RECOVER_UNDEFINED,
-                                               FF_RECOVER_UNDEFINED});
-                    } else {
-                        // OFFSET entries point at string blocks; inline blocks
-                        // sit at `pos` itself. Both are single-witness-ish
-                        // references whose declared type is the array's element tag.
-                        const Offset child = (shape == ElementShape::OffsetPtr)
-                                                 ? static_cast<Offset>(LOAD_U64(m_base + pos))
-                                                 : static_cast<Offset>(pos);
-                        if (child == FF_NULL_OFFSET)
-                            continue;
-                        out.push_back(BlockRef{array_off, static_cast<Offset>(pos - static_cast<uint64_t>(array_off)),
-                                               shape == ElementShape::OffsetPtr ? FF_FIELD_STRING : FF_FIELD_BLOCK,
-                                               child, element_tag, FF_RECOVER_UNDEFINED});
-                    }
-                }
+                // ...and NOTHING ELSE. The entries belong to the array, not to
+                // this parent: the walk descends into the array like any other
+                // child and enumerate_block_refs dispatches to the array
+                // routine there. Emitting them from both places counted every
+                // array entry twice -- measured, it inflated a clean stream
+                // from 16,071 references to 21,566.
+                //
+                // One owner per fact: the parent owns the parent→array edge,
+                // the array owns what is inside it.
                 break;
             }
             case FF_FIELD_DATETIME: {

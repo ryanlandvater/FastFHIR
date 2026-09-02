@@ -25,6 +25,7 @@ Everything currently open, most urgent first. Deep detail lives in the sections 
 |---|---|---|---|
 | **P0** | **P0-3 / REC-10…17** | Recovery: stream map, bit-similarity edge restoration, `src/FF_Recovery.cpp` | `^# ▶ P0-3` |
 | **P0** | **REC-20** | Recovery: cross-reference the two producers' holes, match 10-byte tuples by Hamming | `^# ▶ REC-20` |
+| **P1** | **REC-21** | Recovery: arrays in holes — bound the count by geometry, propose then confirm | `^# ▶ REC-21` |
 | **P0** | **AMEND/APPEND** | Amend + append must take the abstraction types, not only JSON (CAPI-12) | `^# ▶ P0 — AMEND` |
 | **P1** | CAPI-1, 2, 3, 8 | Consumer-API gaps: inline-block array writes, validator/deserializer disagreement, `ChoiceEntry` across arenas, allocating `entries()` | `^# ▶ WORK ORDER — PUBLIC API` |
 | **P1** | Block C | Archive recovery subsystem — **governed by P0-3; do not start before REC-10** | `^## Block C` |
@@ -6395,11 +6396,49 @@ never guessed (P0-3).
 Cost is O(refs x candidates) with candidates already pruned by the ranking band,
 rather than O(bytes x refs).
 
-### 3. Iterate
+### 3. Follow every repair immediately — this is the design, not a detail
+
+**The moment a reference is repaired, assess the block it names.** Not on a later
+pass: right there, inside the loop, before the next reference is considered.
+
+The reason is that the repaired block is not merely *reachable* now — it is a
+**parent**. Nothing has ever looked at its outgoing references. The hierarchy
+walk could not reach it and the scan could not identify it, so its slots were
+never enumerated, and any damage inside them was never counted, never reported,
+and never repaired. Those references are invisible damage until the block
+rejoins the chain, and they become visible at exactly one moment: this one.
+
+So enumerate it through `recover_follow_ref_chain` — the same router the
+hierarchy walk uses, so a break found inside a just-recovered block is judged
+and reported identically to one the walk found itself — and let whatever comes
+back broken join **this** work list. One repair exposes a parent, that parent
+exposes its children, and a chain of losses unwinds from a single recovered
+edge.
+
+**The batch test here must be the weak one.** `refs_are_coherent` refuses a
+batch containing any witness-less child. That is correct for "did I read this
+under the right type" and exactly wrong here, because a damaged child is the
+thing being hunted and refusing the batch discards it. Use
+`batch_reads_as_block`: does *anything* corroborate? A wrong V-Table yields
+uniformly witness-less children; a correct read of a damaged block yields mostly
+sound ones and a few broken. Getting this backwards silences the feedback loop
+entirely — it only fires when the recovered block happens to be undamaged, which
+is the case that needed no help.
+
+### 4. Then widen, and iterate
 
 A repaired block is admitted to the census, `find_gaps` re-runs, and a hole that
-held more than one lost block shows its remainder for the next round. Repeat to
-a fixed point.
+held more than one lost block shows its remainder. When the loop stalls with
+references still broken, **widen the signature band by one bit and try the
+remainder** — capped at `FF_RECOVERY_MAX_FLIPS` so one budget governs the whole
+engine.
+
+Widening is safe only because it happens last, against a pool earlier rounds
+have emptied. At 2 bits the band is a clean signal across the whole arena; the
+3+ band is a flat coincidence floor over 12,227 hole bytes, and admitting it up
+front turned 11 clean verdicts `Ambiguous`. Eight holes is a different
+proposition from twelve thousand bytes: the same 4-bit band that is noise across
+the arena is decisive across a handful of runs nothing else could claim.
 
 ## What exists today, and how it falls short
 
@@ -6421,19 +6460,38 @@ references — the remainder is what step 3 is for.
       each ref, hamming its tuple against the 10 bytes at each ranked candidate
       as a SINGLE distance over the whole tuple. Unique cheapest under budget
       wins; ties stay Ambiguous. O(refs x candidates), not O(bytes x refs).
-- [x] **REC-20.5** Iterate to a fixed point, re-tiling between rounds.
+- [x] **REC-20.5** Follow every repair IMMEDIATELY: enumerate the newly
+      recovered block through `recover_follow_ref_chain`, because it is now a
+      parent whose own references have never been seen, and feed whatever is
+      broken back into this same loop. Gate on `batch_reads_as_block`, never
+      `refs_are_coherent` — the latter discards exactly the broken references
+      the loop consumes.
+- [x] **REC-20.6** Widen the signature band by one bit when the loop stalls with
+      references still broken, capped at `FF_RECOVERY_MAX_FLIPS`. Safe only
+      because the pool has shrunk by then.
+- [x] **REC-20.7** Iterate to a fixed point, re-tiling between rounds.
 
 **Verify.** Zero invented references — not negotiable, and it has regressed
 twice (handoff §2.7, §2.4). Measured 40 single-bit trials: 2 deviating, **0
 inventing**.
 
-**Result (2026-09-01), same artifacts, isolated against `b7b6dcb`:**
+**Result (2026-09-02), same artifacts, isolated against `b7b6dcb`.** Note the
+hole counts moved once more when the CMake/Bazel engine-version split was fixed
+(`6d823df`): gaps the older reader had excused as `VersionSkew` are now counted
+honestly by both builds, so compare only figures taken after that commit.
 
-| artifact | refs | holes | ambiguous | unrecovered |
-|---|---|---|---|---|
-| 64 flips, before → after | 16045 → 16045 | 3 → 3 | 0 → 0 | 0 → 0 |
-| 256 flips | 16009 → 16009 | 15 → **12** | 5 → **1** | 3 → **2** |
-| 512 flips | 15946 → 15946 | 35 → **30** | 10 → **2** | 4 → **2** |
+| artifact | refs | holes | version skew | ambiguous | unrecovered |
+|---|---|---|---|---|---|
+| 64 flips | 16045 | 3 | 0 | 0 | 0 |
+| 256 flips | 16009 → **16015** | 15 → **4** | 8 | 5 → **0** | 3 |
+| 512 flips | 15946 → **15987** | 35 → **8** | 22 | 10 → **1** | 3 → **24** |
+
+`unrecovered` RISING at 512 flips is the feedback loop working, not a
+regression. Following each repair into the structure enumerates references that
+had never been seen — +41 of them — and 21 are damaged beyond repair. They were
+always lost; the difference is that they are now counted and reported instead of
+being invisible. A missing reference that is reported is honest; one nothing
+knows about is not.
 
 Reference counts are flat; the gain is in *certainty*. Ambiguous edges fall 5x
 at 512 flips because one distance over the whole tuple resolves ties that three
@@ -6454,6 +6512,97 @@ and carrying its `self_cost` as separate evidence recovers the difference: the
 position is noise-free, and comparing one noisy observation to a known value
 beats comparing two noisy observations. The tag term is still a direct
 tuple-half comparison. Kept the position form.
+
+---
+
+# ▶ REC-21 — ARRAYS IN HOLES: PROPOSE, THEN CONFIRM
+
+**Ryan, 2026-09-02. Design, not started.** REC-20 recovers a block by matching a
+broken reference to a position. This is the constraint-propagation half: what to
+do once the thing in the hole is an ARRAY, whose entry count is unknown because
+its header went with it.
+
+## The sudoku framing
+
+`walk_array_extent` today walks entries and stops at the first that does not
+validate. That is right when the entries are intact and gives up early when they
+are not — which is precisely the damaged case. Replace "walk until something
+fails" with "propose, then confirm", and let the constraints tighten each other:
+
+- **Hole length bounds the count from above.** A hole holding an array admits at
+  most `(hole_length - FF_ARRAY::HEADER_SIZE) / stride` entries. That is a real
+  ceiling even when `ENTRY_COUNT` is destroyed, and it costs nothing to compute.
+- **A confirmed entry back-solves the array's address.** An entry confirmed at
+  position `p` as index `i` puts the array header at
+  `p - FF_ARRAY::HEADER_SIZE - i * stride`. One good entry locates the array
+  even when the array's own two witnesses are gone.
+- **Every confirmation shrinks the hole**, which tightens the bound on whatever
+  else is in it, which makes the next proposal cheaper. This is the same
+  iterate-to-a-fixed-point loop REC-20 already runs; these are additional
+  constraints to feed it.
+
+Provisional entries are candidates, not facts: later rounds confirm them (their
+targets resolve) or drop them. **Nothing provisional may reach the report as a
+recovered reference** — the standing constraint is zero invented references, and
+a proposal that cannot be confirmed is exactly an invention if it is counted.
+
+## Why arrays specifically
+
+The format concentrates witnesses at the array on purpose. Entries are inline
+and carry no validation of their own — they are not pointers to distant objects,
+so the array's VALIDATION (where it is) and RECOVERY (what is inside) cover all
+of them at once. Efficient, and it means the blast radius of losing an array is
+its entire contents: **N references from a two-bit event**, not one.
+
+That is why a single broken generation in
+`ff_test_recovery::generational_holes_recover_from_the_root` costs three
+references rather than one, and why the array case is worth more than its share
+of the code.
+
+## Known asymmetry, worth its own coverage
+
+An **inline-block array element has one witness, not two**: the slot that names
+it IS its own header (`parent + field == child`, because +0 of an inline entry is
+the element's own offset). A single flip there destroys the only witness, which
+makes inline elements strictly less recoverable than a pointed-to block — and
+makes "destroy both witnesses" impossible to express for them. The generational
+test skips such links deliberately (`two_witnesses`); the case deserves a test
+of its own that asserts the weaker guarantee rather than pretending it is the
+same one.
+
+## Also here, because it is the same shape
+
+- **Byte arrays** (`FF_STRING` and everything sharing its layout, opaque JSON
+  included) are a third shape: an extent and no children.
+  `enumerate_block_refs` now dispatches them to "no references", which is a
+  different answer from "unknown tag". Their extent recovery — a damaged LENGTH
+  against a hole boundary — is unexamined.
+- **CANDIDATES are a flat vector**, scanned in full by every reference. Fine for
+  a few refs against a few thousand candidates; if the pool grows, bucket by
+  declared tag the way orphans already are.
+
+- [ ] **REC-21.1** Bound a hole-resident array's entry count by hole geometry.
+- [ ] **REC-21.2** Back-solve the array address from a confirmed entry.
+- [ ] **REC-21.3** Provisional entries: propose, confirm in later rounds, drop
+      the unconfirmed. Never report a proposal as recovered.
+- [ ] **REC-21.4** A test for the single-witness guarantee on inline elements.
+- [ ] **REC-21.5** Byte-array extent recovery against a hole boundary.
+
+**Verify.** `ff_test_recovery::generational_holes_recover_from_the_root` is the
+acceptance test and is **currently RED**: 21 of 24 references, 1 surviving hole,
+the grandchild generation not recovered. It asserts against a denominator taken
+before the damage, which is the point — every earlier measurement in this area
+was taken against a corpus whose damage was never enumerated, so numbers going
+up read as discoveries when they should have been assertions.
+
+**And check the CLEAN baseline every time.** Giving arrays their own routine
+without also giving them sole ownership of their entries counted each entry
+twice and inflated a clean stream from 16,071 references to 21,566 — which on
+damaged streams would have looked like a 34% improvement. The clean count is the
+control.
+
+Current figures, for comparison: clean 16,071; 256 flips 16,035 (4 holes);
+512 flips 16,001 (8 holes); 40 single-bit trials, 0 invented.
 
 ---
 
