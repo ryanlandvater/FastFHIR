@@ -27,6 +27,7 @@ Everything currently open, most urgent first. Deep detail lives in the sections 
 | **P0** | **REC-20** | Recovery: cross-reference the two producers' holes, match 10-byte tuples by Hamming | `^# ▶ REC-20` |
 | **P1** | **REC-21** | Recovery: arrays in holes — bound the count by geometry, propose then confirm | `^# ▶ REC-21` |
 | **P0** | **REC-22** | The reader must check the self-offset witness the engine already checks | `^# ▶ REC-22` |
+| **P0** | **REC-23** | Repoints mis-attach: a unique candidate is not a corroborated one | `^# ▶ REC-23` |
 | **P1** | **BENCH-1** | Test 5 readiness: content metric, protobuf arm, sweep migration, HL7v2 pipes | `^# ▶ BENCH-1` |
 | **P0** | **AMEND/APPEND** | Amend + append must take the abstraction types, not only JSON (CAPI-12) | `^# ▶ P0 — AMEND` |
 | **P1** | CAPI-1, 2, 3, 8 | Consumer-API gaps: inline-block array writes, validator/deserializer disagreement, `ChoiceEntry` across arenas, allocating `entries()` | `^# ▶ WORK ORDER — PUBLIC API` |
@@ -6680,7 +6681,76 @@ worthless. Measure the leaves.
       never deciding anything.
 
       Residual: `wrong` (a value that reads back as a different value) is still
-      8 and 22 at 256/512 flips. Not fabrication and not loss; unexamined.
+      8 and 22 at 256/512 flips. Diagnosed — it is misattribution, not damage.
+      See REC-23.
+
+---
+
+# ▶ REC-23 — A UNIQUE CANDIDATE IS NOT A CORROBORATED ONE
+
+**P0.** The `wrong` column — a field that reads back as a *different* value —
+is the most dangerous outcome the format produces. It is not fabrication (the
+bytes are genuine) and not loss (nothing is missing): it is **misattribution**,
+real clinical data hung on the wrong entry, and it reads as perfectly valid
+FHIR. A lab result silently moved to another encounter is worse than a lab
+result that is visibly gone.
+
+**Diagnosed at 512 flips.** All 22 wrong values come from **11 mis-attached
+repoints** out of 206 `Corroborated` verdicts (94.7% correct). Tag repairs were
+on the right address 70/70, so this is entirely the repoint path. All 11 are the
+same slot — `Bundle.entry[].resource` (field 50) — and they change *coherently*:
+`entry[1180]` swapped category, display, effective, issued and id together,
+because the whole entry now points at a different Observation.
+
+**The mechanism.** The flip budget IS enforced, so distance is not the problem.
+In 10 of 11 the **true child was not a candidate at all**: at 512 flips its own
+witness was destroyed too, so the byte scan never listed it as an orphan. Some
+*other* orphan then sat within 8 bits of the damaged offset, and with
+`cands=1` the `off_unique` test was trivially satisfied and the repoint applied
+with full confidence.
+
+> **Uniqueness is a property of the SEARCH, not of the evidence.** `cands == 1`
+> means "the search found one thing", not "the search discriminated". In a
+> stream full of structurally identical orphans it is nearly no evidence at all,
+> yet it currently carries the same weight as corroboration.
+
+Coherence — the REC-22.2 adjudicator — cannot help here: every Observation
+reads coherently as an Observation. The discriminator has to be **locality**.
+
+**Locality is the unused witness, and it is strong.** The writer appends
+children as it walks entries, so a resource array's targets ascend with parent
+order: measured **1471/1472 = 99.9%** monotonic on a clean Synthea bundle. The
+mis-attachments violate it grossly — offsets like 80307 and 166438 chosen where
+the neighbours bracket ~750000.
+
+Bracketing each repoint by its nearest INTACT neighbours (evidence recovery
+already holds — 1037 intact anchors in that field):
+
+| | count | locality rejects |
+|---|---|---|
+| mis-attached | 11 | **10** |
+| correct | 195 | **0** |
+
+Ten of eleven caught, zero false positives. This is the "sudoku" constraint:
+the neighbours constrain the cell.
+
+- [ ] **REC-23.1** Bracket a repoint candidate by the nearest intact same-field
+      references on either side in parent order; reject candidates outside it.
+      A rejected sole candidate makes the verdict `Unrecovered`, not a guess —
+      losing a reference honestly beats attaching the wrong patient's data.
+- [ ] **REC-23.2** Exclusive assignment. One of the 11 was **contention**: two
+      refs chose the same orphan, and the greedy per-ref pick let one steal the
+      child the other needed. Resolve claims globally rather than per-reference.
+- [ ] **REC-23.3** Stop treating `cands == 1` as confidence. A sole candidate
+      with no corroborating witness should rank below a corroborated one and
+      may need its own report class ("only possibility, unverified").
+- [ ] **REC-23.4** Test: mis-attribution must be measured, not just fabrication.
+      The four-outcome check already separates `wrong` from `spurious`; the
+      recovery suite should assert on it directly against a known denominator.
+
+**Verify.** `wrong` must fall at 256/512 flips with `correct` rising and
+`spurious` staying at 0; the clean baseline (16,071 refs / 10,503 values) must
+not move; and no repoint that is currently correct may be rejected.
 
 - [ ] **REC-22.3** A reader-side test that a block failing its witness reads as
       absent -- the `test_views.cpp` shape, on the navigation path.

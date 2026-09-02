@@ -527,12 +527,43 @@ stashing the change and re-running the same artifacts:
 Reference counts are flat; **the gain is certainty** — ambiguous edges fall 5x. 40
 single-bit trials: 2 deviating, **0 inventing**.
 
-Two things not to relearn. **The match must stay inside `classify_one`**, competing with
-the orphan repoint on one metric: moved to a pass after classification it saw 4 refs
-against 44 holes, because the orphan path had already resolved everything else. And
-**scoring the offset term against the candidate's exact position beats tuple-against-tuple**
-(15946 refs vs 15944): the position is noise-free, and comparing one noisy observation to a
-known value beats comparing two noisy ones.
+Three things not to relearn.
+
+**The match must stay inside `classify_one`**, competing with the orphan repoint on one
+metric: moved to a pass after classification it saw 4 refs against 44 holes, because the
+orphan path had already resolved everything else.
+
+**Scoring the offset term against the candidate's exact position beats
+tuple-against-tuple** (15946 refs vs 15944): the position is noise-free, and comparing one
+noisy observation to a known value beats comparing two noisy ones.
+
+**Follow every repair immediately, and gate it with `BatchTest::NoWildPointers`, never
+`EveryChildCorroborates`.** The repaired block is a *parent* now, and nothing has ever looked at
+its outgoing references — the walk could not reach it, the scan could not identify it. That
+damage is invisible until this moment. `EveryChildCorroborates` refuses any batch containing a
+witness-less child, which is exactly the child being hunted, so gating on it silences the
+feedback loop except when the recovered block happens to be undamaged — the case that
+needed no help. Fixing that gate turned up 41 previously unseen references at 512 flips.
+
+Figures as of the engine-version fix (`6d823df`) — compare nothing to numbers taken
+before it, because gaps an older reader excused as `VersionSkew` are now counted.
+**Superseded downstream by REC-22** (the reader was not checking the self-offset
+witness the engine checks), which moved the content-level numbers substantially;
+these reference-level counts are the record of where REC-20 left things:
+
+| artifact | refs | holes | skew | ambiguous | unrecovered |
+|---|---:|---:|---:|---:|---:|
+| 256 flips | 16015 | 4 | 8 | 0 | 3 |
+| 512 flips | 15987 | 8 | 22 | 1 | 24 |
+
+`unrecovered` rising is the loop working: damage that was never enumerated is now counted.
+
+**The ceiling is not the band.** Measured on the 8 surviving holes at 512 flips, six have a
+best self-hamming of 2–5 — well inside the expanded band, candidates exist for them — and
+the classifier reports *signature, but no ref in budget: 6*. There are 8 holes and 4
+unrepaired refs: nothing is looking for those blocks, because the parents that would point
+at them were themselves lost. The remaining two sit at hamming 35–36 and are almost
+certainly not blocks at all, which suggests a tiling bug worth its own investigation.
 
 ### 2.15 CMake and Bazel compile DIFFERENT ENGINE VERSIONS — read before trusting a hole count
 
