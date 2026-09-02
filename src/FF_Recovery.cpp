@@ -1246,6 +1246,98 @@ FF_RecoveryReport Recovery::recover() const {
         }
     }
 
+    // REC-23 — A UNIQUE CANDIDATE IS NOT A CORROBORATED ONE.
+    //
+    // The repoint ranker accepts a candidate when it is the only one inside
+    // the flip budget. That is a property of the SEARCH, not of the evidence:
+    // when a reference's true child has itself been destroyed the byte scan
+    // never lists it as an orphan, so the true answer is absent from the
+    // candidate set and some innocent orphan of the same type is the only
+    // thing left standing. `cands == 1` then makes off_unique trivially true
+    // and the repoint is applied with full confidence.
+    //
+    // Measured at 512 flips: 11 of 206 repoints attached the WRONG block, and
+    // in 10 of the 11 the true child was never a candidate. The cost is not a
+    // lost reference but a plausible wrong one -- a real Observation hanging
+    // off another entry, reading as valid FHIR. Misattribution is worse than
+    // loss because nothing downstream can tell.
+    //
+    // Two witnesses the ranker never consulted, both already in hand:
+    //
+    //   LOCALITY. The writer appends children as it walks, so a field's
+    //   targets ascend with parent order -- measured 1471/1472 on a clean
+    //   bundle. A candidate outside the bracket set by the nearest INTACT
+    //   references on either side is not a repair of this edge. Rejecting on
+    //   that caught 10 of the 11 with zero false positives on the 195 correct.
+    //
+    //   EXCLUSIVITY. Two references cannot own the same child. Greedy per-ref
+    //   picking let one steal the orphan another needed; that was the 11th.
+    //
+    // Demotion only: this pass can turn a repoint into Unrecovered, never the
+    // reverse, so it cannot invent recovery -- it only declines to guess.
+    {
+        // Anchors: intact (parent -> child) per field, in parent order.
+        std::map<Offset, std::vector<std::pair<Offset, Offset>>> anchors;
+        for (const BlockVerdict& v : rep.blocks)
+            if (v.class_ == RepairClass::Intact && v.block.child != FF_NULL_OFFSET)
+                anchors[v.block.field].push_back({v.block.parent, v.block.child});
+        for (auto& [field, a] : anchors)
+            std::sort(a.begin(), a.end());
+
+        // Exclusivity: how many repoints chose each address.
+        std::map<Offset, int> claims;
+        for (const BlockVerdict& v : rep.blocks)
+            if (v.class_ == RepairClass::Corroborated && !v.candidates.empty())
+                ++claims[v.candidates.front()];
+
+        std::size_t demoted_locality = 0, demoted_contended = 0;
+        for (BlockVerdict& v : rep.blocks) {
+            if (v.class_ != RepairClass::Corroborated || v.candidates.empty())
+                continue;
+            const Offset chose = v.candidates.front();
+
+            if (claims[chose] > 1) {
+                // Contended: two references want one child and nothing here
+                // says which is entitled to it. Neither may have it.
+                v.class_ = RepairClass::Ambiguous;
+                ++demoted_contended;
+                continue;
+            }
+            const auto it = anchors.find(v.block.field);
+            if (it == anchors.end() || it->second.size() < 2)
+                continue;  // no neighbours to reason from — leave the ranker's call
+            const auto& a = it->second;
+            const auto hi = std::lower_bound(
+                a.begin(), a.end(), std::make_pair(v.block.parent, Offset(0)));
+            if (hi == a.begin() || hi == a.end())
+                continue;  // outside the anchored run — no bracket to test against
+            const Offset lo_child = (hi - 1)->second, hi_child = hi->second;
+            if (lo_child >= hi_child)
+                continue;  // anchors not ascending here — the rule does not hold
+            if (chose <= lo_child || chose >= hi_child) {
+                v.class_ = RepairClass::Unrecovered;
+                v.candidates.clear();
+                ++demoted_locality;
+            }
+        }
+        if (demoted_locality != 0 || demoted_contended != 0) {
+            // Re-count: the tallies above were taken before these demotions.
+            rep.intact = rep.corroborated = rep.tag_repaired = 0;
+            rep.position_repaired = rep.extent_derived = 0;
+            rep.ambiguous = rep.unrecovered = 0;
+            for (const BlockVerdict& v : rep.blocks)
+                switch (v.class_) {
+                    case RepairClass::Intact:            ++rep.intact; break;
+                    case RepairClass::Corroborated:      ++rep.corroborated; break;
+                    case RepairClass::TagRepaired:       ++rep.tag_repaired; break;
+                    case RepairClass::PositionRepaired:  ++rep.position_repaired; break;
+                    case RepairClass::ExtentDerived:     ++rep.extent_derived; break;
+                    case RepairClass::Ambiguous:         ++rep.ambiguous; break;
+                    case RepairClass::Unrecovered:       ++rep.unrecovered; break;
+                }
+        }
+    }
+
     rep.blocks_total = rep.blocks.size();
 
     // REC-19.2 — the merged producer audits ride the report (scan tag audit +
