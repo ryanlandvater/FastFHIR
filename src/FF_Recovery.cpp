@@ -738,6 +738,28 @@ FF_RecoveryReport Recovery::recover() const {
             }
             return;
         }
+        // TAG CONSENSUS (REC-22.2). For a TUPLE kind the type is on the wire
+        // twice, so a disagreement is damage to one copy -- and the ranker
+        // below cannot tell which. It costs the tag distance either way and
+        // resolves the tie by preferring the parent, which is right exactly
+        // half the time: a flip in the slot copy and a flip in the child's
+        // header are the same one bit seen from two sides.
+        //
+        // So do not decide it by cost. Ask whether the block READS as each
+        // candidate: a type is a hypothesis about a V-Table, and the wrong one
+        // pulls offsets out of positions holding something else. Exactly one
+        // coherent reading is an answer; anything else is Undecided and falls
+        // through to be reported rather than guessed.
+        if (IsTupleKind(r.kind) && valid_validation(m_base, m_size, r.child)) {
+            const TagCopy damaged = adjudicate_tag(r.child, r.declared, actual);
+            if (damaged != TagCopy::Undecided) {
+                v.class_ = RepairClass::TagRepaired;
+                v.damaged_copy = damaged;
+                v.consensus_tag = (damaged == TagCopy::ParentSlot) ? actual : r.declared;
+                v.bit_cost = hamming_cost(r.declared, actual);
+                return;
+            }
+        }
         // Damaged reference: rank the repair hypotheses under the flip budget
         // (D1/D2). H_inplace repairs the child in place — a tag mismatch
         // (child validates) costs the recovery-word distance; a broken
@@ -1580,6 +1602,30 @@ void Recovery::enumerate_array_entries(Offset array_off, RECOVERY_TAG array_tag,
 
 }
 
+bool Recovery::reads_as(Offset off, RECOVERY_TAG tag) const {
+    if (!plausible_tag(tag))
+        return false;
+    std::vector<BlockRef> kids;
+    enumerate_block_refs(off, tag, kids);
+    if (kids.empty())
+        return false;  // no children to judge by — silence, not agreement
+    return batch_passes(m_base, m_size, kids, BatchTest::EveryChildCorroborates);
+}
+
+TagCopy Recovery::adjudicate_tag(Offset child, RECOVERY_TAG slot_tag,
+                                 RECOVERY_TAG child_tag) const {
+    // Both copies are plausible types or there would be nothing to decide --
+    // plausibility is what the ranker already used, and it is exactly what
+    // fails here: 0x1012 and 0x1010 are both real resource tags, one bit apart.
+    // So ask the bytes instead of the tag.
+    const bool slot_reads  = reads_as(child, slot_tag);
+    const bool child_reads = reads_as(child, child_tag);
+    if (slot_reads == child_reads)
+        return TagCopy::Undecided;  // both coherent, or neither — no opinion
+    // The coherent reading names the true type; the OTHER copy is the damage.
+    return slot_reads ? TagCopy::ChildHeader : TagCopy::ParentSlot;
+}
+
 void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                                     std::vector<BlockRef>& out) const {
     // Was `> m_size`, which let an offset within a header's width of the end
@@ -2079,6 +2125,27 @@ FF_ApplyReport Recovery::apply(const FF_RecoveryReport& report, std::vector<BYTE
                 // block's real type, so there is nothing to destroy: that is the
                 // case this writes. A plausible-but-different tag stays a
                 // report, and the caller may still opt in through the filter.
+                // ADJUDICATED (REC-22.2). When consensus named a loser, the
+                // "innocent block" worry above is answered by evidence rather
+                // than by a plausibility guess, and the damaged half may be
+                // EITHER copy -- so this is also the only path that can repair
+                // the tuple's own tag, which nothing could write before.
+                if (v.damaged_copy != TagCopy::Undecided &&
+                    v.consensus_tag != FF_RECOVER_UNDEFINED) {
+                    const Offset seat = (v.damaged_copy == TagCopy::ParentSlot)
+                                            ? static_cast<Offset>(r.parent + r.field)
+                                            : r.child;
+                    slot = static_cast<uint64_t>(seat) + DATA_BLOCK::RECOVERY;
+                    if (!in_bounds(slot, 2))
+                        break;
+                    before = LOAD_U16(dst + slot);
+                    STORE_U16(dst + slot, static_cast<uint16_t>(v.consensus_tag));
+                    wrote = true;
+                    // tag_at() would demand a whole HEADER fit; a tuple seat is
+                    // 10 bytes and the write above is already bounds-checked.
+                    ok = FF_GET_RECOVERY_TAG(dst, seat) == v.consensus_tag;
+                    break;
+                }
                 if (r.declared == FF_RECOVER_UNDEFINED)
                     break;
                 if (plausible_tag(tag_at(dst, n, r.child)))

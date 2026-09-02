@@ -309,9 +309,20 @@ exported document carried **20,057 fabricated leaf values**. `FF_BLOCK_VOUCHES`
 (`FF_Primitives.hpp`) is the single gate at all ten hops in `FF_Parser.cpp`, and it
 dropped those to 18. **Reference-level integrity is not content-level integrity**:
 a recovery benchmark measuring only references reports a number that is true and
-worthless. Measure the leaves. The residue is tag consensus — the tag is stored
-twice, in the slot tuple and in the target's header, and reconciling them needs the
-parent's declared type, which only the recovery engine holds (TASKS.md REC-22).
+worthless. Measure the leaves. **A tag stored twice needs a third opinion, and coherence is it.** A resource/choice
+reference is a 10-byte tuple `{offset, tag}`, so its type is on the wire twice — beside
+the offset and in the target's header. A one-bit flip in either makes them disagree, and
+comparing them cannot say which moved: the ranker scores both hypotheses at 1 bit and
+breaks the tie by preferring the parent, which is right half the time. Believing the wrong
+copy is not a bad label but a **bad schema** — the V-Table is decoded under another
+resource's field map. The adjudicator asks the bytes instead: a type is a hypothesis about
+a V-Table, so enumerate the block's children under each candidate and require that they
+vouch for themselves (`Recovery::reads_as` over the existing `batch_passes`). Decisive only
+when exactly one reading is coherent; a block with no enumerable children answers neither
+way and reports `Undecided` rather than passing vacuously. The verdict carries
+`consensus_tag`/`damaged_copy` and `apply()` enacts it — including the tuple's own tag half,
+which nothing could repair before. **Only tuple kinds are adjudicated**: a plain block or
+string slot takes its expectation from the compiled schema, which damage cannot reach.
 
 **A flagged offset is an offset, whatever slot it lives in.** `validate_FFHR_stream()`
 skips inline scalars because they cannot aim the reader at memory it does not own — but a

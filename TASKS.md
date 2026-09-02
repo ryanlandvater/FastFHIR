@@ -6626,32 +6626,61 @@ worthless. Measure the leaves.
       `FF_Parser.cpp`. Spurious values at 512 flips: **20,057 -> 18**; clean
       baseline unchanged (16,071 refs / 10,503 values); ctest 44/44.
 
-- [ ] **REC-22.2 Tag consensus.** A resource reference is a 10-byte tuple
-      `{offset(8), tag(2)}`, so the tag exists TWICE -- beside the offset and in
-      the target's own header. Damage to either is detectable by comparing them,
-      and that is the one fabrication the witness gate does not stop.
+- [x] **REC-22.2 Tag consensus.** Done. A resource/choice reference is a
+      10-byte tuple `{offset(8), tag(2)}`, so the type is on the wire TWICE --
+      beside the offset, and in the header of the block it names. `BlockRef`
+      already carried both (`declared` = the slot half, `actual` = the child's),
+      and the classifier compared only `actual` against the schema.
 
       Measured, both directions, on single bit flips of the same bundle:
 
-      | seed | flipped copy | effect |
-      |---|---|---|
-      | 19 | slot copy `0x1012 -> 0x1010` | block's own tag intact |
-      | 33 | block's own copy, identically | slot copy intact |
+      | seed | flipped copy | ranker's verdict | outcome |
+      |---|---|---|---|
+      | 19 | slot copy `0x1012 -> 0x1010` | TagRepaired, **wrong way** | 6 fields lost, 3 invented |
+      | 33 | child header, identically | TagRepaired, right way | suppressed by the gate |
 
-      Preferring either side fixes one seed and breaks the other (both were
-      built and measured), so **preference is not the answer** and neither is
-      refusing on mismatch: the two copies legitimately differ where a slot
-      carries a declared/generic marker and the block the concrete type --
-      refusing broke `py_test_10`, `py_readme_examples`, `py_roundtrip`.
+      Both cost exactly 1 bit, so the ranker broke the tie by preferring the
+      parent -- right half the time -- and `apply()`'s plausibility gate then
+      suppressed the write either way. That gate was the blunt stand-in for an
+      adjudication that did not exist, which is why blanket tag rewrites once
+      measured *strictly worse than not repairing* (+10 intact, -59, +7 holes).
 
-      The cost of believing a wrong tag is not a bad label but a bad SCHEMA:
-      the V-Table is decoded under another resource's field map. Seed 19 lost 6
-      real fields and invented 3 that were never written, on one bit.
+      **The third opinion is coherence, and the machinery already existed.**
+      A type is a hypothesis about a V-Table: `enumerate_block_refs` takes the
+      tag as a parameter, and `batch_passes(EveryChildCorroborates)` already
+      says whether a hypothesised V-Table yields children that vouch for
+      themselves. `Recovery::reads_as()` asks that question; `adjudicate_tag()`
+      asks it of both candidates and is decisive only when exactly one is
+      coherent. A block with no enumerable children answers neither way and
+      reports `Undecided` rather than passing vacuously.
 
-      Resolution needs the THIRD witness, which only the recovery engine holds:
-      the parent's declared field type (`FF_FieldKeys`) plus Hamming ranking
-      over plausible tags. Do it there and let `apply()` write the consensus;
-      the reader stays honest and simply reports what the bytes say.
+      The verdict CARRIES the result (`consensus_tag`, `damaged_copy`) and
+      `apply()` enacts it -- including writing the tuple's own tag half, which
+      nothing could repair before. Only tuple kinds are adjudicated: a plain
+      block/string slot takes its expectation from the compiled schema, which
+      damage cannot reach, so there is no second wire copy and nothing to weigh.
+
+      Result -- **spurious fabrication is now zero across the whole sweep**, and
+      all 40 single-bit seeds recover the document perfectly:
+
+      | flips | correct | lost | wrong | spurious | was (spurious) |
+      |---|---|---|---|---|---|
+      | 0 | 10503 | 0 | 0 | 0 | 0 |
+      | 1 | 10503 | 0 | 0 | 0 | 0 |
+      | 8 | 10503 | 0 | 0 | 0 | 0 |
+      | 64 | 10489 | 14 | 0 | 0 | 0 |
+      | 256 | 10383 | 112 | 8 | **0** | 3 |
+      | 512 | 10134 | 347 | 22 | **0** | 18 |
+      | 2048 | 0 | 10503 | 0 | 0 | 0 |
+
+      Covered by `ff_test_recovery::tag_consensus_resolves_either_damaged_copy`,
+      which damages each half of every resource tuple in turn and asserts both
+      that a decisive verdict is never wrong AND that it is decisive at all --
+      the second half matters, since checking only the first passes trivially by
+      never deciding anything.
+
+      Residual: `wrong` (a value that reads back as a different value) is still
+      8 and 22 at 256/512 flips. Not fabrication and not loss; unexamined.
 
 - [ ] **REC-22.3** A reader-side test that a block failing its witness reads as
       absent -- the `test_views.cpp` shape, on the navigation path.
@@ -6669,14 +6698,15 @@ single-bit gate, where fabrication must be zero:
 |---|---|---|---|---|
 | 0 | 10503 | 0 | 0 | 0 |
 | 1 | 10503 | 0 | 0 | 0 |
-| 8 | 10489 | 14 | 0 | 0 |
-| 64 | 10441 | 62 | 0 | 0 |
-| 256 | 10240 | 255 | 8 | 3 |
-| 512 | 9889 | 592 | 22 | 18 |
+| 8 | 10503 | 0 | 0 | 0 |
+| 64 | 10489 | 14 | 0 | 0 |
+| 256 | 10383 | 112 | 8 | 0 |
+| 512 | 10134 | 347 | 22 | 0 |
 | 2048 | 0 | 10503 | 0 | 0 |
 
 2048 flips lose everything and invent nothing -- the format fails honestly.
-39 of 40 single-bit seeds fabricate nothing; the 40th is REC-22.2.
+With REC-22.1 and REC-22.2 both in, **spurious is zero at every flip count**
+and all 40 single-bit seeds recover the document perfectly.
 
 **Verify.** `ff_test_recovery::generational_holes_recover_from_the_root` is the
 acceptance test and is **currently RED**: 21 of 24 references, 1 surviving hole,

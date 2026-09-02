@@ -194,6 +194,23 @@ enum class RepairClass : uint8_t {
     Unrecovered,       ///< no candidate within the flip budget
 };
 
+/// WHICH COPY OF A TAG SURVIVED.
+///
+/// A choice/resource reference is a 10-byte tuple {offset(8), tag(2)}, so its
+/// type is written TWICE -- beside the offset, and in the header of the block
+/// it points at. Damage to either is detectable by comparing them, but not
+/// resolvable by comparing them: with two copies and no third opinion, nothing
+/// says which one survived. Adjudication supplies the third (REC-22.2).
+///
+/// Only tuple kinds have two WIRE copies. For a plain block/string slot the
+/// expectation comes from the compiled schema, which damage cannot reach, so
+/// the child's header is the only copy and there is nothing to adjudicate.
+enum class TagCopy : uint8_t {
+    Undecided = 0,  ///< no decisive reading — reported, never guessed
+    ParentSlot,     ///< the tuple's tag half is damaged; the child's is true
+    ChildHeader,    ///< the child's header is damaged; the tuple's half is true
+};
+
 /// One block reference plus its verdict. `blocks` in the report carries every
 /// reference so the benchmark's anchored check can verify recovered ⊆ baseline
 /// over (parent, field, child, tag) — the unit that can audit attachment (F3).
@@ -207,6 +224,11 @@ struct BlockVerdict {
     /// the next known block, and an applier repeating only half of that reasoning
     /// silently disagrees with the verdict it is supposed to be enacting.
     uint32_t                derived_extent = 0;
+    /// TagRepaired only: the tag adjudication settled on, and which of the two
+    /// wire copies it found damaged. Carried, not re-derived — apply() enacts
+    /// the verdict rather than re-running the reasoning behind it.
+    RECOVERY_TAG            consensus_tag  = FF_RECOVER_UNDEFINED;
+    TagCopy                 damaged_copy   = TagCopy::Undecided;
     std::vector<Offset>     candidates;    ///< populated for Ambiguous
 };
 
@@ -385,6 +407,22 @@ private:
 
     void enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                               std::vector<BlockRef>& out) const;
+
+    /// Does the block at `off` READ COHERENTLY as `tag`?
+    ///
+    /// A type is a hypothesis about a V-Table. Enumerate the block's slots
+    /// under that hypothesis and every child must corroborate: a wrong V-Table
+    /// reads real offsets out of positions that hold something else, and what
+    /// comes back does not vouch for itself. A block with no enumerable
+    /// children answers NEITHER way — that is not evidence, and it reports as
+    /// such rather than passing vacuously.
+    bool reads_as(Offset off, RECOVERY_TAG tag) const;
+
+    /// THE THIRD OPINION. Given a tuple's two disagreeing tag copies, decide
+    /// which one the bytes actually support. Decisive only when exactly one
+    /// reading is coherent; otherwise Undecided, which is never a guess.
+    TagCopy adjudicate_tag(Offset child, RECOVERY_TAG slot_tag,
+                           RECOVERY_TAG child_tag) const;
 
     /// The ONE offset-chain walk: DFS from the root through intact references,
     /// depth- and cycle-bounded. Returns every reachable block offset (the

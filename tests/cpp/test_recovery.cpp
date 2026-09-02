@@ -873,6 +873,91 @@ static void test_generational_holes_recover_from_the_root()
     CHECK(g3, "the grandchild generation was rediscovered through its repaired child");
 }
 
+
+// REC-22.2 — TAG CONSENSUS, BOTH DIRECTIONS.
+//
+// A resource/choice reference is a 10-byte tuple {offset(8), tag(2)}, so the
+// type is on the wire TWICE: beside the offset, and in the header of the block
+// it names. One flipped bit in EITHER copy makes them disagree, and comparing
+// them cannot say which one moved.
+//
+// The measured failure: on a Synthea bundle, seed 19 flipped the slot copy
+// (0x1012 -> 0x1010) and seed 33 flipped the child's header identically. Both
+// are real resource tags, so plausibility said nothing, and the ranker -- which
+// scores both hypotheses at 1 bit -- broke the tie by preferring the parent.
+// That is right exactly half the time. Believing the wrong copy is not a bad
+// label but a bad SCHEMA: the V-Table gets decoded under another resource's
+// field map, which cost 6 real fields and 3 invented ones on a single bit.
+//
+// So this asserts the two properties that matter, over every resource tuple in
+// the bundle and in both directions:
+//   1. it is never CONFIDENTLY WRONG -- a decisive verdict always names the
+//      original tag, whichever half was damaged;
+//   2. it is decisive at all -- a test that only checks (1) passes trivially by
+//      never deciding anything.
+static void test_tag_consensus_resolves_either_damaged_copy()
+{
+    auto arena = build_bundle();
+    CHECK(arena != nullptr, "bundle build failed");
+    if (!arena)
+        return;
+
+    Recovery clean(*arena);
+    const auto clean_rep = clean.recover();
+    BYTE *const base = arena->base();
+
+    std::size_t decisive_slot = 0, decisive_child = 0, wrong = 0, tried = 0;
+
+    for (const auto &cv : clean_rep.blocks) {
+        const BlockRef &r = cv.block;
+        if (r.kind != FF_FIELD_RESOURCE && r.kind != FF_FIELD_CHOICE)
+            continue;
+        if (cv.class_ != RepairClass::Intact || r.child == FF_NULL_OFFSET)
+            continue;
+        if (++tried > 24)
+            break;
+
+        // The tuple's tag half and the child's header tag sit at the same
+        // symbolic position -- a tuple has a DATA_BLOCK header's field layout.
+        const std::size_t seats[2] = {
+            static_cast<std::size_t>(r.parent) + r.field + DATA_BLOCK::RECOVERY,
+            static_cast<std::size_t>(r.child) + DATA_BLOCK::RECOVERY,
+        };
+        const TagCopy expect[2] = {TagCopy::ParentSlot, TagCopy::ChildHeader};
+
+        for (int half = 0; half < 2; ++half) {
+            const std::size_t at = seats[half];
+            if (at + 2 > arena->size())
+                continue;
+            const RECOVERY_TAG original = FF_GET_RECOVERY_TAG(
+                base, static_cast<Offset>(at - DATA_BLOCK::RECOVERY));
+
+            base[at] ^= 0x02;  // the flip both measured seeds made
+            {
+                Recovery rec(*arena);
+                const auto rep = rec.recover();
+                const auto *v = find_verdict(rep, r.parent, r.field);
+                if (v && v->damaged_copy != TagCopy::Undecided) {
+                    if (v->consensus_tag != original || v->damaged_copy != expect[half])
+                        ++wrong;
+                    else if (half == 0)
+                        ++decisive_slot;
+                    else
+                        ++decisive_child;
+                }
+            }
+            base[at] ^= 0x02;  // restore — the next probe needs a clean bundle
+        }
+    }
+
+    CHECK(tried > 0, "the bundle contains resource tuples to damage");
+    CHECK(wrong == 0, "consensus is never confidently wrong in either direction");
+    CHECK(decisive_slot > 0, "a damaged SLOT copy is resolved to the child's tag");
+    CHECK(decisive_child > 0, "a damaged CHILD header is resolved to the slot's tag");
+    std::printf("    tag consensus: %zu tuples, slot=%zu child=%zu decisive, %zu wrong\n",
+                tried, decisive_slot, decisive_child, wrong);
+}
+
 int main(int argc, char **argv)
 {
     const char *filter = (argc > 2 && strcmp(argv[1], "--filter") == 0) ? argv[2] : "";
@@ -906,6 +991,8 @@ int main(int argc, char **argv)
     run("apply_repairs_a_copy_and_improves_it", test_apply_repairs_a_copy_and_improves_it);
     run("generational_holes_recover_from_the_root",
         test_generational_holes_recover_from_the_root);
+    run("tag_consensus_resolves_either_damaged_copy",
+        test_tag_consensus_resolves_either_damaged_copy);
 
     std::cout << "\n" << g_tests << " test(s), " << g_failures << " failure(s)\n";
     if (g_tests == 0)
