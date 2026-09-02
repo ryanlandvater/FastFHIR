@@ -1828,7 +1828,7 @@ inline constexpr uint64_t FF_GET_VALIDATION(const BYTE *base, Offset block_offse
     return v;
 }
 
-/// Whether a block VOUCHES FOR ITSELF: it fits, and its VALIDATION word holds
+/// Whether a block SELF-VALIDATES: it fits, and its VALIDATION word holds
 /// its own offset.
 ///
 /// Every block is written with that self-offset witness, and both the explicit
@@ -1843,8 +1843,8 @@ inline constexpr uint64_t FF_GET_VALIDATION(const BYTE *base, Offset block_offse
 /// had walked to anyway. The engine was right and nobody asked it. Checking the
 /// witness costs one 8-byte load on the cache line the header read is about to
 /// touch, and drops those 20,057 to 18.
-[[nodiscard]] inline bool FF_BLOCK_VOUCHES(const BYTE* base, Offset off, Size stream_size,
-                                           Size width = DATA_BLOCK::HEADER_SIZE) noexcept
+[[nodiscard]] inline bool FF_BLOCK_SELF_VALIDATES(const BYTE* base, Offset off, Size stream_size,
+                                                  Size width = DATA_BLOCK::HEADER_SIZE) noexcept
 {
     return FF_BLOCK_IN_BOUNDS(off, stream_size, width) &&
            FF_GET_VALIDATION(base, off) == static_cast<uint64_t>(off);

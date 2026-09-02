@@ -305,7 +305,7 @@ they claim to be, so a corrupted slot aiming anywhere in range was followed and
 believed. The two halves of the system therefore disagreed about which references
 are real, and the credulous half is the one every consumer calls — at 512 flipped
 bits the recovery report said *zero invented references*, correctly, while the
-exported document carried **20,057 fabricated leaf values**. `FF_BLOCK_VOUCHES`
+exported document carried **20,057 fabricated leaf values**. `FF_BLOCK_SELF_VALIDATES`
 (`FF_Primitives.hpp`) is the single gate at all ten hops in `FF_Parser.cpp`, and it
 dropped those to 18. **Reference-level integrity is not content-level integrity**:
 a recovery benchmark measuring only references reports a number that is true and

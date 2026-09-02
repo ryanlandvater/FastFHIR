@@ -250,7 +250,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
 
         case FF_FIELD_RESOURCE: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
+            if (!FF_BLOCK_SELF_VALIDATES(e.base, child_offset, size)) return {};
             RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, slot_offset);
             // Same rule as the standard path: the kind follows the tag, so an
             // out-of-profile resource retained as opaque JSON is walked as the
@@ -263,7 +263,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
 
         case FF_FIELD_ARRAY: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
+            if (!FF_BLOCK_SELF_VALIDATES(e.base, child_offset, size)) return {};
             FF_ARRAY arr_hdr(child_offset, size, version, e.m_engine_version);
             bool entries_are_offsets = arr_hdr.entries_are_pointers(e.base);
             return Node(e.base, size, version, child_offset, expected_tag, schema_kind,
@@ -272,7 +272,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
 
         case FF_FIELD_STRING: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
+            if (!FF_BLOCK_SELF_VALIDATES(e.base, child_offset, size)) return {};
             // The stored tag, not RECOVER_FF_STRING assumed: an opaque-JSON
             // payload shares this layout and must keep its own identity, or the
             // render sites quote and escape a whole resource.
@@ -283,7 +283,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
 
         default: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
+            if (!FF_BLOCK_SELF_VALIDATES(e.base, child_offset, size)) return {};
             RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, child_offset);
             // The recovery tag is ground truth, exactly as in the standard path
             // above -- and this branch is missing that rule was a live defect,
@@ -1444,7 +1444,7 @@ Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version,
     }
     
     Offset child_off = LOAD_U64(base + value_offset);
-    if (!FF_BLOCK_VOUCHES(base, child_off, size)) return {};
+    if (!FF_BLOCK_SELF_VALIDATES(base, child_off, size)) return {};
     
     FF_FieldKind dynamic_kind = FF_FIELD_BLOCK;
     switch (tag) {
@@ -1597,7 +1597,7 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
     // --- POINTER TABLE (variable-length elements: every FF_STRING-backed field) ---
     if (arr.entries_are_pointers(n.m_base)) {
         const Offset child_off = LOAD_U64(n.m_base + item_ptr);
-        if (!FF_BLOCK_VOUCHES(n.m_base, child_off, n.m_size)) return {};
+        if (!FF_BLOCK_SELF_VALIDATES(n.m_base, child_off, n.m_size)) return {};
         // The pointed-to block's own tag outranks even the array header here:
         // a `code` array declares RECOVER_FF_STRING and stores FF_STRINGs, and
         // a dateTime array declares RECOVER_FF_DATETIME and stores them too.
@@ -1610,7 +1610,7 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
     // --- INLINE POLYMORPHIC TUPLE (10 bytes: offset + concrete tag) ---
     if (elem == RECOVER_FF_RESOURCE) {
         const Offset actual_off = LOAD_U64(n.m_base + item_ptr);
-        if (!FF_BLOCK_VOUCHES(n.m_base, actual_off, n.m_size)) return {};
+        if (!FF_BLOCK_SELF_VALIDATES(n.m_base, actual_off, n.m_size)) return {};
 
         const RECOVERY_TAG tuple_tag = FF_GET_RECOVERY_TAG(n.m_base, item_ptr);
         const RECOVERY_TAG block_tag = FF_GET_RECOVERY_TAG(n.m_base, actual_off);
@@ -1832,7 +1832,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
 
         case FF_FIELD_RESOURCE: {
             Offset actual_off = LOAD_U64(e.base + slot_offset);
-            if (!FF_BLOCK_VOUCHES(e.base, actual_off, size)) return {};
+            if (!FF_BLOCK_SELF_VALIDATES(e.base, actual_off, size)) return {};
             RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, slot_offset);
             // The tag beside the offset is ground truth for the KIND too, not
             // just the type name. This used to hardcode FF_FIELD_BLOCK, which
@@ -1850,7 +1850,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
 
         case FF_FIELD_ARRAY: {
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
+            if (!FF_BLOCK_SELF_VALIDATES(e.base, child_offset, size)) return {};
             // m_recovery is unused on array Nodes (fields() returns {} for non-objects).
             // expected_tag already encodes the element type exactly — no memory read needed.
             FF_ARRAY arr_hdr(child_offset, size, version, e.m_engine_version);
@@ -1862,7 +1862,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
         default: {
             // Standard pointer hop for Blocks and Strings
             Offset child_offset = LOAD_U64(e.base + slot_offset);
-            if (!FF_BLOCK_VOUCHES(e.base, child_offset, size)) return {};
+            if (!FF_BLOCK_SELF_VALIDATES(e.base, child_offset, size)) return {};
             RECOVERY_TAG actual_tag = FF_GET_RECOVERY_TAG(e.base, child_offset);
             // The schema kind can be BLOCK (e.g. dateTime fields resolved through the
             // complex-block mapping) while the stored block is actually an FF_STRING.

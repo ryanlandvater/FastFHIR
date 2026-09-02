@@ -6622,7 +6622,7 @@ array of 29,303 entries.
 benchmark that measures only the former will report a number that is true and
 worthless. Measure the leaves.
 
-- [x] **REC-22.1** `FF_BLOCK_VOUCHES(base, off, size, width)` in
+- [x] **REC-22.1** `FF_BLOCK_SELF_VALIDATES(base, off, size, width)` in
       `FF_Primitives.hpp` -- fits AND vouches -- at all 10 navigation hops in
       `FF_Parser.cpp`. Spurious values at 512 flips: **20,057 -> 18**; clean
       baseline unchanged (16,071 refs / 10,503 values); ctest 44/44.
