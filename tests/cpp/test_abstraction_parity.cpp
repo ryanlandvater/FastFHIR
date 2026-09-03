@@ -235,13 +235,190 @@ static bool census_bundle(const fs::path& fixture, Census& c) {
     return true;
 }
 
+// ── Shared scaffolding for the synthetic probes ─────────────────────────────
+//
+// Both probes below need the same six steps -- arena, stream, ingestor, ingest,
+// set-root, finalize -- and differ only in the JSON they feed and what they
+// then assert. One pipeline, so each probe is just the thing it is testing.
+//
+// The arena and the Parser travel WITH the node: Reflective::Node is a
+// non-owning lens, so both must outlive it. Members destroy in reverse
+// declaration order, which retires the Parser before the arena it reads.
+struct SyntheticObservation {
+    Memory                  arena;
+    std::unique_ptr<Parser> parser;
+    Reflective::Node        node;
+
+    explicit operator bool() const { return parser != nullptr && static_cast<bool>(node); }
+};
+
+// 16 MiB: these documents hold ONE Observation. Every failure reports through
+// CHECK rather than returning silently -- a probe that cannot build its fixture
+// has to say so, not read as a pass on nothing.
+static SyntheticObservation ingest_first_observation(const std::string& json) {
+    SyntheticObservation out{Memory::create(16ull * 1024 * 1024), nullptr, {}};
+
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena = std::make_shared<Memory>(out.arena);
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    if (!FF_CreateStream(stream_info, stream)) { CHECK(false, "synthetic: create stream"); return out; }
+
+    FF_IngestorCreateInfo ingestor_info;
+    FF_Ingestor ingestor;
+    if (!FF_CreateIngestor(ingestor_info, ingestor)) { CHECK(false, "synthetic: create ingestor"); return out; }
+
+    Reflective::ObjectHandle root_handle;
+    Size resource_count = 0;
+    const auto ingest = FF_Ingest(FF_IngestInfo{
+        .ingestor = ingestor,
+        .stream = stream,
+        .source_type = FF_SOURCE_FHIR_JSON,
+        .extension_filter = FF_ExtensionFilterMode::FILTER_NONE,
+        .payload = json,
+    }, root_handle, resource_count);
+    if (ingest.failed()) { CHECK(false, "synthetic: ingest failed"); return out; }
+    if (!FF_StreamSetRoot(FF_StreamSetRootInfo{.stream = stream, .root = root_handle})) {
+        CHECK(false, "synthetic: set root"); return out;
+    }
+
+    Memory::View view;
+    if (!FF_StreamFinalize(FF_StreamFinalizeInfo{
+            .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = sha256}, view)) {
+        CHECK(false, "synthetic: finalize failed"); return out;
+    }
+
+    out.parser = std::make_unique<Parser>(out.arena);
+    const auto root = out.parser->root();
+    if (root) {
+        for (const auto& entry : root[Fields::BUNDLE::ENTRY].entries()) {
+            const auto resource = entry[Fields::BUNDLE_ENTRY::RESOURCE].as_node();
+            if (resource && resource.recovery() == RECOVER_FF_OBSERVATION) {
+                out.node = resource;
+                return out;
+            }
+        }
+    }
+    CHECK(false, "synthetic: no Observation in bundle");
+    return out;
+}
+
+// ── Synthetic probe: a date/time CHOICE in fallback form ────────────────────
+//
+// The corpus probe above cannot reach the defect this targets: Synthea
+// date/times all pack, and a PACKED slot is its own value. The FALLBACK form --
+// legal FHIR text that does not fit the 63-bit civil slot (here: seven
+// fractional digits) -- is stored as an FF_STRING whose flagged RELATIVE OFFSET
+// sits in the choice slot. The lens always resolved that offset, because it
+// walks with the parent block in hand; the POCO path could not until the
+// containing block was plumbed into the generated choice decode, and before
+// that, deserialize read the 8 slot bytes raw: the choice arrived as a NUMBER.
+//
+// Deliberately self-contained (no Census, no fixture file): it must compile
+// and run against BOTH the pre-fix and the fixed generator, so it touches only
+// the ChoiceEntry surface both sides share -- tag + value -- and uses the lens
+// as the oracle.
+static void probe_fallback_datetime_choice() {
+    const std::string json = R"({"resourceType":"Bundle","type":"collection","entry":[
+      {"fullUrl":"urn:uuid:o1","resource":{
+        "resourceType":"Observation","id":"o1","status":"final",
+        "code":{"coding":[{"system":"http://loinc.org","code":"718-7","display":"Hemoglobin [Mass/volume] in Blood"}]},
+        "subject":{"reference":"Patient/p1"},
+        "effectiveDateTime":"2019-04-01T13:45:30.1234567+05:30"}}]})";
+
+    const auto fixture = ingest_first_observation(json);
+    if (!fixture) return;
+
+    const ObservationData obs = fixture.node.as<ObservationData>();
+    if (obs.effective.tag != RECOVER_FF_DATETIME) {
+        CHECK(false, "synthetic: effective[x] must hold a dateTime");
+        return;
+    }
+
+    const auto* text = std::get_if<std::string_view>(&obs.effective.value);
+    if (text == nullptr) {
+        CHECK(false, "POCO date/time CHOICE (fallback) arrives as text, not a raw slot");
+        return;
+    }
+
+    const auto lens = fixture.node[Fields::OBSERVATION::EFFECTIVE].as_node();
+    const bool lens_has = static_cast<bool>(lens);
+    CHECK(lens_has, "lens reads the fallback date/time (non-zero floor)");
+    if (!lens_has) return;
+    CHECK(*text == lens.as<std::string_view>(),
+          "POCO and lens agree on the fallback date/time text");
+}
+
+// ── Synthetic probe: a PACKED date/time CHOICE renders via to_string() ─────
+//
+// The fallback probe above exercises the decode half; this one exercises the
+// RENDER half. A packed slot has no text on the wire -- the 8 bytes are civil
+// parts -- so the generated decode carries the packed value (by design) and
+// text is SYNTHESIZED by ChoiceEntry::to_string() when a caller asks. The lens
+// cannot be the oracle here: it has no text to offer for a packed slot either
+// (it formats only at print time), so the oracle is the value itself -- the
+// rendered text must REPACK to the exact civil value the slot holds.
+//
+// This probe is compile-red at the parent commit (2205cae): to_string() was
+// added by the very change this suite gates, so a test of the capability
+// cannot compile against the old API -- its red phase is a compile failure,
+// the same class as the .block census checks above.
+static void probe_packed_datetime_to_string() {
+    // Three fractional digits fit the packed slot -- no fallback. The offset is
+    // +05:30 so the assertion never depends on how "Z" is normalized.
+    const std::string json = R"({"resourceType":"Bundle","type":"collection","entry":[
+      {"fullUrl":"urn:uuid:o2","resource":{
+        "resourceType":"Observation","id":"o2","status":"final",
+        "code":{"coding":[{"system":"http://loinc.org","code":"718-7","display":"Hemoglobin [Mass/volume] in Blood"}]},
+        "effectiveDateTime":"2019-04-01T13:45:30.123+05:30"}}]})";
+
+    const auto fixture = ingest_first_observation(json);
+    if (!fixture) return;
+
+    const ObservationData obs = fixture.node.as<ObservationData>();
+    if (obs.effective.tag != RECOVER_FF_DATETIME) {
+        CHECK(false, "synthetic: effective[x] must hold a dateTime");
+        return;
+    }
+
+    const auto* raw = std::get_if<uint64_t>(&obs.effective.value);
+    CHECK(raw != nullptr, "packed date/time CHOICE carries the civil value");
+    if (raw == nullptr) return;
+    CHECK(*raw != FF_DATETIME_NULL, "packed slot present (non-zero floor)");
+    if (*raw == FF_DATETIME_NULL) return;
+
+    // The oracle is the VALUE, not the lens: a packed slot has no text on the
+    // wire for either side to read, so the rendered text has to repack to the
+    // exact civil value the slot holds.
+    const std::string text = obs.effective.to_string();
+    CHECK(!text.empty(), "packed date/time CHOICE renders civil text");
+    if (text.empty()) return;
+    const auto reparsed = FF_PARSE_DATETIME(text, RECOVER_FF_DATETIME);
+    CHECK(reparsed.has_value() && FF_PACK_DATETIME(*reparsed) == *raw,
+          "rendered text re-packs to the same civil value");
+}
+
 int main() {
+    // BEFORE the corpus gate: both probes build their own document inline and
+    // need no fixture. Below the gate they were skipped entirely whenever
+    // FASTFHIR_SYNTHEA_DIR is empty (it defaults to "" with
+    // FASTFHIR_DOWNLOAD_SYNTHEA=OFF -- an offline or air-gapped build), which
+    // is a pass on zero coverage for the newest code in the tree: exactly the
+    // reporting failure the SKIP branch below exists to avoid.
+    probe_fallback_datetime_choice();
+    probe_packed_datetime_to_string();
+
     const auto bundles = find_bundles(8);
     if (bundles.empty()) {
         // A supported configuration, but say so loudly: a pass on zero coverage
         // is the reporting failure this whole task is about.
         printf("SKIP: no Synthea fixtures (FASTFHIR_SYNTHEA_DIR unset or empty)\n");
-        return 0;
+        // NOT an unconditional 0: the synthetic probes above have already run
+        // and may have failed. Returning 0 here regardless would report their
+        // failure as a pass -- the same reporting failure this branch exists to
+        // avoid, reintroduced one line below the comment saying so.
+        printf("%s\n", failures ? "FAILURES" : "synthetic probes only (no corpus)");
+        return failures ? 1 : 0;
     }
 
     printf("POCO/lens parity over %zu Synthea bundles\n", bundles.size());
