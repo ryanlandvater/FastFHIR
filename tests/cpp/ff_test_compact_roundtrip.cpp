@@ -136,17 +136,17 @@ static void report_first_difference(const std::string& lhs, const std::string& r
 struct FixtureResult {
     bool        ok      = false;
     std::size_t opaque  = 0;
+    // The document as the SOURCE stream rendered it, so a caller can assert its
+    // case is not vacuous -- that the value it meant to exercise is really there.
+    std::string source_json;
 };
 
-static FixtureResult compact_roundtrip(const fs::path& fixture) {
+// Split from the file loader so a hand-written document can go through the
+// SAME pipeline: ingest -> finalize -> compact -> compare. A synthetic fixture
+// that skips the writer proves the reader agrees with the test author, not with
+// the writer (COV-1), so the synthetic case here supplies only the JSON.
+static FixtureResult compact_roundtrip_json(const std::string& json) {
     FixtureResult result;
-
-    std::ifstream f(fixture, std::ios::binary | std::ios::ate);
-    if (!f) { printf("    cannot open %s\n", fixture.string().c_str()); return result; }
-    const auto size = f.tellg();
-    f.seekg(0);
-    std::string json(static_cast<std::size_t>(size), '\0');
-    f.read(json.data(), size);
 
     auto mem = Memory::create(2ull * 1024 * 1024 * 1024);
     FF_StreamCreateInfo stream_info;
@@ -210,6 +210,7 @@ static FixtureResult compact_roundtrip(const fs::path& fixture) {
 
     const std::string lhs = source_json.str();
     const std::string rhs = compact_json.str();
+    result.source_json = lhs;
     if (lhs != rhs) {
         report_first_difference(lhs, rhs);
         return result;
@@ -228,6 +229,50 @@ static FixtureResult compact_roundtrip(const fs::path& fixture) {
 
     result.ok = true;
     return result;
+}
+
+static FixtureResult compact_roundtrip(const fs::path& fixture) {
+    std::ifstream f(fixture, std::ios::binary | std::ios::ate);
+    if (!f) { printf("    cannot open %s\n", fixture.string().c_str()); return {}; }
+    const auto size = f.tellg();
+    f.seekg(0);
+    std::string json(static_cast<std::size_t>(size), '\0');
+    f.read(json.data(), size);
+    return compact_roundtrip_json(json);
+}
+
+// A DATE/TIME VARIANT THAT DOES NOT PACK, INSIDE A CHOICE SLOT.
+//
+// Observation.effective[x] is a choice, and a date/time whose text will not
+// pack keeps its ORIGINAL bytes in an FF_STRING reached by a signed offset
+// RELATIVE to the containing block. Compaction moves that block, so the offset
+// has to be recomputed -- and the choice path did not: those tags sit in the
+// scalar band, so they fell through to a verbatim 8-byte copy and the compact
+// stream kept an offset measured from the block's OLD address.
+//
+// The Synthea corpus never produced one, which is why 44 green tests said
+// nothing about it. This builds the case on purpose.
+static void test_unpackable_datetime_in_a_choice_survives_compaction() {
+    const std::string json = R"({
+        "resourceType": "Bundle",
+        "type": "collection",
+        "entry": [{
+            "resource": {
+                "resourceType": "Observation",
+                "id": "dt-fallback-1",
+                "status": "final",
+                "effectiveDateTime": "not-a-parseable-instant"
+            }
+        }]
+    })";
+
+    const FixtureResult r = compact_roundtrip_json(json);
+    CHECK(r.ok, "unpackable date/time in a choice survives compaction");
+
+    // Not vacuous: if that text ever starts PACKING, this case stops covering
+    // the fallback and silently becomes a test of the inline path instead.
+    CHECK(r.source_json.find("not-a-parseable-instant") != std::string::npos,
+          "the fallback text is actually present in the source document");
 }
 
 int main() {
@@ -257,6 +302,8 @@ int main() {
     // The fix is NOT to widen the profile: CMakePresets.json omits the `imaging`
     // grouping deliberately (TASKS.md OPQ-1).
     CHECK(opaque_total > 0, "corpus exercised the opaque-JSON path at all");
+
+    test_unpackable_datetime_in_a_choice_survives_compaction();
 
     printf("%s\n", failures ? "FAILURES" : "compaction preserves the document");
     return failures ? 1 : 0;

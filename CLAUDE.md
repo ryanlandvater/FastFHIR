@@ -335,6 +335,43 @@ containing block, and walked against `RECOVER_FF_CODEABLE_CONCEPT`
 `FF_STRING` (TASKS.md DT-1.5). A slot kind that can point somewhere and is not in
 `slot_carries_offset` is a hole in the validator.
 
+**THREE POLYMORPHIC SLOTS, AND THAT IS THE WHOLE LIST.** Every other slot means
+one thing. These three mean two, and each one is a place a copy, a walk or a
+validator can be wrong without any error:
+
+| slot | width | discriminator | arm A | arm B |
+|---|---|---|---|---|
+| `FF_FIELD_CODE` | 4 | bit 31 (`FF_CODEABLE_CONCEPT_FLAG`) | permanent dictionary ID | signed offset **relative to the containing block** → `FF_CODEABLE_CONCEPT` |
+| `FF_FIELD_DATETIME` | 8 | bit 63 (`FF_DATETIME_FALLBACK_FLAG`) | packed civil date/time | signed offset **relative to the containing block** → `FF_STRING` |
+| `FF_FIELD_RESOURCE` / `FF_FIELD_CHOICE` | 10 | the 2-byte tag beside the value | inline value (choice only) | absolute offset to a block |
+
+Two of them are **scalars** (code, date/time): the same bytes are a value or an
+address, and only the top bit says which. One is a **block** (resource): a
+`{offset, tag}` tuple where the tag names the concrete type. A choice is the
+tuple form too, and its variant may itself be one of the polymorphic scalars —
+which is exactly how a slot ends up polymorphic twice over.
+
+Three rules follow, and each has already been paid for:
+
+1. **Arm A copies; arm B must be re-measured.** A dictionary ID is a global
+   index, identical in every arena, so it moves verbatim. A relative offset is
+   measured from its parent, so moving the parent invalidates it: resolve it in
+   the source, copy the target, and recompute against the *new* parent address.
+2. **Dispatch on `Recovery_to_Kind(tag)`, never on tag identity.** Four tags map
+   to `FF_FIELD_DATETIME` and a fifth would inherit the handling for free; a
+   hand-written tag list silently misses it. The compactor's choice path tested
+   `tag == RECOVER_FF_CODE` and fell through for date/time, so a fallback
+   variant carried an offset measured from the block's OLD address into the
+   compact stream — a silent broken reference the 44-test suite did not see,
+   because Synthea never produces an unpackable date/time
+   (`ff_test_compact_roundtrip` now builds one on purpose).
+3. **`memcpy` is only ever correct over an extent with no interior offsets.**
+   That is true of an `FF_CODEABLE_CONCEPT` (system byte, length byte, payload),
+   an `FF_STRING`, and an inline-scalar array — and false of a `DATA_BLOCK`,
+   which interleaves inline scalars with offsets in one V-Table. Copying a block
+   wholesale is never right; copy the leaves and re-encode arena B's addresses
+   into the parent's references, which is what `archive_*` does.
+
 **A block-relative offset must be resolved while the parent is still in hand.** Both
 fallback offsets are signed and relative to the *containing block*, so resolving one takes
 two operands — and `Reflective::Node` carries only its own offset, never its parent's.

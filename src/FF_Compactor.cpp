@@ -199,33 +199,46 @@ static Offset archive_string(std::string_view value, Memory& destination,
     return string_off;
 }
 
-static void write_compact_code_slot(const Reflective::Entry& entry, Memory& destination,
-                                    Offset compact_parent_off, Offset dense_off) {
-    BYTE* base = destination.base();
+// The compact-arena encoding of a CODE slot's 4-byte payload.
+//
+// Returns the bits; the CALLER stores them, because the two slots that hold a
+// code are different widths -- a plain FF_FIELD_CODE slot is 4 bytes, while a
+// choice's value area is 8 (the slot is 10, with the tag in the last two). That
+// width is the ONLY thing that differed between the two copies of this logic,
+// and keeping two of them is how one of them gets fixed alone.
+static uint32_t compact_code_bits(const Reflective::Entry& entry, Memory& destination,
+                                  Offset compact_parent_off) {
     const uint32_t raw_code = LOAD_U32(entry.base + entry.absolute_offset());
-    if (raw_code == FF_CODE_NULL || (raw_code & FF_CODEABLE_CONCEPT_FLAG) == 0) {
-        STORE_U32(base + dense_off, raw_code);
-        return;
-    }
 
-    // CodeableConcept block — copy the source block verbatim to preserve
-    // SYSTEM byte, LENGTH byte, and payload.  Creating an FF_STRING would
-    // lose the discriminator and break FF_DECODE_CODEABLE_CONCEPT on read.
-    int32_t rel_off = static_cast<int32_t>(raw_code << 1) >> 1;
-    Offset src_cc_off = entry.parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
-    const BYTE* src = entry.base;
+    // Dictionary ID (or absent): a PERMANENT global index, identical in every
+    // arena, so it copies verbatim. This is the whole reason the flag exists.
+    if (raw_code == FF_CODE_NULL || (raw_code & FF_CODEABLE_CONCEPT_FLAG) == 0)
+        return raw_code;
 
-    uint8_t cc_len = FF_GET_CONCEPT_LENGTH(src, src_cc_off);
-    Size total_bytes = FF_CODEABLE_CONCEPT::HEADER_SIZE + cc_len;
+    // Flagged: a signed offset RELATIVE to the containing block. Copy the
+    // CodeableConcept verbatim -- SYSTEM byte, LENGTH byte and payload, no
+    // interior offsets, so a byte copy is exact here and creating an FF_STRING
+    // instead would lose the discriminator FF_DECODE_CODEABLE_CONCEPT reads --
+    // then RE-MEASURE the offset against the block's NEW address.
+    const int32_t rel_off = static_cast<int32_t>(raw_code << 1) >> 1;
+    const Offset src_cc_off = entry.parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
+    const uint8_t cc_len = FF_GET_CONCEPT_LENGTH(entry.base, src_cc_off);
+    const Size total_bytes = FF_CODEABLE_CONCEPT::HEADER_SIZE + cc_len;
 
-    Offset dst_cc_off = destination.claim_space(total_bytes);
-    std::memcpy(base + dst_cc_off, src + src_cc_off, total_bytes);
+    const Offset dst_cc_off = destination.claim_space(total_bytes);
+    std::memcpy(destination.base() + dst_cc_off, entry.base + src_cc_off, total_bytes);
 
-    Offset relative_off = dst_cc_off - compact_parent_off;
+    const Offset relative_off = dst_cc_off - compact_parent_off;
     if (relative_off > 0x7FFFFFFF) {
         throw std::runtime_error("FastFHIR Compactor Error: CodeableConcept relative offset exceeds 31-bit signed range.");
     }
-    STORE_U32(base + dense_off, static_cast<uint32_t>(relative_off) | FF_CODEABLE_CONCEPT_FLAG);
+    return static_cast<uint32_t>(relative_off) | FF_CODEABLE_CONCEPT_FLAG;
+}
+
+static void write_compact_code_slot(const Reflective::Entry& entry, Memory& destination,
+                                    Offset compact_parent_off, Offset dense_off) {
+    STORE_U32(destination.base() + dense_off,
+              compact_code_bits(entry, destination, compact_parent_off));
 }
 
 static void write_compact_datetime_slot(const Reflective::Entry& entry, Memory& destination,
@@ -264,31 +277,33 @@ static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& co
     STORE_U16(base + dense_off + DATA_BLOCK::RECOVERY, tag);
 
     if (FF_IsScalarBlockTag(tag)) {
-        if (tag == RECOVER_FF_CODE) {
-            uint64_t raw_bits = 0;
-            const uint32_t raw_code = LOAD_U32(entry.base + src_slot);
-            if (raw_code == FF_CODE_NULL || (raw_code & FF_CODEABLE_CONCEPT_FLAG) == 0) {
-                raw_bits = raw_code;
-            } else {
-                // Resolve and copy the source CodeableConcept block verbatim
-                int32_t rel_off = static_cast<int32_t>(raw_code << 1) >> 1;
-                Offset src_cc_off = entry.parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
-                uint8_t cc_len = FF_GET_CONCEPT_LENGTH(entry.base, src_cc_off);
-                Size block_total = FF_CODEABLE_CONCEPT::HEADER_SIZE + cc_len;
-                Offset dst_cc_off = context.destination.claim_space(block_total);
-                std::memcpy(context.destination.base() + dst_cc_off, entry.base + src_cc_off, block_total);
-                Offset relative_off = dst_cc_off - compact_parent_off;
-                if (relative_off > 0x7FFFFFFF) {
-                    throw std::runtime_error("FastFHIR Compactor Error: CodeableConcept relative offset exceeds 31-bit signed range.");
-                }
-                raw_bits = static_cast<uint32_t>(relative_off) | FF_CODEABLE_CONCEPT_FLAG;
-            }
-            STORE_U64(base + dense_off, raw_bits);
+        // THE POLYMORPHIC SCALARS. Both store a value OR an address in the same
+        // bytes, discriminated by their top bit, so neither can be copied
+        // without asking which it is this time. Dispatch on the KIND rather
+        // than on tag identity: four tags map to FF_FIELD_DATETIME today and a
+        // fifth would inherit this for free, whereas a tag list has to be
+        // remembered. Everything else in the scalar band is inline by
+        // definition -- the bytes ARE the value -- and falls to the default.
+        switch (Recovery_to_Kind(tag)) {
+        case FF_FIELD_CODE:
+            // Choice value area is 8 bytes wide; the payload is still 4.
+            STORE_U64(base + dense_off,
+                      compact_code_bits(entry, context.destination, compact_parent_off));
+            return;
+
+        case FF_FIELD_DATETIME:
+            // Was missing, and the omission was invisible: the date/time tags
+            // sit in the scalar band, so a fallback variant fell through to the
+            // verbatim copy below and carried an offset measured from the
+            // block's OLD address into the compact stream. The non-choice path
+            // always called this; only the choice path did not.
+            write_compact_datetime_slot(entry, context.destination, compact_parent_off, dense_off);
+            return;
+
+        default:
+            std::memcpy(base + dense_off, entry.base + src_slot, TYPE_SIZE_UINT64);
             return;
         }
-
-        std::memcpy(base + dense_off, entry.base + src_slot, TYPE_SIZE_UINT64);
-        return;
     }
 
     // Through the paired helper, not a hand-rolled store + push_back: keeping
