@@ -147,9 +147,17 @@ inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_of
 // alongside a flag bit.  These helpers extract, sign-extend, and resolve
 // the offset to an absolute arena address from the parent block.
 
-/// Sign-extend a 31-bit relative offset (FF_CODEABLE_CONCEPT_FLAG is already
-/// stripped by the caller).  Arithmetic right-shift on int32_t reconstructs
-/// the signed value: bits 30–0 become a ±1 GB offset.
+/// Sign-extend a 31-bit relative offset packed beside FF_CODEABLE_CONCEPT_FLAG.
+///
+/// Callers pass the FULL slot word; the flag is not stripped first -- the
+/// idiom is one idea in two steps: `<< 1` discards the flag from bit 31 and
+/// moves bit 30 (the payload's sign) into the sign position, and the
+/// arithmetic `>> 1` copies that sign back down, reconstructing the signed
+/// value: bits 30-0 become a +/-1 GiB offset. The packers (FF_Primitives.cpp)
+/// enforce that range and refuse the rel == -1 pattern that would collide with
+/// FF_CODE_NULL, so backward offsets are first-class on the wire. A plain
+/// `& FF_CODE_PAYLOAD_MASK` would ZERO-extend instead -- identical for forward
+/// offsets, and a wrong huge positive for a legal backward one.
 inline Offset FF_ResolveCodeableConceptOffset(uint32_t raw,
                                             Offset parent_off) noexcept {
     int32_t rel_off = static_cast<int32_t>(raw << 1) >> 1;
@@ -157,11 +165,13 @@ inline Offset FF_ResolveCodeableConceptOffset(uint32_t raw,
 }
 
 /// The 8-byte counterpart: sign-extend a 63-bit relative offset out of a packed
-/// date/time slot (FF_DATETIME_FALLBACK_FLAG already stripped by the shift).
-/// Identical arithmetic to the 31-bit case one width up -- the two are written
-/// the same way on purpose, so a reader who has understood one has understood
-/// both. PRECONDITION: the caller has excluded FF_DATETIME_NULL and confirmed
-/// the flag is set; a packed value is not an offset.
+/// date/time slot. Identical arithmetic to the 31-bit case one width up -- the
+/// two are written the same way on purpose, so a reader who has understood one
+/// has understood both. The caller passes the FULL slot word: `<< 1` discards
+/// FF_DATETIME_FALLBACK_FLAG and moves bit 62 into the sign position, and the
+/// arithmetic `>> 1` sign-extends it. PRECONDITION: the caller has excluded
+/// FF_DATETIME_NULL and confirmed the flag is set; a packed value is not an
+/// offset.
 inline Offset FF_ResolveDateTimeOffset(uint64_t raw,
                                        Offset parent_off) noexcept {
     int64_t rel_off = static_cast<int64_t>(raw << 1) >> 1;

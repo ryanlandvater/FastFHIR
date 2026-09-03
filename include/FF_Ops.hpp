@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include "FF_Dictionary.hpp"
 #include "FF_Primitives.hpp"
+#include "FF_Utilities.hpp"
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -168,7 +170,18 @@ namespace FastFHIR::Decode {
     }
     /// Read a 10-byte inline ChoiceEntry from the arena.
     /// Layout: [8-byte raw_bits | 2-byte RECOVERY_TAG]
-    inline ChoiceEntry choice(const BYTE* base, Offset absolute_offset) {
+    ///
+    /// `parent_offset` is REQUIRED, not optional: it is the containing block.
+    /// A CODE alternative with bit 31 set, and a DATE/TIME alternative with bit
+    /// 63 set, pack a SIGNED RELATIVE OFFSET measured from that block -- the
+    /// only origin that can resolve them. The old signature had no parent, so
+    /// both fell through to an empty/raw read; ParserOps::code_node resolves
+    /// the same arithmetic eagerly for exactly this reason. `stream_size` and
+    /// `version` are required because the flagged fallback decodes to a block
+    /// (FF_CODEABLE_CONCEPT / FF_STRING) that must be bounds-checked and typed.
+    inline ChoiceEntry choice(const BYTE* base, Offset absolute_offset,
+                              Offset parent_offset, Size stream_size,
+                              uint32_t version) {
         ChoiceEntry entry;
         entry.tag = FF_GET_RECOVERY_TAG(base, absolute_offset);
         if (entry.tag == FF_RECOVER_UNDEFINED) return entry;
@@ -180,6 +193,45 @@ namespace FastFHIR::Decode {
                 case RECOVER_FF_INT64:   entry.value = static_cast<int64_t>(LOAD_U64(base + absolute_offset)); break;
                 case RECOVER_FF_UINT64:  entry.value = LOAD_U64(base + absolute_offset); break;
                 case RECOVER_FF_FLOAT64: entry.value = LOAD_F64(base + absolute_offset); break;
+                case RECOVER_FF_CODE: {
+                    // Mirror of the generated FF_FIELD_CODE branch: dictionary
+                    // first, then the flagged fallback resolved against the
+                    // containing block. Only a 32-bit read -- the code slot is
+                    // 4 bytes, and the unused high half of the 8-byte value
+                    // area carries the absent sentinel.
+                    const uint32_t raw_code = LOAD_U32(base + absolute_offset);
+                    if (raw_code != FF_CODE_NULL) {
+                        if (const char* label = FF_ResolveCode(raw_code, version)) {
+                            entry.value = label;
+                        } else if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
+                            const Offset abs_off =
+                                FF_ResolveCodeableConceptOffset(raw_code, parent_offset);
+                            entry.value = FF_DECODE_CODEABLE_CONCEPT(base, abs_off, version,
+                                                                     stream_size).label;
+                        }
+                    }
+                    break;
+                }
+                case RECOVER_FF_DATE:
+                case RECOVER_FF_DATETIME:
+                case RECOVER_FF_TIME:
+                case RECOVER_FF_INSTANT: {
+                    // DT-2 discriminator, one width up: bit 63 set is a signed
+                    // relative offset to an FF_STRING holding the ORIGINAL
+                    // text (returned verbatim below). The packed form IS the
+                    // value -- a self-contained civil value whose text is
+                    // formatted on demand via ChoiceEntry::to_string().
+                    const uint64_t raw_dt = LOAD_U64(base + absolute_offset);
+                    if (raw_dt != FF_DATETIME_NULL) {
+                        if (FF_DATETIME_IS_FALLBACK(raw_dt)) {
+                            const Offset str_off = FF_ResolveDateTimeOffset(raw_dt, parent_offset);
+                            entry.value = FF_STRING(str_off, stream_size, version).read_view(base);
+                        } else {
+                            entry.value = raw_dt;
+                        }
+                    }
+                    break;
+                }
                 default: break;
             }
         } else {

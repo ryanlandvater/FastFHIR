@@ -40,13 +40,61 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}            case RECOVER_FF_BOOL:   data.{f['cpp_name']}.value = FastFHIR::Decode::scalar<bool>(__base, {vtable_off}, tag); break;\n"
             cpp += f"{indent}            case RECOVER_FF_FLOAT64: data.{f['cpp_name']}.value = FastFHIR::Decode::scalar<double>(__base, {vtable_off}, tag); break;\n"
             cpp += f"{indent}            case RECOVER_FF_INT32:   data.{f['cpp_name']}.value = FastFHIR::Decode::scalar<int32_t>(__base, {vtable_off}, tag); break;\n"
+            # CODE and DATE/TIME are the two scalar-band alternatives whose slot can
+            # pack a SIGNED RELATIVE OFFSET (bit 31 / bit 63 set) to a fallback
+            # block holding the original text. That offset is measured from the
+            # CONTAINING BLOCK, so resolving it needs __offset -- the same origin
+            # the FF_FIELD_CODE / DATETIME field branches in this function use.
+            # The old default arm read all 8 slot bytes raw, so a flagged code
+            # never resolved and even a dictionary code carried the slot's unused
+            # high half. Mirrors the field branches exactly; keep them in step.
+            cpp += f"{indent}            case RECOVER_FF_CODE: {{\n"
+            cpp += f"{indent}                uint32_t raw_code = LOAD_U32(__base + {vtable_off});\n"
+            cpp += f"{indent}                if (raw_code != FF_CODE_NULL) {{\n"
+            cpp += f"{indent}                    if (const char* _cc_label = FF_ResolveCode(raw_code, __version)) {{\n"
+            cpp += f"{indent}                        data.{f['cpp_name']}.value = _cc_label;\n"
+            cpp += f"{indent}                    }} else if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {{\n"
+            cpp += f"{indent}                        Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, __offset);\n"
+            cpp += f"{indent}                        data.{f['cpp_name']}.value = FF_DECODE_CODEABLE_CONCEPT(__base, abs_off, __version, __size).label;\n"
+            cpp += f"{indent}                    }}\n"
+            cpp += f"{indent}                }}\n"
+            cpp += f"{indent}                break;\n"
+            cpp += f"{indent}            }}\n"
+            cpp += f"{indent}            case RECOVER_FF_DATE: case RECOVER_FF_DATETIME: case RECOVER_FF_TIME: case RECOVER_FF_INSTANT: {{\n"
+            cpp += f"{indent}                const uint64_t __dt_raw = LOAD_U64(__base + {vtable_off});\n"
+            cpp += f"{indent}                if (__dt_raw != FF_DATETIME_NULL) {{\n"
+            cpp += f"{indent}                    if (FF_DATETIME_IS_FALLBACK(__dt_raw)) {{\n"
+            cpp += f"{indent}                        // The fallback is a signed relative offset to an FF_STRING\n"
+            cpp += f"{indent}                        // holding the ORIGINAL text -- resolved against __offset, the\n"
+            cpp += f"{indent}                        // containing block, exactly like the DT-2 field branch below.\n"
+            cpp += f"{indent}                        FF_STRING __dt_str(FF_ResolveDateTimeOffset(__dt_raw, __offset), __size, __version);\n"
+            cpp += f"{indent}                        data.{f['cpp_name']}.value = __dt_str.read_view(__base);\n"
+            cpp += f"{indent}                    }} else {{\n"
+            cpp += f"{indent}                        // The packed civil value IS the representation: the slot is the\n"
+            cpp += f"{indent}                        // value, self-contained. Its text does not exist on the wire and\n"
+            cpp += f"{indent}                        // is FORMATTED on demand by ChoiceEntry::to_string() (a heap\n"
+            cpp += f"{indent}                        // std::string the caller owns) -- never copied or stored here.\n"
+            cpp += f"{indent}                        data.{f['cpp_name']}.value = __dt_raw;\n"
+            cpp += f"{indent}                    }}\n"
+            cpp += f"{indent}                }}\n"
+            cpp += f"{indent}                break;\n"
+            cpp += f"{indent}            }}\n"
             cpp += f"{indent}            default:                 data.{f['cpp_name']}.value = FastFHIR::Decode::scalar<uint64_t>(__base, {vtable_off}, tag); break;\n"
             cpp += f"{indent}        }}\n"
             cpp += f"{indent}    }} else if (tag != FF_RECOVER_UNDEFINED) {{\n"
             cpp += f"{indent}        Offset child_off = LOAD_U64(__base + {vtable_off});\n"
             cpp += f"{indent}        if (child_off != FF_NULL_OFFSET) {{\n"
             cpp += f"{indent}            if (tag == RECOVER_FF_STRING) data.{f['cpp_name']}.value = FF_STRING(child_off, __size, __version).read_view(__base);\n"
-            cpp += f"{indent}            else data.{f['cpp_name']}.value = child_off;\n"
+            # THE VALUE, NOT ITS ADDRESS. Storing child_off here put a raw
+            # arena offset into the public value API: nothing in the library
+            # read it back, but STORE wrote it out verbatim, so a POCO
+            # re-serialized into another arena named an address that meant
+            # nothing there -- a silently broken offset chain. Offsets are
+            # structure; a caller gets values.
+            cpp += (
+                f"{indent}            else data.{f['cpp_name']}.block = "
+                f"FF_DecodeChoiceBlock(__base, child_off, __size, __version, tag);\n"
+            )
             cpp += f"{indent}        }}\n"
             cpp += f"{indent}    }}\n"
             cpp += f"{indent}}}\n"

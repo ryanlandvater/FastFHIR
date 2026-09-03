@@ -24,6 +24,7 @@ from generator.emit.views import (
     generate_field_info_implementation,
     generate_reflection_dispatch,
 )
+from generator.emit.choice_block import generate_choice_block
 from generator.emit.deserialize import generate_eager_deserializer
 from generator.emit.store import generate_size_fields, generate_store_fields
 from generator.emit.traits import generate_resource_traits_header
@@ -177,6 +178,12 @@ def compile_fhir_library(
         types_hpp += pub_hpp
         types_int_hpp += int_hpp
         types_cpp += cpp_body
+
+    # ChoiceBlock is a variant over exactly these datatypes, so it is appended
+    # to their header (after the structs) rather than given one of its own.
+    _choice_hpp, _choice_cpp = generate_choice_block(list(types_all), auto_header)
+    types_hpp += _choice_hpp
+    write_if_changed(os.path.join(output_dir, "FF_ChoiceBlock.cpp"), _choice_cpp)
 
     write_if_changed(os.path.join(output_dir, "FF_DataTypes.hpp"), types_hpp)
     write_if_changed(os.path.join(output_dir, "FF_DataTypes_internal.hpp"), types_int_hpp)

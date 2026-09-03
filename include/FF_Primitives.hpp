@@ -28,9 +28,11 @@
 #include <cstddef>
 #include <cstring>
 #include <stdexcept>
+#include <charconv>
 #include <limits>
 #include <optional>
 #include <unordered_map>
+#include <memory>
 #include <variant>
 #include "FF_Version.hpp"
 
@@ -1910,6 +1912,12 @@ uint32_t ENCODE_FF_CODEABLE_CONCEPT_UCUM(BYTE* __base, Offset block_offset,
                                        const std::string& ucum_expr,
                                        uint32_t version);
 
+// Defined in generated FF_ChoiceBlock.hpp -- a variant over the datatypes this
+// profile generates. Forward-declared here because this header is BELOW the
+// generated code: ChoiceEntry holds it by unique_ptr, which needs only an
+// incomplete type so long as the special members below stay out of line.
+struct ChoiceBlock;
+
 struct ChoiceEntry
 {
     RECOVERY_TAG tag = FF_RECOVER_UNDEFINED;
@@ -1924,7 +1932,59 @@ struct ChoiceEntry
         std::string_view>
         value;
 
+    /// The DECODED value when `tag` names a block type.
+    ///
+    /// This used to be a raw arena OFFSET in the `uint64_t` arm above -- a
+    /// structural address handed out through the value API. Nothing in the
+    /// library ever read it back, so inside one arena it was invisible; but
+    /// STORE wrote it out verbatim, so a POCO re-serialized into a DIFFERENT
+    /// arena produced a slot naming an address that meant nothing there. The
+    /// offset chain broke at write time, silently, and surfaced only in
+    /// whatever later walked the whole graph.
+    ///
+    /// Offsets are structure. A caller gets values, by every access path.
+    ///
+    /// unique_ptr rather than an inline variant: std::variant is sized by its
+    /// largest alternative, so inlining would take ChoiceEntry from 32 bytes to
+    /// ~184 (AddressData alone is 176) and grow every struct holding one --
+    /// and they nest, and live in vectors.
+    std::unique_ptr<ChoiceBlock> block;
+
+    /// MOVE-ONLY, like everything else in this layer.
+    ///
+    /// ChoiceBlock wraps the generated datatype structs, and 36 of those hold
+    /// std::unique_ptr members for their own nested blocks -- so they are
+    /// move-only, and so is any variant over them. Every struct that contains a
+    /// ChoiceEntry already contains such a member too, which means copying one
+    /// was never possible in the contexts that matter; declaring it here only
+    /// makes that explicit instead of failing deep inside a variant.
+    ///
+    /// Out of line because the header only forward-declares ChoiceBlock; the
+    /// generated TU defines these where it is complete.
+    ChoiceEntry();
+    ~ChoiceEntry();
+    ChoiceEntry(const ChoiceEntry &) = delete;
+    ChoiceEntry &operator=(const ChoiceEntry &) = delete;
+    ChoiceEntry(ChoiceEntry &&) noexcept;
+    ChoiceEntry &operator=(ChoiceEntry &&) noexcept;
+
     bool is_empty() const { return tag == FF_RECOVER_UNDEFINED; }
+
+    /// The text form of this choice's value -- for ANY tag and ANY arm:
+    /// strings, code labels and fallback date/time text come back as-is;
+    /// booleans, integers and decimals are formatted; a PACKED date/time is
+    /// synthesized on demand. Empty for an absent entry or a block
+    /// alternative (`.block` is a structured object with no scalar text).
+    ///
+    /// WHY on demand, not at decode: a packed date/time has no text on the
+    /// wire -- the 8-byte slot is civil parts -- so its text must be
+    /// SYNTHESIZED, and this struct deliberately owns no buffer. Formatting
+    /// here, when a caller asks for text, is when the allocation belongs. The
+    /// fallback form (legal text that could not pack) is preserved verbatim in
+    /// the arena and arrives in `value` as a string_view; it is returned as-is
+    /// without allocating. FF_FORMAT_DATETIME is the seam where future
+    /// formatting options (zone, precision) would attach.
+    std::string to_string() const;
 };
 
 // =====================================================================
@@ -1995,3 +2055,52 @@ static_assert(FF_IsDateTimeTag(RECOVER_FF_DATE) && FF_IsDateTimeTag(RECOVER_FF_D
               "every date/time tag must satisfy FF_IsDateTimeTag");
 static_assert(!FF_IsDateTimeTag(RECOVER_FF_STRING) && !FF_IsDateTimeTag(RECOVER_FF_CODE),
               "FF_IsDateTimeTag must not claim the string or code tags");
+
+// Defined out of class so FF_FORMAT_DATETIME (declared above) is visible; the
+// body is inline so every TU sees the same definition.
+//
+// One function owns the text of EVERY alternative: string/code/fallback text
+// is returned as-is, numeric arms are formatted, and a packed date/time -- the
+// one alternative whose text does not exist on the wire -- is synthesized here
+// because this struct owns no buffer. Date/time is dispatched on the TAG
+// first: a packed date/time lives in the uint64_t arm and would otherwise
+// format as a plain integer.
+inline std::string ChoiceEntry::to_string() const
+{
+    // Date/time alternatives first: their text does not exist on the wire --
+    // the slot holds civil parts (packed) or a relative offset to the original
+    // text (fallback, materialized into the string_view arm at decode).
+    if (FF_IsDateTimeTag(tag))
+    {
+        if (const auto* text = std::get_if<std::string_view>(&value)) return std::string(*text);
+        if (const auto* raw = std::get_if<uint64_t>(&value))
+        {
+            // A FLAGGED value never reaches this arm: the decoder materializes
+            // the fallback's text into the string_view arm, because a relative
+            // offset cannot be resolved without the containing block's arena
+            // base. What remains here is the packed civil value -- format it.
+            if (FF_DATETIME_IS_FALLBACK(*raw)) return {};
+            return FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(*raw), tag);
+        }
+        return {};
+    }
+
+    if (const auto* text = std::get_if<std::string_view>(&value)) return std::string(*text);
+    if (const auto* flag = std::get_if<bool>(&value)) return *flag ? "true" : "false";
+    if (const auto* v = std::get_if<int32_t>(&value)) return std::to_string(*v);
+    if (const auto* v = std::get_if<uint32_t>(&value)) return std::to_string(*v);
+    if (const auto* v = std::get_if<int64_t>(&value)) return std::to_string(*v);
+    if (const auto* v = std::get_if<uint64_t>(&value)) return std::to_string(*v);
+    if (const auto* v = std::get_if<double>(&value))
+    {
+        // Shortest-round-trip -- the same answer print_decimal_json gives a
+        // decimal choice variant. ostream's default six digits truncates
+        // 42.142567166419695 to 42.1426.
+        char buf[64];
+        const auto res = std::to_chars(buf, buf + sizeof buf, *v);
+        return res.ec == std::errc{} ? std::string(buf, res.ptr - buf) : std::string{};
+    }
+    // monostate, or a block alternative whose value lives in `.block` -- a
+    // structured object has no scalar text form.
+    return {};
+}

@@ -56,6 +56,13 @@ def generate_size_fields(layout, block_struct_name, data_name):
             )
             cpp += f"        }}\n"
             cpp += f"    }}, {data_name}.{f['cpp_name']}.value);\n"
+            # A block-typed variant lives in `.block`, not in `.value` -- the
+            # visitor above cannot see it. It is a decoded struct now, so it
+            # costs whatever rebuilding it costs.
+            cpp += (
+                f"    if ({_cv}.block)\n"
+                f"        __total += FF_SizeChoiceBlock(*{_cv}.block, __version);\n"
+            )
         elif kind == "FF_FIELD_ARRAY":
             if (
                 f["fhir_type"] == "string"
@@ -148,6 +155,22 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
         if kind == "FF_FIELD_CHOICE":
             vtable_off = f"{ptr_name} + {block_struct_name}::{f['name']}"
 
+            _bv = f"{data_name}.{f['cpp_name']}"
+            # A BLOCK-TYPED VARIANT IS REBUILT, NOT REPOINTED.
+            #
+            # This is the whole point of carrying the decoded value: the block
+            # is written into THIS arena and the slot names the address it got
+            # here. The old code put the SOURCE arena's offset in the slot
+            # verbatim, so a stream built from a POCO read elsewhere claimed a
+            # block at an address that meant nothing in it.
+            cpp += f"    if ({_bv}.block) {{\n"
+            cpp += f"        STORE_U64({vtable_off}, child_off);\n"
+            cpp += (
+                f"        child_off += FF_StoreChoiceBlock("
+                f"__base, child_off, *{_bv}.block, __version);\n"
+            )
+            cpp += f"        STORE_U16({vtable_off} + 8, {_bv}.tag);\n"
+            cpp += f"    }} else\n"
             cpp += f"    std::visit([&](auto&& arg) {{\n"
             cpp += f"        using T = std::decay_t<decltype(arg)>;\n"
 

@@ -178,7 +178,10 @@ int main() {
         coding.code   = "org-local-code-91827";   // deliberately not in the dictionary
 
         CodeableConceptData ccc;
-        ccc.coding.push_back(coding);
+        // std::move: the datatype structs are move-only now that a block-typed
+        // choice carries its DECODED value (ChoiceBlock wraps structs holding
+        // unique_ptr members), so a copy is no longer available to take.
+        ccc.coding.push_back(std::move(coding));
         auto hccc = FF_StreamAppendObject(stream3, ccc);
 
         IdentifierData cid;

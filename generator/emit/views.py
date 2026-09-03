@@ -91,7 +91,11 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
             hpp += f"        Offset child_off = LOAD_U64(base + offset + {vtable_off});\n"
             hpp += "        return FF_ARRAY(child_off, stream_size, VERSION);\n"
         elif f.get("is_choice"):
-            hpp += f"        return Decode::choice(base, offset + {vtable_off});\n"
+            # Decode::choice requires the CONTAINING BLOCK (offset), the stream
+            # extent and the version: a code/date-time alternative whose flag
+            # bit is set packs a SIGNED RELATIVE OFFSET, and this view sits in
+            # the block that is the only origin able to resolve it.
+            hpp += f"        return Decode::choice(base, offset + {vtable_off}, offset, stream_size, VERSION);\n"
         elif f.get("raw_scalar"):
             hpp += f"        return {f['macro']}(base + offset + {vtable_off});\n"
         elif f["fhir_type"] in _tm.DATETIME_TYPES:

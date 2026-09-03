@@ -301,7 +301,21 @@ static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& co
             return;
 
         default:
-            std::memcpy(base + dense_off, entry.base + src_slot, TYPE_SIZE_UINT64);
+            // ONE 8-BYTE VALUE, said as a value.
+            //
+            // Identical machine code to a memcpy of the same width at -O2 (both
+            // are ldr/str), and marginally leaner at -O0, which is what every
+            // preset builds -- so this is not a performance choice. It is a
+            // claim: memcpy asserts "eight opaque bytes", which is the wrong
+            // thing to assert in the default arm of a switch whose entire
+            // subject is WHICH KIND these bytes are. Everything reaching here
+            // is inline by definition -- bool, the integer widths, float64 --
+            // and none of it is an address.
+            //
+            // This would not have caught the date/time bug and is not claimed
+            // to: that was a missing dispatch case, and the exhaustive switch
+            // above is what prevents the next one.
+            STORE_U64(base + dense_off, LOAD_U64(entry.base + src_slot));
             return;
         }
     }

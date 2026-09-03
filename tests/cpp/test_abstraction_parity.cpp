@@ -94,6 +94,10 @@ struct Census {
     std::size_t lens_extensions    = 0;  // Patient.extension entries on the wire
     std::size_t poco_extensions    = 0;  // ... surviving into PatientData
     std::size_t poco_extension_url = 0;  // ... with a resolved URL-directory ref
+    // Observation.value[x] as a Quantity -- a BLOCK-typed choice.
+    std::size_t lens_value_qty      = 0;  // readable via Node
+    std::size_t poco_value_qty      = 0;  // ... and carried as a DECODED value
+    std::size_t value_qty_mismatch  = 0;  // both present, different number
 };
 
 // The lens reading of Observation.code -- the value the exporter emits and the
@@ -118,6 +122,36 @@ static void census_observation(const Reflective::Node& resource, Census& c) {
     if (obs.code && !obs.code->coding.empty() && !obs.code->coding[0].code.empty()) {
         ++c.poco_code;
         if (!lens_code.empty() && obs.code->coding[0].code != lens_code) ++c.code_mismatch;
+    }
+
+    // A BLOCK-TYPED CHOICE MUST ARRIVE AS A VALUE.
+    //
+    // Observation.value[x] holding a Quantity is the commonest instance -- the
+    // measurement itself. The POCO used to receive the Quantity's raw ARENA
+    // OFFSET in ChoiceEntry's uint64_t arm: a structural address handed out
+    // through the value API, useless to the caller and actively destructive if
+    // the struct was ever re-serialized into a different arena, because STORE
+    // wrote that foreign address back out verbatim.
+    //
+    // The lens always read it correctly, which is why nothing caught it -- the
+    // same shape as the FF_FIELD_BLOCK gap this file was written for.
+    // Gate on the TAG before reading. value[x] is polymorphic -- the same slot
+    // holds a Quantity here and a CodeableConcept or a string one resource
+    // later -- so navigating QUANTITY::VALUE without checking first reads a
+    // field map that does not belong to the block (it segfaulted on the first
+    // Observation that was not a Quantity).
+    if (obs.value.tag == RECOVER_FF_QUANTITY) {
+        const auto lens_v = resource[Fields::OBSERVATION::VALUE].as_node();
+        const bool lens_has = static_cast<bool>(lens_v);
+        const double lens_num = lens_has ? lens_v[Fields::QUANTITY::VALUE].as<double>() : 0.0;
+        if (lens_has) ++c.lens_value_qty;
+
+        if (obs.value.block) {
+            if (const auto* q = std::get_if<QuantityData>(&obs.value.block->value)) {
+                ++c.poco_value_qty;
+                if (lens_has && q->value != lens_num) ++c.value_qty_mismatch;
+            }
+        }
     }
 
     if (!lens_subj.empty()) ++c.lens_subject;
@@ -236,6 +270,15 @@ int main() {
     CHECK(c.poco_code == c.lens_code,
           "as<ObservationData>().code matches the lens (" + std::to_string(c.poco_code) +
               "/" + std::to_string(c.lens_code) + ")");
+    // Non-zero floor first: 0 == 0 is how this class of defect passes for
+    // months, and it is exactly how the offset-in-a-value-slot survived.
+    CHECK(c.lens_value_qty > 0,
+          "lens reads Observation.value[x] as a Quantity (non-zero)");
+    CHECK(c.poco_value_qty == c.lens_value_qty,
+          "POCO carries every block-typed choice the lens reads");
+    CHECK(c.value_qty_mismatch == 0,
+          "POCO and lens agree on the Quantity's value");
+
     CHECK(c.poco_subject == c.lens_subject,
           "as<ObservationData>().subject matches the lens (" + std::to_string(c.poco_subject) +
               "/" + std::to_string(c.lens_subject) + ")");

@@ -797,6 +797,76 @@ static void test_field_kind()
           "0001-01-01 packs to mostly zero bits and must still read as present");
 }
 
+// ChoiceEntry::to_string -- text on demand. A PACKED date/time choice stores
+// the civil value in the slot and has no text on the wire; the text is
+// FORMATTED when a caller asks (heap std::string, caller owns). The FALLBACK
+// form's text is preserved verbatim in the arena and returned as-is. This is
+// the CAPI-11 resolution: the representation stays packed, the conversion to
+// text is one call away.
+static void test_choice_datetime_to_string()
+{
+    const auto parsed = FF_PARSE_DATETIME("2024-01-15T13:45:30+00:00", RECOVER_FF_DATETIME);
+    CHECK(parsed.has_value(), "probe text must parse");
+    if (!parsed) return;
+    const uint64_t packed = FF_PACK_DATETIME(*parsed);
+
+    ChoiceEntry e;  // packed civil value -> formatted text on demand
+    e.tag = RECOVER_FF_DATETIME;
+    e.value = packed;
+    CHECK_EQ(e.to_string(), FF_FORMAT_DATETIME(*parsed, RECOVER_FF_DATETIME),
+             "packed date/time choice formats to text on demand");
+
+    ChoiceEntry f;  // fallback: original text preserved verbatim, no formatting
+    f.tag = RECOVER_FF_INSTANT;
+    f.value = std::string_view("2024-01-15T13:45:30.1234567+05:30");
+    CHECK_EQ(f.to_string(), "2024-01-15T13:45:30.1234567+05:30",
+             "fallback date/time choice returns its verbatim text");
+
+    ChoiceEntry g;  // any arm stringifies -- an integer is digits, not empty
+    g.tag = RECOVER_FF_INT32;
+    g.value = int32_t{7};
+    CHECK_EQ(g.to_string(), "7", "integer choice formats its digits");
+
+    ChoiceEntry h;  // absent
+    CHECK(h.to_string().empty(), "absent choice formats to nothing");
+}
+
+// to_string() is generic -- every arm has a text form: strings as-is,
+// booleans/integers/decimals formatted (shortest-round-trip for doubles, the
+// same answer print_decimal_json gives a decimal choice variant). Block
+// alternatives are structured and format to nothing.
+static void test_choice_to_string_generic()
+{
+    ChoiceEntry b;
+    b.tag = RECOVER_FF_BOOL;
+    b.value = true;
+    CHECK_EQ(b.to_string(), "true", "bool choice formats true");
+
+    ChoiceEntry d;
+    d.tag = RECOVER_FF_FLOAT64;
+    d.value = 42.142567166419695;
+    CHECK_EQ(d.to_string(), "42.142567166419695", "decimal choice uses shortest round-trip");
+
+    ChoiceEntry s;
+    s.tag = RECOVER_FF_STRING;
+    s.value = std::string_view("hello");
+    CHECK_EQ(s.to_string(), "hello", "string choice returns text as-is");
+
+    ChoiceEntry u;
+    u.tag = RECOVER_FF_UINT64;
+    u.value = uint64_t{18446744073709551615ull};
+    CHECK_EQ(u.to_string(), "18446744073709551615", "u64 choice formats full width");
+
+    ChoiceEntry i64;
+    i64.tag = RECOVER_FF_INT64;
+    i64.value = int64_t{-7};
+    CHECK_EQ(i64.to_string(), "-7", "i64 choice formats negatives");
+
+    ChoiceEntry q;  // block alternative: structured, no scalar text
+    q.tag = RECOVER_FF_QUANTITY;
+    CHECK(q.to_string().empty(), "block choice formats to nothing");
+}
+
 int main(int argc, char **argv)
 {
     const char *filter = "";
@@ -839,6 +909,10 @@ int main(int argc, char **argv)
 
     TEST_GROUP("Serialization");
     run("test_slot_serialization", test_slot_serialization);
+
+    TEST_GROUP("ChoiceText");
+    run("test_choice_datetime_to_string", test_choice_datetime_to_string);
+    run("test_choice_to_string_generic", test_choice_to_string_generic);
 
     std::cout << "\n────────────────────────────────────────────────\n"
               << g_tests << " tests, " << g_failures << " failures\n";

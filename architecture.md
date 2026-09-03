@@ -993,22 +993,35 @@ without the fetch — important in tight loops over heterogeneous arrays
 
 #### `ChoiceEntry` — FHIR `[x]` field
 
-`FF_Primitives.hpp:623–637`. The build-time staging form is:
+`FF_Primitives.hpp:1920`. The decode-side POCO form is:
 
 ```
 struct ChoiceEntry {
-    RECOVERY_TAG tag;                        // 2 bytes — chosen variant
+    RECOVERY_TAG tag;     // chosen variant
     std::variant<monostate, bool, i32, u32, i64, u64, double, string_view> value;
+    std::unique_ptr<ChoiceBlock> block;   // DECODED block-typed value (move-only)
+    bool is_empty() const;
+    std::string to_string() const;        // text form of any value, on demand
 };
 ```
 
-On the wire, the 10 bytes are laid out as **8 raw bytes** + **2-byte
-recovery**. The 8 raw bytes are interpreted by the recovery tag:
+On the wire, the 10 bytes are laid out as **8 value bytes** + **2-byte
+recovery**. The value bytes are interpreted by the recovery tag:
 
 - For scalar variants (`RECOVER_FF_BOOL`, `_INT32`, …, `_FLOAT64`), the raw
   bits *are* the value, padded to 8 bytes.
-- For string and block variants, the raw bits are an `Offset` into the
-  arena.
+- For `RECOVER_FF_CODE`, the slot's low 4 bytes are a dictionary ID, or a
+  bit-31-flagged **signed relative offset** to an `FF_CODEABLE_CONCEPT`
+  fallback block — relative to the *containing* block and resolved at decode;
+  either way the POCO carries the decoded code text.
+- For date/time tags, the 8 bytes are a packed civil value (self-contained;
+  its text is synthesized by `ChoiceEntry::to_string()` when a caller asks) or
+  a bit-63-flagged relative offset to an `FF_STRING` holding the ORIGINAL text
+  (carried as `string_view`, returned verbatim).
+- For string and block variants, the raw bits are an absolute `Offset` into
+  the arena; blocks are DECODED via `FF_DecodeChoiceBlock` into `.block` —
+  never a raw address in the value API — and rebuilt in the destination arena
+  on store.
 
 The Builder side is `amend_variant(parent_off, vtable_off, raw_bits, tag)`
 (`FF_Builder.hpp:184`); the read side resolves with `Node::resolve_choice`
