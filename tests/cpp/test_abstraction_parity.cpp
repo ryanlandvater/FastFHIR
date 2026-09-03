@@ -398,6 +398,39 @@ static void probe_packed_datetime_to_string() {
           "rendered text re-packs to the same civil value");
 }
 
+
+// ── The two reflection surfaces must agree ──────────────────────────────────
+//
+// FastFHIR now reflects a document two ways: reflected_fields_view() walks the
+// WIRE (it needs an arena and an offset), and visit_fields() walks the POCO
+// (it needs neither). Both are generated from the same layout, so they must
+// enumerate the same elements in the same order -- and if they ever drift, a
+// caller reading through one surface silently sees a different document than a
+// caller reading through the other.
+//
+// That is not hypothetical. This whole file exists because the POCO
+// deserializer once dropped 736 block-typed fields the lens read correctly, and
+// nothing noticed for months. A generated cross-check is cheaper than
+// rediscovering it.
+static void test_poco_reflection_matches_the_wire() {
+    std::vector<std::string> poco;
+    const PatientData d{};
+    visit_fields(d, [&](const char* name, const auto&) { poco.emplace_back(name); });
+
+    std::vector<std::string> wire;
+    for (const auto& f : reflected_fields_view(RECOVER_FF_PATIENT))
+        wire.emplace_back(f.name);
+
+    // Non-zero floor first: two empty lists compare equal, which is how a
+    // vacuous check passes forever.
+    CHECK(!poco.empty(), "visit_fields enumerates PatientData (non-zero)");
+    CHECK(!wire.empty(), "reflected_fields_view enumerates Patient (non-zero)");
+    CHECK(poco.size() == wire.size(),
+          "POCO and wire reflection list the same NUMBER of fields (" +
+              std::to_string(poco.size()) + " vs " + std::to_string(wire.size()) + ")");
+    CHECK(poco == wire, "POCO and wire reflection agree field for field, in order");
+}
+
 int main() {
     // BEFORE the corpus gate: both probes build their own document inline and
     // need no fixture. Below the gate they were skipped entirely whenever
@@ -407,6 +440,7 @@ int main() {
     // reporting failure the SKIP branch below exists to avoid.
     probe_fallback_datetime_choice();
     probe_packed_datetime_to_string();
+    test_poco_reflection_matches_the_wire();
 
     const auto bundles = find_bundles(8);
     if (bundles.empty()) {

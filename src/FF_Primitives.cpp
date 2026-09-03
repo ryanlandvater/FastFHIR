@@ -383,7 +383,7 @@ Size SIZE_FF_CODE(std::string_view code_str, uint32_t version = FHIR_VERSION_R5)
     if (FF_GetDictionaryCode(std::string(code_str), version) != FF_CODE_NULL) return 0;
     return SIZE_FF_STRING(code_str);
 }
-Offset STORE_FF_CODE(BYTE* const __base, Offset start_offset, std::string_view code_str, uint32_t version) {
+Size STORE_FF_CODE(BYTE* const __base, Offset start_offset, std::string_view code_str, uint32_t version) {
     // If the code is in the dictionary, it's stored inline as a uint32_t
     // in the vtable slot (4 bytes, already counted in the block header stride).
     // If not found in the dictionary, store as a custom FF_STRING.
@@ -827,7 +827,7 @@ Size SIZE_FF_DATETIME(std::string_view text, RECOVERY_TAG tag) {
     return SIZE_FF_STRING(text);
 }
 
-Offset STORE_FF_DATETIME(BYTE* const __base, Offset start_offset,
+Size STORE_FF_DATETIME(BYTE* const __base, Offset start_offset,
                          std::string_view text, RECOVERY_TAG tag) {
     if (text.empty()) return 0;
     const std::optional<FF_DateTimeParts> parts = FF_PARSE_DATETIME(text, tag);

@@ -165,8 +165,16 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             # block at an address that meant nothing in it.
             cpp += f"    if ({_bv}.block) {{\n"
             cpp += f"        STORE_U64({vtable_off}, child_off);\n"
+            # `=`, not `+=`. The two STORE families return different things and
+            # the RETURN TYPE is the signal: `Size STORE_FF_STRING(...)` gives
+            # bytes written (so `+=`), while `Offset STORE_FF_<BLOCK>(...)`
+            # gives the END OFFSET (so `=`). FF_StoreChoiceBlock forwards
+            # TypeTraits<T>::store and returns Offset. Using `+=` here added an
+            # absolute address to the cursor: STORE consumed 13,917 bytes where
+            # SIZE had claimed 4,847, and the arena's own SIZE/STORE contract
+            # check caught it.
             cpp += (
-                f"        child_off += FF_StoreChoiceBlock("
+                f"        child_off = FF_StoreChoiceBlock("
                 f"__base, child_off, *{_bv}.block, __version);\n"
             )
             cpp += f"        STORE_U16({vtable_off} + 8, {_bv}.tag);\n"

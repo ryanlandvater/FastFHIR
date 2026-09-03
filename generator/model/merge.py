@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 
 from generator.emit.header import auto_header, write_if_changed
+from generator.emit import poco_visit as _poco_visit
 from generator.model import type_map as _tm
 from generator.model import structure as _st
 
@@ -298,6 +299,13 @@ def generate_cxx_for_blocks(master_blocks, versions):
                 else:
                     public_hpp += f"    {f['data_type']} {f['cpp_name']}{{}};\n"
         public_hpp += "};\n\n"
+
+        # ── PUBLIC: POCO reflection ──────────────────────────────
+        # Emitted next to the struct, not collected at the end of the header:
+        # visit_fields is a TEMPLATE, so its members only need to be complete
+        # where it is instantiated. That keeps the enumeration beside the thing
+        # it enumerates, which is what stops the two drifting apart.
+        public_hpp += _poco_visit.generate_poco_visitor(layout, d_name)
 
         # ── INTERNAL: Data Block Sentinel (vtable enums) ───────
         internal_hpp += f"struct FF_EXPORT {s_name} : DATA_BLOCK {{\n"

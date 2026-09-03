@@ -1002,6 +1002,7 @@ struct ChoiceEntry {
     std::unique_ptr<ChoiceBlock> block;   // DECODED block-typed value (move-only)
     bool is_empty() const;
     std::string to_string() const;        // text form of any value, on demand
+    friend std::ostream &operator<<(std::ostream &, const ChoiceEntry &);  // debug: tag + value (or <block>)
 };
 ```
 

@@ -31,6 +31,7 @@
 #include <charconv>
 #include <limits>
 #include <optional>
+#include <ostream>
 #include <unordered_map>
 #include <memory>
 #include <variant>
@@ -1985,6 +1986,13 @@ struct ChoiceEntry
     /// without allocating. FF_FORMAT_DATETIME is the seam where future
     /// formatting options (zone, precision) would attach.
     std::string to_string() const;
+
+    /// Stream output
+    // NOT const-qualified: this is a friend FREE function, and only member
+    // functions take a cv-qualifier. The qualifier made the whole header fail
+    // to parse ("non-member function cannot have 'const' qualifier"), taking
+    // every translation unit with it.
+    friend std::ostream &operator<<(std::ostream &os, const ChoiceEntry &entry);
 };
 
 // =====================================================================
@@ -1996,9 +2004,29 @@ Size SIZE_FF_CODE(std::string_view code_str, uint32_t version);
 // (FF_IsStringLayoutTag): RECOVER_FF_OPAQUE_JSON writes the identical header and
 // payload but marks the bytes as already-serialized JSON. One emitter with an
 // enum argument, not two near-identical emitters to drift apart.
+// THE STORE RETURN CONTRACT -- the return TYPE is the whole signal.
+//
+//   Size   STORE_*  -> BYTES WRITTEN. 0 means "nothing was written" (a
+//                     dictionary code and a packed date/time both need no child
+//                     block), so it pairs with `child_off += ...` and with the
+//                     SIZE/STORE contract check, which can only be expressed as
+//                     a count: `written != claimed` is the guard that catches a
+//                     store overrunning its claim.
+//   Offset STORE_*  -> THE NEXT FREE OFFSET. A block writes its header at one
+//                     address and its children at another, so "bytes written"
+//                     is not even well defined for it; the cursor is. Pairs
+//                     with `child_off = ...`.
+//
+// Both are needed and neither is arbitrary. What is NOT allowed is a function
+// whose declared type disagrees with what it returns: STORE_FF_CODE and
+// STORE_FF_DATETIME were declared Offset while returning a count, which made
+// the type unreliable as a signal and the convention unlearnable. That
+// mislabelling is what produced `child_off += <an absolute address>` in the
+// generated choice store -- STORE consumed 13,917 bytes against a 4,847-byte
+// claim, and only the contract check above caught it.
 Size STORE_FF_STRING(BYTE *const __base, Offset start_offset, std::string_view str,
                      RECOVERY_TAG tag = RECOVER_FF_STRING);
-Offset STORE_FF_CODE(BYTE *const __base, Offset start_offset, std::string_view code_str, uint32_t version);
+Size STORE_FF_CODE(BYTE *const __base, Offset start_offset, std::string_view code_str, uint32_t version);
 // Pack a code value into a 32-bit vtable slot.  Returns dictionary index
 // (MSB=0) when the code is in the permanent dictionary, or a packed relative
 // offset with FF_CODEABLE_CONCEPT_FLAG set (MSB=1) when the code requires a
@@ -2024,7 +2052,7 @@ uint32_t ENCODE_FF_CODE(BYTE *const __base, Offset block_offset, Offset &child_o
 std::optional<FF_DateTimeParts> FF_PARSE_DATETIME(std::string_view text, RECOVERY_TAG tag);
 std::string FF_FORMAT_DATETIME(const FF_DateTimeParts &parts, RECOVERY_TAG tag);
 Size SIZE_FF_DATETIME(std::string_view text, RECOVERY_TAG tag);
-Offset STORE_FF_DATETIME(BYTE *const __base, Offset start_offset,
+Size STORE_FF_DATETIME(BYTE *const __base, Offset start_offset,
                           std::string_view text, RECOVERY_TAG tag);
 uint64_t ENCODE_FF_DATETIME(BYTE *const __base, Offset block_offset, Offset &child_off,
                              std::string_view text, RECOVERY_TAG tag);
@@ -2103,4 +2131,32 @@ inline std::string ChoiceEntry::to_string() const
     // monostate, or a block alternative whose value lives in `.block` -- a
     // structured object has no scalar text form.
     return {};
+}
+
+// The stream twin of to_string(), defined beside it for the same reasons: one
+// inline definition every TU sees, placed where FF_RecoveryName is declared.
+// Value text goes through to_string(), so the two can never disagree about what
+// text a value has. A nested block has no scalar text -- its TYPE is the tag's
+// name (RECOVER_FF_QUANTITY and friends), and the decoded payload is a struct
+// ChoiceBlock only forward-declares at this layer -- so the structure is marked
+// instead: `RECOVER_FF_QUANTITY: <block>`.
+inline std::ostream &operator<<(std::ostream &os, const ChoiceEntry &entry)
+{
+    // FF_RecoveryName is a DEBUG-ONLY dump helper: generated inside
+    // `#ifndef NDEBUG` in FF_RecoveryTags.hpp, so it does not exist in a
+    // release build. Calling it unconditionally compiled fine under the
+    // default (debug) presets and broke EVERY -DNDEBUG build -- which is how
+    // it reached the benchmark, whose Bazel arms are the only release
+    // compilation in the workspace.
+    //
+    // The tag is still reported in release, as its numeric value: a diagnostic
+    // that vanishes is worse than one that is terse.
+#ifndef NDEBUG
+    os << FF_RecoveryName(entry.tag) << ": ";
+#else
+    os << "tag:" << static_cast<int>(entry.tag) << ": ";
+#endif
+    if (entry.block) os << "<block>";
+    else os << entry.to_string();
+    return os;
 }

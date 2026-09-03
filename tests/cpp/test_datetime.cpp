@@ -49,6 +49,7 @@
 #include <cstring>
 #include <iostream>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -646,7 +647,7 @@ static void test_slot_serialization()
     CHECK_EQ(SIZE_FF_DATETIME("2024-01-15T13:45:30Z", RECOVER_FF_INSTANT), Size{0},
              "SIZE must agree that no child block is needed");
     CHECK_EQ(STORE_FF_DATETIME(arena.data(), child, "2024-01-15T13:45:30Z", RECOVER_FF_INSTANT),
-             Offset{0}, "STORE must write nothing");
+             Size{0}, "STORE must write nothing");
 
     TEST("a fallback writes an FF_STRING and a forward relative offset");
     const char *text = "2024-01-15T13:45:30.123456Z";
@@ -815,6 +816,11 @@ static void test_choice_datetime_to_string()
     e.value = packed;
     CHECK_EQ(e.to_string(), FF_FORMAT_DATETIME(*parsed, RECOVER_FF_DATETIME),
              "packed date/time choice formats to text on demand");
+
+    std::ostringstream oss;
+    oss << e;
+    CHECK_EQ(oss.str(), std::string(FF_RecoveryName(e.tag)) + ": " + e.to_string(),
+             "operator<< prints the tag name and the value");
 
     ChoiceEntry f;  // fallback: original text preserved verbatim, no formatting
     f.tag = RECOVER_FF_INSTANT;
