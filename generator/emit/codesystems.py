@@ -294,6 +294,26 @@ def generate_code_systems(
         ns_body += f"    return {enum_name}::{UNSET_ENUMERATOR};\n"
         ns_body += "}\n\n"
 
+        # UNIFORM overload of the same parse, so generic code can reach it.
+        # parse_ObservationStatus is name-mangled per enum, which is fine for
+        # generated call sites that know the type and useless to anything
+        # writing a field it only knows by reflection -- a decoder populating a
+        # POCO by FHIR element name has the member's TYPE and nothing else.
+        # Overload resolution turns that type into the right parser.
+        #
+        # Returns false for an unrecognised code rather than storing UNSET: the
+        # caller is telling the difference between "absent" and "present but
+        # unreadable", and collapsing those is how a decoder reports success on
+        # data it dropped.
+        ns_body += (
+            f"inline bool FF_ParseCode(std::string_view sv, {enum_name} &out) {{\n"
+            f"    const {enum_name} v = {parse_name}(sv);\n"
+            f"    if (v == {enum_name}::{UNSET_ENUMERATOR}) return false;\n"
+            f"    out = v;\n"
+            f"    return true;\n"
+            f"}}\n\n"
+        )
+
     hpp += enclose_namespace("FastFHIR", ns_body)
     write_if_changed(os.path.join(output_dir, "FF_CodeSystems.hpp"), hpp)
     print(f"-- Emitted {output_dir}/FF_CodeSystems.hpp ({len(emitted)} enums)")

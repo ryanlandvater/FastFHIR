@@ -218,6 +218,10 @@ def generate_reflection_dispatch(block_struct_names, resources, top_level_types=
         "// as resources -- reflected_resource_type above deliberately does not,\n"
         "// and using it here printed a bare `value` for every complex variant.\n"
         "std::string_view reflected_choice_suffix(uint16_t recovery);\n"
+        "// The INVERSE: the tag a choice's FHIR type name denotes, so a decoder\n"
+        "// reading `valueQuantity` can say which variant to build. 0 when the\n"
+        "// name is not a generated type -- refused, never guessed.\n"
+        "uint16_t reflected_choice_tag(std::string_view type_name);\n"
         "const uint8_t* compact_field_sizes(uint16_t recovery);\n"
     )
     hpp = hpp_banner + enclose_namespace("FastFHIR", hpp_body)
@@ -309,6 +313,13 @@ def generate_reflection_dispatch(block_struct_names, resources, top_level_types=
     cpp_body += (
         '        default: return "";\n'
         "    }\n"
+        "}\n\n"
+        "uint16_t reflected_choice_tag(std::string_view type_name) {\n"
+    )
+    for _t in sorted(top_level_types):
+        cpp_body += f'    if (type_name == "{_t}") return FF_{_t.upper()}::recovery;\n'
+    cpp_body += (
+        "    return 0;\n"
         "}\n\n"
         "const uint8_t* compact_field_sizes(uint16_t recovery) {\n"
         "    switch (recovery) {\n"

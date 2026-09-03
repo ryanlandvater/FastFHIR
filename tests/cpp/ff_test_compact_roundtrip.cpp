@@ -250,28 +250,51 @@ static FixtureResult compact_roundtrip(const fs::path& fixture) {
 // scalar band, so they fell through to a verbatim 8-byte copy and the compact
 // stream kept an offset measured from the block's OLD address.
 //
-// The Synthea corpus never produced one, which is why 44 green tests said
-// nothing about it. This builds the case on purpose.
-static void test_unpackable_datetime_in_a_choice_survives_compaction() {
-    const std::string json = R"({
-        "resourceType": "Bundle",
-        "type": "collection",
-        "entry": [{
-            "resource": {
-                "resourceType": "Observation",
-                "id": "dt-fallback-1",
-                "status": "final",
-                "effectiveDateTime": "not-a-parseable-instant"
-            }
-        }]
-    })";
+// IT MUST BE A REAL BUNDLE. The first version of this test used a hand-written
+// two-resource document and PASSED WITH THE FIX REMOVED: compaction threw away
+// so little that it laid the fallback FF_STRING at the same distance from its
+// block as the source did, so copying the relative offset verbatim landed on
+// the right bytes by luck. A regression test whose red phase depends on layout
+// coincidence is not a regression test.
+//
+// So this takes a Synthea bundle -- thousands of blocks, where compaction
+// genuinely re-lays the arena -- and injects one unpackable date/time into it.
+static void test_unpackable_datetime_in_a_choice_survives_compaction(
+    const std::vector<fs::path>& bundles) {
+    if (bundles.empty()) return;
+
+    std::ifstream f(bundles.front(), std::ios::binary | std::ios::ate);
+    if (!f) { CHECK(false, "synthetic: cannot open the corpus bundle"); return; }
+    const auto size = f.tellg();
+    f.seekg(0);
+    std::string json(static_cast<std::size_t>(size), '\0');
+    f.read(json.data(), size);
+
+    // Replace the FIRST effectiveDateTime with text that cannot pack. Seven
+    // fractional digits do not fit the 63-bit civil slot, so the writer stores
+    // the original bytes in an FF_STRING and puts a flagged RELATIVE offset in
+    // the choice slot -- the exact shape the compactor mishandled.
+    const auto at = json.find("\"effectiveDateTime\"");
+    if (at == std::string::npos) {
+        CHECK(false, "corpus bundle has an effectiveDateTime to damage");
+        return;
+    }
+    const auto colon = json.find(':', at);
+    const auto value_start = json.find('"', colon) + 1;
+    const auto value_end = json.find('"', value_start);
+    if (value_end == std::string::npos) {
+        CHECK(false, "corpus bundle's effectiveDateTime is well-formed");
+        return;
+    }
+    const std::string unpackable = "2019-04-01T13:45:30.1234567+05:30";
+    json.replace(value_start, value_end - value_start, unpackable);
 
     const FixtureResult r = compact_roundtrip_json(json);
     CHECK(r.ok, "unpackable date/time in a choice survives compaction");
 
-    // Not vacuous: if that text ever starts PACKING, this case stops covering
-    // the fallback and silently becomes a test of the inline path instead.
-    CHECK(r.source_json.find("not-a-parseable-instant") != std::string::npos,
+    // Not vacuous: if that text ever starts PACKING, this stops covering the
+    // fallback and silently becomes a test of the inline path instead.
+    CHECK(r.source_json.find(unpackable) != std::string::npos,
           "the fallback text is actually present in the source document");
 }
 
@@ -303,7 +326,7 @@ int main() {
     // grouping deliberately (TASKS.md OPQ-1).
     CHECK(opaque_total > 0, "corpus exercised the opaque-JSON path at all");
 
-    test_unpackable_datetime_in_a_choice_survives_compaction();
+    test_unpackable_datetime_in_a_choice_survives_compaction(bundles);
 
     printf("%s\n", failures ? "FAILURES" : "compaction preserves the document");
     return failures ? 1 : 0;
