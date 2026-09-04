@@ -40,6 +40,33 @@ set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type (Debug|Release|RelWithDebInf
 # and multi-config (Xcode) generators.
 add_compile_definitions($<$<CONFIG:Debug>:FASTFHIR_DEBUG>)
 
+# ── Enum-switch exhaustiveness warnings ─────────────────────────
+# House convention: enum dispatch is written as no-default switches over the
+# closed enums (FF_FieldKind, RepairClass, GapClass, ElementShape, ...) so that
+# adding an enumerator fails loudly at the switch instead of silently taking an
+# old branch. The tripwire for that convention is -Wswitch (GCC/Clang) / C4062
+# (MSVC); neither is enabled by default, so without this the no-default rule
+# has no teeth and the IDE shows nothing.
+#
+# -Wswitch-enum is deliberately NOT used: several switches carry a semantic
+# group-default (ff_slot_width, ff_kind_is_inline_scalar, Kind_to_Recovery,
+# Recovery_to_Kind) where the default arm names an outcome class, and
+# -Wswitch-enum would flag those spuriously. -Wall is not (yet) enabled either:
+# it would bury this signal under unrelated pre-existing warnings.
+#
+# Applied per target, never via add_compile_options: the FetchContent
+# third-party targets (simdjson, wamr, pybind11, asio) are first-class targets
+# in this tree and must not inherit first-party policy.
+#
+# MSVC note: C4062 is a level-4 warning, so it only surfaces when the MSVC
+# build runs at /W4 or above (CMake's default is /W1). Deferred until a Windows
+# build directory actually exists rather than shipping an untested no-op arm.
+function(_ff_enable_switch_warnings target_name)
+    target_compile_options(${target_name} PRIVATE
+        $<$<COMPILE_LANG_AND_ID:CXX,AppleClang,Clang,GNU>:-Wswitch>
+    )
+endfunction()
+
 # ── IDE organisation (Xcode / Visual Studio; no-op for Ninja & Make) ──
 # Targets are grouped into folders instead of one flat list, and CMake's own
 # bookkeeping targets (ALL_BUILD, ZERO_CHECK, install, RUN_TESTS) are pushed out
@@ -205,6 +232,7 @@ target_compile_definitions(fastfhir_obj PUBLIC
 if(FASTFHIR_BUILD_SHARED)
     target_compile_definitions(fastfhir_obj PRIVATE FF_BUILDING_DLL)
 endif()
+_ff_enable_switch_warnings(fastfhir_obj)
 
 # ── Core library (shared or static) ─────────────────────────────
 # The Xcode generator produces NO product for a target whose only sources are
@@ -287,6 +315,7 @@ if(FASTFHIR_BUILD_INGESTOR)
         ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
     )
     target_link_libraries(fastfhir_ingest_obj PUBLIC fastfhir_obj simdjson::simdjson)
+    _ff_enable_switch_warnings(fastfhir_ingest_obj)
 
     # Always static — small convenience wrapper, not a real DLL boundary.
     # Keeping it SHARED on Windows requires dllexport annotations or
@@ -301,17 +330,20 @@ if(FASTFHIR_BUILD_INGESTOR)
     add_executable(ff_ingest tools/ingestor/FF_Ingest.cpp)
     target_include_directories(ff_ingest PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
     target_link_libraries(ff_ingest PRIVATE fastfhir_ingestor OpenSSL::Crypto)
+    _ff_enable_switch_warnings(ff_ingest)
 endif()
 
 # ── CLI tools ───────────────────────────────────────────────────
 add_executable(ff_export tools/exporter/FF_Export.cpp)
 target_include_directories(ff_export PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
 target_link_libraries(ff_export PRIVATE $<TARGET_OBJECTS:fastfhir_obj>)
+_ff_enable_switch_warnings(ff_export)
 
 add_executable(ff_compact tools/compactor/FF_Compact.cpp)
 target_include_directories(ff_compact PRIVATE ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
 target_link_libraries(ff_compact PRIVATE $<TARGET_OBJECTS:fastfhir_obj> OpenSSL::Crypto)
 target_compile_definitions(ff_compact PRIVATE FASTFHIR_HAS_OPENSSL)
+_ff_enable_switch_warnings(ff_compact)
 
 # ── C++ & Python tests ───────────────────────────────────────
 # All test registration — executables, CTest entries, dependency chains,
@@ -350,6 +382,7 @@ if(FASTFHIR_BUILD_PYTHON_BINDINGS)
         FASTFHIR_VERSION_BUILD=${FASTFHIR_VERSION_BUILD}
     )
     target_link_libraries(fastfhir_python PRIVATE simdjson::simdjson OpenSSL::Crypto)
+    _ff_enable_switch_warnings(fastfhir_python)
 
     # ── Assemble an importable package in the build tree (A21) ───────────────
     # fastfhir/__init__.py imports relatively (from . import _core;

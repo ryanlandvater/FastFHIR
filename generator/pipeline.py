@@ -60,10 +60,13 @@ def run(output_dir: str = "generated_src", *, keep_specs: bool = False) -> None:
     # 2. Reconcile the HL7 code sets against the permanent ID ledger.
     #    APPEND-ONLY: existing IDs are never reassigned. Stage 3 then projects
     #    the ledger into dictionaries/.
+    #    THO rides with BOTH revisions: it is one shared terminology packaged
+    #    per release, and from R5 it is where the shared CodeSystems actually
+    #    live (r5.core ships 448 of them against r4.core's 1,062).
     _systems, ledger, code_system_urls = generate_master_codes(
         {
-            "R4": _pkg("R4"),
-            "R5": _pkg("R5"),
+            "R4": [_pkg("R4"), _pkg("THO_R4")],
+            "R5": [_pkg("R5"), _pkg("THO_R5")],
         }
     )
 

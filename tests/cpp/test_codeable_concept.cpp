@@ -149,9 +149,19 @@ int main()
         for (S sys : all) {
             Offset child_off = 16384;
             std::fill(arena.begin(), arena.end(), BYTE{0});
-            // "9" parses under base 10 and 16, fits every width, and is not
-            // a dictionary entry (which would take the fast path instead).
-            ENCODE_FF_CODE(base, 512, child_off, std::string("9"), FHIR_VERSION_R5, sys);
+            // "39" parses under base 10 and 16 (39 / 0x39 = 57, both inside a
+            // uint8 payload), and is not a dictionary entry -- a dictionary hit
+            // returns the inline ID and writes no block at all, so the decode
+            // below would find nothing and the probe would test the wrong path.
+            //
+            // This was "9", which stopped working the moment FF_GetDictionaryCode
+            // became total. "9" IS in the ledger (chromosome-human,
+            // ex-benefitcategory); it was only unfindable because the lookup
+            // consulted a version-filtered slice of the intern table and "9"
+            // sits in the R4-only remainder. The probe was resting on that gap.
+            // Any replacement must be re-checked whenever the ledger grows --
+            // it is append-only, so a code that is free today can be taken.
+            ENCODE_FF_CODE(base, 512, child_off, std::string("39"), FHIR_VERSION_R5, sys);
             const auto d = FF_DECODE_CODEABLE_CONCEPT(base, 16384, FHIR_VERSION_R5, arena.size());
             CHECK(d.system == sys && !d.label.empty(),
                   "system " + std::to_string(static_cast<int>(sys)) +

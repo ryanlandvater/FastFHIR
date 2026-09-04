@@ -1356,8 +1356,13 @@ FF_RecoveryReport Recovery::recover() const {
         find_gaps(map);
     rep.gaps = map.gaps;
     for (const Gap& g : rep.gaps) {
-        if (g.class_ == GapClass::Hole)             ++rep.holes;
-        else if (g.class_ == GapClass::VersionSkew) ++rep.version_skew;
+        switch (g.class_) {
+            case GapClass::Hole:        ++rep.holes; break;
+            case GapClass::VersionSkew: ++rep.version_skew; break;
+            // Trailing: arena slack past the last entry — benign, uncounted.
+            // Listed explicitly so a future GapClass member is triaged here.
+            case GapClass::Trailing:    break;
+        }
     }
     return rep;
 }
@@ -1783,39 +1788,62 @@ void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                     continue;  // absent (monostate) — not a reference
                 const RECOVERY_TAG stored = FF_GET_RECOVERY_TAG(m_base, static_cast<Offset>(slot));
                 const FF_FieldKind variant_kind = Recovery_to_Kind(stored);
-                if (variant_kind == FF_FIELD_UNKNOWN)
-                    continue;  // the tag half names no kind this build knows
-                if (variant_kind == FF_FIELD_BOOL || variant_kind == FF_FIELD_INT32 ||
-                    variant_kind == FF_FIELD_UINT32 || variant_kind == FF_FIELD_INT64 ||
-                    variant_kind == FF_FIELD_UINT64 || variant_kind == FF_FIELD_FLOAT64)
-                    continue;  // inline scalar value — no addressable child (D3)
-                if (variant_kind == FF_FIELD_DATETIME) {
-                    // Packed civil value unless the fallback flag is set; the
-                    // flagged form is a SIGNED offset RELATIVE to this block
-                    // (CLAUDE.md hard invariant) naming an FF_STRING fallback.
-                    if (raw == FF_DATETIME_NULL || !(raw & FF_DATETIME_FALLBACK_FLAG))
+                // No-default on purpose: Recovery_to_Kind's output set is closed
+                // (see the mapping in FF_Primitives.hpp), so a kind added there
+                // must be triaged here at compile time, never mis-read.
+                switch (variant_kind) {
+                    case FF_FIELD_UNKNOWN:
+                        // The tag half names no kind this build knows.
                         continue;
-                    out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
-                                           FF_ResolveDateTimeOffset(raw, block_offset),
-                                           RECOVER_FF_STRING, FF_RECOVER_UNDEFINED});
-                    break;
+                    case FF_FIELD_BOOL:
+                    case FF_FIELD_INT32:
+                    case FF_FIELD_UINT32:
+                    case FF_FIELD_INT64:
+                    case FF_FIELD_UINT64:
+                    case FF_FIELD_FLOAT64:
+                        continue;  // inline scalar value — no addressable child (D3)
+                    case FF_FIELD_DATETIME: {
+                        // Packed civil value unless the fallback flag is set; the
+                        // flagged form is a SIGNED offset RELATIVE to this block
+                        // (CLAUDE.md hard invariant) naming an FF_STRING fallback.
+                        if (raw == FF_DATETIME_NULL || !(raw & FF_DATETIME_FALLBACK_FLAG))
+                            continue;
+                        out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
+                                               FF_ResolveDateTimeOffset(raw, block_offset),
+                                               RECOVER_FF_STRING, FF_RECOVER_UNDEFINED});
+                        break;
+                    }
+                    case FF_FIELD_CODE: {
+                        // Code occupies the low 4 bytes of the 8-byte value area;
+                        // MSB clear = packed dictionary ID, MSB set = signed
+                        // relative offset to an FF_CODEABLE_CONCEPT fallback block.
+                        const uint32_t raw_code = static_cast<uint32_t>(raw);
+                        if (!(raw_code & FF_CODEABLE_CONCEPT_FLAG))
+                            continue;
+                        out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
+                                               FF_ResolveCodeableConceptOffset(raw_code, block_offset),
+                                               RECOVER_FF_CODEABLE_CONCEPT, FF_RECOVER_UNDEFINED});
+                        break;
+                    }
+                    // Offset-bearing: the raw 8 bytes are an absolute child
+                    // offset. Array-tagged tags reach here through their base
+                    // kind — GetTypeFromTag strips the array bit before the
+                    // mapping — and the array bit survives in `stored` for the
+                    // walker. ARRAY/CHOICE/URL are never yielded by
+                    // Recovery_to_Kind; they are listed anyway so -Wswitch stays
+                    // live and a future widening of that mapping is triaged
+                    // here instead of silently mis-reading a new inline form.
+                    case FF_FIELD_STRING:
+                    case FF_FIELD_BLOCK:
+                    case FF_FIELD_RESOURCE:
+                    case FF_FIELD_ARRAY:
+                    case FF_FIELD_CHOICE:
+                    case FF_FIELD_URL:
+                        out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
+                                               static_cast<Offset>(raw), stored, FF_RECOVER_UNDEFINED});
+                        break;
                 }
-                if (variant_kind == FF_FIELD_CODE) {
-                    // Code occupies the low 4 bytes of the 8-byte value area;
-                    // MSB clear = packed dictionary ID, MSB set = signed
-                    // relative offset to an FF_CODEABLE_CONCEPT fallback block.
-                    const uint32_t raw_code = static_cast<uint32_t>(raw);
-                    if (!(raw_code & FF_CODEABLE_CONCEPT_FLAG))
-                        continue;
-                    out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
-                                           FF_ResolveCodeableConceptOffset(raw_code, block_offset),
-                                           RECOVER_FF_CODEABLE_CONCEPT, FF_RECOVER_UNDEFINED});
-                    break;
-                }
-                // Offset-bearing variant: STRING / BLOCK / RESOURCE / ARRAY.
-                out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
-                                       static_cast<Offset>(raw), stored, FF_RECOVER_UNDEFINED});
-                break;
+                break;  // end of the CHOICE/RESOURCE case
             }
             case FF_FIELD_ARRAY: {
                 if (slot + 8 > m_size)

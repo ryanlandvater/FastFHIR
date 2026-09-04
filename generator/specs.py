@@ -16,9 +16,25 @@ import tarfile
 import shutil
 from pathlib import Path
 
+# EXACT VERSIONS, never a floating "latest". These packages decide which codes
+# enter dictionaries/master_codes.json, and that ledger is a PERMANENT wire
+# artifact -- a floating tag would make regeneration non-deterministic and could
+# append IDs on a day nobody touched the generator.
 FHIR_PACKAGES = {
     "R4": "https://packages.fhir.org/hl7.fhir.r4.core/-/hl7.fhir.r4.core-4.0.1.tgz",
     "R5": "https://packages.fhir.org/hl7.fhir.r5.core/-/hl7.fhir.r5.core-5.0.0.tgz",
+    # HL7 Terminology (THO). R5 moved the shared CodeSystems OUT of the core
+    # package and into these: r4.core ships 1,062 CodeSystems, r5.core only 448.
+    # Without them, codes that are perfectly valid in R5 -- everything under
+    # http://terminology.hl7.org/CodeSystem/, which is what R5 ValueSets such as
+    # ValueSet-surface actually point at -- are absent from the dictionary and
+    # every use falls back to an FF_CODEABLE_CONCEPT block.
+    #
+    # THO is revision-aligned but revision-SHARED: the r4 and r5 flavours are
+    # the same terminology packaged for each release, so pipeline.py feeds each
+    # one to its own revision rather than inventing a third version bucket.
+    "THO_R4": "https://packages.fhir.org/hl7.terminology.r4/-/hl7.terminology.r4-7.3.0.tgz",
+    "THO_R5": "https://packages.fhir.org/hl7.terminology.r5/-/hl7.terminology.r5-7.3.0.tgz",
 }
 
 BASE_DIR = Path("fhir_packages")

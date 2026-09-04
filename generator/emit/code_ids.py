@@ -60,13 +60,32 @@ FHIR_NATIVE_PREFIXES = (
 # Bit 31 (0x80000000) is FF_CODEABLE_CONCEPT_FLAG -- never assign an ID with it set.
 _FF_CODE_DICTIONARY_MAX = 0x7FFFFFFF
 
+# CodeSystems whose "codes" are not VALUES a resource instance can carry.
+# The ledger is append-only and every entry costs a permanent wire ID, so a
+# system that no instance will ever cite is pure, irreversible cost.
 _EXPLICIT_BLOCK = {
     "color-names",
     "spdx-license",
+    # FHIR's own type names -- "Patient", "string", "dateTime". These are schema
+    # vocabulary; they live in the V-Tables, not in a code slot.
     "fhir-types",
     "resource-types",
     "data-types",
     "fhirpath-types",
+    # Added with the hl7.terminology packages. THO carries the terminology's own
+    # infrastructure alongside the clinical content, and it dwarfs it: taking
+    # THO wholesale offered 1,912 codes of which 1,341 were conceptdomains
+    # alone -- 70% of the addition.
+    #
+    # A CONCEPT DOMAIN IS NOT A CODE. It is the abstract binding target a
+    # ValueSet is declared against ("ActConsentDirectiveType", "JobStatus"); an
+    # instance binds to the ValueSet and carries a code from the CodeSystem
+    # behind it, never the domain name itself. The other two are the metadata
+    # UTG uses to maintain the terminology (property definitions, maintenance
+    # infrastructure), which is about the CodeSystems rather than in them.
+    "conceptdomains",
+    "utg-concept-properties",
+    "hl7TermMaintInfra",
 }
 
 
@@ -284,11 +303,22 @@ def _verify_ledger(ledger: dict) -> None:
         )
 
 
-def generate_master_codes(package_dirs: dict[str, str]) -> tuple[dict, dict, set[str]]:
+def generate_master_codes(
+    package_dirs: dict[str, str | list[str]],
+) -> tuple[dict, dict, set[str]]:
     """Scan NPM FHIR packages and reconcile them against the permanent ledger.
 
     Args:
-        package_dirs: {"R4": "path/to/R4/package", "R5": "path/to/R5/package"}
+        package_dirs: {revision: package dir, or a LIST of package dirs}, e.g.
+            {"R4": ["fhir_packages/R4/package", "fhir_packages/THO_R4/package"]}.
+
+            A revision takes SEVERAL packages because HL7 splits its terminology
+            across them: from R5 the shared CodeSystems live in hl7.terminology,
+            not in <revision>.core. Both feed one revision bucket rather than a
+            bucket of their own -- the per-revision tables emitted below are a
+            fixed set ("R4", "R5", "UCUM"), so a new bucket would land codes in
+            the ledger that no table lists, which is precisely the kind of
+            silent partial coverage this function exists to avoid.
     Returns:
         (systems, ledger, all_urls)
     """
@@ -296,9 +326,22 @@ def generate_master_codes(package_dirs: dict[str, str]) -> tuple[dict, dict, set
     token_versions = {}
     all_urls = set()
 
-    for vname, pkg_dir in package_dirs.items():
-        css = _collect_code_systems(pkg_dir)
-        ucs = _collect_ucum_value_sets(pkg_dir)
+    for vname, pkg_dirs in package_dirs.items():
+        if isinstance(pkg_dirs, str):
+            pkg_dirs = [pkg_dirs]
+        css, ucs = {}, {}
+        for pkg_dir in pkg_dirs:
+            # Later packages do not clobber earlier ones: a CodeSystem present
+            # in both core and THO keeps the core entry list and gains anything
+            # THO adds, which is the same merge the per-version loop below does.
+            for name, data in _collect_code_systems(pkg_dir).items():
+                if name in css:
+                    have = {e["code"] for e in css[name]["entries"]}
+                    css[name]["entries"].extend(e for e in data["entries"] if e["code"] not in have)
+                else:
+                    css[name] = data
+            for name, data in _collect_ucum_value_sets(pkg_dir).items():
+                ucs.setdefault(name, data)
         total = sum(len(v["entries"]) for v in css.values()) + sum(
             len(v["entries"]) for v in ucs.values()
         )

@@ -25,6 +25,9 @@ if(FASTFHIR_BUILD_TESTS)
             FF_TEST_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/tests/cpp"
         )
         target_link_libraries(${NAME} PRIVATE fastfhir_obj)
+        # First-party policy: the no-default enum-switch convention applies to
+        # test code too (it exercises the same headers). Defined in CMakeLists.txt.
+        _ff_enable_switch_warnings(${NAME})
     endfunction()
 
     # Asio for HTTP round-trip tests
@@ -68,12 +71,14 @@ if(FASTFHIR_BUILD_TESTS)
         target_compile_definitions(ff_test_readme PRIVATE _WIN32_WINNT=0x0601 WIN32_LEAN_AND_MEAN NOMINMAX)
     endif()
     target_link_libraries(ff_test_readme PRIVATE fastfhir_ingestor OpenSSL::Crypto)
+    _ff_enable_switch_warnings(ff_test_readme)
     # ── Round-trip harness (invoked by Python DOM parity tests) ──
     add_executable(ff_roundtrip tests/cpp/ff_roundtrip.cpp)
     target_include_directories(ff_roundtrip PRIVATE
         ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
     )
     target_link_libraries(ff_roundtrip PRIVATE fastfhir_ingestor OpenSSL::Crypto)
+    _ff_enable_switch_warnings(ff_roundtrip)
 
     if(WIN32)
         target_link_libraries(ff_test_readme PRIVATE ws2_32)

@@ -721,7 +721,9 @@ enum FF_FieldKind : uint16_t
 // A previous version had the generator re-derive these from FHIR type names
 // while C++ switched on the kind. They disagreed on 1,393 of 1,611 slots and
 // the compact reader read every field after the first string from the wrong
-// address. Do not reintroduce a second derivation -- extend this function.
+// address. Do not reintroduce a second derivation -- add a case here. No
+// default on purpose: a new FF_FieldKind without a width case is a compile
+// error (-Wswitch), never a silent TYPE_SIZE_OFFSET guess.
 constexpr uint8_t ff_slot_width(const FF_FieldKind kind)
 {
     switch (kind)
@@ -738,7 +740,11 @@ constexpr uint8_t ff_slot_width(const FF_FieldKind kind)
     case FF_FIELD_RESOURCE: return TYPE_SIZE_RESOURCE;
     case FF_FIELD_CHOICE:   return TYPE_SIZE_CHOICE;
     // STRING, ARRAY, BLOCK and UNKNOWN hold an arena offset.
-    default:                return TYPE_SIZE_OFFSET;
+    case FF_FIELD_STRING:
+    case FF_FIELD_ARRAY:
+    case FF_FIELD_BLOCK:
+    case FF_FIELD_UNKNOWN:
+        return TYPE_SIZE_OFFSET;
     }
 }
 
@@ -825,7 +831,9 @@ constexpr uint8_t FF_DecimalSigfigsFromToken(std::string_view token)
 // Single source of truth, for the same reason ff_slot_width above is one:
 // Reflective::Node::is_scalar() and the JSON field dispatch in
 // Node::print_json used to carry independent copies of this list, and a kind
-// missing from either one silently changed how a field printed.
+// missing from either one silently changed how a field printed. No default for
+// the same reason ff_slot_width has none: a kind added to the enum without
+// triage here is a compile error, not a silent misclassification.
 constexpr bool ff_kind_is_inline_scalar(const FF_FieldKind kind)
 {
     switch (kind)
@@ -842,7 +850,12 @@ constexpr bool ff_kind_is_inline_scalar(const FF_FieldKind kind)
         return true;
     // STRING, ARRAY, BLOCK, RESOURCE, CHOICE and UNKNOWN all resolve through
     // an offset to a block.
-    default:
+    case FF_FIELD_STRING:
+    case FF_FIELD_ARRAY:
+    case FF_FIELD_BLOCK:
+    case FF_FIELD_RESOURCE:
+    case FF_FIELD_CHOICE:
+    case FF_FIELD_UNKNOWN:
         return false;
     }
 }
@@ -1012,9 +1025,6 @@ inline constexpr FF_FieldKind Recovery_to_Kind(RECOVERY_TAG tag)
             return FF_FIELD_FLOAT64;
         case RECOVER_FF_CODE:
             return FF_FIELD_CODE;
-        // All four collapse to one kind: the tag survives alongside it and is
-        // what tells the encoder, the exporter and the validator which FHIR
-        // type this is. See FF_FIELD_DATETIME's comment on the enum.
         case RECOVER_FF_DATE:
         case RECOVER_FF_DATETIME:
         case RECOVER_FF_TIME:
