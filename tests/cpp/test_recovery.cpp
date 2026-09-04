@@ -958,6 +958,87 @@ static void test_tag_consensus_resolves_either_damaged_copy()
                 tried, decisive_slot, decisive_child, wrong);
 }
 
+// REC-21.3 regression -- a damaged INTERIOR element must not truncate the
+// array.
+//
+// walk_array_extent used to return the index of the FIRST element that failed
+// to validate. One flipped VALIDATION word inside a large inline-block array
+// therefore read as "the array ends here": the classifier emitted
+// ExtentDerived and apply() overwrote the INTACT entry count with the
+// truncated extent. Measured on a real Synthea bundle: one flipped bit in
+// entry 28 of the 1,473-entry Bundle.entry[] array derived an extent of 28,
+// the count was rewritten 1473 -> 28, and the reparse lost 97% of the
+// document (the bench leaf census dropped 99% -> 3% from that one 2-byte
+// write -- isolated by single-write bisection). Element damage is work for
+// the element's own reference verdict, never the end of the array: the
+// extent is a geometry bound only.
+static void test_interior_entry_damage_does_not_truncate_array()
+{
+    auto arena = build_bundle();
+    CHECK(arena != nullptr, "bundle build failed");
+    if (!arena)
+        return;
+
+    Recovery clean(*arena);
+    const auto clean_rep = clean.recover();
+
+    // The Bundle.entry[] array: an inline array of FF_BUNDLE_ENTRY blocks
+    // whose +0 is each element's own offset (the fixture has 2 entries).
+    // Select the array whose element references are inline BLOCKS and that
+    // has at least two of them (name[] has one; contained[] elements are
+    // 10-byte resource tuples, not blocks).
+    Offset entry_array = FF_NULL_OFFSET;
+    std::size_t block_elems = 0;
+    for (const auto &v : clean_rep.blocks)
+    {
+        if (v.block.kind != FF_FIELD_ARRAY)
+            continue;
+        std::size_t n = 0;
+        for (const auto &e : clean_rep.blocks)
+            if (e.block.parent == v.block.child && e.block.kind == FF_FIELD_BLOCK)
+                ++n;
+        if (n >= 2)
+        {
+            entry_array = v.block.child;
+            block_elems = n;
+            break;
+        }
+    }
+    CHECK(entry_array != FF_NULL_OFFSET, "fixture has a multi-element inline-block array");
+    if (entry_array == FF_NULL_OFFSET)
+        return;
+
+    // Damage entry[0]'s VALIDATION word (one bit) while every later entry
+    // stays intact: provably interior damage, not truncation.
+    const Offset elem0 = entry_array + FF_ARRAY::HEADER_SIZE;
+    arena->base()[static_cast<size_t>(elem0)] ^= 0x01;
+
+    Recovery rec(*arena);
+    const auto rep = rec.recover();
+
+    // The array's count must not be extent-derived: the count is intact, the
+    // damage is in an element, and elements sit at a fixed stride.
+    bool array_extent_derived = false;
+    for (const auto &v : rep.blocks)
+        if (v.block.kind == FF_FIELD_ARRAY && v.block.child == entry_array &&
+            v.class_ == RepairClass::ExtentDerived)
+            array_extent_derived = true;
+    CHECK(!array_extent_derived,
+          "interior element damage must not derive a new array extent");
+
+    // The damaged element itself is repaired by its own reference verdict.
+    bool elem0_repaired = false;
+    for (const auto &v : rep.blocks)
+        if (v.block.kind == FF_FIELD_BLOCK && v.block.parent == entry_array &&
+            v.block.child == static_cast<Offset>(elem0) &&
+            v.class_ != RepairClass::Intact && v.class_ != RepairClass::Unrecovered &&
+            v.class_ != RepairClass::Ambiguous)
+            elem0_repaired = true;
+    CHECK(elem0_repaired, "the damaged element is repaired by its own verdict");
+    std::printf("    entry[] array: %zu inline elements, interior damage -> no extent rewrite\n",
+                block_elems);
+}
+
 int main(int argc, char **argv)
 {
     const char *filter = (argc > 2 && strcmp(argv[1], "--filter") == 0) ? argv[2] : "";
@@ -991,6 +1072,8 @@ int main(int argc, char **argv)
     run("apply_repairs_a_copy_and_improves_it", test_apply_repairs_a_copy_and_improves_it);
     run("generational_holes_recover_from_the_root",
         test_generational_holes_recover_from_the_root);
+    run("interior_entry_damage_does_not_truncate_array",
+        test_interior_entry_damage_does_not_truncate_array);
     run("tag_consensus_resolves_either_damaged_copy",
         test_tag_consensus_resolves_either_damaged_copy);
 

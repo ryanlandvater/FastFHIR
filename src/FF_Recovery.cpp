@@ -675,8 +675,14 @@ FF_RecoveryReport Recovery::recover() const {
         if (valid_validation(m_base, m_size, r.child) && actual_base == r.declared) {
             v.class_ = RepairClass::Intact;
             // Array extent: the stamped ENTRY_COUNT has no second witness
-            // (F4), but the element walk derives it — a disagreement means the
-            // count is the damaged half.
+            // (F4), so it can only be DISPROVEN by geometry -- the count must
+            // not conjure elements the buffer cannot hold. walk_array_extent
+            // is that bound; it never derives a count from element damage
+            // (a damaged element is repaired by its own reference verdict).
+            // Measured regression: a walk that stopped at the first damaged
+            // entry turned one flipped VALIDATION word in entry 28 into an
+            // ExtentDerived that rewrote an intact 1,473-entry count to 28
+            // and lost 97% of the reparse.
             if (r.kind == FF_FIELD_ARRAY &&
                 static_cast<size_t>(r.child) + FF_ARRAY::HEADER_SIZE <= m_size) {
                 const FF_ARRAY array(r.child, m_size, 0);
@@ -687,10 +693,9 @@ FF_RecoveryReport Recovery::recover() const {
                 const uint16_t step = array.entry_step(m_base);
 
                 if (shape == ElementShape::InlineBlock) {
-                    // The elements ARE blocks, sitting inside the entry region
-                    // and carrying their own self-offset witness. Walking them
-                    // in place derives the count directly, and it is the only
-                    // shape that can be walked.
+                    // Geometry bound only: walked == stamped unless the stamped
+                    // count overruns the buffer, which is the one case a
+                    // derived extent may replace it.
                     const uint32_t walked =
                         walk_array_extent(m_base, m_size, r.child, shape, step, stamped);
                     if (walked != stamped) {
@@ -1644,17 +1649,13 @@ void Recovery::enumerate_array_entries(Offset array_off, RECOVERY_TAG array_tag,
     // EMITTING REFERENCES IS NOT DERIVING AN EXTENT, and conflating them is
     // what stopped the generational recovery dead.
     //
-    // walk_array_extent answers "how many entries are demonstrably intact" by
-    // walking until one fails to validate. That is the right answer for SIZING
-    // the array in the census. It is the wrong bound for emitting references,
-    // because it stops at the first DAMAGED entry -- and a damaged entry is
-    // precisely what recovery is hunting. An array whose first element is the
-    // broken one emitted no references at all, so nothing was looking for that
-    // element and its hole survived every round.
-    //
-    // Bound by GEOMETRY instead (REC-21.1): the stamped count when the arena
-    // has room for it, and the walked extent when it does not, so a corrupted
+    // Bound by GEOMETRY (REC-21.1): the stamped count when the arena has room
+    // for it, and the largest fitting extent when it does not, so a corrupted
     // ENTRY_COUNT cannot conjure thousands of references out of a small array.
+    // walk_array_extent never stops at a DAMAGED entry -- elements sit at a
+    // fixed stride, so damage to one element is work for the matcher, not the
+    // end of the array (stopping there turned one flipped VALIDATION word into
+    // an ExtentDerived that overwrote an intact 1,473-entry count).
     // Each emitted reference is then judged on its own merits -- an intact one
     // classifies Intact, a damaged one becomes work for the matcher.
     const uint64_t entries = static_cast<uint64_t>(array_off) + FF_ARRAY::HEADER_SIZE;
@@ -1977,8 +1978,13 @@ StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off) {
     return {StreamMapEntryType::Block, off, Recovery::derived_block_size(tag)};
 }
 
-// The walked extent of one array: how many elements actually validate. Returns
-// the stamped count when the shape makes verification impossible.
+// The walked extent of one array: how many elements the GEOMETRY can hold
+// (fixed stride inside the buffer). Element validation is deliberately NOT
+// part of this answer -- a damaged element is damage to one element, repaired
+// by its own reference verdict, never the end of the array. Returns the
+// stamped count when the shape makes geometry the only check, and the largest
+// fitting index when the stamped count overruns the buffer (the
+// anti-inflation bound: a corrupted count must not conjure elements).
 uint32_t walk_array_extent(const BYTE* base, size_t size, Offset array_off,
                            ElementShape shape, uint16_t stride, uint32_t stamped) {
     if (shape == ElementShape::None)
@@ -1990,26 +1996,22 @@ uint32_t walk_array_extent(const BYTE* base, size_t size, Offset array_off,
     if (step < 8)
         return stamped;  // implausible stride — the header is suspect
 
+    // The extent is a GEOMETRY question, never a validation score. Elements
+    // sit at a fixed stride, so a failed element is damage to ONE element —
+    // the reference verdicts repair it individually — not the end of the
+    // array. Bailing at the first damaged entry read a mid-array flip as
+    // truncation: one flipped VALIDATION word in entry 28 of a 1,473-entry
+    // bundle array derived an extent of 28, ExtentDerived overwrote the
+    // INTACT entry count (the flip was in the entry, not the count), and the
+    // reparse lost 97% of the document (reproduced via bench recovery_probe:
+    // the single 2-byte count rewrite 1473 -> 28 dropped the leaf census
+    // 99% -> 3%). Only an element position the buffer cannot hold ends the
+    // extent — that is the anti-inflation bound, and a count that overruns
+    // the arena is the one case a derived extent may replace.
     for (uint32_t i = 0; i < stamped; ++i) {
         const uint64_t pos = entries + static_cast<uint64_t>(i) * step;
-        if (pos + DATA_BLOCK::HEADER_SIZE > size)
+        if (pos + step > size)
             return i;
-        if (shape == ElementShape::InlineBlock) {
-            // Elements are blocks at fixed positions: walk their VALIDATION words.
-            if (LOAD_U64(base + pos) != pos)
-                return i;
-            if (!Recovery::plausible_tag(FF_GET_RECOVERY_TAG(base, static_cast<Offset>(pos))))
-                return i;
-        } else {
-            // Tuple / OFFSET entries are POINTERS: validate each target.
-            const uint64_t target = LOAD_U64(base + pos);
-            if (target == FF_NULL_OFFSET)
-                continue;  // legal absent element — does not end the extent (D4)
-            if (target + DATA_BLOCK::HEADER_SIZE > size)
-                return i;
-            if (LOAD_U64(base + target) != target)
-                return i;
-        }
     }
     return stamped;
 }

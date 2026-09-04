@@ -42,7 +42,7 @@ deleted; consult git history if you need them.
 | `python/` | pybind11 bindings (`FF_PythonBindings.cpp` → `_core`) + `fastfhir` package. `fastfhir.fields` is a generated **package** (`<build>/python/fields/`, one module + `.pyi` per resource, plus `py.typed`), emitted by `generator/bindings/python_fields.py` at build time — it is not a single `fields.py`, and it is not written into the source tree. |
 | `tools/` | CLI tools: `ingestor/FF_Ingest.cpp`, `exporter/FF_Export.cpp`, `compactor/FF_Compact.cpp`. |
 | `tests/` | `cpp/` (standalone-main tests via ctest), `python/` (README/round-trip suites via ctest `py_*`), `generator/` (pytest wire-format gate). |
-| `architecture.md` | Deep reference for the binary format, VMA, builder, and read path. Read it before touching wire-format code. |
+| `architecture.md` | Deep reference for the binary format, VMA, builder, and read path. Read it before touching wire-format code. **§3.4 is the value-representation contract** — how absence is spelled, why enum ordinal `0` is a VALUE and not a missing field, why the `double` sentinel cannot be tested with `!=`, and what a dictionary ID does and does not mean. Read it before writing anything that decides whether a field is set. |
 | `terminology_layer_architecture.md` | CodeableConcept / code-system encoding design. |
 
 **Companion repo:** performance benchmarks live in

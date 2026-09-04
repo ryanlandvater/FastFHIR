@@ -256,8 +256,7 @@ Node ParserOps::compact_entry_as_node(const Entry& e, Size size, uint32_t versio
             // out-of-profile resource retained as opaque JSON is walked as the
             // string-layout block it is.
             return Node(e.base, size, version, child_offset, actual_tag,
-                        Recovery_to_Kind(actual_tag) == FF_FIELD_STRING ? FF_FIELD_STRING
-                                                                        : FF_FIELD_BLOCK,
+                        FF_IsStringLayoutTag(actual_tag) ? FF_FIELD_STRING : FF_FIELD_BLOCK,
                         FF_RECOVER_UNDEFINED, false, compact_ops, e.m_engine_version);
         }
 
@@ -1446,12 +1445,20 @@ Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version,
     Offset child_off = LOAD_U64(base + value_offset);
     if (!FF_BLOCK_SELF_VALIDATES(base, child_off, size)) return {};
     
+    // FF_IsStringLayoutTag, not a tag list. The switch this replaces named
+    // RECOVER_FF_STRING alone, so a choice variant tagged
+    // RECOVER_FF_OPAQUE_JSON -- byte-for-byte an FF_STRING -- was typed
+    // FF_FIELD_BLOCK and read as a V-Table it does not have. That is the
+    // reflected_fields_view -> {} -> "no members" shape.
+    //
+    // Recovery_to_Kind(tag) is the exhaustive mapping but is not substituted
+    // wholesale here: it would also turn RECOVER_FF_RESOURCE into
+    // FF_FIELD_RESOURCE (a tuple kind, and the tuple is already resolved by
+    // this point) and every unrecognised tag into FF_FIELD_UNKNOWN, which
+    // makes a previously navigable node falsy. Block stays the default.
     FF_FieldKind dynamic_kind = FF_FIELD_BLOCK;
-    switch (tag) {
-        case RECOVER_FF_STRING: dynamic_kind = FF_FIELD_STRING; break;
-        case RECOVER_FF_CODE: dynamic_kind = FF_FIELD_CODE; break;
-        default: break;
-    }
+    if (FF_IsStringLayoutTag(tag))   dynamic_kind = FF_FIELD_STRING;
+    else if (tag == RECOVER_FF_CODE) dynamic_kind = FF_FIELD_CODE;
     return Node(base, size, version, child_off, tag, dynamic_kind,
                 FF_RECOVER_UNDEFINED, false, ops);
 }
@@ -1641,8 +1648,7 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
         // V-Table. Calling it a block is the reflected_fields_view/{} ->
         // "no members" -> dropped-element shape.
         return Node(n.m_base, n.m_size, n.m_version, actual_off, tuple_tag,
-                    Recovery_to_Kind(tuple_tag) == FF_FIELD_STRING ? FF_FIELD_STRING
-                                                                   : FF_FIELD_BLOCK,
+                    FF_IsStringLayoutTag(tuple_tag) ? FF_FIELD_STRING : FF_FIELD_BLOCK,
                     FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
     }
 
@@ -1650,13 +1656,66 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
     // Recovery_to_Kind resolves the scalar band (0x0100-0x01FF) to the concrete
     // scalar kind and every block band to FF_FIELD_BLOCK, so one call covers
     // both remaining layouts.
-    return Node(n.m_base, n.m_size, n.m_version, item_ptr, elem, Recovery_to_Kind(elem),
+    const FF_FieldKind elem_kind = Recovery_to_Kind(elem);
+
+    // A BLOCK ELEMENT IS ADJUDICATED AGAINST ITS OWN HEADER.
+    //
+    // A scalar entry carries no witness: the array's VALIDATION and RECOVERY
+    // are the only ones it has, which is why the blast radius of a damaged
+    // array is its whole contents. A BLOCK entry is not in that position. Its
+    // 10-byte header is stored inline, so it carries a self-offset and a tag
+    // of its own, and both are second witnesses for what the array header
+    // claims the element is.
+    //
+    // Until this check the array header was believed alone, so ONE flip in its
+    // RECOVERY tag retyped every element. Measured on a 16-flip stream: a
+    // `coding` array read as `codeableConcept` gave each element a `coding`
+    // field Coding does not have; the bytes at that offset were Coding payload,
+    // read as an array header, and the reader enumerated them --
+    // `code.coding[0].coding[230] = "Mo"`. 128,104 fabricated units against a
+    // 34,839-unit document, all of it parsing cleanly and none of it real.
+    //
+    // Falsy rather than throwing, for the reason the tuple branch above gives:
+    // one damaged element is not a damaged document.
+    if (elem_kind == FF_FIELD_BLOCK) {
+        if (!FF_BLOCK_SELF_VALIDATES(n.m_base, item_ptr, n.m_size)) return {};
+        if (GetTypeFromTag(FF_GET_RECOVERY_TAG(n.m_base, item_ptr)) != elem) return {};
+    }
+
+    return Node(n.m_base, n.m_size, n.m_version, item_ptr, elem, elem_kind,
                 FF_RECOVER_UNDEFINED, false, n.m_ops, n.m_engine_version);
 }
 
-// The element type is read from the array header once, not per entry.
+// The element type is read from the array header once, not per entry -- and it
+// is VALIDATED against the parent V-Table before it is believed.
+//
+// The array header's RECOVERY tag is a wire value with no second witness of its
+// own, so a single flip in it retypes every element of the array at once. The
+// parent's V-Table is the witness damage cannot reach: it is compiled in, and
+// it declares what this field's elements are. `m_child_recovery` carries that
+// declaration (entry_as_node stores the schema's child_recovery there when it
+// builds an array node), so the two can simply be compared.
+//
+// The wire still decides LAYOUT where the two legitimately differ. Six `code`
+// array fields declare their FHIR type and store FF_STRING blocks, and
+// date/time arrays do the same (TASKS.md AR-2, DT-2.4); deriving layout from
+// the schema there would misread them. That is why a string-layout wire tag is
+// accepted over the schema rather than corrected.
+//
+// Any other disagreement is damage, and the schema wins. Without this, one
+// flipped tag turned a `coding` array into a `codeableConcept` array, gave
+// every element a `coding` field Coding does not have, and had the reader
+// enumerate the Coding payload bytes underneath it as entries:
+// `code.coding[0].coding[230] = "Mo"`. 128,104 fabricated units against a
+// 34,839-unit document, every one of them parsing cleanly.
 RECOVERY_TAG ParserOps::array_element_tag(const Node& n) {
-    return GetTypeFromTag(FF_GET_RECOVERY_TAG(n.m_base, n.m_node_offset));
+    const RECOVERY_TAG wire = GetTypeFromTag(FF_GET_RECOVERY_TAG(n.m_base, n.m_node_offset));
+    const RECOVERY_TAG schema = GetTypeFromTag(n.m_child_recovery);
+
+    if (schema == FF_RECOVER_UNDEFINED) return wire;  // nothing to check against
+    if (wire == schema) return wire;
+    if (FF_IsStringLayoutTag(wire)) return wire;      // declared type, string storage
+    return schema;                                     // the V-Table outlives the flip
 }
 
 std::vector<Node> ParserOps::standard_node_entries(const Node& n) {
@@ -1793,6 +1852,20 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
 
     const Offset slot_offset = e.absolute_offset();
 
+    // BOUNDS-CHECK THE SLOT BEFORE READING IT.
+    //
+    // Every branch below dereferences e.base + slot_offset, and that address is
+    // itself wire-derived: an Entry is parent_offset plus a V-Table offset, so
+    // a damaged parent puts the slot anywhere. Until this check the load simply
+    // happened -- measured on a 512-flip stream, EXC_BAD_ACCESS inside this
+    // function while reading the 8 bytes of an array slot.
+    //
+    // ff_slot_width gives the exact width the chosen branch will read, so a
+    // slot that is present but truncated at the end of the stream is rejected
+    // too. Falsy, per the read-path contract: absent, damaged and out-of-bounds
+    // are the same answer (CLAUDE.md invariant 10).
+    if (!FF_BLOCK_IN_BOUNDS(slot_offset, size, ff_slot_width(schema_kind))) return {};
+
     switch (schema_kind) {
         case FF_FIELD_BOOL:
         case FF_FIELD_INT32:
@@ -1843,8 +1916,7 @@ Node ParserOps::standard_entry_as_node(const Entry& e, Size size, uint32_t versi
             // reflected_fields_view/{} -> "no members" -> dropped-field shape
             // that has now cost four separate defects.
             return Node(e.base, size, version, actual_off, actual_tag,
-                        Recovery_to_Kind(actual_tag) == FF_FIELD_STRING ? FF_FIELD_STRING
-                                                                        : FF_FIELD_BLOCK,
+                        FF_IsStringLayoutTag(actual_tag) ? FF_FIELD_STRING : FF_FIELD_BLOCK,
                         FF_RECOVER_UNDEFINED, false, ops, e.m_engine_version);
         }
 

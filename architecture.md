@@ -16,15 +16,57 @@
 
 ## Table of Contents
 
-1. [System Philosophy & Design Invariants](#1-system-philosophy--design-invariants)
-2. [Memory Architecture: The Virtual Memory Arena (VMA)](#2-memory-architecture-the-virtual-memory-arena-vma)
-3. [The Dual-Layer Type System](#3-the-dual-layer-type-system)
-4. [Binary Wire Format: `DATA_BLOCK` Anatomy](#4-binary-wire-format-data_block-anatomy)
-5. [The Array Subsystem: Inline Entries and the One Indirection](#5-the-array-subsystem-inline-entries-and-the-one-indirection)
-6. [High-Performance Primitives](#6-high-performance-primitives)
-7. [Concurrent Builder Mechanics](#7-concurrent-builder-mechanics)
-8. [Zero-Copy Read Path (`Reflective::Node`)](#8-zero-copy-read-path-reflectivenode)
-9. [Code Generation Pipeline (`generator/`)](#9-code-generation-pipeline-generator)
+- [1. System Philosophy & Design Invariants](#1-system-philosophy--design-invariants)
+  - [1.1 Zero-Copy Random Access — O(1) field navigation](#11-zero-copy-random-access--o1-field-navigation)
+  - [1.2 Lock-Free Concurrency — Atomic space reservation](#12-lock-free-concurrency--atomic-space-reservation)
+  - [1.3 Memory-Mapped Substrate — Sparse, high-capacity VMA](#13-memory-mapped-substrate--sparse-high-capacity-vma)
+  - [1.4 Version Awareness — Forward and backward compatibility](#14-version-awareness--forward-and-backward-compatibility)
+- [2. Memory Architecture: The Virtual Memory Arena (VMA)](#2-memory-architecture-the-virtual-memory-arena-vma)
+  - [2.1 `Memory` & `FF_Memory_t` — Handle / Body](#21-memory--ff_memory_t--handle--body)
+  - [2.2 Lock-Free Claiming — `claim_space()`](#22-lock-free-claiming--claim_space)
+  - [2.3 Lifetime Safety — `Memory::View`](#23-lifetime-safety--memoryview)
+  - [2.4 RAII Stream Management — `StreamHead`](#24-raii-stream-management--streamhead)
+- [3. The Dual-Layer Type System](#3-the-dual-layer-type-system)
+  - [3.1 `FF_FieldKind` — Physical Discriminant](#31-ff_fieldkind--physical-discriminant)
+  - [3.2 `RECOVERY_TAG` — Semantic Identifier](#32-recovery_tag--semantic-identifier)
+  - [3.3 `TypeTraits<T>` — Compile-Time Bridge](#33-typetraitst--compile-time-bridge)
+  - [3.4 Absence: the sentinel contract](#34-absence-the-sentinel-contract)
+- [4. Binary Wire Format: `DATA_BLOCK` Anatomy](#4-binary-wire-format-data_block-anatomy)
+  - [4.1 The Universal Header (10 bytes)](#41-the-universal-header-10-bytes)
+  - [4.2 The V-Table Architecture](#42-the-v-table-architecture)
+  - [4.3 Back-Patching — `Builder::amend_pointer`](#43-back-patching--builderamend_pointer)
+- [5. The Array Subsystem: Inline Entries and the One Indirection](#5-the-array-subsystem-inline-entries-and-the-one-indirection)
+  - [5.1 Fixed stride is the constraint; variable length is the only thing that breaks it](#51-fixed-stride-is-the-constraint-variable-length-is-the-only-thing-that-breaks-it)
+  - [5.2 `FF_ARRAY` Layout](#52-ff_array-layout)
+  - [5.3 The element type is the header's `RECOVERY` tag — and nothing else](#53-the-element-type-is-the-headers-recovery-tag--and-nothing-else)
+  - [5.4 `EntryKind` — a coarser echo of the tag](#54-entrykind--a-coarser-echo-of-the-tag)
+  - [5.5 Reading Arrays](#55-reading-arrays)
+- [6. High-Performance Primitives](#6-high-performance-primitives)
+  - [6.1 `FF_STRING` — 14-byte header, zero-copy view](#61-ff_string--14-byte-header-zero-copy-view)
+  - [6.2 Polymorphic 10-Byte Wrappers](#62-polymorphic-10-byte-wrappers)
+  - [6.3 MSB-discriminated value slots — `FF_CODE` and `FF_DATETIME`](#63-msb-discriminated-value-slots--ff_code-and-ff_datetime)
+- [7. Concurrent Builder Mechanics](#7-concurrent-builder-mechanics)
+  - [7.1 Mutation Safety — `try_begin_mutation()` / `m_finalizing`](#71-mutation-safety--try_begin_mutation--m_finalizing)
+  - [7.2 `ObjectHandle` & `MutableEntry` — Thin Coordinate Handles](#72-objecthandle--mutableentry--thin-coordinate-handles)
+  - [7.3 Append Path — `Builder::append<T>`](#73-append-path--builderappendt)
+  - [7.4 Finalisation & Sealing — `Builder::finalize`](#74-finalisation--sealing--builderfinalize)
+- [8. Zero-Copy Read Path (`Reflective::Node`)](#8-zero-copy-read-path-reflectivenode)
+  - [8.1 The Lens Pattern — `Reflective::Node`](#81-the-lens-pattern--reflectivenode)
+  - [8.2 Field Lookup](#82-field-lookup)
+  - [8.3 Entry → Node delegation](#83-entry--node-delegation)
+  - [8.4 The `ParserOps` table](#84-the-parserops-table)
+- [9. Code Generation Pipeline (`pipeline.py`)](#9-code-generation-pipeline-pipelinepy)
+  - [9.1 Pipeline Stages](#91-pipeline-stages)
+  - [9.2 Why the generator is the architecture](#92-why-the-generator-is-the-architecture)
+- [10. Extension Subsystem: Compiled, WASM, and Passive Routing](#10-extension-subsystem-compiled-wasm-and-passive-routing)
+  - [10.1 Five-Tier Extension Routing](#101-five-tier-extension-routing)
+  - [10.2 STATIC Extension Payload Binary Layout](#102-static-extension-payload-binary-layout)
+  - [10.3 FF_MODULE_REGISTRY Entry Expansion — KIND Field Discrimination](#103-ff_module_registry-entry-expansion--kind-field-discrimination)
+  - [10.4 Generator Path — `compile_extension_library()` Pass](#104-generator-path--compile_extension_library-pass)
+  - [10.5 Predigest Routing — Phase 7 Extended](#105-predigest-routing--phase-7-extended)
+  - [10.6 Parser Read Path — KIND-Aware Dispatch](#106-parser-read-path--kind-aware-dispatch)
+  - [10.7 Invariants — Extension Subsystem](#107-invariants--extension-subsystem)
+- [Appendix A — Invariant Cheatsheet](#appendix-a--invariant-cheatsheet)
 
 ---
 
@@ -406,7 +448,7 @@ inline scalar, and `FF_IsScalarBlockTag` / `FF_IsResourceTag` /
 the wrong band is therefore *silently misclassified at runtime* rather than
 failing to compile.
 
-That is not hypothetical. `RECOVER_FF_CODE` sat in the Core Primitives band
+`RECOVER_FF_CODE` sat in the Core Primitives band
 until 2026-08-19 while being an inline scalar, which put it outside the band
 test — so a `case RECOVER_FF_CODE:` written inside the scalar-band switch was
 unreachable, and the same misbanding silently disabled the code path in the
@@ -476,6 +518,105 @@ are not generated.
 on the hot path. A virtual call per field would defeat O(1) navigation; RTTI
 would defeat the recovery-tag scheme. Compile-time specialisation collapses
 the entire bridge to inlined memcpys on the call site.
+
+### 3.4 Absence: the sentinel contract
+
+The standard layout has fixed slots, no presence bitmap and no way to omit a
+field, so absence is encoded in the slot. Every FastFHIR sentinel is all-ones at
+the slot's width.
+
+| slot width | constant | value |
+|---|---|---|
+| `uint8_t`  | `FF_NULL_UINT8`    | `0xFF` |
+| `uint16_t` | `FF_NULL_UINT16`   | `0xFFFF` |
+| `uint32_t` | `FF_NULL_UINT32`   | `0xFFFF'FFFF` |
+| `uint64_t` | `FF_NULL_UINT64`   | `0xFFFF'FFFF'FFFF'FFFF` |
+| `double`   | `FF_NULL_F64`      | `std::bit_cast<double>(FF_NULL_UINT64)` — a quiet NaN |
+| `Offset`   | `FF_NULL_OFFSET`   | `FF_NULL_UINT64` |
+| code       | `FF_CODE_NULL`     | `FF_NULL_UINT32` |
+| date/time  | `FF_DATETIME_NULL` | `FF_NULL_UINT64` |
+| extension  | `FF_EXT_REF_NULL`  | `FF_NULL_UINT32` |
+
+All-ones keeps the sentinel out of the MSB-flag space used by the polymorphic
+slots (§6.3).
+
+`FF_IsFieldEmpty()` (`FF_Utilities.hpp:87`) is the wire-side presence test. It
+compares the slot's raw bytes against all-ones.
+
+#### Ordinal 0 is a valid code
+
+Generated enums are alphabetical and 0-based, so ordinal 0 carries a real code:
+
+```cpp
+enum class FF_AdministrativeGender : uint8_t { Female, Male, Other, Unknown, FF_UNSET = 255 };
+enum class FF_ObservationStatus    : uint8_t { Amended, Cancelled, Corrected, ..., FF_UNSET = 255 };
+enum class FF_NarrativeStatus      : uint8_t { Additional, Empty, Extensions, ..., FF_UNSET = 255 };
+```
+
+All 80 generated enums use `FF_UNSET = 255` for absence. Test against that
+sentinel, never against 0:
+
+```cpp
+if (patient.gender != FF_AdministrativeGender::FF_UNSET)   // correct
+if (static_cast<int>(patient.gender) != 0)                 // drops Female
+```
+
+A `!= 0` guard removes the first code of every ValueSet. The output stays
+structurally valid, so the loss is silent. In the benchmark this removed
+`gender` from every female patient and `use` from every telecom.
+
+Ordinals are also not portable across libraries. FastFHIR orders enumerators
+alphabetically; FhirProto and others order them as the FHIR ValueSet declares
+them. A numeric cast between the two compiles and yields a different valid code
+— `FF_ContactPointSystem::Phone` (4) becomes `PAGER` (4). Map explicitly.
+
+#### The `double` sentinel must be tested on bits
+
+`FF_NULL_F64` is a quiet NaN, and NaN compares unordered, so
+`x != FF_NULL_F64` is true for every `x` including the sentinel. Use
+`FF_IsFieldEmpty()`.
+
+The sentinel also cannot be assigned by numeric conversion. `= FF_NULL_UINT64`
+yields `1.8446744073709552e19`, encoded `0x43F0...`, which is never all-ones; no
+decimal slot then reports empty and absent values export as `1.84467e+19`.
+`std::bit_cast` is required. The general rule: the sentinel and the test for it
+must be spelled in the same domain, which here is bits (§4.2).
+
+#### Absent, damaged and empty return the same result
+
+The read path returns a falsy Node for all three. The write path raises; the
+read path degrades (CLAUDE.md invariants 5 and 10). A falsy Node is therefore
+not evidence of corruption. Structural faults are reported by
+`validate_FFHR_stream()`, which enumerates every occurrence rather than stopping
+at the first.
+
+#### A dictionary ID identifies a string, not a concept
+
+`FF_DICTIONARY_STRINGS` is a bijection — one string per ID, one ID per string,
+with no CodeSystem dimension. `FF_ResolveCode(id)` is an array index and
+`FF_GetDictionaryCode(str)` is its exact inverse, so the write path cannot fail
+to find a code the read path resolves.
+
+Consequently `Quantity.code = "F"` and a US Core `birthsex = "F"` share one ID:
+that ID denotes the string `"F"`. The CodeSystem comes from the element's
+binding. `FF_CODE::UCUM::F` names the string, so comparing a stored code against
+it cannot distinguish systems. Whether a code is valid for its element is
+conformance, handled by an attachable layer (TASKS.md Block K).
+
+#### Where the polymorphic slots are documented
+
+Absence interacts with the three slots that mean two things. Their layouts are
+not repeated here:
+
+- **§6.2** — the 10-byte `{offset, tag}` tuple: `FF_FIELD_RESOURCE` and
+  `FF_FIELD_CHOICE`.
+- **§6.3** — the MSB-discriminated scalars: `FF_FIELD_CODE` (bit 31,
+  `FF_CODEABLE_CONCEPT_FLAG`) and `FF_FIELD_DATETIME` (bit 63,
+  `FF_DATETIME_FALLBACK_FLAG`). Both fallback arms are offsets **relative to the
+  containing block**, which is why they must be resolved while the parent is
+  still in hand.
+
+---
 
 ---
 
@@ -568,9 +709,8 @@ floating-point arithmetic that does not care how the value was typed gets what
 it needs with no decode. Precision is the addendum, wanted by exactly one
 consumer: the JSON exporter. Nothing may be encoded into the value bytes.
 
-A consequence worth stating: `100.0` and `100` produce **identical** first eight
-bytes and differ only at `+8`. Equal as numbers, distinguishable as text — which
-is what lets one slot serve both audiences. The byte at `+8` records how many digits followed the `.`
+`100.0` and `100` produce identical first eight
+bytes and differ only at `+8`: equal as numbers, distinguishable as text. The byte at `+8` records how many digits followed the `.`
 in the source document, because FHIR counts trailing zeros as significant
 (`62.00` asserts hundredths, `62` does not) and no bit pattern of a binary64 is
 free to say so. It is the decimal *scale* — what `%.*f` consumes — not a count
@@ -1147,7 +1287,7 @@ round-trip as `"2024-01-01T00:00:00Z"`; `date` never carries a timezone, so an
 epoch-UTC encoding would invent one; `time` has no date to anchor an instant to;
 and seconds may legally be `60`, which `std::chrono` would silently normalise.
 
-Three consequences worth stating because they are not obvious:
+Three consequences follow:
 
 - **The epoch is 0001-01-01 and the day field is unsigned.** Not a free choice: a
   signed count from 1970 needs 2,932,896 days for 1970→9999, and signed 22 bits
