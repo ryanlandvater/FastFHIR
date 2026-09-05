@@ -27,6 +27,8 @@ using namespace FastFHIR;
 
 #include <set>
 
+#include "FFHR_tests.hpp"
+
 #ifndef TEST_DIR
 #define TEST_DIR "."
 #endif
@@ -34,20 +36,6 @@ using namespace FastFHIR;
 // ─────────────────────────────────────────────────────────────────────────────
 // Assertion helpers
 // ─────────────────────────────────────────────────────────────────────────────
-static int g_failures = 0;
-#define CHECK(expr, msg)                                             \
-    do                                                               \
-    {                                                                \
-        if (!(expr))                                                 \
-        {                                                            \
-            std::cerr << "FAIL: " << msg << "  (" << __FILE__ << ":" \
-                      << __LINE__ << ")\n";                          \
-            ++g_failures;                                            \
-        }                                                            \
-    } while (false)
-
-#define CHECK_EQ(a, b, msg) CHECK((a) == (b), msg)
-#define CHECK_NE(a, b, msg) CHECK((a) != (b), msg)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test: anonymous Memory creation
@@ -294,7 +282,7 @@ int main(int argc, char **argv)
         ++ran;
     }
 
-    std::cout << "\n[" << (g_failures ? "FAIL" : "PASS") << "] "
-              << ran << " tests, " << g_failures << " failures\n";
-    return g_failures ? 1 : 0;
+    std::cout << "\n[" << (::ff_test::g_failures ? "FAIL" : "PASS") << "] "
+              << ran << " tests, " << ::ff_test::g_failures << " failures\n";
+    return ::ff_test::g_failures ? 1 : 0;
 }

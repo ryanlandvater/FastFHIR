@@ -50,6 +50,7 @@
   - [7.2 `ObjectHandle` & `MutableEntry` — Thin Coordinate Handles](#72-objecthandle--mutableentry--thin-coordinate-handles)
   - [7.3 Append Path — `Builder::append<T>`](#73-append-path--builderappendt)
   - [7.4 Finalisation & Sealing — `Builder::finalize`](#74-finalisation--sealing--builderfinalize)
+  - [7.5 Concurrent build throughput — what the arena actually scales to](#75-concurrent-build-throughput--what-the-arena-actually-scales-to)
 - [8. Zero-Copy Read Path (`Reflective::Node`)](#8-zero-copy-read-path-reflectivenode)
   - [8.1 The Lens Pattern — `Reflective::Node`](#81-the-lens-pattern--reflectivenode)
   - [8.2 Field Lookup](#82-field-lookup)
@@ -110,10 +111,12 @@ Multiple writer threads must be able to ingest into a single arena
 simultaneously without mutexes, condition variables, or producer/consumer
 queues on the hot path.
 
-- Space is reserved by a single `fetch_add` on a `std::atomic<uint64_t>`
+- Space is reserved by an atomic claim on a `std::atomic_ref<uint64_t>`
   write-head (`Memory::claim_space`, `FF_Memory.hpp:74`). The returned offset
   is the writer's exclusive slice for the call's duration; no other writer
-  can ever observe that range as available.
+  can ever observe that range as available. The claim is a CAS retry loop
+  rather than a `fetch_add`, because bit 63 of the same word is the stream
+  lock (§2.2); §7.5 measures what that costs.
 - Once written, the slice is published to readers via the release-semantics
   load on `Memory::size()` (`FF_Memory.hpp:307–309`).
 
@@ -124,7 +127,7 @@ addressable arena to preserve cross-resource references (`ResourceReference`,
 benefit of multi-core decode.
 
 **Consequence.** All append paths are forbidden from holding any lock other
-than the implicit hardware fence on `fetch_add`. Block layouts are forbidden
+than the implicit hardware fence on the atomic claim. Block layouts are forbidden
 from requiring back-references to siblings written by other threads;
 back-patching is restricted to the parent the current writer owns
 (`Builder::amend_*`, §7).
@@ -138,8 +141,9 @@ by the OS, so the cost is paid as data is actually written.
 - Three flavours coexist: anonymous RAM, POSIX SHM (cross-process), and
   file-backed (`Memory::create`, `Memory::createFromFile`).
 - Sparse-by-default means the high-capacity reservation is essentially free
-  and means that the lock-free `fetch_add` allocator never has to grow,
-  rebase, or invalidate pointers.
+  and means that the lock-free bump allocator never has to grow, rebase, or
+  invalidate pointers. It also means every page is first-touched during the
+  build; §7.5 measures what that costs when N threads fault one mapping.
 
 **Why.** Two distinct properties fall out of one decision:
 
@@ -248,11 +252,16 @@ ingest — see `STREAM_PAYLOAD_OFFSET = 16` and the `StreamHead` discussion in
 §2.4. `Memory::base()` returns `m_base` directly; arena offsets stored in
 V-Tables are relative to `m_base` (offset 0 = start of `FF_HEADER`).
 
-`claim_space(bytes)` performs a single `fetch_add(bytes,
-memory_order_acq_rel)` on the write-head, returning the offset the caller now
-exclusively owns. Capacity overflow throws `std::runtime_error`; the addition
-itself is uncontended in the success path because every concurrent caller
-gets a distinct offset by construction.
+`claim_space(bytes)` returns the offset the caller now exclusively owns.
+Capacity overflow throws `std::runtime_error`. Every concurrent caller gets a
+distinct offset by construction.
+
+**It is a `compare_exchange_strong` retry loop, not a `fetch_add`**
+(`src/FF_Memory.cpp:386`). The lock bit shares the word, so the claim has to
+load, test bit 63, bounds-check, and CAS; a losing CAS re-reads and retries.
+This document asserted `fetch_add` in four places until 2026-09-05 and the
+code has never done that. The distinction is a throughput one — see
+§7.5 — and both forms are equally correct.
 
 #### The `STREAM_LOCK_BIT` (bit 63)
 
@@ -1471,14 +1480,15 @@ Three steps, each lock-free:
 
 1. **Size** computed from the typed value via `TypeTraits<T>::size`
    (compile-time inlined, no virtual dispatch).
-2. **Reserve** via the `claim_space` `fetch_add` — N threads issuing
-   simultaneously each receive a distinct, non-overlapping slice.
+2. **Reserve** via `claim_space` — N threads issuing simultaneously each
+   receive a distinct, non-overlapping slice. The reservation is a CAS retry
+   loop, and it is called once per BLOCK, not once per resource (§7.5).
 3. **Write** via `TypeTraits<T>::store` — into the writer's exclusive slice.
    Because the slice is exclusive, no atomicity is needed within the write.
 
 The published bytes become visible to readers when the next acquire-load
 of the head observes the new value (which happens implicitly on the next
-`fetch_add` or on `Memory::size()`).
+claim or on `Memory::size()`).
 
 The variant overload `append(const std::vector<Offset>&, RECOVERY_TAG)`
 (`FF_Builder.hpp:133–159`) is the strongly-typed path for offset arrays;
@@ -1516,6 +1526,97 @@ deliberately does not embed a cryptographic library. Algorithm choice is a
 deployment decision (FIPS, BoringSSL, OpenSSL, an in-tree
 implementation…); accepting `std::function<std::vector<BYTE>(…)>` keeps the
 engine free of crypto dependencies and lets the integrator pick.
+
+### 7.5 Concurrent build throughput — what the arena actually scales to
+
+The append path is lock-free and correct under contention. It is not
+currently fast under contention. Measured 2026-09-05 in FastFHIR-benchmark
+Test 1 (`bench/arm_fastfhir.cpp`), 64 MB Synthea corpus, 4,203 resources,
+`-c opt`, Apple M5 Pro (6 P + 12 E = 18 logical). Each resource is built
+start-to-finish by one thread, which then amends its own pre-allocated
+`Bundle.entry` slot — the `FF_Ingestor.cpp` step-5 shape.
+
+```mermaid
+flowchart TB
+    subgraph producer["producer thread"]
+        P1["draw task"] --> P2["FIFO::Queue::Injector::push"]
+        P2 --> P3["notify_parked"]
+    end
+    P2 -.-> Q[["FIFO::Queue<br/>PENDING → READING CAS"]]
+    P3 -.->|"__ulock_wake"| W1
+    Q --> W1["worker 1<br/>Consumer::pop"]
+    Q --> W2["worker N<br/>Consumer::pop"]
+    W1 --> B1["Builder::append_obj(POCO)"]
+    W2 --> B2["Builder::append_obj(POCO)"]
+    B1 --> C[["Memory::claim_space<br/>CAS retry loop on ONE cache line<br/>called once per BLOCK"]]
+    B2 --> C
+    C --> A[("sparse VMA<br/>first touch faults<br/>N threads → one kernel VM lock")]
+    B1 --> M1["MutableEntry = ObjectHandle<br/>amend_resource into its OWN entry slot"]
+    B2 --> M2["MutableEntry = ObjectHandle<br/>amend_resource into its OWN entry slot"]
+    M1 --> R["Bundle.entry array<br/>pre-allocated, no slot shared"]
+    M2 --> R
+    R --> F["finalize / seal<br/>after every worker joins"]
+
+    classDef cost fill:#4a1f1f,stroke:#c05050,color:#f0d0d0
+    class Q,C,A cost
+```
+
+Shaded nodes are the three costs below: the queue's park/wake protocol, the
+shared write head, and first-touch faulting. Nothing else is contended — no two
+workers touch the same entry slot, and `finalize` runs only after every worker
+has joined.
+
+| configuration, 18 workers | wall | user CPU | sys CPU |
+|---|---|---|---|
+| one resource per queue task | 17.0 ms | 13.7 ms | 190 ms |
+| 64 resources per task | 4.80 ms | 6.3 ms | 56 ms |
+| 64 per task, arena pre-faulted | 1.40 ms | 14.7 ms | 2.5 ms |
+| *single thread, for reference* | *2.29 ms* | *2.29 ms* | *0.01 ms* |
+
+Three independent costs, each isolated by measurement:
+
+1. **Park/wake rate.** `append_obj` on one Synthea resource is **0.545 µs**,
+   the same order as one queue push and as one `__ulock_wait`/`__ulock_wake`
+   pair. One producer cannot feed 18 consumers at that size, so consumers
+   park and wake continuously. `notify_one` in place of `notify_all` changed
+   nothing, so this is the wake *rate*, not a thundering herd. Batching tasks
+   into ranges fixes it; break-even is ~9 µs of work per task. The ingestor
+   is unaffected because its task is a full simdjson parse plus store — tens
+   of µs — which amortizes the same protocol.
+2. **First-touch page faults.** `Memory::create` reserves without
+   committing (§1.3), so every page faults during the build. N threads
+   faulting one fresh anonymous mapping serialize on the kernel VM lock.
+3. **Write-head contention — the floor.** With 1 and 2 removed, user CPU
+   still inflates **2.29 → 14.7 ms for byte-identical output**. `claim_space`
+   is called once per BLOCK — every string, `FF_CODEABLE_CONCEPT`, and array,
+   not once per resource — so a 64 MB build issues on the order of 10⁵ claims
+   (estimate; not instrumented), all on one cache line, through a CAS retry
+   loop whose retries scale with thread count. Consecutive claims from
+   different threads also place blocks on shared cache lines.
+
+**Net: 18 cores buy 1.8×**, peaking at 8 workers and going backwards after.
+Granularity moves sys time by 21× and user time by nothing, so 3 is not a
+task-sizing problem and cannot be batched away.
+
+Two fixes, neither of which changes a byte on the wire:
+
+- **`fetch_add` in place of the CAS loop.** Removes retry amplification
+  (O(N) coherence round trips per claim becomes O(1); LDADD on ARMv8.1).
+  It does not remove the shared line, so it reduces the floor rather than
+  eliminating it. Complication: bit 63 of the same word is `STREAM_LOCK_BIT`
+  (§2.2). Because capacity ≪ 2⁶³ an add cannot carry into it, so a claim that
+  lands on a locked head can detect it in the returned prior value and
+  `fetch_sub` to undo — adds and subs commute, so the final value stays
+  correct, at the cost of a transiently over-large head. Moving the lock out
+  of the head word instead makes the head a pure bump, but those 8 bytes are
+  also `FF_HEADER::STREAM_SIZE`, so that is a header-layout decision.
+- **Per-thread claim batching.** One claim per slab, then a thread-local
+  bump with no atomic. Removes the shared line and the false sharing
+  together. Costs slab-tail waste, and blocks are no longer densely packed in
+  append order — offsets are explicit so readers do not care, but stream size
+  changes slightly.
+
+TASKS.md **CONC-1** / **CONC-2**.
 
 ---
 
@@ -1887,7 +1988,7 @@ explicit, documented architectural review is a regression.
 | # | Invariant                                                                                                   | Enforced by                                              |
 |---|-------------------------------------------------------------------------------------------------------------|----------------------------------------------------------|
 | 1 | Field reads are O(1) pointer arithmetic; no parsing, no scanning.                                            | Fixed-stride V-Tables (§4.2), generator (§9)             |
-| 2 | Append paths take no mutex; only `fetch_add` on the write-head.                                              | `Memory::claim_space` (§2.2)                             |
+| 2 | Append paths take no mutex; the write-head is claimed with a CAS retry loop (§2.2, §7.5 — not a `fetch_add`).  | `Memory::claim_space` (§2.2)                             |
 | 3 | Mappings are sparse virtual memory; no realloc / no rebase.                                                  | `FF_Memory_t` / `Memory::create*` (§2.1)                 |
 | 4 | Every block starts with `VALIDATION (8) | RECOVERY (2)` — no exceptions.                                     | `DATA_BLOCK::vtable_offsets` (§4.1)                      |
 | 5 | Array recovery tags carry `RECOVER_ARRAY_BIT (0x8000)`; element type recovered with `GetTypeFromTag()`.      | `FF_ARRAY::validate_full`; generator (§3.2)              |

@@ -511,7 +511,8 @@ Three instructions: load, index, call. ~5 cycles on a modern OoO core.
 ### 7.1 FF_CODEABLE_CONCEPT Allocation
 
 The block is 18 bytes. It is allocated via `Memory::claim_space(18)` — the
-same atomic `fetch_add` path used by every other block type. Alignment follows
+same atomic claim path used by every other block type (a CAS retry loop, not a
+`fetch_add`; architecture.md §2.2). Alignment follows
 the arena convention: `claim_space` returns offsets aligned to the allocation
 size's natural boundary. For 18 bytes, the returned offset is at least 2-byte
 aligned; the `VALIDATION` field at offset 0 is an `STORE_U64` which is

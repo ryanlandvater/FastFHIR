@@ -19,6 +19,8 @@
 #include <FF_Ingestor.hpp>
 #include <FastFHIR.hpp>
 
+#include "FFHR_tests.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -32,33 +34,6 @@ using namespace FastFHIR;
 
 // ── Test framework (same header-only pattern as test_primitives.cpp) ───────
 
-static int g_failures = 0;
-static int g_tests = 0;
-static const char *g_current_group = "";
-
-#define TEST_GROUP(name)                     \
-    do                                       \
-    {                                        \
-        g_current_group = name;              \
-        std::cout << "\n[" << name << "]\n"; \
-    } while (0)
-#define TEST(name) \
-    do             \
-    {              \
-        ++g_tests; \
-    } while (0)
-#define CHECK(cond, msg)                                   \
-    do                                                     \
-    {                                                      \
-        if (!(cond))                                       \
-        {                                                  \
-            ++g_failures;                                  \
-            std::cerr << "  FAIL " << g_current_group      \
-                      << "::" << __func__ << " line "      \
-                      << __LINE__ << ": " << msg << "\n";  \
-        }                                                  \
-    } while (0)
-#define CHECK_EQ(a, b, msg) CHECK((a) == (b), msg << " expected " << (b) << " got " << (a))
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -1041,47 +1016,36 @@ static void test_interior_entry_damage_does_not_truncate_array()
 
 int main(int argc, char **argv)
 {
-    const char *filter = (argc > 2 && strcmp(argv[1], "--filter") == 0) ? argv[2] : "";
+    ff_test::set_filter(argc, argv);
 
-    auto run = [&](const char *name, auto fn)
-    {
-        if (filter[0] != '\0' && !strstr(name, filter))
-            return;
-        // Count here, not inside the bodies: a suite that runs nothing must not
-        // be indistinguishable from a suite that passes everything. Before this,
-        // deleting all four run() lines below produced byte-identical output and
-        // the same green ctest verdict (TASKS.md P0-2).
-        TEST(name);
-        fn();
-    };
 
     TEST_GROUP("Recovery");
-    run("clean_stream_zero_false_positives", test_clean_stream_zero_false_positives);
-    run("validation_flip_position_repaired", test_validation_flip_position_repaired);
-    run("offset_flip_corroborated", test_offset_flip_corroborated);
-    run("both_halves_never_silent", test_both_halves_never_silent);
-    run("clean_stream_tiles_with_no_gaps", test_clean_stream_tiles_with_no_gaps);
-    run("broken_validation_leaves_a_hole", test_broken_validation_leaves_a_hole);
-    run("both_witnesses_broken_is_still_found", test_both_witnesses_broken_is_still_found);
-    run("same_version_stream_never_reports_skew", test_same_version_stream_never_reports_skew);
-    run("compact_archive_is_refused", test_compact_archive_is_refused);
-    run("holes_locate_and_size_every_entry_shape", test_holes_locate_and_size_every_entry_shape);
-    run("broken_blockref_still_locates_and_sizes_the_orphan",
+    ff_test::run("clean_stream_zero_false_positives", test_clean_stream_zero_false_positives);
+    ff_test::run("validation_flip_position_repaired", test_validation_flip_position_repaired);
+    ff_test::run("offset_flip_corroborated", test_offset_flip_corroborated);
+    ff_test::run("both_halves_never_silent", test_both_halves_never_silent);
+    ff_test::run("clean_stream_tiles_with_no_gaps", test_clean_stream_tiles_with_no_gaps);
+    ff_test::run("broken_validation_leaves_a_hole", test_broken_validation_leaves_a_hole);
+    ff_test::run("both_witnesses_broken_is_still_found", test_both_witnesses_broken_is_still_found);
+    ff_test::run("same_version_stream_never_reports_skew", test_same_version_stream_never_reports_skew);
+    ff_test::run("compact_archive_is_refused", test_compact_archive_is_refused);
+    ff_test::run("holes_locate_and_size_every_entry_shape", test_holes_locate_and_size_every_entry_shape);
+    ff_test::run("broken_blockref_still_locates_and_sizes_the_orphan",
         test_broken_blockref_still_locates_and_sizes_the_orphan);
-    run("one_damaged_witness_costs_nothing", test_one_damaged_witness_costs_nothing);
-    run("apply_repairs_a_copy_and_improves_it", test_apply_repairs_a_copy_and_improves_it);
-    run("generational_holes_recover_from_the_root",
+    ff_test::run("one_damaged_witness_costs_nothing", test_one_damaged_witness_costs_nothing);
+    ff_test::run("apply_repairs_a_copy_and_improves_it", test_apply_repairs_a_copy_and_improves_it);
+    ff_test::run("generational_holes_recover_from_the_root",
         test_generational_holes_recover_from_the_root);
-    run("interior_entry_damage_does_not_truncate_array",
+    ff_test::run("interior_entry_damage_does_not_truncate_array",
         test_interior_entry_damage_does_not_truncate_array);
-    run("tag_consensus_resolves_either_damaged_copy",
+    ff_test::run("tag_consensus_resolves_either_damaged_copy",
         test_tag_consensus_resolves_either_damaged_copy);
 
-    std::cout << "\n" << g_tests << " test(s), " << g_failures << " failure(s)\n";
-    if (g_tests == 0)
+    std::cout << "\n" << ::ff_test::g_checks << " test(s), " << ::ff_test::g_failures << " failure(s)\n";
+    if (::ff_test::g_checks == 0)
     {
         std::cerr << "  FAIL no tests ran -- a pass on zero coverage is not a pass\n";
         return 1;
     }
-    return g_failures == 0 ? 0 : 1;
+    return ::ff_test::g_failures == 0 ? 0 : 1;
 }

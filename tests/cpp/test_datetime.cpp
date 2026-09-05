@@ -45,6 +45,8 @@
 #include <FF_Ops.hpp>
 #include <FF_Utilities.hpp>
 
+#include "FFHR_tests.hpp"
+
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -57,36 +59,10 @@ using namespace FastFHIR;
 
 // ── Test framework (matches the other standalone suites) ───────────────────
 
-static int g_failures = 0;
-static int g_tests = 0;
-static const char *g_current_group = "";
 // Fixed by default so a failure is reproducible and CI cannot flake; --seed
 // varies it deliberately. The seed is printed on every run, so a red CI log
 // always carries the command that reproduces it.
 static uint32_t g_seed = 20260820u;
-
-#define TEST_GROUP(name)                     \
-    do                                       \
-    {                                        \
-        g_current_group = name;              \
-        std::cout << "\n[" << name << "]\n"; \
-    } while (0)
-#define TEST(name) \
-    do             \
-    {              \
-        ++g_tests; \
-    } while (0)
-#define CHECK(cond, msg)                                                                   \
-    do                                                                                     \
-    {                                                                                      \
-        if (!(cond))                                                                       \
-        {                                                                                  \
-            ++g_failures;                                                                  \
-            std::cerr << "  FAIL " << g_current_group << "::" << __func__ << " line "      \
-                      << __LINE__ << ": " << msg << "\n";                                  \
-        }                                                                                  \
-    } while (0)
-#define CHECK_EQ(a, b, msg) CHECK((a) == (b), msg << " expected " << (b) << " got " << (a))
 
 // ── The round trip under test ──────────────────────────────────────────────
 
@@ -164,7 +140,6 @@ static void expect_fallback(std::string_view text, RECOVERY_TAG tag)
 
 static void test_precision_levels()
 {
-    TEST("every precision level round-trips");
     expect_packed("2024", RECOVER_FF_DATETIME);
     expect_packed("2024-01", RECOVER_FF_DATETIME);
     expect_packed("2024-01-15", RECOVER_FF_DATETIME);
@@ -191,7 +166,6 @@ static void test_precision_levels()
 
 static void test_precision_is_preserved_not_normalised()
 {
-    TEST("precision distinguishes values that denote the same instant");
     // "Born in 1970" is not "born 1 Jan 1970". If precision were dropped these
     // would all decode identically, which is the defect the 3-bit field exists
     // to prevent -- so assert the SLOTS differ, not merely the text.
@@ -213,7 +187,6 @@ static void test_precision_is_preserved_not_normalised()
 
 static void test_epoch_shift_crosses_zero()
 {
-    TEST("pre-1970 dates make the epoch shift go negative");
     // Pin the signedness the dates below depend on, rather than assuming they
     // reach it. If these ever come back unsigned, every case in this group is
     // still "passing" against arithmetic that silently wrapped.
@@ -230,7 +203,6 @@ static void test_epoch_shift_crosses_zero()
 
 static void test_epoch_boundary_dates()
 {
-    TEST("dates either side of 1970-01-01");
     static const char *const AROUND[] = {
         "1969-12-30", "1969-12-31", "1970-01-01", "1970-01-02", "1970-01-03",
     };
@@ -240,7 +212,6 @@ static void test_epoch_boundary_dates()
         expect_packed(d, RECOVER_FF_DATETIME);
     }
 
-    TEST("deep pre-epoch dates");
     static const char *const BEFORE[] = {
         "0001-01-01",   // the stored epoch itself
         "0001-01-02",
@@ -261,7 +232,6 @@ static void test_epoch_boundary_dates()
         expect_packed(d, RECOVER_FF_DATE);
     }
 
-    TEST("post-epoch dates");
     static const char *const AFTER[] = {
         "1970-01-01", "1999-12-31", "2000-02-29",   // 2000 IS a leap year
         "2024-02-29", "2100-02-28",                 // 2100 is not
@@ -270,7 +240,6 @@ static void test_epoch_boundary_dates()
     };
     for (const char *d : AFTER) expect_packed(d, RECOVER_FF_DATE);
 
-    TEST("pre-epoch values with a full time and offset");
     expect_packed("1969-07-20T20:17:40Z", RECOVER_FF_INSTANT);
     expect_packed("1969-07-20T20:17:40.000Z", RECOVER_FF_INSTANT);
     expect_packed("1969-07-20T15:17:40-05:00", RECOVER_FF_INSTANT);
@@ -401,7 +370,6 @@ static void test_random_dates_all_precisions()
 
     for (const Bucket &bucket : BUCKETS)
     {
-        TEST("random dates, every precision");
         size_t bad = 0, checked = 0;
         std::string first_failure;
 
@@ -448,7 +416,6 @@ static void test_random_dates_all_precisions()
     // The sampler is only as good as its coverage: assert every legal
     // (tag, precision) cell was actually reached, so a hole cannot hide behind
     // a green run.
-    TEST("every legal tag/precision pair was exercised");
     for (size_t t = 0; t < 4; ++t)
     {
         for (size_t p = 0; p < 7; ++p)
@@ -466,7 +433,6 @@ static void test_named_boundary_days()
     // The specific days a random sampler is unlikely to land on, and where a
     // calendar bug would actually live. Each is run at every precision its tag
     // admits, via the same path as the random cases.
-    TEST("named boundary days, every precision");
     static const Sample DAYS[] = {
         {1, 1, 1, 0, 0, 0, {'0', '0', '0', '\0'}, 0, true},        // stored epoch
         {1, 12, 31, 23, 59, 59, {'9', '9', '9', '\0'}, 0, false},
@@ -500,7 +466,6 @@ static void test_named_boundary_days()
 
 static void test_time_of_day_sweep()
 {
-    TEST("every hour:minute:second, including leap seconds");
     size_t bad = 0;
     for (uint32_t h = 0; h < 24; ++h)
     {
@@ -525,7 +490,6 @@ static void test_time_of_day_sweep()
     }
     CHECK_EQ(bad, size_t{0}, "24*60*61 = 87,840 times round-tripped");
 
-    TEST("every millisecond value at 3-digit precision");
     bad = 0;
     for (uint32_t ms = 0; ms < 1000; ++ms)
     {
@@ -539,7 +503,6 @@ static void test_time_of_day_sweep()
 
 static void test_utc_offset_sweep()
 {
-    TEST("every legal UTC offset from -14:00 to +14:00");
     size_t bad = 0, checked = 0;
     for (int minutes = FF_DATETIME_OFFSET_MIN; minutes <= FF_DATETIME_OFFSET_MAX;
          ++minutes, ++checked)
@@ -553,7 +516,6 @@ static void test_utc_offset_sweep()
     }
     CHECK_EQ(bad, size_t{0}, checked << " UTC offsets round-tripped");
 
-    TEST("'Z' and '+00:00' are the same instant and different text");
     const Encoded z = rt("2024-01-15T13:45:30Z", RECOVER_FF_INSTANT);
     const Encoded plus = rt("2024-01-15T13:45:30+00:00", RECOVER_FF_INSTANT);
     CHECK(z.packed && plus.packed, "both spellings must pack");
@@ -568,7 +530,6 @@ static void test_utc_offset_sweep()
 
 static void test_equal_values_have_equal_bits()
 {
-    TEST("equal values are one integer compare");
     // The claim that comparison becomes an integer compare only holds if fields
     // the tag does not use are zero. Two independent encodes of the same text
     // must therefore produce the identical word.
@@ -577,7 +538,6 @@ static void test_equal_values_have_equal_bits()
     CHECK_EQ(rt("13:45:30", RECOVER_FF_TIME).slot, rt("13:45:30", RECOVER_FF_TIME).slot,
              "same time, same bits");
 
-    TEST("fields the tag does not use stay zero");
     const FF_DateTimeParts date = FF_UNPACK_DATETIME(rt("2024-01-15", RECOVER_FF_DATE).slot);
     CHECK_EQ(date.hour, uint8_t{0}, "'date' carries no hour");
     CHECK_EQ(date.minute, uint8_t{0}, "'date' carries no minute");
@@ -589,7 +549,6 @@ static void test_equal_values_have_equal_bits()
     CHECK_EQ(time.days, uint32_t{0}, "'time' carries no date");
     CHECK_EQ(time.utc_offset, int16_t{0}, "'time' never carries a timezone");
 
-    TEST("dates ordered within one offset compare as integers");
     // Days sit at the top of the payload, so this holds for same-offset values.
     // It deliberately does NOT claim chronological ordering across offsets.
     CHECK(rt("1969-12-31", RECOVER_FF_DATE).slot < rt("1970-01-01", RECOVER_FF_DATE).slot,
@@ -602,19 +561,16 @@ static void test_equal_values_have_equal_bits()
 
 static void test_fallback_preserves_text()
 {
-    TEST("legal FHIR that the 63 bits cannot hold");
     expect_fallback("2024-01-15T13:45:30.5000Z", RECOVER_FF_DATETIME);      // 4 digits
     expect_fallback("2024-01-15T13:45:30.123456Z", RECOVER_FF_DATETIME);    // 6 digits
     expect_fallback("2024-01-15T13:45:30.123456789Z", RECOVER_FF_INSTANT);  // 9 digits
 
-    TEST("values illegal for the tag");
     expect_fallback("2024-01-15T13:45:30Z", RECOVER_FF_DATE);   // 'date' has no time
     expect_fallback("2024-01-15", RECOVER_FF_INSTANT);          // 'instant' needs one
     expect_fallback("2024-01-15T13:45:30", RECOVER_FF_DATETIME);// T without a timezone
     expect_fallback("13:45:30Z", RECOVER_FF_TIME);              // 'time' has no timezone
     expect_fallback("2024-01-15T13:45:30Z", RECOVER_FF_TIME);   // 'time' has no date
 
-    TEST("text that is not a date at all");
     expect_fallback("2024-02-31", RECOVER_FF_DATE);   // would normalise to 03-02
     expect_fallback("2023-02-29", RECOVER_FF_DATE);   // not a leap year
     expect_fallback("1900-02-29", RECOVER_FF_DATE);   // century, not a leap year
@@ -637,7 +593,6 @@ static void test_fallback_preserves_text()
 
 static void test_slot_serialization()
 {
-    TEST("a packed value claims no child space");
     std::vector<BYTE> arena(8192, 0);
     Offset child = TEST_BLOCK_OFFSET + 512;
     const Offset before = child;
@@ -649,7 +604,6 @@ static void test_slot_serialization()
     CHECK_EQ(STORE_FF_DATETIME(arena.data(), child, "2024-01-15T13:45:30Z", RECOVER_FF_INSTANT),
              Size{0}, "STORE must write nothing");
 
-    TEST("a fallback writes an FF_STRING and a forward relative offset");
     const char *text = "2024-01-15T13:45:30.123456Z";
     child = TEST_BLOCK_OFFSET + 512;
     const Size need = SIZE_FF_DATETIME(text, RECOVER_FF_INSTANT);
@@ -669,7 +623,6 @@ static void test_slot_serialization()
     CHECK_EQ(decode_slot(arena.data(), TEST_BLOCK_OFFSET, slot, RECOVER_FF_INSTANT),
              std::string(text), "text survives");
 
-    TEST("a fallback placed BEFORE its block sign-extends");
     // The relative offset is signed; a negative one is the case a mistaken
     // unsigned cast would silently break.
     Offset back_child = TEST_BLOCK_OFFSET - 2048;
@@ -682,7 +635,6 @@ static void test_slot_serialization()
     CHECK_EQ(decode_slot(arena.data(), TEST_BLOCK_OFFSET, back, RECOVER_FF_INSTANT),
              std::string(text), "text survives a backward offset");
 
-    TEST("empty text is the null sentinel");
     child = TEST_BLOCK_OFFSET + 512;
     const Offset untouched = child;
     CHECK_EQ(ENCODE_FF_DATETIME(arena.data(), TEST_BLOCK_OFFSET, child, "", RECOVER_FF_DATE),
@@ -693,7 +645,6 @@ static void test_slot_serialization()
 
 static void test_layout_constants()
 {
-    TEST("the packed layout is exactly 64 bits and the fields do not overlap");
     CHECK_EQ(static_cast<int>(FF_DT_FLAG), 63, "discriminator sits at bit 63");
     CHECK_EQ(static_cast<int>(FF_DT_PRECISION), 0, "precision is the low field");
     CHECK_EQ(static_cast<int>(FF_DT_DAYS + FF_DT_DAYS_S), static_cast<int>(FF_DT_FLAG),
@@ -723,7 +674,6 @@ static void test_layout_constants()
     CHECK_EQ(back.utc_offset, p.utc_offset, "utc offset");
     CHECK(back.precision == p.precision, "precision");
 
-    TEST("the most negative offset and the Z sentinel survive");
     p.utc_offset = FF_DATETIME_OFFSET_MIN;
     CHECK_EQ(FF_UNPACK_DATETIME(FF_PACK_DATETIME(p)).utc_offset, FF_DATETIME_OFFSET_MIN,
              "-14:00 sign-extends");
@@ -731,7 +681,6 @@ static void test_layout_constants()
     CHECK_EQ(FF_UNPACK_DATETIME(FF_PACK_DATETIME(p)).utc_offset, FF_DATETIME_OFFSET_Z,
              "the Z sentinel sign-extends");
 
-    TEST("ff_datetime_fits rejects what the fields cannot hold");
     FF_DateTimeParts bad;
     bad.days = FF_DATETIME_MAX_DAYS + 1;
     CHECK(!ff_datetime_fits(bad), "a day past 9999-12-31");
@@ -753,7 +702,6 @@ static void test_layout_constants()
 
 static void test_field_kind()
 {
-    TEST("FF_FIELD_DATETIME is the pinned value and the right width");
     CHECK_EQ(static_cast<int>(FF_FIELD_DATETIME), 13, "appended value is ABI-pinned");
     CHECK_EQ(static_cast<int>(ff_slot_width(FF_FIELD_DATETIME)),
              static_cast<int>(TYPE_SIZE_UINT64), "8 bytes");
@@ -764,20 +712,17 @@ static void test_field_kind()
              static_cast<int>(ff_slot_width(FF_FIELD_STRING)),
              "must match the string-offset slot it replaces");
 
-    TEST("all four tags collapse to the one kind");
     CHECK(Recovery_to_Kind(RECOVER_FF_DATE) == FF_FIELD_DATETIME, "date");
     CHECK(Recovery_to_Kind(RECOVER_FF_DATETIME) == FF_FIELD_DATETIME, "dateTime");
     CHECK(Recovery_to_Kind(RECOVER_FF_TIME) == FF_FIELD_DATETIME, "time");
     CHECK(Recovery_to_Kind(RECOVER_FF_INSTANT) == FF_FIELD_DATETIME, "instant");
 
-    TEST("the reverse mapping stays UNDEFINED, deliberately");
     // Pinned so nobody "completes" the table later: one kind names four tags, so
     // any single answer here is wrong three times in four, and the wrong answer
     // would show up as a `date` exported as valueDateTime.
     CHECK(Kind_to_Recovery(FF_FIELD_DATETIME) == FF_RECOVER_UNDEFINED,
           "Kind_to_Recovery must not guess which of the four tags this is");
 
-    TEST("emptiness is detected, not defaulted");
     // FF_IsFieldEmpty's default arm returns true, so a missing case would report
     // every date/time field as absent and silently drop it on export.
     std::vector<BYTE> buf(32, 0);
@@ -884,43 +829,39 @@ int main(int argc, char **argv)
     }
     std::cout << "seed " << g_seed << " (reproduce with --seed " << g_seed << ")\n";
 
-    auto run = [&](const char *name, auto fn)
-    {
-        if (filter[0] == '\0' || std::strstr(name, filter)) fn();
-    };
 
     TEST_GROUP("Layout");
-    run("test_layout_constants", test_layout_constants);
-    run("test_field_kind", test_field_kind);
+    ff_test::run("test_layout_constants", test_layout_constants);
+    ff_test::run("test_field_kind", test_field_kind);
 
     TEST_GROUP("Precision");
-    run("test_precision_levels", test_precision_levels);
-    run("test_precision_is_preserved_not_normalised", test_precision_is_preserved_not_normalised);
+    ff_test::run("test_precision_levels", test_precision_levels);
+    ff_test::run("test_precision_is_preserved_not_normalised", test_precision_is_preserved_not_normalised);
 
     TEST_GROUP("CivilEpoch");
-    run("test_epoch_shift_crosses_zero", test_epoch_shift_crosses_zero);
-    run("test_epoch_boundary_dates", test_epoch_boundary_dates);
+    ff_test::run("test_epoch_shift_crosses_zero", test_epoch_shift_crosses_zero);
+    ff_test::run("test_epoch_boundary_dates", test_epoch_boundary_dates);
 
     TEST_GROUP("Sweeps");
-    run("test_named_boundary_days", test_named_boundary_days);
-    run("test_random_dates_all_precisions", test_random_dates_all_precisions);
-    run("test_time_of_day_sweep", test_time_of_day_sweep);
-    run("test_utc_offset_sweep", test_utc_offset_sweep);
+    ff_test::run("test_named_boundary_days", test_named_boundary_days);
+    ff_test::run("test_random_dates_all_precisions", test_random_dates_all_precisions);
+    ff_test::run("test_time_of_day_sweep", test_time_of_day_sweep);
+    ff_test::run("test_utc_offset_sweep", test_utc_offset_sweep);
 
     TEST_GROUP("CanonicalForm");
-    run("test_equal_values_have_equal_bits", test_equal_values_have_equal_bits);
+    ff_test::run("test_equal_values_have_equal_bits", test_equal_values_have_equal_bits);
 
     TEST_GROUP("Fallback");
-    run("test_fallback_preserves_text", test_fallback_preserves_text);
+    ff_test::run("test_fallback_preserves_text", test_fallback_preserves_text);
 
     TEST_GROUP("Serialization");
-    run("test_slot_serialization", test_slot_serialization);
+    ff_test::run("test_slot_serialization", test_slot_serialization);
 
     TEST_GROUP("ChoiceText");
-    run("test_choice_datetime_to_string", test_choice_datetime_to_string);
-    run("test_choice_to_string_generic", test_choice_to_string_generic);
+    ff_test::run("test_choice_datetime_to_string", test_choice_datetime_to_string);
+    ff_test::run("test_choice_to_string_generic", test_choice_to_string_generic);
 
     std::cout << "\n────────────────────────────────────────────────\n"
-              << g_tests << " tests, " << g_failures << " failures\n";
-    return g_failures > 0 ? 1 : 0;
+              << ::ff_test::g_checks << " tests, " << ::ff_test::g_failures << " failures\n";
+    return ::ff_test::g_failures > 0 ? 1 : 0;
 }

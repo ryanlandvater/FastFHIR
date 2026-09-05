@@ -25,6 +25,10 @@
 #include <FF_Ingestor.hpp>
 #include "FF_AllTypes.hpp"
 
+#include "FFHR_tests.hpp"
+#include "FFHR_test_corpus.hpp"
+#include "FFHR_test_checksum.hpp"
+
 #include <openssl/evp.h>
 
 #include <algorithm>
@@ -37,47 +41,11 @@
 namespace fs = std::filesystem;
 using namespace FastFHIR;
 
-static int failures = 0;
 
-static void CHECK(bool ok, const std::string& what) {
-    printf("  %-64s %s\n", what.c_str(), ok ? "PASS" : "FAIL");
-    if (!ok) ++failures;
-}
-
-#ifndef FASTFHIR_SYNTHEA_DIR
-#  define FASTFHIR_SYNTHEA_DIR ""
-#endif
 
 // Sorted for the same reason ff_test_roundtrip_validate sorts: directory order
 // differs between machines, so an unsorted truncation makes a red irreproducible.
-static std::vector<fs::path> find_bundles(std::size_t limit) {
-    std::vector<fs::path> out;
-    const fs::path root(FASTFHIR_SYNTHEA_DIR);
-    if (root.empty()) return out;
-    for (const auto& dir : {root / "fhir", root}) {
-        std::error_code ec;
-        if (!fs::is_directory(dir, ec)) continue;
-        for (const auto& entry : fs::directory_iterator(dir, ec)) {
-            if (entry.path().extension() == ".json") out.push_back(entry.path());
-        }
-        if (!out.empty()) break;
-    }
-    std::sort(out.begin(), out.end());
-    if (out.size() > limit) out.resize(limit);
-    return out;
-}
 
-static std::vector<BYTE> sha256(const unsigned char* data, Size len) {
-    std::vector<BYTE> hash(EVP_MAX_MD_SIZE);
-    unsigned int out_len = 0;
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-    EVP_DigestUpdate(ctx, data, len);
-    EVP_DigestFinal_ex(ctx, hash.data(), &out_len);
-    EVP_MD_CTX_free(ctx);
-    hash.resize(out_len);
-    return hash;
-}
 
 // Every counter here is reported, not just asserted. "It passed" and "it looked
 // at anything" are different claims, and this suite exists because the second
@@ -212,7 +180,7 @@ static bool census_bundle(const fs::path& fixture, Census& c) {
 
     Memory::View view;
     if (!FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = sha256}, view))
+            .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = ff_test::sha256}, view))
         return false;
     if (view.empty()) return false;
 
@@ -284,7 +252,7 @@ static SyntheticObservation ingest_first_observation(const std::string& json) {
 
     Memory::View view;
     if (!FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = sha256}, view)) {
+            .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = ff_test::sha256}, view)) {
         CHECK(false, "synthetic: finalize failed"); return out;
     }
 
@@ -442,7 +410,7 @@ int main() {
     probe_packed_datetime_to_string();
     test_poco_reflection_matches_the_wire();
 
-    const auto bundles = find_bundles(8);
+    const auto bundles = ff_test::find_bundles(8);
     if (bundles.empty()) {
         // A supported configuration, but say so loudly: a pass on zero coverage
         // is the reporting failure this whole task is about.
@@ -451,8 +419,7 @@ int main() {
         // and may have failed. Returning 0 here regardless would report their
         // failure as a pass -- the same reporting failure this branch exists to
         // avoid, reintroduced one line below the comment saying so.
-        printf("%s\n", failures ? "FAILURES" : "synthetic probes only (no corpus)");
-        return failures ? 1 : 0;
+        return ff_test::report("synthetic probes only (no corpus)");
     }
 
     printf("POCO/lens parity over %zu Synthea bundles\n", bundles.size());
@@ -512,6 +479,5 @@ int main() {
               std::to_string(c.poco_extension_url) + "/" +
               std::to_string(c.poco_extensions) + ")");
 
-    printf("%s\n", failures ? "FAILURES" : "POCO and lens agree on every counted field");
-    return failures ? 1 : 0;
+    return ff_test::report("POCO and lens agree on every counted field");
 }

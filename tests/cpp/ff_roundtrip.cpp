@@ -27,6 +27,8 @@
 #include <array>
 #include <vector>
 
+#include "FFHR_test_checksum.hpp"
+
 using namespace FastFHIR;
 
 static std::string slurp(const std::string& path) {
@@ -39,20 +41,6 @@ static std::string slurp(const std::string& path) {
     return buf;
 }
 
-static std::vector<BYTE> sha256(const unsigned char *data, Size len)
-{
-    std::vector<BYTE> hash(EVP_MAX_MD_SIZE);
-    unsigned int out_len = 0;
-
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-    EVP_DigestUpdate(ctx, data, len);
-    EVP_DigestFinal_ex(ctx, hash.data(), &out_len);
-    EVP_MD_CTX_free(ctx);
-
-    hash.resize(out_len);
-    return hash;
-}
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -155,7 +143,7 @@ int main(int argc, char** argv) {
         if (!FF_StreamFinalize(FF_StreamFinalizeInfo{
                 .stream = stream,
                 .algorithm = FF_CHECKSUM_SHA256,
-                .hasher = sha256,
+                .hasher = ff_test::sha256,
             }, view)) {
             std::cerr << "finalize failed\n";
             return 1;

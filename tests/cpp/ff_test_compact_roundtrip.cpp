@@ -39,6 +39,10 @@
 #include "FF_AllTypes.hpp"
 #include "FF_FieldKeys.hpp"
 
+#include "FFHR_tests.hpp"
+#include "FFHR_test_corpus.hpp"
+#include "FFHR_test_checksum.hpp"
+
 #include <openssl/evp.h>
 
 #include <algorithm>
@@ -52,15 +56,7 @@
 namespace fs = std::filesystem;
 using namespace FastFHIR;
 
-static int failures = 0;
-static void CHECK(bool ok, const char* what) {
-    printf("  %-58s %s\n", what, ok ? "PASS" : "FAIL");
-    if (!ok) ++failures;
-}
 
-#ifndef FASTFHIR_SYNTHEA_DIR
-#  define FASTFHIR_SYNTHEA_DIR ""
-#endif
 
 // The first `limit` bundles in NAME order.
 //
@@ -70,34 +66,7 @@ static void CHECK(bool ok, const char* what) {
 // another box. Same reason ff_test_datetime pins its seed and prints it: a suite
 // whose input varies run to run is a suite whose red gets ignored. Sort first,
 // then truncate.
-static std::vector<fs::path> find_bundles(std::size_t limit) {
-    std::vector<fs::path> out;
-    const fs::path root(FASTFHIR_SYNTHEA_DIR);
-    if (root.empty()) return out;
-    for (const auto& dir : {root / "fhir", root}) {
-        std::error_code ec;
-        if (!fs::is_directory(dir, ec)) continue;
-        for (const auto& entry : fs::directory_iterator(dir, ec)) {
-            if (entry.path().extension() == ".json") out.push_back(entry.path());
-        }
-        if (!out.empty()) break;
-    }
-    std::sort(out.begin(), out.end());
-    if (out.size() > limit) out.resize(limit);
-    return out;
-}
 
-static std::vector<BYTE> sha256(const unsigned char* data, Size len) {
-    std::vector<BYTE> hash(EVP_MAX_MD_SIZE);
-    unsigned int out_len = 0;
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-    EVP_DigestUpdate(ctx, data, len);
-    EVP_DigestFinal_ex(ctx, hash.data(), &out_len);
-    EVP_MD_CTX_free(ctx);
-    hash.resize(out_len);
-    return hash;
-}
 
 // How many Bundle.entry resources are retained opaque-JSON blocks?
 //
@@ -178,7 +147,7 @@ static FixtureResult compact_roundtrip_json(const std::string& json) {
 
     Memory::View view;
     if (!FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = sha256}, view))
+            .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = ff_test::sha256}, view))
         return result;
     if (view.empty()) return result;
 
@@ -301,7 +270,7 @@ static void test_unpackable_datetime_in_a_choice_survives_compaction(
 int main() {
     // 8, not 4: the whole run is under a second, and a wider sample is the
     // difference between exercising 4 opaque-JSON resources and 11.
-    const auto bundles = find_bundles(8);
+    const auto bundles = ff_test::find_bundles(8);
     if (bundles.empty()) {
         // Not a failure: CI without Synthea data is a supported configuration.
         // Say so loudly rather than reporting a pass on zero coverage.
@@ -328,6 +297,5 @@ int main() {
 
     test_unpackable_datetime_in_a_choice_survives_compaction(bundles);
 
-    printf("%s\n", failures ? "FAILURES" : "compaction preserves the document");
-    return failures ? 1 : 0;
+    return ff_test::report("compaction preserves the document");
 }

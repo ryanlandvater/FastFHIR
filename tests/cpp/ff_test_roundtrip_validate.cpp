@@ -30,6 +30,10 @@
 #include <FF_Ingestor.hpp>
 #include "FF_AllTypes.hpp"
 
+#include "FFHR_tests.hpp"
+#include "FFHR_test_corpus.hpp"
+#include "FFHR_test_checksum.hpp"
+
 #include <openssl/evp.h>
 
 #include <algorithm>
@@ -42,15 +46,7 @@
 namespace fs = std::filesystem;
 using namespace FastFHIR;
 
-static int failures = 0;
-static void CHECK(bool ok, const char* what) {
-    printf("  %-58s %s\n", what, ok ? "PASS" : "FAIL");
-    if (!ok) ++failures;
-}
 
-#ifndef FASTFHIR_SYNTHEA_DIR
-#  define FASTFHIR_SYNTHEA_DIR ""
-#endif
 
 // The first `limit` Synthea bundles in NAME order. One fixture is not
 // representative -- the validator defect needed a bundle carrying a populated
@@ -60,34 +56,7 @@ static void CHECK(bool ok, const char* what) {
 // that to `limit` picked an arbitrary subset that differed between machines, so
 // a red here would not reproduce from the same command elsewhere. Same rule as
 // ff_test_datetime's pinned seed.
-static std::vector<fs::path> find_bundles(std::size_t limit) {
-    std::vector<fs::path> out;
-    const fs::path root(FASTFHIR_SYNTHEA_DIR);
-    if (root.empty()) return out;
-    for (const auto& dir : {root / "fhir", root}) {
-        std::error_code ec;
-        if (!fs::is_directory(dir, ec)) continue;
-        for (const auto& entry : fs::directory_iterator(dir, ec)) {
-            if (entry.path().extension() == ".json") out.push_back(entry.path());
-        }
-        if (!out.empty()) break;
-    }
-    std::sort(out.begin(), out.end());
-    if (out.size() > limit) out.resize(limit);
-    return out;
-}
 
-static std::vector<BYTE> sha256(const unsigned char* data, Size len) {
-    std::vector<BYTE> hash(EVP_MAX_MD_SIZE);
-    unsigned int out_len = 0;
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-    EVP_DigestUpdate(ctx, data, len);
-    EVP_DigestFinal_ex(ctx, hash.data(), &out_len);
-    EVP_MD_CTX_free(ctx);
-    hash.resize(out_len);
-    return hash;
-}
 
 struct WalkStats {
     std::size_t nodes       = 0;   // proves the walk actually descended
@@ -180,7 +149,7 @@ static bool roundtrip_and_validate(const fs::path& fixture) {
 
     Memory::View view;
     if (!FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = sha256}, view))
+            .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = ff_test::sha256}, view))
         return false;
     if (view.empty()) return false;
 
@@ -233,7 +202,7 @@ static bool roundtrip_and_validate(const fs::path& fixture) {
 }
 
 int main() {
-    const auto bundles = find_bundles(8);
+    const auto bundles = ff_test::find_bundles(8);
     if (bundles.empty()) {
         // Not a failure: CI without Synthea data is a supported configuration.
         // Say so loudly rather than reporting a pass on zero coverage.
@@ -247,6 +216,5 @@ int main() {
         CHECK(roundtrip_and_validate(b), name.c_str());
     }
 
-    printf("%s\n", failures ? "FAILURES" : "all writer-produced streams validate");
-    return failures ? 1 : 0;
+    return ff_test::report("all writer-produced streams validate");
 }

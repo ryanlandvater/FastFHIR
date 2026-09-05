@@ -19,13 +19,10 @@
 #include "FF_AllTypes.hpp"
 #include <cstdio>
 #include <string>
+
+#include "FFHR_tests.hpp"
 using namespace FastFHIR;
 
-static int failures = 0;
-static void CHECK(bool ok, const char* what) {
-    printf("  %-58s %s\n", what, ok ? "PASS" : "FAIL");
-    if (!ok) ++failures;
-}
 
 int main() {
     // 1. FF_NULL_OFFSET as object_offset must be rejected, not wrapped.
@@ -79,6 +76,5 @@ int main() {
         } catch (const std::runtime_error&) { threw = true; }
         CHECK(threw, "already-assigned slot refused");
     }
-    printf("%s\n", failures ? "FAILURES" : "all amend guards hold");
-    return failures ? 1 : 0;
+    return ff_test::report("all amend guards hold");
 }

@@ -27,13 +27,10 @@
 #include <string>
 #include <vector>
 
+#include "FFHR_tests.hpp"
+
 using namespace FastFHIR;
 
-static int failures = 0;
-static void CHECK(bool ok, const char* what) {
-    printf("  %-58s %s\n", what, ok ? "PASS" : "FAIL");
-    if (!ok) ++failures;
-}
 
 // Wire a Patient root to a list of Identifier blocks through identifier[].
 static void wire_root(FF_Stream stream, const std::vector<Offset>& ids, std::string_view id) {
@@ -655,6 +652,5 @@ int main() {
         }
     }
 
-    printf("%s\n", failures ? "FAILURES" : "all graph-bounds checks pass");
-    return failures ? 1 : 0;
+    return ff_test::report("all graph-bounds checks pass");
 }

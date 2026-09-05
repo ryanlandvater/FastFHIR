@@ -32,6 +32,8 @@
 #include <string>
 #include <vector>
 
+#include "FFHR_test_checksum.hpp"
+
 using namespace FastFHIR;
 
 static int g_tests = 0, g_failures = 0;
@@ -43,18 +45,6 @@ static void CHECK(bool ok, const std::string &what)
         ++g_failures;
 }
 
-static std::vector<BYTE> sha256(const unsigned char *data, Size len)
-{
-    std::vector<BYTE> hash(EVP_MAX_MD_SIZE);
-    unsigned int out_len = 0;
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-    EVP_DigestUpdate(ctx, data, len);
-    EVP_DigestFinal_ex(ctx, hash.data(), &out_len);
-    EVP_MD_CTX_free(ctx);
-    hash.resize(out_len);
-    return hash;
-}
 
 // A one-Patient bundle, sealed, so the view reads real writer output rather
 // than a hand-built buffer (COV-1: a synthetic fixture proves the reader agrees
@@ -95,7 +85,7 @@ static std::shared_ptr<Memory> build_patient(Memory::View &view_out)
         return nullptr;
     if (!FF_StreamFinalize(
             FF_StreamFinalizeInfo{
-                .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = sha256},
+                .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = ff_test::sha256},
             view_out))
         return nullptr;
     return arena;

@@ -42,13 +42,10 @@
 #include <thread>
 #include <vector>
 
+#include "FFHR_tests.hpp"
+
 using namespace FastFHIR;
 
-static int failures = 0;
-static void CHECK(bool ok, const char* what) {
-    printf("  %-58s %s\n", what, ok ? "PASS" : "FAIL");
-    if (!ok) ++failures;
-}
 
 // Comfortably past one node so the producer must allocate and link a second.
 static constexpr uint32_t ITEMS = 5000;
@@ -142,6 +139,5 @@ int main() {
     test_latch_before_push_delivers_all(4);
     test_late_consumer_is_not_silent(); // no longer aborts: the canary records
 
-    printf("%s\n", failures ? "FAILURES" : "all queue checks pass");
-    return failures ? 1 : 0;
+    return ff_test::report("all queue checks pass");
 }

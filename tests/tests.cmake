@@ -18,8 +18,12 @@ if(FASTFHIR_BUILD_TESTS)
     # Helper: create a cpp test executable + CTest entry
     function(add_ff_cpp_test NAME SOURCE)
         add_executable(${NAME} ${SOURCE})
+        # tests/cpp is on the path for the shared harness headers
+        # (FFHR_tests.hpp, FFHR_test_corpus.hpp, FFHR_test_checksum.hpp),
+        # included by bare name like every other FastFHIR header.
         target_include_directories(${NAME} PRIVATE
             ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp
         )
         target_compile_definitions(${NAME} PRIVATE
             FF_TEST_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/tests/cpp"
@@ -61,6 +65,7 @@ if(FASTFHIR_BUILD_TESTS)
     add_executable(ff_test_readme tests/cpp/test_readme.cpp)
     target_include_directories(ff_test_readme PRIVATE
         ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR} ${ASIO_INCLUDE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp
     )
     target_compile_definitions(ff_test_readme PRIVATE
         ASIO_STANDALONE
@@ -76,6 +81,7 @@ if(FASTFHIR_BUILD_TESTS)
     add_executable(ff_roundtrip tests/cpp/ff_roundtrip.cpp)
     target_include_directories(ff_roundtrip PRIVATE
         ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp
     )
     target_link_libraries(ff_roundtrip PRIVATE fastfhir_ingestor OpenSSL::Crypto)
     _ff_enable_switch_warnings(ff_roundtrip)

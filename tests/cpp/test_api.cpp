@@ -15,13 +15,10 @@
 #include <cstdio>
 #include <string>
 
+#include "FFHR_tests.hpp"
+
 using namespace FastFHIR;
 
-static int failures = 0;
-static void CHECK(bool ok, const char* what) {
-    printf("  %-64s %s\n", what, ok ? "PASS" : "FAIL");
-    if (!ok) ++failures;
-}
 
 int main() {
     // ── Shared fixture: one sealed stream + parsed view, for the Parser and
@@ -145,6 +142,5 @@ int main() {
               "FF_Ingest cleared out_root + out_count on invalid args");
     }
 
-    printf("%s\n", failures ? "FAILURES" : "all FF_* out-param contracts hold");
-    return failures ? 1 : 0;
+    return ff_test::report("all FF_* out-param contracts hold");
 }

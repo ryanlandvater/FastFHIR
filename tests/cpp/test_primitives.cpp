@@ -11,6 +11,8 @@
 #include <FF_Ops.hpp>
 #include <FF_Utilities.hpp>  // FF_IsResourceTag / FF_IsBackboneTag / FF_IsScalarBlockTag
 #include "FF_ResourceTypes.hpp"
+
+#include "FFHR_tests.hpp"
 #include <cstring>
 
 using namespace FastFHIR;
@@ -27,32 +29,6 @@ using namespace FastFHIR;
 
 // ── Test framework (header-only, no deps) ──────────────────────────────────
 
-static int g_failures = 0;
-static int g_tests = 0;
-static const char *g_current_group = "";
-
-#define TEST_GROUP(name)                     \
-    do                                       \
-    {                                        \
-        g_current_group = name;              \
-        std::cout << "\n[" << name << "]\n"; \
-    } while (0)
-#define TEST(name) \
-    do             \
-    {              \
-        ++g_tests; \
-    } while (0)
-#define CHECK(cond, msg)                                                                                                  \
-    do                                                                                                                    \
-    {                                                                                                                     \
-        if (!(cond))                                                                                                      \
-        {                                                                                                                 \
-            ++g_failures;                                                                                                 \
-            std::cerr << "  FAIL " << g_current_group << "::" << __func__ << " line " << __LINE__ << ": " << msg << "\n"; \
-        }                                                                                                                 \
-    } while (0)
-#define CHECK_EQ(a, b, msg) CHECK((a) == (b), msg << " expected " << (b) << " got " << (a))
-#define CHECK_NE(a, b, msg) CHECK((a) != (b), msg)
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -80,7 +56,6 @@ static std::vector<uint8_t> make_header_buffer(uint16_t fhir_rev = FHIR_VERSION_
 // =====================================================================
 static void test_header_validate()
 {
-    TEST("validate_full on a valid header");
     auto buf = make_header_buffer();
     printf("  buf size=%zu\n", buf.size());
     const FF_HEADER *hdr = reinterpret_cast<const FF_HEADER *>(buf.data());
@@ -92,7 +67,6 @@ static void test_header_validate()
 
 static void test_header_fhir_rev()
 {
-    TEST("FHIR_REV round-trip");
     {
         auto buf = make_header_buffer(FHIR_VERSION_R4);
         const FF_HEADER *hdr = reinterpret_cast<const FF_HEADER *>(buf.data());
@@ -107,7 +81,6 @@ static void test_header_fhir_rev()
 
 static void test_header_engine_version()
 {
-    TEST("engine version encode/decode");
     auto buf = make_header_buffer();
     const FF_HEADER *hdr = reinterpret_cast<const FF_HEADER *>(buf.data());
     CHECK_EQ(hdr->get_engine_version(buf.data()), TEST_ENGINE_VERSION, "engine version");
@@ -115,7 +88,6 @@ static void test_header_engine_version()
 
 static void test_header_root()
 {
-    TEST("root offset and recovery round-trip");
     Offset root_off = 128;
     auto buf = make_header_buffer(FHIR_VERSION_R5, root_off, RECOVER_FF_PATIENT);
     const FF_HEADER *hdr = reinterpret_cast<const FF_HEADER *>(buf.data());
@@ -125,7 +97,6 @@ static void test_header_root()
 
 static void test_header_checksum()
 {
-    TEST("checksum footer round-trip");
     // Minimal checksum block
     std::vector<uint8_t> buf(static_cast<size_t>(FF_HEADER::HEADER_SIZE) + static_cast<size_t>(FF_CHECKSUM::HEADER_SIZE) + 64, 0);
     Offset cs_off = FF_HEADER::HEADER_SIZE;
@@ -151,7 +122,6 @@ static void test_header_checksum()
 // =====================================================================
 static void test_recovery_array_tag()
 {
-    TEST("IsArrayTag");
     CHECK(IsArrayTag(static_cast<RECOVERY_TAG>(0x8000)), "0x8000 is array");
     CHECK(IsArrayTag(static_cast<RECOVERY_TAG>(0x8301)), "0x8301 is array");
     CHECK(!IsArrayTag(static_cast<RECOVERY_TAG>(0x0301)), "0x0301 is not array");
@@ -161,7 +131,6 @@ static void test_recovery_array_tag()
 
 static void test_recovery_type_mask()
 {
-    TEST("GetTypeFromTag");
     CHECK_EQ(GetTypeFromTag(static_cast<RECOVERY_TAG>(0x8301)),
              static_cast<RECOVERY_TAG>(0x0301), "mask removes array bit");
     CHECK_EQ(GetTypeFromTag(static_cast<RECOVERY_TAG>(0xFFFF)),
@@ -172,7 +141,6 @@ static void test_recovery_type_mask()
 
 static void test_recovery_to_array()
 {
-    TEST("ToArrayTag");
     CHECK_EQ(ToArrayTag(RECOVER_FF_PATIENT),
              static_cast<RECOVERY_TAG>(RECOVER_FF_PATIENT | 0x8000),
              "patient to array");
@@ -183,7 +151,6 @@ static void test_recovery_to_array()
 
 static void test_recovery_known_tags()
 {
-    TEST("known RECOVERY_TAG values are correct");
     CHECK_EQ(RECOVER_FF_HEADER, 0x0001, "FF_HEADER");
     CHECK_EQ(RECOVER_FF_STRING, 0x0002, "FF_STRING");
     // FF_CODE moved 0x0003 -> 0x010B on 2026-08-19: it is an inline scalar, and
@@ -215,7 +182,6 @@ static void test_recovery_known_tags()
 // since the band spans 0x1000-0x1FFF across 16 high-byte values.
 static void test_recovery_band_classification()
 {
-    TEST("band predicates classify across the whole band");
     CHECK_EQ(FF_IsResourceTag(RECOVER_FF_PATIENT), true, "PATIENT is a resource");
     CHECK_EQ(FF_IsResourceTag(RECOVER_FF_BUNDLE), true, "BUNDLE is a resource");
     CHECK_EQ(FF_IsResourceTag(ToArrayTag(RECOVER_FF_PATIENT)), true, "array-of-PATIENT");
@@ -237,7 +203,6 @@ static void test_recovery_band_classification()
 // =====================================================================
 static void test_field_key_construction()
 {
-    TEST("FF_FieldKey construction");
     FF_FieldKey key(RECOVER_FF_PATIENT, FF_FIELD_BLOCK, 10,
                     RECOVER_FF_STRING, false, "id");
     CHECK_EQ(key.owner_recovery, RECOVER_FF_PATIENT, "owner");
@@ -248,7 +213,6 @@ static void test_field_key_construction()
 
 static void test_field_key_scalar()
 {
-    TEST("FF_FieldKey scalar field");
     FF_FieldKey key(RECOVER_FF_PATIENT, FF_FIELD_BOOL, 14,
                     RECOVER_FF_BOOL, false, "active");
     CHECK_EQ(key.kind, FF_FIELD_BOOL, "scalar kind");
@@ -257,7 +221,6 @@ static void test_field_key_scalar()
 
 static void test_field_key_array_offsets()
 {
-    TEST("FF_FieldKey array-of-offsets flag");
     FF_FieldKey key(RECOVER_FF_PATIENT, FF_FIELD_BLOCK, 30,
                     RECOVER_FF_STRING, true, "name");
     CHECK(key.array_entries_are_offsets, "array entries are offsets");
@@ -268,7 +231,6 @@ static void test_field_key_array_offsets()
 // =====================================================================
 static void test_array_header_rw()
 {
-    TEST("FF_ARRAY header read/write");
     // 3 entries of stride 8 need 24 payload bytes; this allocated 16 and
     // stamped a count of 3 into it. Harmless only while nothing compared the
     // count against the space -- entry_count() now does, and clamped to 2.
@@ -291,7 +253,6 @@ static void test_array_header_rw()
 // =====================================================================
 static void test_string_block_rw()
 {
-    TEST("FF_STRING block read/write");
     std::vector<uint8_t> buf(256, 0);
     const char *kTestStr = "Hello, FastFHIR!";
     Offset write_off = 0;
@@ -308,7 +269,6 @@ static void test_string_block_rw()
 
 static void test_string_block_empty()
 {
-    TEST("FF_STRING block empty string");
     std::vector<uint8_t> buf(64, 0);
     Offset write_off = 0;
     STORE_FF_STRING(buf.data(), write_off, "");
@@ -322,7 +282,6 @@ static void test_string_block_empty()
 // =====================================================================
 static void test_checksum_null_sentinel()
 {
-    TEST("FF_CODE_NULL sentinel");
     CHECK_EQ(FF_CODE_NULL, 0xFFFFFFFFu, "FF_CODE_NULL is 0xFFFFFFFF");
     CHECK_EQ(FF_NULL_UINT32, 0xFFFFFFFFu, "FF_NULL_UINT32 is 0xFFFFFFFF");
 }
@@ -332,7 +291,6 @@ static void test_checksum_null_sentinel()
 // =====================================================================
 static void test_resource_type_from_recovery()
 {
-    TEST("resource_type_from_recovery maps correctly");
     CHECK(resource_type_from_recovery(RECOVER_FF_PATIENT) == RESOURCETYPE::PATIENT, "patient");
     CHECK(resource_type_from_recovery(RECOVER_FF_BUNDLE) == RESOURCETYPE::BUNDLE, "bundle");
     CHECK(resource_type_from_recovery(RECOVER_FF_OBSERVATION) == RESOURCETYPE::OBSERVATION, "observation");
@@ -341,7 +299,6 @@ static void test_resource_type_from_recovery()
 
 static void test_resource_type_traits()
 {
-    TEST("ResourceTypeTraits::recovery matches");
     CHECK_EQ(ResourceTypeTraits<RESOURCETYPE::PATIENT>::recovery, RECOVER_FF_PATIENT, "patient trait");
     CHECK_EQ(ResourceTypeTraits<RESOURCETYPE::BUNDLE>::recovery, RECOVER_FF_BUNDLE, "bundle trait");
     CHECK_EQ(ResourceTypeTraits<RESOURCETYPE::UNKNOWN>::recovery, FF_RECOVER_UNDEFINED, "unknown trait");
@@ -352,16 +309,13 @@ static void test_resource_type_traits()
 // =====================================================================
 static void test_load_store()
 {
-    TEST("LOAD_U16 / STORE_U16 round-trip");
     uint8_t buf[8] = {};
     STORE_U16(buf, 0xAABB);
     CHECK_EQ(LOAD_U16(buf), uint16_t(0xAABB), "U16");
 
-    TEST("LOAD_U32 / STORE_U32 round-trip");
     STORE_U32(buf, 0x12345678);
     CHECK_EQ(LOAD_U32(buf), 0x12345678u, "U32");
 
-    TEST("LOAD_U64 / STORE_U64 round-trip");
     STORE_U64(buf, 0xDEADBEEFCAFEBABEull);
     CHECK_EQ(LOAD_U64(buf), 0xDEADBEEFCAFEBABEull, "U64");
 }
@@ -371,7 +325,6 @@ static void test_load_store()
 // =====================================================================
 static void test_validate_offset()
 {
-    TEST("DATA_BLOCK::validate_offset");
     // FF_HEADER uses MAGIC bytes at offset 0, not a self-pointer,
     // so validate_offset is expected to fail here.  This test confirms
     // it returns a validation failure rather than crashing.
@@ -388,62 +341,55 @@ static void test_validate_offset()
 // =====================================================================
 int main(int argc, char **argv)
 {
-    const char *filter = (argc > 2 && strcmp(argv[1], "--filter") == 0) ? argv[2] : "";
+    ff_test::set_filter(argc, argv);
 
-    auto run = [&](const char *name, auto fn)
-    {
-        if (filter[0] == '\0' || strstr(name, filter))
-        {
-            fn();
-        }
-    };
 
     printf("DEBUG: main starting\n");
     TEST_GROUP("FF_HEADER");
     printf("DEBUG: calling validate\n");
-    run("test_header_validate", test_header_validate);
+    ff_test::run("test_header_validate", test_header_validate);
     printf("DEBUG: calling fhir_rev\n");
-    run("test_header_fhir_rev", test_header_fhir_rev);
+    ff_test::run("test_header_fhir_rev", test_header_fhir_rev);
     printf("DEBUG: calling engine_version\n");
-    run("test_header_engine_version", test_header_engine_version);
+    ff_test::run("test_header_engine_version", test_header_engine_version);
     printf("DEBUG: calling root\n");
-    run("test_header_root", test_header_root);
+    ff_test::run("test_header_root", test_header_root);
     printf("DEBUG: calling checksum\n");
-    run("test_header_checksum", test_header_checksum);
+    ff_test::run("test_header_checksum", test_header_checksum);
 
     TEST_GROUP("RECOVERY_TAG");
-    run("test_recovery_array_tag", test_recovery_array_tag);
-    run("test_recovery_type_mask", test_recovery_type_mask);
-    run("test_recovery_to_array", test_recovery_to_array);
-    run("test_recovery_known_tags", test_recovery_known_tags);
-    run("test_recovery_band_classification", test_recovery_band_classification);
+    ff_test::run("test_recovery_array_tag", test_recovery_array_tag);
+    ff_test::run("test_recovery_type_mask", test_recovery_type_mask);
+    ff_test::run("test_recovery_to_array", test_recovery_to_array);
+    ff_test::run("test_recovery_known_tags", test_recovery_known_tags);
+    ff_test::run("test_recovery_band_classification", test_recovery_band_classification);
 
     TEST_GROUP("FF_FieldKey");
-    run("test_field_key_construction", test_field_key_construction);
-    run("test_field_key_scalar", test_field_key_scalar);
-    run("test_field_key_array_offsets", test_field_key_array_offsets);
+    ff_test::run("test_field_key_construction", test_field_key_construction);
+    ff_test::run("test_field_key_scalar", test_field_key_scalar);
+    ff_test::run("test_field_key_array_offsets", test_field_key_array_offsets);
 
     TEST_GROUP("FF_ARRAY");
-    run("test_array_header_rw", test_array_header_rw);
+    ff_test::run("test_array_header_rw", test_array_header_rw);
 
     TEST_GROUP("FF_STRING");
-    run("test_string_block_rw", test_string_block_rw);
-    run("test_string_block_empty", test_string_block_empty);
+    ff_test::run("test_string_block_rw", test_string_block_rw);
+    ff_test::run("test_string_block_empty", test_string_block_empty);
 
     TEST_GROUP("FF_CHECKSUM");
-    run("test_checksum_null_sentinel", test_checksum_null_sentinel);
+    ff_test::run("test_checksum_null_sentinel", test_checksum_null_sentinel);
 
     TEST_GROUP("ResourceType");
-    run("test_resource_type_from_recovery", test_resource_type_from_recovery);
-    run("test_resource_type_traits", test_resource_type_traits);
+    ff_test::run("test_resource_type_from_recovery", test_resource_type_from_recovery);
+    ff_test::run("test_resource_type_traits", test_resource_type_traits);
 
     TEST_GROUP("ByteOps");
-    run("test_load_store", test_load_store);
+    ff_test::run("test_load_store", test_load_store);
 
     TEST_GROUP("DATA_BLOCK");
-    run("test_validate_offset", test_validate_offset);
+    ff_test::run("test_validate_offset", test_validate_offset);
 
     std::cout << "\n────────────────────────────────────────────────\n"
-              << g_tests << " tests, " << g_failures << " failures\n";
-    return g_failures > 0 ? 1 : 0;
+              << ::ff_test::g_checks << " tests, " << ::ff_test::g_failures << " failures\n";
+    return ::ff_test::g_failures > 0 ? 1 : 0;
 }

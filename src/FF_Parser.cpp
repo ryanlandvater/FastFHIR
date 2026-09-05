@@ -387,7 +387,29 @@ Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast
     m_module_reg_offset  = header.get_module_reg_offset(m_base); // FF_NULL_OFFSET until Phase 7
 }
 
-Parser::Parser(const Memory& memory) : m_memory(memory), m_base(memory.base()), m_size(memory.size()) {
+// CLAMP THE CLAIMED STREAM SIZE TO WHAT IS ACTUALLY MAPPED.
+//
+// Memory::size() reads the write head, and the write head lives in the same
+// eight bytes as FF_HEADER::STREAM_SIZE -- so on damaged input it IS corrupted
+// data (CLAUDE.md invariant 8). Every bounds check in the reader is
+// FF_BLOCK_IN_BOUNDS(off, m_size, width), so a single flip there does not
+// produce a wrong answer, it disables the entire bounds regime at once.
+//
+// Measured on a 512-flip stream: STREAM_SIZE read back as 2,251,799,816,455,525
+// against a real extent of 2,770,277. Every offset then "fit", the reader
+// followed one into unmapped memory, and FF_BLOCK_SELF_VALIDATES segfaulted on
+// the witness load it was called to perform.
+//
+// capacity() is the arena's mapped extent and is not on the wire, so it cannot
+// be corrupted by the stream it holds.
+static inline size_t ff_mapped_extent(const Memory& memory) {
+    const size_t claimed = memory.size();
+    const size_t mapped  = memory.capacity();
+    return claimed < mapped ? claimed : mapped;
+}
+
+Parser::Parser(const Memory& memory)
+    : m_memory(memory), m_base(memory.base()), m_size(ff_mapped_extent(memory)) {
     if (m_size < FF_HEADER::HEADER_SIZE) {
         throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
     }
@@ -1608,7 +1630,34 @@ Node ParserOps::array_element(const Node& n, const FF_ARRAY& arr,
         // The pointed-to block's own tag outranks even the array header here:
         // a `code` array declares RECOVER_FF_STRING and stores FF_STRINGs, and
         // a dateTime array declares RECOVER_FF_DATETIME and stores them too.
+        // The array header therefore cannot type these elements.
+        //
+        // It is not believed unconditionally, though. The legal readings are
+        // exactly two: the element the array declares, or a string-layout
+        // block standing in for it. The second is the whole reason the target's
+        // tag outranks the header, and the first is what the header is for.
+        //
+        // STANDARD LAYOUT ONLY. Compact reuses this geometry for block
+        // elements, and its targets legitimately carry neither a string-layout
+        // tag nor the array's declared element -- both stricter rules were
+        // tried and both broke it (cpp_test_9, then ff_test_compact_roundtrip).
+        // The compact reader has its own geometry and its own correctness
+        // rules; enforcing a standard-layout invariant there would be asserting
+        // something not established. The corruption work targets standard
+        // streams, which is where the fabrication path runs.
+        //
+        // Until this check the tag was taken as read, leaving the one element
+        // path the array-header adjudication deliberately exempts with no
+        // witness at all: a flipped target tag decoded a block under a V-Table
+        // it does not have, and the reader walked whatever the payload bytes
+        // happened to say -- the same fabrication the inline branch produces,
+        // reached through the exemption.
         const RECOVERY_TAG actual = FF_GET_RECOVERY_TAG(n.m_base, child_off);
+        const bool standard_layout =
+            n.m_ops == nullptr || n.m_ops->layout == FF_STREAM_COMPACTION_NONE;
+        if (standard_layout && !FF_IsStringLayoutTag(actual) &&
+            GetTypeFromTag(actual) != GetTypeFromTag(elem))
+            return {};
         return Node(n.m_base, n.m_size, n.m_version, child_off, actual,
                     Recovery_to_Kind(actual), FF_RECOVER_UNDEFINED, false,
                     n.m_ops, n.m_engine_version);
@@ -1714,7 +1763,24 @@ RECOVERY_TAG ParserOps::array_element_tag(const Node& n) {
 
     if (schema == FF_RECOVER_UNDEFINED) return wire;  // nothing to check against
     if (wire == schema) return wire;
-    if (FF_IsStringLayoutTag(wire)) return wire;      // declared type, string storage
+
+    // String storage substitutes for a declared PRIMITIVE, never for a declared
+    // BLOCK. Six `code` array fields and the date/time arrays declare their FHIR
+    // type and store FF_STRINGs, and those are the cases this exemption exists
+    // for -- all of them scalar-band. A Coding, a CodeableConcept or any other
+    // block type is never stored as an FF_STRING, so a string tag on one of
+    // those is damage, not storage.
+    //
+    // Testing only FF_IsStringLayoutTag made this an unconditional escape
+    // hatch: a flipped tag that happened to land on RECOVER_FF_STRING skipped
+    // the schema check altogether. Measured at k=512, a `coding` array read as
+    // a string array enumerated 759,621 unparseable leaves --
+    // `code.coding[22] = "I"`, `code.coding[82] = "Do you feel physically and
+    // emotionally safe..."` -- text from elsewhere in the document, read at
+    // arbitrary offsets and reported as data.
+    if (FF_IsStringLayoutTag(wire) && Recovery_to_Kind(schema) != FF_FIELD_BLOCK)
+        return wire;
+
     return schema;                                     // the V-Table outlives the flip
 }
 

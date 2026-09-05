@@ -41,7 +41,7 @@ deleted; consult git history if you need them.
 | `generated_src/` | Generator output (~75 C++ files), including `FF_Codes.hpp`, the dictionary tables projected from `dictionaries/*.json`, and `FF_RecoveryTags.hpp` projected from `master_tags.json`. **Gitignored** — produced at CMake configure time. Most of it requires network (HL7 / packages.fhir.org); the dictionary projection does not, needing only the committed ledger. |
 | `python/` | pybind11 bindings (`FF_PythonBindings.cpp` → `_core`) + `fastfhir` package. `fastfhir.fields` is a generated **package** (`<build>/python/fields/`, one module + `.pyi` per resource, plus `py.typed`), emitted by `generator/bindings/python_fields.py` at build time — it is not a single `fields.py`, and it is not written into the source tree. |
 | `tools/` | CLI tools: `ingestor/FF_Ingest.cpp`, `exporter/FF_Export.cpp`, `compactor/FF_Compact.cpp`. |
-| `tests/` | `cpp/` (standalone-main tests via ctest), `python/` (README/round-trip suites via ctest `py_*`), `generator/` (pytest wire-format gate). |
+| `tests/` | `cpp/` (standalone-main tests via ctest), `python/` (README/round-trip suites via ctest `py_*`), `generator/` (pytest wire-format gate). **Shared C++ harness: `tests/cpp/FFHR_tests.hpp`** (counters, `CHECK`/`CHECK_EQ`/`CHECK_NE`/`REQUIRE`, `TEST_GROUP`, `ff_test::run`/`set_filter`/`report`), **`FFHR_test_corpus.hpp`** (`find_bundles`, `read_file`), **`FFHR_test_checksum.hpp`** (`sha256`). Split by dependency on purpose — the corpus header needs `<filesystem>` and the checksum header links OpenSSL, so a test that only asserts pulls in neither. `tests/cpp` is on the include path; include by bare name. |
 | `architecture.md` | Deep reference for the binary format, VMA, builder, and read path. Read it before touching wire-format code. **§3.4 is the value-representation contract** — how absence is spelled, why enum ordinal `0` is a VALUE and not a missing field, why the `double` sentinel cannot be tested with `!=`, and what a dictionary ID does and does not mean. Read it before writing anything that decides whether a field is set. |
 | `terminology_layer_architecture.md` | CodeableConcept / code-system encoding design. |
 
@@ -147,6 +147,17 @@ writer → validator → reader path, where all three bugs lived, was covered by
 you add a test here, prefer one that goes through the real pipeline over one that
 hand-builds a buffer; a synthetic fixture proves the reader agrees with your idea of the
 format, not with the writer. TASKS.md **COV-1**.
+
+**Use the shared harness; do not re-declare a failure counter (2026-09-05).** Every
+test in `tests/cpp` used to carry its own `failures`/`g_failures` and its own `CHECK` —
+six near-identical macros differing in whitespace and in whether they counted passes,
+plus `find_bundles` copied byte-for-byte into three files and `sha256` into four. One
+contract implemented seventeen times means a fix to any of it reaches one file.
+Consolidated into the three headers above: **331 lines deleted, suite still 44/44.**
+`test_simd.cpp` deliberately keeps its own `FAIL`, because it returns from the case on
+the first failure where the shared `CHECK` accumulates — a different contract, not a
+duplicate one. Per-check `PASS` lines are now off by default and restored with
+`FF_TEST_VERBOSE=1`.
 
 **A new C++ test needs registering in FOUR places in `CMakeLists.txt`**, not one:
 `add_ff_cpp_test(...)`, the ctest `foreach(_standalone ...)`, the `_BUILD_ALL` list, and
@@ -442,6 +453,20 @@ decide whether a version gate is wanted.
 6. **Concurrency contract:** `claim_space()` appends are lock-free and thread-safe;
    pointer amendments and finalize are not concurrency-protected (see TASKS.md Q9). Don't
    introduce mutexes into the append hot path.
+   **Lock-free is a correctness claim, not a throughput claim, and the two have been
+   conflated.** `claim_space` is a `compare_exchange_strong` retry loop
+   (`src/FF_Memory.cpp:386`), not a `fetch_add` — architecture.md asserted `fetch_add` in
+   four places until 2026-09-05 and the code has never done it. Measured on 2026-09-05
+   (benchmark Test 1, 64 MB Synthea, 4,203 resources, Release, M5 Pro / 18 logical
+   cores): **18 cores buy 1.8×**, peaking at 8 workers and regressing after. Three
+   separate costs — a park/wake round trip that exceeds the 0.545 µs it takes to build
+   one resource, first-touch page faults on the sparse arena, and contention on the single
+   write-head cache line (`claim_space` runs once per BLOCK, not once per resource). Only
+   the third is inherent to the allocator, and it is the floor: with the other two removed,
+   18 threads still burn 14.7 ms of user CPU where one thread burns 2.29 ms for identical
+   output. Numbers, attribution, and the two candidate fixes (`fetch_add`; per-thread claim
+   batching) are in architecture.md §7.5; the work is TASKS.md CONC-1/CONC-2. Do not cite
+   FastFHIR as scaling with core count until one of them lands.
    **`FIFO::Queue` is lockless and safe for any number of concurrent consumer
    threads** — each entry is single-delivery via the `PENDING->READING` CAS, so
    consumers never serialize. The hazard is not sharing; it is the **zero-consumer

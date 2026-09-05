@@ -39,6 +39,8 @@
 #include <FF_Dictionary.hpp>
 #include <FF_Primitives.hpp>
 
+#include "FFHR_tests.hpp"
+
 #include <cctype>
 #include <cstring>
 #include <iostream>
@@ -51,28 +53,6 @@ using namespace FastFHIR;
 
 // ── Test framework (matches the other standalone suites) ───────────────────
 
-static int g_failures = 0;
-static int g_tests = 0;
-static const char *g_current_group = "";
-
-#define TEST_GROUP(name)                     \
-    do                                       \
-    {                                        \
-        g_current_group = name;              \
-        std::cout << "\n[" << name << "]\n"; \
-    } while (0)
-#define CHECK(cond, msg)                                                              \
-    do                                                                                \
-    {                                                                                 \
-        ++g_tests;                                                                    \
-        if (!(cond))                                                                  \
-        {                                                                             \
-            ++g_failures;                                                             \
-            std::cerr << "  FAIL " << g_current_group << "::" << __func__ << " line " \
-                      << __LINE__ << ": " << msg << "\n";                             \
-        }                                                                             \
-    } while (0)
-#define CHECK_EQ(a, b, msg) CHECK((a) == (b), msg << " expected " << (b) << " got " << (a))
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -241,27 +221,23 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; ++i)
         if (std::strcmp(argv[i], "--filter") == 0 && i + 1 < argc) filter = argv[++i];
 
-    auto run = [&](const char *name, auto fn)
-    {
-        if (filter[0] == '\0' || std::strstr(name, filter)) fn();
-    };
 
     std::cout << "UCUM " << FF_UCUM_DICTIONARY_SIZE << " labels, R4 " << FF_R4_DICTIONARY_SIZE
               << ", R5 " << FF_R5_DICTIONARY_SIZE << " (enumerated, no sampling)\n";
 
     TEST_GROUP("SelfResolution");
-    run("test_ucum_labels_resolve_to_own_code", test_ucum_labels_resolve_to_own_code);
-    run("test_fhir_labels_resolve_to_own_code", test_fhir_labels_resolve_to_own_code);
+    ff_test::run("test_ucum_labels_resolve_to_own_code", test_ucum_labels_resolve_to_own_code);
+    ff_test::run("test_fhir_labels_resolve_to_own_code", test_fhir_labels_resolve_to_own_code);
 
     TEST_GROUP("CaseSensitivity");
-    run("test_case_variant_labels_stay_distinct", test_case_variant_labels_stay_distinct);
-    run("test_ucum_year_is_not_ampere", test_ucum_year_is_not_ampere);
-    run("test_wrong_case_ucum_is_refused", test_wrong_case_ucum_is_refused);
+    ff_test::run("test_case_variant_labels_stay_distinct", test_case_variant_labels_stay_distinct);
+    ff_test::run("test_ucum_year_is_not_ampere", test_ucum_year_is_not_ampere);
+    ff_test::run("test_wrong_case_ucum_is_refused", test_wrong_case_ucum_is_refused);
 
     TEST_GROUP("Absent");
-    run("test_unknown_labels_report_null", test_unknown_labels_report_null);
+    ff_test::run("test_unknown_labels_report_null", test_unknown_labels_report_null);
 
     std::cout << "\n────────────────────────────────────────────────\n"
-              << g_tests << " checks, " << g_failures << " failures\n";
-    return g_failures > 0 ? 1 : 0;
+              << ::ff_test::g_checks << " checks, " << ::ff_test::g_failures << " failures\n";
+    return ::ff_test::g_failures > 0 ? 1 : 0;
 }

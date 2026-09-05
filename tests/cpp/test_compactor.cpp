@@ -21,13 +21,10 @@
 #include <cstdio>
 #include <string>
 
+#include "FFHR_tests.hpp"
+
 using namespace FastFHIR;
 
-static int failures = 0;
-static void CHECK(bool ok, const char* what) {
-    printf("  %-58s %s\n", what, ok ? "PASS" : "FAIL");
-    if (!ok) ++failures;
-}
 
 int main() {
     // ── Shared-subtree document ─────────────────────────────────────────────
@@ -245,6 +242,5 @@ int main() {
               "out-of-dictionary code round-trips through the archive");
     }
 
-    printf("%s\n", failures ? "FAILURES" : "all compactor graph checks pass");
-    return failures ? 1 : 0;
+    return ff_test::report("all compactor graph checks pass");
 }

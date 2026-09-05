@@ -23,15 +23,10 @@
 #include <string>
 #include <vector>
 
+#include "FFHR_tests.hpp"
+
 using S = FF_CodeableConceptSystem;
 
-static int failures = 0;
-
-static void CHECK(bool ok, const std::string& what)
-{
-    printf("  %-56s %s\n", what.c_str(), ok ? "PASS" : "FAIL");
-    if (!ok) ++failures;
-}
 
 int main()
 {
@@ -169,6 +164,5 @@ int main()
         }
     }
 
-    printf("%s\n", failures ? "FAILURES" : "all CodeableConcept round-trips hold");
-    return failures ? 1 : 0;
+    return ff_test::report("all CodeableConcept round-trips hold");
 }
