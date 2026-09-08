@@ -47,3 +47,12 @@ dictionaries/*.hpp
 
 # Rendered documentation (docs/build_docs.sh output)
 docs/output/
+
+# Session handoff notes. Internal, agent-to-agent working documents -- they
+# describe what to do next, not what the project IS, and both repos are public.
+# Two were tracked until 2026-09-08 (1,205 and 740 lines) and read as internal
+# process noise on a repo whose value is its credibility. Write them if they
+# help; do not commit them.
+handoff.md
+handoff*.md
+HANDOFF*.md

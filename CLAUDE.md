@@ -453,20 +453,21 @@ decide whether a version gate is wanted.
 6. **Concurrency contract:** `claim_space()` appends are lock-free and thread-safe;
    pointer amendments and finalize are not concurrency-protected (see TASKS.md Q9). Don't
    introduce mutexes into the append hot path.
-   **Lock-free is a correctness claim, not a throughput claim, and the two have been
-   conflated.** `claim_space` is a `compare_exchange_strong` retry loop
-   (`src/FF_Memory.cpp:386`), not a `fetch_add` — architecture.md asserted `fetch_add` in
-   four places until 2026-09-05 and the code has never done it. Measured on 2026-09-05
-   (benchmark Test 1, 64 MB Synthea, 4,203 resources, Release, M5 Pro / 18 logical
-   cores): **18 cores buy 1.8×**, peaking at 8 workers and regressing after. Three
-   separate costs — a park/wake round trip that exceeds the 0.545 µs it takes to build
-   one resource, first-touch page faults on the sparse arena, and contention on the single
-   write-head cache line (`claim_space` runs once per BLOCK, not once per resource). Only
-   the third is inherent to the allocator, and it is the floor: with the other two removed,
-   18 threads still burn 14.7 ms of user CPU where one thread burns 2.29 ms for identical
-   output. Numbers, attribution, and the two candidate fixes (`fetch_add`; per-thread claim
-   batching) are in architecture.md §7.5; the work is TASKS.md CONC-1/CONC-2. Do not cite
-   FastFHIR as scaling with core count until one of them lands.
+   **Lock-free is a correctness claim; throughput is a separate question with a
+   separate answer.** `claim_space` is a `compare_exchange_strong` retry loop
+   (`src/FF_Memory.cpp:386`), not the `fetch_add` architecture.md asserted until
+   2026-09-05 — but it was instrumented that day and **it is not a bottleneck**:
+   a 64 MB build issues 4,498 claims (append<T> claims a whole subtree at once)
+   with 0 retries at one thread and 318 at eighteen. **Default a worker pool to
+   `FastFHIR::performance_core_count()` (`include/FF_Concurrency.hpp`), never
+   `hardware_concurrency()`** — on a heterogeneous CPU the efficiency cores make
+   wall time WORSE while roughly doubling CPU time. Measured on an M5 Pro
+   (6 P + 12 E): 6 workers 1.10 ms, 18 workers 1.79 ms, user CPU 4.4 ms vs
+   8.0 ms. `Ingestor`'s default was `hardware_concurrency()` and is now the
+   P-core count; the benchmark's Test 1 ratio against JSON moved 3.24x -> 6.11x
+   on that one change. What remains is 1.93x on 6 cores, and the residual is
+   memory-bound work, not lock contention. architecture.md §7.5; TASKS.md
+   CONC-1/CONC-2 record the two allocator changes considered and rejected.
    **`FIFO::Queue` is lockless and safe for any number of concurrent consumer
    threads** — each entry is single-delivery via the `PENDING->READING` CAS, so
    consumers never serialize. The hazard is not sharing; it is the **zero-consumer

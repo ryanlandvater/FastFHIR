@@ -398,7 +398,8 @@ level up.
 
 ### F6 — Attribution correction, and one flaw in the current code
 
-The **91.6 % / 70.3 %** medians in `../FastFHIR-benchmark/handoff.md:422-424` come from
+The **91.6 % / 70.3 %** medians (quoted in the benchmark's `handoff.md`, since
+removed -- both handoff docs were untracked on 2026-09-08) come from
 `bench/corruption_probe.cpp:213` → `rec.recover_bundle_entries().recovered` — a **count**,
 not the units fingerprint. The review attributed them to `bench_test_5.hpp`. Both critiques
 stand, but **fix the attribution before touching files**, or the work lands in the wrong
@@ -1135,8 +1136,9 @@ DT-4.4, 2026-08-20 — see each task). Nothing gates DT-1.
 | CMP-1 | **P1** | Compaction lost scalar arrays, the URL table and `Attachment.data` | found by COV-1.5 on its first run; compaction had never been fed a real document | **DONE 2026-08-23** (459e8d8) |
 | REV-1 | **P1** | PR #6 review fixes: Release build broken, corpus gate pinned to 1 worker, 9 more | Release+tests did not compile at all; the 342-fixture gate could not see the AR-3 class | **DONE 2026-08-23** |
 | REV-2 | **P1** | PR #6 second review: 11 findings, all correct — incl. a null-View crash and **68 V-Tables outside the wire gate** | the "ONE hard gate" was witnessing a `us-core` tree while the presets ship four groupings | **DONE 2026-08-24** (working tree) |
-| CONC-1 | P2 | `claim_space` CAS retry loop → `fetch_add` | retries scale with thread count; ~10⁵ claims per 64 MB build, all on one cache line | open |
-| CONC-2 | P2 | Per-thread claim batching (slab) for the arena write head | the floor: with syscall costs removed, 18 threads still burn 6.4× the CPU of one for identical bytes | open |
+| CONC-0 | **P1** | Worker pools default to the PERFORMANCE-core count, not `hardware_concurrency()` | E-core spillover made wall time worse and CPU ~2× on an M5 Pro; benchmark Test 1 vs JSON went 3.24× → 6.11× | **DONE 2026-09-05** (working tree) |
+| CONC-1 | — | ~~`claim_space` CAS retry loop → `fetch_add`~~ | **REJECTED on measurement**: 4,498 claims per 64 MB build, 318 retries at 18 threads | closed |
+| CONC-2 | — | ~~Per-thread claim batching (slab)~~ | **REJECTED on measurement**: there is nothing to batch — `append<T>` already claims a whole subtree per call | closed |
 
 ---
 
@@ -2026,83 +2028,66 @@ canary out (no scan, no counter writes), and `ff_test_queue` proves both.
 
 ---
 
-## CONC-1 / CONC-2 — The arena is lock-free but does not scale (P2)
+## CONC-0 — Worker pools must default to the PERFORMANCE-core count (P1) ✅ DONE 2026-09-05
 
-**Measured 2026-09-05** in FastFHIR-benchmark Test 1: 64 MB Synthea corpus,
-4,203 resources, `-c opt`, Apple M5 Pro (18 logical cores). Each resource is
-built start-to-finish by one thread, which then amends its own pre-allocated
-`Bundle.entry` slot — the `FF_Ingestor.cpp` step-5 shape. Stream validated
+**Measured** in FastFHIR-benchmark Test 1: 64 MB Synthea corpus, 4,203
+resources, `-c opt`, Apple M5 Pro (6 P + 12 E = 18 logical). Stream validated
 (`validate_FFHR_stream` code 0, zero null entries) and element-parity exact
-against the other three benchmark arms at every corpus size, so this is a
-throughput finding, not a correctness one.
+against the other three arms, so this is throughput, not correctness.
 
-| configuration, 18 workers | wall | user CPU | sys CPU |
+One fixed bundle, arena pre-faulted, batched tasks:
+
+| workers | wall | user CPU | speedup |
 |---|---|---|---|
-| one resource per queue task | 17.0 ms | 13.7 ms | 190 ms |
-| 64 resources per task | 4.80 ms | 6.3 ms | 56 ms |
-| 64 per task, arena pre-faulted | 1.40 ms | 14.7 ms | 2.5 ms |
-| *single thread, for reference* | *2.29 ms* | *2.29 ms* | *0.01 ms* |
+| 1 | 2.12 ms | 2.07 ms | 1.00× |
+| 4 | 1.40 ms | 4.98 ms | 1.52× |
+| **6** | **1.10 ms** | 4.41 ms | **1.93×** |
+| 8 | 1.53 ms | 7.91 ms | 1.39× |
+| 18 | 1.79 ms | 8.05 ms | 1.19× |
 
-**18 cores buy 1.8×**, peaking at 8 workers and regressing after. Three
-independent costs; the benchmark repo carries the isolating experiments and
-the env vars that reproduce them (`BENCH_FF_THREADS`, `BENCH_FF_BATCH`,
-`BENCH_FF_MODE=split`, `BENCH_FF_PREFAULT`, `BENCH_FF_TRACE`).
+The optimum is exactly the P-core count and it regresses past it — user CPU
+jumps 4.4 → 7.9 ms the moment work spills onto E-cores. `Ingestor` defaulted to
+`std::thread::hardware_concurrency()`, so every consumer was getting the
+18-worker row.
 
-1. **Park/wake rate — benchmark-side, already handled there.** `append_obj` on
-   one Synthea resource is **0.545 µs**, the same order as a queue push and as
-   one `__ulock_wait`/`__ulock_wake` pair, so one producer cannot feed 18
-   consumers and they park continuously. `notify_one` for `notify_all` changed
-   nothing, so it is the wake rate, not a thundering herd. Break-even is ~9 µs
-   of work per task. **The ingestor is not exposed**: its task is a full
-   simdjson parse plus store, tens of µs, which amortizes the same protocol.
-   Worth knowing before any future pool is written against a cheaper task.
-2. **First-touch page faults.** `Memory::create` reserves without committing,
-   so every page faults during the build and N threads faulting one fresh
-   anonymous mapping serialize on the kernel VM lock. Pre-faulting outside the
-   measured window: 4.80 → 1.40 ms.
-3. **Write-head contention — the floor, and the only one inherent to the
-   engine.** With 1 and 2 removed, user CPU still inflates **2.29 → 14.7 ms for
-   byte-identical output**.
+Fixed by `FastFHIR::performance_core_count()` in the new
+`include/FF_Concurrency.hpp` (macOS `hw.perflevel0.logicalcpu`, Windows
+`EfficiencyClass`, everything else falls back to `hardware_concurrency()`).
+`Ingestor`'s default now uses it. Benchmark Test 1 paired ratio vs the JSON arm:
+**3.24× → 6.11×** on that change alone.
 
-### CONC-1 — `fetch_add` in place of the CAS retry loop
+### CONC-1 / CONC-2 — rejected on measurement, do not re-open without new data
 
-`src/FF_Memory.cpp:386` is a `compare_exchange_strong` loop; a losing CAS
-re-reads and retries, so coherence traffic per claim scales with thread count.
-`fetch_add` (LDADD on ARMv8.1) completes at the coherence point with no retry.
+Both were filed on 2026-09-05 against an **estimate** of ~10⁵ `claim_space`
+calls per build, all contending on one cache line. Instrumented the same day,
+the estimate was wrong by ~20× and in the wrong direction:
 
-⚠ **Decision needed — it interacts with the header layout.** Bit 63 of the
-write-head is `STREAM_LOCK_BIT`. Two ways out:
+| workers | claims per 64 MB build | CAS retries |
+|---|---|---|
+| 1 | 4,498 | 0 |
+| 4 | 4,498 | 1,058 |
+| 18 | 4,498 | 318 |
 
-- Unconditional `fetch_add`, then test the returned prior value: capacity is
-  ≪ 2⁶³ so an add cannot carry into bit 63, and a claim that lands on a locked
-  head can `fetch_sub` to undo. Adds and subs commute, so the head's final
-  value stays correct; the cost is a transiently over-large head observable to
-  a concurrent reader. During streaming the exclusive `StreamHead` is the only
-  legitimate reader, which is the thing that set the bit.
-- Move the lock out of the head word so the head is a pure bump. Cleaner, but
-  those 8 bytes are also `FF_HEADER::STREAM_SIZE` (invariant 8), so this is a
-  header-layout change and Ryan's call.
+`Builder::append<T>` claims a resource's **entire subtree** in one call —
+`TypeTraits<T>::size` is recursive — so it is ~1 claim per resource, not one per
+block. 318 failed compare-exchanges cannot cost milliseconds.
 
-`fetch_add` reduces the floor; it does not remove it, because the head is still
-one cache line every claim must own exclusively.
+- **CONC-1 (`fetch_add` for the CAS loop)** would remove retry amplification
+  that is not occurring, and it would have required a decision about moving
+  `STREAM_LOCK_BIT` out of the word it shares with `FF_HEADER::STREAM_SIZE`.
+  Not worth a header-layout question for 318 retries.
+- **CONC-2 (per-thread slab)** has nothing to batch at 4,498 claims, and would
+  add slab-tail waste to every stream for it.
 
-### CONC-2 — Per-thread claim batching
+Per-worker fixed overhead was measured separately (18 workers, one task
+between them): ~135 µs each, for thread creation and one park/wake round trip.
 
-`claim_space` runs once per **BLOCK** — every `FF_STRING`, every
-`FF_CODEABLE_CONCEPT`, every array — not once per resource, so a 64 MB build
-issues on the order of 10⁵ claims (estimate; not instrumented). A larger
-resource makes *more* blocks, so the claim rate per byte is roughly constant
-and no amount of task batching touches this term.
-
-One claim per slab, then a thread-local bump with no atomic at all. Removes
-both the shared line and the false sharing between blocks that adjacent claims
-place on the same cache line. Costs slab-tail waste, and blocks are no longer
-densely packed in append order — offsets are explicit so readers do not care,
-but stream size changes slightly.
-
-**Neither fix changes a byte's meaning on the wire.** Verify with
-`ff_test_compact_roundtrip` plus the benchmark's cross-arm element parity.
-Full write-up: architecture.md §7.5.
+What remains after CONC-0 is 1.93× on 6 cores, 32% efficiency. The residual is
+that the work is memory-bound — writing several MB of freshly-faulted blocks
+with pointer amendments is memcpy-shaped, and that does not scale linearly with
+cores. **An allocator change is not the lever**; if this is revisited, the
+candidates are reducing bytes written or reducing page-fault cost, not reducing
+contention. Full write-up: architecture.md §7.5.
 
 ---
 

@@ -18,6 +18,7 @@
 #include <thread>
 #include <atomic>
 #include <string>
+#include "FF_Concurrency.hpp"
 
 namespace FastFHIR::Ingest {
 
@@ -91,13 +92,16 @@ public:
     /**
      * @brief Initializes the FastFHIR Ingestor.
      * @param log_capacity Maximum bytes for the lock-free warning buffer.
-     * @param concurrency Number of worker threads. Default (0) is replaced by hardware concurrency.
+     * @param concurrency Number of worker threads. Default (0) is replaced by the
+     *        PERFORMANCE-core count, not hardware_concurrency() -- on a
+     *        heterogeneous CPU the extra efficiency cores make wall time worse
+     *        while roughly doubling CPU time. See FF_Concurrency.hpp for the
+     *        measurement.
      */
     explicit Ingestor(size_t logger_byte_capacity = 64 * 1024 * 1024, unsigned int concurrency = 0) 
         : m_logger(logger_byte_capacity) 
     {
-        m_num_threads = concurrency > 0 ? concurrency : std::thread::hardware_concurrency();
-        if (m_num_threads == 0) m_num_threads = 4; // Absolute fallback
+        m_num_threads = concurrency > 0 ? concurrency : performance_core_count();
         
         m_parser_pool.resize(m_num_threads);
     }

@@ -1481,8 +1481,9 @@ Three steps, each lock-free:
 1. **Size** computed from the typed value via `TypeTraits<T>::size`
    (compile-time inlined, no virtual dispatch).
 2. **Reserve** via `claim_space` — N threads issuing simultaneously each
-   receive a distinct, non-overlapping slice. The reservation is a CAS retry
-   loop, and it is called once per BLOCK, not once per resource (§7.5).
+   receive a distinct, non-overlapping slice. `TypeTraits<T>::size` is
+   recursive, so ONE call reserves the whole subtree: a 64 MB Bundle build
+   issues ~4,500 claims, roughly one per resource (§7.5).
 3. **Write** via `TypeTraits<T>::store` — into the writer's exclusive slice.
    Because the slice is exclusive, no atomicity is needed within the write.
 
@@ -1548,7 +1549,7 @@ flowchart TB
     Q --> W2["worker N<br/>Consumer::pop"]
     W1 --> B1["Builder::append_obj(POCO)"]
     W2 --> B2["Builder::append_obj(POCO)"]
-    B1 --> C[["Memory::claim_space<br/>CAS retry loop on ONE cache line<br/>called once per BLOCK"]]
+    B1 --> C[["Memory::claim_space<br/>CAS retry loop, one shared word<br/>~1 call per resource (whole subtree)"]]
     B2 --> C
     C --> A[("sparse VMA<br/>first touch faults<br/>N threads → one kernel VM lock")]
     B1 --> M1["MutableEntry = ObjectHandle<br/>amend_resource into its OWN entry slot"]
@@ -1561,10 +1562,11 @@ flowchart TB
     class Q,C,A cost
 ```
 
-Shaded nodes are the three costs below: the queue's park/wake protocol, the
-shared write head, and first-touch faulting. Nothing else is contended — no two
-workers touch the same entry slot, and `finalize` runs only after every worker
-has joined.
+Shaded nodes are the three places workers meet. Measurement below found the
+cost in the queue's park/wake protocol and in first-touch faulting; the shared
+write head was instrumented and is not a bottleneck. Nothing else is contended
+— no two workers touch the same entry slot, and `finalize` runs only after
+every worker has joined.
 
 | configuration, 18 workers | wall | user CPU | sys CPU |
 |---|---|---|---|
@@ -1586,37 +1588,41 @@ Three independent costs, each isolated by measurement:
 2. **First-touch page faults.** `Memory::create` reserves without
    committing (§1.3), so every page faults during the build. N threads
    faulting one fresh anonymous mapping serialize on the kernel VM lock.
-3. **Write-head contention — the floor.** With 1 and 2 removed, user CPU
-   still inflates **2.29 → 14.7 ms for byte-identical output**. `claim_space`
-   is called once per BLOCK — every string, `FF_CODEABLE_CONCEPT`, and array,
-   not once per resource — so a 64 MB build issues on the order of 10⁵ claims
-   (estimate; not instrumented), all on one cache line, through a CAS retry
-   loop whose retries scale with thread count. Consecutive claims from
-   different threads also place blocks on shared cache lines.
+3. **Efficiency-core spillover — the floor, and it is not a lock.** The pool
+   defaulted to `hardware_concurrency()`, which on a heterogeneous CPU means
+   using the slow half too. Sweeping the worker count on one fixed bundle with
+   the arena pre-faulted:
 
-**Net: 18 cores buy 1.8×**, peaking at 8 workers and going backwards after.
-Granularity moves sys time by 21× and user time by nothing, so 3 is not a
-task-sizing problem and cannot be batched away.
+   | workers | wall | user CPU | speedup |
+   |---|---|---|---|
+   | 1 | 2.12 ms | 2.07 ms | 1.00x |
+   | 4 | 1.40 ms | 4.98 ms | 1.52x |
+   | **6** | **1.10 ms** | 4.41 ms | **1.93x** |
+   | 8 | 1.53 ms | 7.91 ms | 1.39x |
+   | 18 | 1.79 ms | 8.05 ms | 1.19x |
 
-Two fixes, neither of which changes a byte on the wire:
+   The optimum sits exactly on the 6 P-cores and regresses past it; user CPU
+   jumps 4.4 -> 7.9 ms at the moment work spills onto E-cores. Fixed by
+   `FastFHIR::performance_core_count()` (`include/FF_Concurrency.hpp`), now the
+   default for `Ingestor` and for the benchmark arm. Test 1's paired ratio
+   against the JSON arm moved 3.24x -> 6.11x on that change alone.
 
-- **`fetch_add` in place of the CAS loop.** Removes retry amplification
-  (O(N) coherence round trips per claim becomes O(1); LDADD on ARMv8.1).
-  It does not remove the shared line, so it reduces the floor rather than
-  eliminating it. Complication: bit 63 of the same word is `STREAM_LOCK_BIT`
-  (§2.2). Because capacity ≪ 2⁶³ an add cannot carry into it, so a claim that
-  lands on a locked head can detect it in the returned prior value and
-  `fetch_sub` to undo — adds and subs commute, so the final value stays
-  correct, at the cost of a transiently over-large head. Moving the lock out
-  of the head word instead makes the head a pure bump, but those 8 bytes are
-  also `FF_HEADER::STREAM_SIZE`, so that is a header-layout decision.
-- **Per-thread claim batching.** One claim per slab, then a thread-local
-  bump with no atomic. Removes the shared line and the false sharing
-  together. Costs slab-tail waste, and blocks are no longer densely packed in
-  append order — offsets are explicit so readers do not care, but stream size
-  changes slightly.
+**The write head was measured, and it is NOT a bottleneck.** An earlier
+revision of this section blamed `claim_space` contention and estimated 10^5
+claims per build. Instrumented 2026-09-05: the 64 MB build issues **4,498
+claims**, because `Builder::append<T>` claims a resource's ENTIRE subtree in one
+call (`TypeTraits<T>::size` is recursive) — roughly one claim per resource, not
+one per block. CAS retries were **0 at one thread and 318 at eighteen**. Three
+hundred failed compare-exchanges cannot cost milliseconds. Per-worker fixed
+overhead, measured by handing 18 workers a single task, is ~135 us each.
 
-TASKS.md **CONC-1** / **CONC-2**.
+What remains after the core count is fixed is 1.93x on 6 cores, 32% efficiency.
+The residual is that the work is memory-bound: writing several MB of
+freshly-faulted blocks with pointer amendments is a memcpy-shaped workload, and
+those do not scale linearly with cores. No allocator change addresses it.
+
+TASKS.md **CONC-1** / **CONC-2** record the two allocator changes that were
+considered and, on this evidence, rejected.
 
 ---
 
