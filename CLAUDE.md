@@ -29,7 +29,7 @@ must be byte-identical to one written without it. K was done first, and its `Val
 loader, not a second mechanism. J1.2's separate C ABI is struck and J5.2 is already done;
 the reconciliation is recorded under J1 in TASKS.md. The 145 required ValueSet bindings the
 layer already emits as `UNIMPLEMENTED` rows, each carrying its ValueSet URL, are J4's
-worklist. Read K0 and the Block K work order first.
+worklist. Read K0 and K-open in TASKS.md first (the executed work order is in git history).
 The former checklist/plan docs (audit, integration-revision, project-progress,
 generator-refactor, unification, refactor-history) were consolidated into TASKS.md and
 deleted; consult git history if you need them.

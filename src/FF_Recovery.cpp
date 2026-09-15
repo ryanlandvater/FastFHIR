@@ -1275,6 +1275,18 @@ FF_RecoveryReport Recovery::recover() const {
     //   references on either side is not a repair of this edge. Rejecting on
     //   that caught 10 of the 11 with zero false positives on the 195 correct.
     //
+    //   NOT FOR RESOURCE TUPLES. Ascending order is a property of one append<T>
+    //   laying out one subtree, and a resource slot's target is not in its
+    //   parent's subtree: the Ingestor appends each contained/entry resource on
+    //   its own, in worker-completion order, and writes the {offset, tag} tuple
+    //   afterwards. Placement there is scheduler order, which is not a guarantee
+    //   (TASKS.md COV-3). Measured on a concurrently ingested 1.15 MB Synthea
+    //   bundle: 239/306 resource targets ascend against 15,971/16,107 for every
+    //   other kind. Applied to them, the rule demoted a correct 1-bit repoint
+    //   of Observation.contained[0] whenever the pool happened to place the
+    //   contained Patient before its parent -- the intermittent
+    //   ff_test_recovery failure. Exclusivity still applies to them.
+    //
     //   EXCLUSIVITY. Two references cannot own the same child. Greedy per-ref
     //   picking let one steal the orphan another needed; that was the 11th.
     //
@@ -1308,6 +1320,8 @@ FF_RecoveryReport Recovery::recover() const {
                 ++demoted_contended;
                 continue;
             }
+            if (v.block.kind == FF_FIELD_RESOURCE)
+                continue;  // placement is scheduler order — no locality witness
             const auto it = anchors.find(v.block.field);
             if (it == anchors.end() || it->second.size() < 2)
                 continue;  // no neighbours to reason from — leave the ranker's call

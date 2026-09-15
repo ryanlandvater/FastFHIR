@@ -18,9 +18,11 @@
 #include <FF_Compactor.hpp>
 #include <FF_Ingestor.hpp>
 #include <FastFHIR.hpp>
+#include "FF_AllTypes.hpp"
 
 #include "FFHR_tests.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -113,6 +115,74 @@ static std::shared_ptr<Memory> build_bundle()
         }, view))
         return nullptr;
     return arena;
+}
+
+// RESOURCE TARGETS OUT OF PARENT ORDER, ON PURPOSE (TASKS.md COV-3).
+//
+// build_bundle() goes through the Ingestor, whose pool places each resource in
+// worker-completion order. That order is not a guarantee, so the layout it
+// produces is not one either: 200 ingests of that fixture gave five layouts,
+// and a recovery rule that assumed parent-ordered placement passed on the
+// common one and failed on the rest, 29 runs in 500 under load.
+//
+// A test that meets a layout only by scheduler luck does not cover it. This
+// fixture builds the case directly through the Builder: three contained
+// Patients appended BEFORE the Observations that name them, and in the order
+// c2, c1, c3, so the middle Observation's target sits below both neighbours'.
+// The intact neighbours then bracket a range that excludes the true child --
+// exactly the geometry the ingest pool produced when the test failed.
+static std::shared_ptr<Memory> build_out_of_order_contained()
+{
+    auto arena = std::make_shared<Memory>(Memory::create(4 * 1024 * 1024));
+    FF_BuilderCreateInfo builder_info;
+    builder_info.arena = arena;
+    FF_Builder builder;
+    if (!FF_CreateBuilder(builder_info, builder))
+        return nullptr;
+
+    const auto patient = [&](std::string_view id) {
+        PatientData p;
+        p.id = id;
+        return builder->append_obj(p).offset();
+    };
+    const Offset c2 = patient("c2");
+    const Offset c1 = patient("c1");
+    const Offset c3 = patient("c3");
+
+    const auto observation = [&](std::string_view id, Offset contained) {
+        ObservationData o;
+        o.id = id;
+        o.status = FF_ObservationStatus::Final;
+        o.contained.emplace_back(contained, RECOVER_FF_PATIENT);
+        return builder->append_obj(o).offset();
+    };
+    const Offset o1 = observation("o1", c1);
+    const Offset o2 = observation("o2", c2);
+    const Offset o3 = observation("o3", c3);
+
+    BundleData bundle;
+    bundle.type = FF_BundleType::Collection;
+    for (const Offset o : {o1, o2, o3}) {
+        BundleentryData entry;
+        entry.resource = ResourceReference(o, RECOVER_FF_OBSERVATION);
+        bundle.entry.push_back(std::move(entry));
+    }
+    const auto root = builder->append_obj(bundle);
+    if (!FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root}))
+        return nullptr;
+    Memory::View view;
+    if (!FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view))
+        return nullptr;
+    return arena;
+}
+
+// A private copy of a sealed stream, so each damage case starts from clean bytes.
+static Memory copy_of(const Memory &clean)
+{
+    Memory copy = Memory::create(std::max<size_t>(clean.size(), 1));
+    copy.claim_space(clean.size());
+    std::memcpy(copy.base(), clean.base(), clean.size());
+    return copy;
 }
 
 static const BlockVerdict *find_verdict(const FF_RecoveryReport &rep,
@@ -744,108 +814,165 @@ static void test_apply_repairs_a_copy_and_improves_it()
 // discover the child, fix the child, discover the grandchild. A recovery engine
 // that repairs one generation and stops looks identical to a correct one on any
 // single-generation fixture, which is why every earlier fixture missed it.
-static void test_generational_holes_recover_from_the_root()
+// EVERY CHAIN, EVERY FIXTURE (TASKS.md COV-3). This used to damage only the
+// FIRST qualifying chain in whichever layout ingest happened to produce, so which
+// chain it tested was decided by the scheduler. It failed intermittently for
+// exactly that reason: on some layouts the first chain ran through a resource
+// tuple whose target sat below its parent. Every chain in both fixtures is cheap
+// (a handful each), and it makes the property -- not the layout -- the subject.
+static void check_generational_chains(const Memory &clean, const char *fixture)
 {
-    auto arena = build_bundle();
-    CHECK(arena != nullptr, "bundle build failed");
-    if (!arena)
-        return;
-
     // The known denominator, taken BEFORE any damage.
-    Recovery clean(*arena);
-    const FF_RecoveryReport baseline = clean.recover();
-    CHECK_EQ(baseline.holes, static_cast<size_t>(0), "baseline has no holes");
+    Recovery clean_rec(clean);
+    const FF_RecoveryReport baseline = clean_rec.recover();
+    CHECK_EQ(baseline.holes, static_cast<size_t>(0), fixture << ": baseline has no holes");
     const std::size_t expected_refs = baseline.blocks_total;
 
-    // Find a three-generation chain: a ref whose child is itself a parent whose
+    // Find three-generation chains: a ref whose child is itself a parent whose
     // child is a parent. Indexed by parent so the descent is a lookup.
-    const std::vector<BlockRef> refs = clean.reachable_blocks();
+    const std::vector<BlockRef> refs = clean_rec.reachable_blocks();
     std::map<Offset, std::vector<BlockRef>> by_parent;
     for (const BlockRef &r : refs)
         if (r.child != FF_NULL_OFFSET)
             by_parent[r.parent].push_back(r);
 
-    BlockRef gen1{}, gen2{}, gen3{};
-    bool found = false;
+    // TWO WITNESSES, NOT ONE. An inline-block array element lives AT the slot
+    // that names it -- `parent + field == child`, because +0 of an inline entry
+    // is the element's own offset. There is only one witness there, and
+    // "destroy both" would flip the same byte twice and cancel. (That is not a
+    // test artifact: a single flip in an inline element destroys its only
+    // witness, which makes those elements strictly less recoverable than a
+    // pointed-to block. Worth its own coverage; see REC-21.)
+    const auto two_witnesses = [](const BlockRef &r) { return r.parent + r.field != r.child; };
+
+    std::size_t chains = 0;
     for (const BlockRef &a : refs) {
-        if (a.child == FF_NULL_OFFSET || !by_parent.count(a.child))
+        if (a.child == FF_NULL_OFFSET || !by_parent.count(a.child) || !two_witnesses(a))
             continue;
         for (const BlockRef &b : by_parent[a.child]) {
-            if (b.child == FF_NULL_OFFSET || !by_parent.count(b.child))
+            if (b.child == FF_NULL_OFFSET || !by_parent.count(b.child) || !two_witnesses(b))
                 continue;
             for (const BlockRef &c : by_parent[b.child]) {
-                if (c.child == FF_NULL_OFFSET)
+                if (c.child == FF_NULL_OFFSET || !two_witnesses(c))
                     continue;
                 // Distinct blocks, so three separate holes rather than one
                 // block damaged three times.
                 if (a.child == b.child || b.child == c.child || a.child == c.child)
                     continue;
-                // TWO WITNESSES, NOT ONE. An inline-block array element lives AT
-                // the slot that names it -- `parent + field == child`, because
-                // +0 of an inline entry is the element's own offset. There is
-                // only one witness there, and "destroy both" would flip the
-                // same byte twice and cancel. (That is not a test artifact: a
-                // single flip in an inline element destroys its only witness,
-                // which makes those elements strictly less recoverable than a
-                // pointed-to block. Worth its own coverage; see REC-21.)
-                const auto two_witnesses = [](const BlockRef &r) {
-                    return r.parent + r.field != r.child;
+                ++chains;
+
+                // FULL HOLES: both witnesses of each generation destroyed.
+                //   - the parent's stored offset (the slot no longer names the child)
+                //   - the child's VALIDATION word (scan can no longer find it)
+                Memory damaged = copy_of(clean);
+                BYTE *const base = damaged.base();
+                for (const BlockRef *r : {&a, &b, &c}) {
+                    base[static_cast<size_t>(r->parent) + static_cast<size_t>(r->field)] ^= 0x01;
+                    base[static_cast<size_t>(r->child)] ^= 0x01;
+                }
+                const FF_RecoveryReport rep = Recovery(damaged).recover();
+
+                // The assertions are against the KNOWN quantity, not against
+                // whatever the previous run happened to produce.
+                CHECK_EQ(rep.blocks_total, expected_refs,
+                         fixture << " chain " << a.parent << "->" << a.child << "->" << b.child
+                                 << "->" << c.child << ": every reference is accounted for");
+                CHECK_EQ(rep.holes, static_cast<size_t>(0),
+                         fixture << " chain ->" << c.child << ": no hole survives recovery");
+                CHECK_EQ(rep.unrecovered, static_cast<size_t>(0),
+                         fixture << " chain ->" << c.child << ": nothing is left unrecovered");
+                CHECK_EQ(rep.ambiguous, static_cast<size_t>(0),
+                         fixture << " chain ->" << c.child << ": nothing is left ambiguous");
+
+                // And specifically that the DEEPER generations came back -- an
+                // engine that repairs only the first would still satisfy a
+                // naive reference count if the subtree happened to be small.
+                // A repaired reference still carries the CORRUPTED offset in
+                // block.child -- the repair is the candidate the ranker chose, in
+                // `candidates`. Checking block.child alone would miss every
+                // successful repoint, which is exactly the outcome being asserted.
+                const auto reached = [&rep](Offset target) {
+                    for (const BlockVerdict &v : rep.blocks) {
+                        if (v.block.child == target)
+                            return true;
+                        for (const Offset cand : v.candidates)
+                            if (cand == target)
+                                return true;
+                    }
+                    return false;
                 };
-                if (!two_witnesses(a) || !two_witnesses(b) || !two_witnesses(c))
-                    continue;
-                gen1 = a; gen2 = b; gen3 = c; found = true;
-                break;
+                CHECK(reached(b.child), fixture << " chain ->" << c.child
+                          << ": the child generation was rediscovered through its repaired parent");
+                CHECK(reached(c.child), fixture << " chain ->" << c.child
+                          << ": the grandchild generation was rediscovered through its repaired child");
             }
-            if (found) break;
         }
-        if (found) break;
     }
-    CHECK(found, "fixture contains a three-generation chain");
-    if (!found)
-        return;
+    // P0-2: a sweep over zero chains is not a pass.
+    CHECK(chains > 0, fixture << ": fixture contains a three-generation chain");
+    std::cout << "    generational chains [" << fixture << "]: " << chains << "\n";
+}
 
-    // FULL HOLES: both witnesses of each generation destroyed.
-    //   - the parent's stored offset (the slot no longer names the child)
-    //   - the child's VALIDATION word (scan can no longer find it)
-    BYTE *const base = arena->base();
-    const BlockRef chain[3] = {gen1, gen2, gen3};
-    for (const BlockRef &r : chain) {
-        base[static_cast<size_t>(r.parent) + static_cast<size_t>(r.field)] ^= 0x01;
-        base[static_cast<size_t>(r.child)] ^= 0x01;
+static void test_generational_holes_recover_from_the_root()
+{
+    const auto ingested = build_bundle();
+    REQUIRE(ingested != nullptr, "bundle build failed");
+    check_generational_chains(*ingested, "ingest");
+
+    const auto ordered = build_out_of_order_contained();
+    REQUIRE(ordered != nullptr, "out-of-order fixture build failed");
+    check_generational_chains(*ordered, "out-of-order");
+}
+
+// ONE FLIP IN EVERY RESOURCE TUPLE, IN A LAYOUT THE SCHEDULER DID NOT CHOOSE.
+//
+// The single-flip reduction of COV-3. A resource slot's target is appended on
+// its own, so it can sit anywhere relative to its parent -- including below it,
+// with intact neighbours whose children bracket a range that excludes it. The
+// REC-23 locality rule read that as misattribution and demoted a correct 1-bit
+// repoint to Unrecovered, even though the named block was intact and still
+// vouched for itself. Every resource tuple in both fixtures, one at a time: the
+// repoint must be Corroborated and must name the TRUE child.
+static void check_resource_tuple_repoints(const Memory &clean, const char *fixture)
+{
+    const std::vector<BlockRef> refs = Recovery(clean).reachable_blocks();
+    std::size_t tuples = 0;
+    for (const BlockRef &r : refs) {
+        if (r.kind != FF_FIELD_RESOURCE || r.child == FF_NULL_OFFSET ||
+            r.parent + r.field == r.child)
+            continue;
+        ++tuples;
+        Memory damaged = copy_of(clean);
+        damaged.base()[static_cast<size_t>(r.parent) + static_cast<size_t>(r.field)] ^= 0x01;
+        const FF_RecoveryReport rep = Recovery(damaged).recover();
+        const BlockVerdict *v = find_verdict(rep, r.parent, r.field);
+        CHECK(v != nullptr, fixture << " tuple " << r.parent << "+" << r.field << ": has a verdict");
+        if (!v)
+            continue;
+        CHECK(v->class_ == RepairClass::Corroborated,
+              fixture << " tuple " << r.parent << "+" << r.field << " -> " << r.child
+                      << ": one flipped offset bit is Corroborated, got class "
+                      << static_cast<int>(v->class_));
+        CHECK(!v->candidates.empty() && v->candidates.front() == r.child,
+              fixture << " tuple " << r.parent << "+" << r.field
+                      << ": the repoint names the true child " << r.child);
+        CHECK_EQ(rep.unrecovered, static_cast<size_t>(0),
+                 fixture << " tuple " << r.parent << "+" << r.field << ": nothing left unrecovered");
     }
+    // P0-2: both fixtures carry resource tuples (Bundle.entry.resource and
+    // Observation.contained); a sweep that found none tested nothing.
+    CHECK(tuples >= 4, fixture << ": fixture carries resource tuples, found " << tuples);
+}
 
-    Recovery rec(*arena);
-    const FF_RecoveryReport rep = rec.recover();
+static void test_resource_tuple_repoint_independent_of_layout()
+{
+    const auto ingested = build_bundle();
+    REQUIRE(ingested != nullptr, "bundle build failed");
+    check_resource_tuple_repoints(*ingested, "ingest");
 
-    // The assertions are against the KNOWN quantity, not against whatever the
-    // previous run happened to produce.
-    CHECK_EQ(rep.blocks_total, expected_refs,
-             "every reference is accounted for after three generations of damage");
-    CHECK_EQ(rep.holes, static_cast<size_t>(0), "no hole survives recovery");
-    CHECK_EQ(rep.unrecovered, static_cast<size_t>(0), "nothing is left unrecovered");
-    CHECK_EQ(rep.ambiguous, static_cast<size_t>(0), "nothing is left ambiguous");
-
-    // And specifically that the DEEPER generations came back -- a engine that
-    // repairs only the first would still satisfy a naive reference count if the
-    // subtree happened to be small.
-    // A repaired reference still carries the CORRUPTED offset in block.child --
-    // the repair is the candidate the ranker chose, in `candidates`. Checking
-    // block.child alone would miss every successful repoint, which is exactly
-    // the outcome being asserted.
-    const auto reached = [&rep](Offset target) {
-        for (const BlockVerdict &v : rep.blocks) {
-            if (v.block.child == target)
-                return true;
-            for (const Offset cand : v.candidates)
-                if (cand == target)
-                    return true;
-        }
-        return false;
-    };
-    const bool g2 = reached(gen2.child);
-    const bool g3 = reached(gen3.child);
-    CHECK(g2, "the child generation was rediscovered through its repaired parent");
-    CHECK(g3, "the grandchild generation was rediscovered through its repaired child");
+    const auto ordered = build_out_of_order_contained();
+    REQUIRE(ordered != nullptr, "out-of-order fixture build failed");
+    check_resource_tuple_repoints(*ordered, "out-of-order");
 }
 
 
@@ -1036,6 +1163,8 @@ int main(int argc, char **argv)
     ff_test::run("apply_repairs_a_copy_and_improves_it", test_apply_repairs_a_copy_and_improves_it);
     ff_test::run("generational_holes_recover_from_the_root",
         test_generational_holes_recover_from_the_root);
+    ff_test::run("resource_tuple_repoint_independent_of_layout",
+        test_resource_tuple_repoint_independent_of_layout);
     ff_test::run("interior_entry_damage_does_not_truncate_array",
         test_interior_entry_damage_does_not_truncate_array);
     ff_test::run("tag_consensus_resolves_either_damaged_copy",
