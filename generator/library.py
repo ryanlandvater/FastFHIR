@@ -25,6 +25,7 @@ from generator.emit.views import (
     generate_reflection_dispatch,
 )
 from generator.emit.choice_block import generate_choice_block
+from generator.emit.conformance import generate_conformance_layer
 from generator.emit.deserialize import generate_eager_deserializer
 from generator.emit.store import generate_size_fields, generate_store_fields
 from generator.emit.traits import generate_resource_traits_header
@@ -42,6 +43,20 @@ from generator.utilities import (
     validate_recovery_bands,
     validate_recovery_tags,
 )
+
+
+def _parse_tag_values(ledger_path: str = "dictionaries/master_tags.json") -> dict[str, int]:
+    """RECOVERY_TAG name -> permanent value, read from the committed ledger.
+
+    The conformance dispatch table is binary-searched, so it must be sorted by
+    tag value, and only the ledger knows those values at emit time. The emitted
+    table itself still names TypeTraits<T>::recovery rather than a literal --
+    the ledger decides the ORDER, the traits decide the VALUE, and a generated
+    static_assert fails the build if the two ever disagree.
+    """
+    with open(ledger_path, encoding="utf-8") as fh:
+        ledger = json.load(fh)
+    return {name: int(info["value"], 16) for name, info in ledger["tags"].items()}
 
 
 def compile_fhir_library(
@@ -413,6 +428,24 @@ def compile_fhir_library(
     )
     write_if_changed(os.path.join(output_dir, "FF_Reflection.hpp"), reflection_hpp)
     write_if_changed(os.path.join(output_dir, "FF_Reflection.cpp"), reflection_cpp)
+
+    # --- Conformance layer (TASKS.md Block K) ---
+    # Last, because it needs every block's final layout: a Rule addresses its
+    # field by the field's index in that layout, which is the same list
+    # visit_fields() is emitted from. Emits no wire constant and no layout --
+    # if the wire witness moves because of this call, something is wrong.
+    conformance_tags = _parse_tag_values()
+    conformance_counts = generate_conformance_layer(
+        all_blocks, generated_resources, conformance_tags, output_dir=output_dir
+    )
+    print(
+        "  Conformance layer: "
+        f"{conformance_counts['required']} required, "
+        f"{conformance_counts['max_cardinality']} max-cardinality, "
+        f"{conformance_counts['unimplemented_invariant']} invariants recorded, "
+        f"{conformance_counts['unimplemented_binding']} required bindings recorded, "
+        f"{conformance_counts['unimplemented_fixed']} fixed/pattern recorded"
+    )
 
     # --- Resource type traits ---
     resource_traits_hpp = generate_resource_traits_header(resources)

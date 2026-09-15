@@ -11,6 +11,7 @@
 #include "FF_Utilities.hpp"
 #include "FF_Builder.hpp"
 #include "FF_Ops.hpp"
+#include "FF_Logger.hpp"
 #include <atomic>
 #include <stdexcept>
 #include <thread>
@@ -100,6 +101,69 @@ m_active_mutators(0)
 }
 
 Builder::~Builder() = default; // m_memory handles its own OS cleanup
+
+// =====================================================================
+// Conformance Layer
+// =====================================================================
+// The layer decides WHAT is wrong; the Builder decides what that MEANS. A
+// generated check is noexcept and returns a Status; a Status becomes an
+// exception at exactly one place, which is here. That split is why the
+// generated layer carries no trace of the write path's error convention, and
+// why a Report-policy layer costs the same code path as a Throw-policy one.
+
+void Builder::attach_layer(const Conformance::ValidationHooks* hooks)
+{
+    // Deliberately NOT noexcept. An ABI mismatch means a layer built against a
+    // different FastFHIR release is about to be read through this release's
+    // struct layout -- the failure mode a runtime-loaded layer exists to have
+    // (TASKS.md J1.2). Attach time is the one moment where refusing is cheap,
+    // loud, and before any damage; at dispatch it would be neither.
+    for (const Conformance::ValidationHooks* l = hooks; l != nullptr; l = l->next)
+    {
+        if (l->abi_version == Conformance::FF_CONFORMANCE_ABI)
+            continue;
+        throw std::runtime_error(
+            "FastFHIR: conformance layer ABI mismatch: the layer reports version " +
+            std::to_string(l->abi_version) + ", this build speaks " +
+            std::to_string(Conformance::FF_CONFORMANCE_ABI) +
+            ". Rebuild the layer against this release.");
+    }
+    m_layer = hooks;
+}
+
+void Builder::_check_conformance(RECOVERY_TAG tag, const void* data)
+{
+    const Conformance::Status status =
+        Conformance::dispatch(m_layer, tag, data, m_fhir_rev);
+    if (status)
+        return;
+
+    // Reporting already happened inside the layer that found the fault -- it
+    // owns the sink and the counter, and in a chain it is the only one that
+    // knows which sink is its own. What is left is the boundary's decision.
+    if (status.policy == Conformance::LayerPolicy::Report)
+        return;
+
+    // Formatting is affordable on this branch alone: the exception allocates
+    // anyway. Every operand is static storage from the generated layer.
+    std::string message = "FastFHIR: conformance: ";
+    message += status.path;
+    message += ": ";
+    message += status.human;
+    if (status.key[0] != '\0')
+    {
+        message += " [";
+        message += status.key;
+        message += "]";
+    }
+    if (status.url[0] != '\0')
+    {
+        message += " (";
+        message += status.url;
+        message += ")";
+    }
+    throw std::runtime_error(message);
+}
 
 // =====================================================================
 // Concurrency Guards

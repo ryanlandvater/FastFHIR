@@ -13,6 +13,8 @@
 #include "FF_AllTypes.hpp"
 
 #include <cstdio>
+#include <cstring>
+#include <set>
 #include <string>
 
 #include "FFHR_tests.hpp"
@@ -140,6 +142,124 @@ int main() {
         CHECK(r.failed(), "FF_Ingest rejects null ingestor");
         CHECK(!out_root && out_count == 0,
               "FF_Ingest cleared out_root + out_count on invalid args");
+    }
+
+    // ── API-1.2 — Entry::concrete_recovery() ───────────────────────────────
+    //
+    // The type of a resource slot is on the wire TWICE: in the 10-byte tuple
+    // {offset(8), tag(2)} beside the offset, and again in the target block's
+    // own header. concrete_recovery() reads the FIRST copy without following
+    // the offset; this asserts it agrees with the SECOND.
+    //
+    // ⚠ THE OBVIOUS TEST IS VACUOUS. `slot.as_node().recovery()` reads the tuple
+    // tag too -- standard_entry_as_node's FF_FIELD_RESOURCE branch builds the
+    // Node with `FF_GET_RECOVERY_TAG(base, slot_offset)`, the very bytes
+    // concrete_recovery() returns. Comparing those two compares a value with
+    // itself and passes even if both are wrong. Ground truth is the TARGET
+    // BLOCK'S HEADER, read from the sealed buffer at the node's own offset.
+    {
+        FF_StreamCreateInfo stream_info;
+        FF_Stream stream;
+        CHECK(FF_CreateStream(stream_info, stream), "create bundle stream");
+        FF_IngestorCreateInfo ingestor_info;
+        FF_Ingestor ingestor;
+        CHECK(FF_CreateIngestor(ingestor_info, ingestor), "create bundle ingestor");
+
+        // Deliberately mixed, and deliberately including ImagingStudy: the
+        // shipped profile omits the `imaging` grouping, so that entry is
+        // retained as an opaque-JSON blob and its tuple tag is
+        // RECOVER_FF_OPAQUE_JSON rather than a resource tag. A slot whose tag
+        // varies by CONTENT is the whole reason this accessor exists.
+        constexpr std::string_view kMixed = R"({
+            "resourceType":"Bundle","id":"mixed","type":"collection",
+            "entry":[
+                {"resource":{"resourceType":"Patient","id":"p1"}},
+                {"resource":{"resourceType":"Observation","id":"o1","status":"final"}},
+                {"resource":{"resourceType":"Encounter","id":"e1"}},
+                {"resource":{"resourceType":"Condition","id":"c1"}},
+                {"resource":{"resourceType":"ImagingStudy","id":"i1","status":"available"}}
+            ]})";
+
+        Reflective::ObjectHandle root_handle;
+        Size ingested = 0;
+        CHECK(FF_Ingest(FF_IngestInfo{
+            .ingestor = ingestor,
+            .stream = stream,
+            .source_type = FF_SOURCE_FHIR_JSON,
+            .payload = kMixed,
+        }, root_handle, ingested), "ingest the mixed bundle");
+        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
+            .stream = stream, .root = root_handle}), "set mixed bundle root");
+
+        Memory::View sealed;
+        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{.stream = stream}, sealed),
+              "finalize mixed bundle");
+
+        Parser parser;
+        CHECK(FF_Parse(FF_ParseInfo{
+            .buffer = sealed.data(), .size = sealed.size()}, parser),
+            "parse mixed bundle");
+
+        const BYTE* const bytes = reinterpret_cast<const BYTE*>(sealed.data());
+        const auto entries = parser.root()[Fields::BUNDLE::ENTRY].entries();
+        CHECK(entries.size() == 5, "five bundle entries");
+
+        std::set<RECOVERY_TAG> seen;
+        size_t compared = 0;
+        for (const Reflective::Node& entry : entries) {
+            const Reflective::Entry slot = entry[Fields::BUNDLE_ENTRY::RESOURCE];
+
+            // 1. The slot's own copy -- no dereference.
+            const RECOVERY_TAG from_slot = slot.concrete_recovery();
+            CHECK(from_slot != FF_RECOVER_UNDEFINED,
+                  "a populated resource slot answers a concrete tag");
+            // It must never be the polymorphic base -- that is the value
+            // target_recovery already carries, and the reason this exists.
+            CHECK(from_slot != RECOVER_FF_RESOURCE,
+                  "concrete_recovery() is the CONCRETE type, not RECOVER_FF_RESOURCE");
+            CHECK(slot.target_recovery == RECOVER_FF_RESOURCE,
+                  "target_recovery still carries the static base (unchanged by API-1)");
+
+            // 2. The independent second copy, read straight from the bytes.
+            //    as_node() is deliberately NOT used to locate the target. The
+            //    Node it returns was built from the SAME tuple tag, so it is
+            //    not a second witness at all. (Node::offset() is protected BY
+            //    DESIGN -- a consumer is not handed raw arena offsets -- so
+            //    this is not a gap to file; a test asserting against bytes
+            //    reads the bytes.) The tuple's first 8 bytes are the
+            //    target's absolute offset; the tag in the block header there is
+            //    the independent copy. Reading it is the whole point of the
+            //    redundancy (B7: assert against bytes, not against another
+            //    description of them).
+            uint64_t target_offset = 0;
+            std::memcpy(&target_offset, bytes + slot.absolute_offset(), sizeof(target_offset));
+            CHECK(target_offset != FF_NULL_OFFSET && target_offset < sealed.size(),
+                  "the tuple's offset half is in bounds");
+            const RECOVERY_TAG from_header = FF_GET_RECOVERY_TAG(bytes, target_offset);
+            CHECK(from_slot == from_header,
+                  "slot tag " << from_slot << " == target header tag " << from_header);
+
+            seen.insert(from_slot);
+            ++compared;
+        }
+        // P0-2: an empty walk would satisfy every assertion above.
+        CHECK(compared == 5, "compared all five entries");
+        CHECK(seen.size() >= 4, "the bundle really is mixed: " << seen.size()
+                                << " distinct concrete tags");
+        CHECK(seen.count(RECOVER_FF_OPAQUE_JSON) == 1,
+              "the out-of-profile ImagingStudy reports the opaque-JSON tag");
+
+        // 3. Non-tuple slots answer FF_RECOVER_UNDEFINED rather than
+        //    reinterpreting whatever 2 bytes happen to sit at slot+8.
+        const Reflective::Node first = entries[0];
+        CHECK(first[Fields::BUNDLE_ENTRY::FULL_URL].concrete_recovery() == FF_RECOVER_UNDEFINED,
+              "a STRING slot is not a tuple");
+        CHECK(first[Fields::BUNDLE_ENTRY::REQUEST].concrete_recovery() == FF_RECOVER_UNDEFINED,
+              "a BLOCK slot is not a tuple (8 bytes, no tag half)");
+        CHECK(parser.root()[Fields::BUNDLE::TYPE].concrete_recovery() == FF_RECOVER_UNDEFINED,
+              "a CODE slot is not a tuple");
+        CHECK(parser.root()[Fields::BUNDLE::ENTRY].concrete_recovery() == FF_RECOVER_UNDEFINED,
+              "an ARRAY slot is not a tuple");
     }
 
     return ff_test::report("all FF_* out-param contracts hold");

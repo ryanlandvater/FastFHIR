@@ -1891,6 +1891,28 @@ uint32_t Reflective::Node::code_word() const {
     return LOAD_U32(m_base + m_node_offset);
 }
 
+// API-1: the tuple's tag half, read WITHOUT following the offset.
+//
+// A resource/choice slot is {offset(8), tag(2)}, the same field positions as a
+// DATA_BLOCK header — so the tag sits at +8 in the slot exactly as it does in a
+// block, and FF_GET_RECOVERY_TAG reads it directly. What must NOT happen here
+// is following +0: that is the TARGET's offset, not this block's, and walking
+// it in place is the defect architecture.md §5 records.
+//
+// Bounds-checked because a slot near the end of a damaged stream may not hold
+// its full 10 bytes; an unreadable slot answers FF_RECOVER_UNDEFINED rather
+// than a fabricated tag, per invariant 10 (the read path degrades, it does not
+// throw).
+RECOVERY_TAG Entry::concrete_recovery() const {
+    if (kind != FF_FIELD_RESOURCE && kind != FF_FIELD_CHOICE)
+        return FF_RECOVER_UNDEFINED;
+    if (!base) return FF_RECOVER_UNDEFINED;
+    const Offset slot = absolute_offset();
+    if (!FF_BLOCK_IN_BOUNDS(slot, m_size, ff_slot_width(kind)))
+        return FF_RECOVER_UNDEFINED;
+    return FF_GET_RECOVERY_TAG(base, slot);
+}
+
 Entry::operator std::string_view() const {
     if (kind == FF_FIELD_CODE) {
         uint32_t raw_code = LOAD_U32(base + absolute_offset());

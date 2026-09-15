@@ -15,6 +15,22 @@ def fastfhir_tests(copts = []):
     (CTest splits the README suite into per-example tests via --filter; Bazel
     runs the binary as one test)."""
 
+    # The conformance layer test needs the opt-in layer target. Bazel has no
+    # equivalent of the CMake option, so it is always built here -- the split
+    # that matters is that :fastfhir does not depend on it.
+    cc_test(
+        name = "test_conformance",
+        srcs = ["//:tests/cpp/test_conformance.cpp"],
+        copts = copts,
+        # The ingest byte-identity case drives FF_Ingest; with no corpus
+        # configured it SKIPs, as the other corpus suites do under Bazel.
+        deps = [
+            "//:fastfhir_conformance",
+            "//:fastfhir_ingestor",
+            "@simdjson//:simdjson",
+        ],
+    )
+
     # ── Core-only suites ─────────────────────────────────────────────────
     for name, src in [
         ("test_primitives", "test_primitives.cpp"),
@@ -29,6 +45,8 @@ def fastfhir_tests(copts = []):
         ("test_dictionary", "test_dictionary.cpp"),
         # AR-4.4: the first direct FIFO::Queue test. Header-only, no ingestor.
         ("test_queue", "ff_test_queue.cpp"),
+        # LOG-1: ConcurrentLogger claim/refusal/contention. Header-only.
+        ("test_logger", "test_logger.cpp"),
     ]:
         cc_test(
             name = name,

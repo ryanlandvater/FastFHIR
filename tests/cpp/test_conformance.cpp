@@ -1,0 +1,578 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+// The attachable conformance layer (TASKS.md Block K).
+//
+// The property the whole design rests on, and the one that is easiest to break
+// without noticing: THE LAYER OBSERVES, IT DOES NOT ENCODE. A stream written
+// with the layer attached must be byte-for-byte the stream written without it.
+// Case 4 is that test, and it is the reason the check runs before claim_space()
+// rather than after -- a rejected write must leave the arena as it found it,
+// with no claimed-but-unwritten hole.
+//
+// Fixture note: PatientData is the WRONG fixture for a required-element test
+// and it was the one the plan originally named. Patient declares no min >= 1 at
+// its top level -- every required element it has lives in a backbone. Measured
+// before writing this file; Observation.status and Observation.code are the
+// real ones.
+
+#include <FastFHIR.hpp>
+#include <FF_Ingestor.hpp>
+#include "FF_AllTypes.hpp"
+#include "FF_Conformance_Layer.hpp"
+#include "FF_ConformanceEngine.hpp"
+#include "FF_Logger.hpp"
+
+#include <atomic>
+#include <cstring>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include "FFHR_tests.hpp"
+#include "FFHR_test_corpus.hpp"
+
+using namespace FastFHIR;
+using namespace FastFHIR::Conformance;
+
+namespace
+{
+
+/// A stream carrying one Observation, optionally under a layer.
+/// Returns the sealed bytes so a caller can compare them.
+std::vector<BYTE> write_observation(const ObservationData& observation,
+                                    const ValidationHooks* hooks, bool& threw,
+                                    std::string& what)
+{
+    threw = false;
+    what.clear();
+    FF_StreamCreateInfo stream_info;
+    FF_Stream           stream;
+    if (!FF_CreateStream(stream_info, stream))
+        return {};
+    if (hooks != nullptr)
+        stream->attach_layer(hooks);
+
+    // append_obj, not append: it is the public entry point, and it reaches the
+    // layer through the same append<T_Data> the ingest workers use.
+    try
+    {
+        Reflective::ObjectHandle root = stream->append_obj(observation);
+        if (!FF_StreamSetRoot(FF_StreamSetRootInfo{.stream = stream, .root = root}))
+            return {};
+    }
+    catch (const std::runtime_error& e)
+    {
+        threw = true;
+        what  = e.what();
+        return {};
+    }
+
+    Memory::View view;
+    if (!FF_StreamFinalize(FF_StreamFinalizeInfo{.stream = stream}, view))
+        return {};
+    return std::vector<BYTE>(view.data(), view.data() + view.size());
+}
+
+/// Structurally perfect, spec-violating: status and code are both min = 1.
+ObservationData violating()
+{
+    ObservationData observation;
+    observation.id = "obs-violating";
+    return observation;
+}
+
+/// The same resource with both required elements supplied.
+ObservationData conforming()
+{
+    ObservationData observation;
+    observation.id     = "obs-conforming";
+    observation.status = FF_ObservationStatus::Final;
+    observation.code   = std::make_unique<CodeableConceptData>();
+    return observation;
+}
+
+// ── 1. Detached: conformance is not the library's business ────────────────
+void detached_accepts_a_spec_violation()
+{
+    TEST_GROUP("detached");
+    bool        threw = false;
+    std::string what;
+    const std::vector<BYTE> bytes = write_observation(violating(), nullptr, threw, what);
+    CHECK(!threw, "a detached append does not throw on a spec violation: " << what);
+    CHECK(!bytes.empty(), "a detached stream still seals");
+}
+
+// ── 2. Attached: the same input is a conformance failure ──────────────────
+void attached_rejects_and_cites_the_specification()
+{
+    TEST_GROUP("attached");
+    ValidationHooks hooks = conformance_layer();
+    bool            threw = false;
+    std::string     what;
+    const std::vector<BYTE> bytes = write_observation(violating(), &hooks, threw, what);
+
+    CHECK(threw, "an attached append rejects spec-violating input");
+    CHECK(bytes.empty(), "nothing is sealed when the write is rejected");
+    CHECK(what.rfind("FastFHIR: conformance: ", 0) == 0,
+          "the message carries the write-path prefix: " << what);
+    CHECK(what.find("Observation.status") != std::string::npos,
+          "the message names the failing element: " << what);
+    CHECK(what.find("minimum cardinality 1") != std::string::npos,
+          "the message states the rule that produced it: " << what);
+    CHECK(what.find("http://hl7.org/fhir/StructureDefinition/Observation") != std::string::npos,
+          "the message cites the canonical StructureDefinition: " << what);
+}
+
+// ── 3. Report policy: fill the sink, count it, and continue ───────────────
+void report_policy_counts_instead_of_throwing()
+{
+    TEST_GROUP("report");
+    ConcurrentLogger      logger;
+    std::atomic<uint64_t> failures{0};
+    ValidationHooks       hooks = conformance_layer();
+    hooks.policy     = LayerPolicy::Report;
+    hooks.diagnostic = &logger;
+    hooks.failures   = &failures;
+
+    bool        threw = false;
+    std::string what;
+    const std::vector<BYTE> bytes = write_observation(violating(), &hooks, threw, what);
+
+    CHECK(!threw, "Report policy does not throw: " << what);
+    CHECK(!bytes.empty(), "Report policy still writes the resource");
+    CHECK_EQ(failures.load(), 1u, "one failure counted");
+    CHECK(logger.to_string().find("Observation.status") != std::string::npos,
+          "the diagnostic reached the sink");
+}
+
+// ── 4. A conforming resource passes with the layer attached ───────────────
+void conforming_input_passes_attached()
+{
+    TEST_GROUP("conforming");
+    ConcurrentLogger      logger;
+    std::atomic<uint64_t> failures{0};
+    ValidationHooks       hooks = conformance_layer();
+    hooks.policy     = LayerPolicy::Report;
+    hooks.diagnostic = &logger;
+    hooks.failures   = &failures;
+
+    bool        threw = false;
+    std::string what;
+    const std::vector<BYTE> bytes = write_observation(conforming(), &hooks, threw, what);
+
+    CHECK(!threw, "conforming input is not rejected: " << what);
+    CHECK(!bytes.empty(), "conforming input seals");
+    CHECK_EQ(failures.load(), 0u, "nothing counted for conforming input");
+    CHECK(logger.to_string().empty(), "nothing reported for conforming input");
+}
+
+// ── 5. BYTE IDENTITY — the property that makes the layer safe to ship ─────
+void the_layer_never_changes_the_bytes()
+{
+    TEST_GROUP("byte identity");
+    ConcurrentLogger      logger;
+    std::atomic<uint64_t> failures{0};
+    ValidationHooks       hooks = conformance_layer();
+    hooks.policy     = LayerPolicy::Report;
+    hooks.diagnostic = &logger;
+    hooks.failures   = &failures;
+
+    bool        threw = false;
+    std::string what;
+    const std::vector<BYTE> detached = write_observation(conforming(), nullptr, threw, what);
+    const std::vector<BYTE> attached = write_observation(conforming(), &hooks, threw, what);
+
+    REQUIRE(!detached.empty(), "detached stream sealed");
+    CHECK_EQ(attached.size(), detached.size(), "attached and detached streams are the same size");
+    CHECK(attached == detached, "attached and detached streams are byte-identical");
+
+    // The same must hold when the layer FIRES. A Report-policy failure that
+    // still writes must write the same bytes a detached build would.
+    const std::vector<BYTE> bad_detached = write_observation(violating(), nullptr, threw, what);
+    const std::vector<BYTE> bad_attached = write_observation(violating(), &hooks, threw, what);
+    REQUIRE(!bad_detached.empty(), "detached stream sealed for violating input");
+    CHECK(bad_attached == bad_detached,
+          "a REPORTED failure still writes byte-identical output");
+    CHECK(failures.load() > 0, "the layer actually fired -- a zero here would make "
+                               "the identity above vacuous (P0-2)");
+}
+
+// ── 6. Descent: a rule on a nested backbone fires from the parent append ──
+void descent_reaches_a_nested_backbone()
+{
+    TEST_GROUP("descent");
+    // Bundle.entry.request.method is min = 1, three levels below BundleData.
+    // Nothing about BundleData itself is wrong -- if descent is broken, this
+    // passes and the layer is worth much less than it looks.
+    BundleData bundle;
+    bundle.type = FF_BundleType::Collection;
+    BundleentryData entry;
+    entry.request = std::make_unique<BundleentryrequestData>();
+    entry.request->url = "Patient/1";
+    bundle.entry.push_back(std::move(entry));
+
+    FF_StreamCreateInfo stream_info;
+    FF_Stream           stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+    ValidationHooks hooks = conformance_layer();
+    stream->attach_layer(&hooks);
+
+    std::string what;
+    try
+    {
+        stream->append_obj(bundle);
+    }
+    catch (const std::runtime_error& e)
+    {
+        what = e.what();
+    }
+    CHECK(what.find("Bundle.entry.request.method") != std::string::npos,
+          "descent reached Bundle.entry.request.method: " << what);
+}
+
+// ── 7. Chaining: `next` is reached only when the first layer passes ───────
+std::atomic<int> g_trace_calls{0};
+
+Status tracing_check(const void*, uint32_t, const ValidationHooks*) noexcept
+{
+    g_trace_calls.fetch_add(1, std::memory_order_relaxed);
+    return {};
+}
+
+void layers_chain_in_both_orders()
+{
+    TEST_GROUP("chaining");
+    static const Entry TRACE_ENTRIES[] = {
+        {TypeTraits<ObservationData>::recovery, &tracing_check},
+    };
+    ValidationHooks conformance = conformance_layer();
+    conformance.policy = LayerPolicy::Report;
+
+    ValidationHooks tracing{};
+    tracing.entries = TRACE_ENTRIES;
+    tracing.count   = 1;
+    tracing.policy  = LayerPolicy::Report;
+
+    bool        threw = false;
+    std::string what;
+
+    // Tracing first: it passes, so the conformance layer behind it still runs.
+    g_trace_calls = 0;
+    tracing.next  = &conformance;
+    write_observation(violating(), &tracing, threw, what);
+    CHECK_EQ(g_trace_calls.load(), 1, "the first layer ran");
+
+    // Conformance first: it FAILS, so the chain stops and tracing is not reached.
+    g_trace_calls     = 0;
+    tracing.next      = nullptr;
+    conformance.next  = &tracing;
+    write_observation(violating(), &conformance, threw, what);
+    CHECK_EQ(g_trace_calls.load(), 0, "a failing layer stops the chain");
+
+    // ...and with conforming input the chain runs all the way through.
+    g_trace_calls = 0;
+    write_observation(conforming(), &conformance, threw, what);
+    CHECK_EQ(g_trace_calls.load(), 1, "a passing layer hands on to the next");
+}
+
+// ── 8. UNIMPLEMENTED rows are queryable, and never fire ───────────────────
+void what_was_not_checked_is_visible()
+{
+    TEST_GROUP("unimplemented");
+    const std::span<const Rule> rules = conformance_rules(TypeTraits<PatientData>::recovery);
+    CHECK(!rules.empty(), "Patient has recorded rules");
+
+    bool found_dom2 = false;
+    bool found_binding = false;
+    for (const Rule& rule : rules)
+    {
+        if (std::string_view(rule.key) == "dom-2")
+        {
+            found_dom2 = true;
+            CHECK(rule.kind == RuleKind::UNIMPLEMENTED, "dom-2 is recorded, not enforced");
+            CHECK(std::string_view(rule.human).find("FHIRPath") != std::string_view::npos,
+                  "dom-2 says WHY it is not evaluated");
+        }
+        if (rule.kind == RuleKind::UNIMPLEMENTED && std::string_view(rule.binding).size() > 0)
+            found_binding = true;
+    }
+    CHECK(found_dom2, "the dom-2 invariant is listed as unimplemented");
+    CHECK(found_binding, "a required ValueSet binding is listed with its ValueSet URL");
+
+    // A resource with only UNIMPLEMENTED rows must still write cleanly: those
+    // rows are records, not checks.
+    ValidationHooks hooks = conformance_layer();
+    FF_StreamCreateInfo stream_info;
+    FF_Stream           stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+    stream->attach_layer(&hooks);
+    PatientData patient;
+    patient.id = "p1";
+    std::string what;
+    try { stream->append_obj(patient); }
+    catch (const std::runtime_error& e) { what = e.what(); }
+    CHECK(what.empty(), "an UNIMPLEMENTED row never fires: " << what);
+}
+
+// ── 9. MAX_CARDINALITY: the engine branch the base spec never exercises ───
+// The compiled StructureDefinitions spell `max` only as "1" or "*", so the
+// generated layer emits ZERO max-cardinality rules. An engine branch no rule
+// ever reaches is not evidence that it works, so this builds the rule by hand.
+// If a profile ever introduces a numeric max, this is the code that will run.
+
+/// The field's position in visit_fields() -- the same ordinal a Rule carries.
+/// Derived here rather than hardcoded, so the test cannot drift from the layout
+/// the generator emitted.
+uint16_t ordinal_of(const ObservationData& observation, std::string_view name)
+{
+    uint16_t index = 0;
+    uint16_t found = 0xFFFF;
+    visit_fields(observation, [&](const char* field_name, const auto&) {
+        if (std::string_view(field_name) == name)
+            found = index;
+        ++index;
+    });
+    return found;
+}
+
+void a_numeric_max_is_enforced()
+{
+    TEST_GROUP("max cardinality");
+    const uint16_t identifier_ordinal = ordinal_of(conforming(), "identifier");
+    CHECK_NE(identifier_ordinal, 0xFFFF, "Observation.identifier has a visit ordinal");
+
+    static Rule max_rules[] = {
+        {"Observation.identifier", "", "Observation.identifier admits at most 2 element(s).",
+         "http://hl7.org/fhir/StructureDefinition/Observation", "", 0, 2, 0,
+         RuleKind::MAX_CARDINALITY, FF_CONF_VERSION_ALL},
+    };
+    max_rules[0].ordinal = identifier_ordinal;
+
+    static const Entry MAX_ENTRIES[] = {
+        {TypeTraits<ObservationData>::recovery,
+         [](const void* data, uint32_t version, const ValidationHooks* self) noexcept -> Status {
+             return run_rules(*static_cast<const ObservationData*>(data), max_rules, 1, version,
+                              self);
+         }},
+    };
+    ValidationHooks hooks{};
+    hooks.entries = MAX_ENTRIES;
+    hooks.count   = 1;
+    hooks.policy  = LayerPolicy::Throw;
+
+    bool        threw = false;
+    std::string what;
+
+    ObservationData within = conforming();
+    within.identifier.resize(2);
+    write_observation(within, &hooks, threw, what);
+    CHECK(!threw, "two identifiers is within a max of 2: " << what);
+
+    ObservationData over = conforming();
+    over.identifier.resize(3);
+    write_observation(over, &hooks, threw, what);
+    CHECK(threw, "three identifiers exceeds a max of 2");
+    CHECK(what.find("Observation.identifier") != std::string::npos,
+          "the failure names the repeating element: " << what);
+}
+
+// ── 10. An ABI mismatch is refused at attach, loudly ──────────────────────
+void an_abi_mismatch_is_refused()
+{
+    TEST_GROUP("abi");
+    FF_StreamCreateInfo stream_info;
+    FF_Stream           stream;
+    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+
+    ValidationHooks stale = conformance_layer();
+    stale.abi_version = FF_CONFORMANCE_ABI + 1;
+    std::string what;
+    try { stream->attach_layer(&stale); }
+    catch (const std::runtime_error& e) { what = e.what(); }
+    CHECK(what.find("ABI mismatch") != std::string::npos,
+          "a layer from another release is refused at attach: " << what);
+    CHECK(stream->layer() == nullptr, "the refused layer was not attached");
+}
+
+// ── 11. Version masking: R4 and R5 disagree, and the layer knows ──────────
+void a_rule_only_applies_to_the_revision_that_states_it()
+{
+    TEST_GROUP("versions");
+    // Condition.clinicalStatus is min = 1 in R5 and min = 0 in R4 -- verified
+    // against both StructureDefinitions. The same POCO must therefore be
+    // rejected by an R5 stream and accepted by an R4 one.
+    ConditionData condition;
+    condition.id = "c1";
+
+    ValidationHooks hooks = conformance_layer();
+    for (const FHIR_VERSION version : {FHIR_VERSION_R5, FHIR_VERSION_R4})
+    {
+        FF_StreamCreateInfo stream_info;
+        stream_info.version = version;
+        FF_Stream stream;
+        REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+        stream->attach_layer(&hooks);
+        std::string what;
+        try { stream->append_obj(condition); }
+        catch (const std::runtime_error& e) { what = e.what(); }
+
+        const bool named = what.find("Condition.clinicalStatus") != std::string::npos;
+        if (version == FHIR_VERSION_R5)
+            CHECK(named, "R5 requires Condition.clinicalStatus: " << what);
+        else
+            CHECK(!named, "R4 does not require Condition.clinicalStatus: " << what);
+    }
+}
+
+// ── 12. The layer through the real pipeline (COV-1) ───────────────────────
+// Case 5 proves identity for a hand-built POCO on the calling thread. The
+// layer's real deployment is the ingest, where every nested and contained
+// resource reaches it through a worker's append<T_Data>. So ingest real Synthea
+// bundles with and without the layer, twice over:
+//
+//   ONE worker   -- the sealed arenas must be byte-identical. Only here is that
+//                   a meaningful claim: with a pool, block placement follows
+//                   worker scheduling, and two DETACHED ingests of one bundle
+//                   already differ in ~70% of their bytes (measured
+//                   2026-09-15). A detached-vs-detached control runs first, so
+//                   if single-worker ingest ever stops being deterministic the
+//                   failure names that instead of blaming the layer.
+//   FULL pool    -- the layer runs concurrently on the workers, and the
+//                   exported documents must be identical.
+//
+// A tracing layer sits in FRONT of the conformance layer (it always passes, so
+// the chain always reaches conformance). Its call count and the failure count
+// prove the layer actually ran -- identical output from a layer that never ran
+// would be vacuous (P0-2).
+
+/// Ingest one payload into a fresh stream, optionally under @p hooks, and
+/// return the sealed bytes. Empty on any failure.
+std::vector<BYTE> ingest_bundle(const std::string& json, const ValidationHooks* hooks,
+                                uint32_t concurrency)
+{
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena   = std::make_shared<Memory>(Memory::create(2ull * 1024 * 1024 * 1024));
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    if (!FF_CreateStream(stream_info, stream))
+        return {};
+    if (hooks != nullptr)
+        stream->attach_layer(hooks);
+
+    FF_IngestorCreateInfo ingestor_info;
+    ingestor_info.concurrency = concurrency;
+    FF_Ingestor ingestor;
+    if (!FF_CreateIngestor(ingestor_info, ingestor))
+        return {};
+
+    Reflective::ObjectHandle root;
+    Size                     resource_count = 0;
+    const FF_Result ingest = FF_Ingest(FF_IngestInfo{
+        .ingestor         = ingestor,
+        .stream           = stream,
+        .source_type      = FF_SOURCE_FHIR_JSON,
+        .extension_filter = FF_ExtensionFilterMode::FILTER_NONE,
+        .payload          = json,
+    }, root, resource_count);
+    if (ingest.failed())
+    {
+        printf("    ingest failed: %s\n", ingest.message.c_str());
+        return {};
+    }
+    if (!FF_StreamSetRoot(FF_StreamSetRootInfo{.stream = stream, .root = root}))
+        return {};
+
+    Memory::View view;
+    if (!FF_StreamFinalize(FF_StreamFinalizeInfo{.stream = stream}, view))
+        return {};
+    return std::vector<BYTE>(view.data(), view.data() + view.size());
+}
+
+/// The document a sealed stream exports.
+std::string exported_json(const std::vector<BYTE>& bytes)
+{
+    std::ostringstream out;
+    Parser(bytes.data(), bytes.size()).print_json(out);
+    return out.str();
+}
+
+void the_layer_never_changes_ingested_output()
+{
+    TEST_GROUP("ingest identity");
+    const std::vector<ff_test::fs::path> bundles = ff_test::find_bundles(3);
+    if (bundles.empty())
+    {
+        printf("  SKIP: Synthea corpus not configured (FASTFHIR_DOWNLOAD_SYNTHEA)\n");
+        return;
+    }
+
+    static const Entry TRACE_ENTRIES[] = {
+        {TypeTraits<ObservationData>::recovery, &tracing_check},
+    };
+    ConcurrentLogger      logger;
+    std::atomic<uint64_t> failures{0};
+    ValidationHooks       conformance = conformance_layer();
+    conformance.policy     = LayerPolicy::Report;
+    conformance.diagnostic = &logger;
+    conformance.failures   = &failures;
+
+    ValidationHooks tracing{};
+    tracing.entries = TRACE_ENTRIES;
+    tracing.count   = 1;
+    tracing.policy  = LayerPolicy::Report;
+    tracing.next    = &conformance;
+
+    for (const ff_test::fs::path& path : bundles)
+    {
+        const std::string name = path.filename().string();
+        const std::string json = ff_test::read_file(path);
+        REQUIRE(!json.empty(), "read " << name);
+
+        // One worker: exact bytes.
+        const std::vector<BYTE> control  = ingest_bundle(json, nullptr, 1);
+        const std::vector<BYTE> detached = ingest_bundle(json, nullptr, 1);
+        REQUIRE(!detached.empty(), "single-worker detached ingest sealed: " << name);
+        REQUIRE(control == detached,
+                "single-worker ingest is deterministic (precondition for the byte "
+                "comparison, not a layer defect): " << name);
+
+        g_trace_calls = 0;
+        failures      = 0;
+        const std::vector<BYTE> attached = ingest_bundle(json, &tracing, 1);
+        CHECK(attached == detached,
+              "single-worker ingest is byte-identical with the layer attached: " << name);
+        CHECK(g_trace_calls.load() > 0, "the layer chain was consulted: " << name);
+        CHECK(failures.load() > 0, "the conformance layer fired on real data: " << name);
+
+        // Full pool: the layer runs on the workers; the document must not change.
+        g_trace_calls = 0;
+        const std::vector<BYTE> pool_detached = ingest_bundle(json, nullptr, 0);
+        const std::vector<BYTE> pool_attached = ingest_bundle(json, &tracing, 0);
+        REQUIRE(!pool_detached.empty() && !pool_attached.empty(), "pooled ingest sealed: " << name);
+        CHECK(g_trace_calls.load() > 0, "the pooled workers consulted the layer chain: " << name);
+        CHECK(exported_json(pool_attached) == exported_json(pool_detached),
+              "pooled ingest exports an identical document with the layer attached: " << name);
+    }
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+    ff_test::set_filter(argc, argv);
+    ff_test::run("detached", detached_accepts_a_spec_violation);
+    ff_test::run("attached", attached_rejects_and_cites_the_specification);
+    ff_test::run("report", report_policy_counts_instead_of_throwing);
+    ff_test::run("conforming", conforming_input_passes_attached);
+    ff_test::run("byte_identity", the_layer_never_changes_the_bytes);
+    ff_test::run("descent", descent_reaches_a_nested_backbone);
+    ff_test::run("chaining", layers_chain_in_both_orders);
+    ff_test::run("unimplemented", what_was_not_checked_is_visible);
+    ff_test::run("max_cardinality", a_numeric_max_is_enforced);
+    ff_test::run("abi", an_abi_mismatch_is_refused);
+    ff_test::run("versions", a_rule_only_applies_to_the_revision_that_states_it);
+    ff_test::run("ingest_identity", the_layer_never_changes_ingested_output);
+    return ff_test::report("conformance layer");
+}

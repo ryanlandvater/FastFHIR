@@ -52,14 +52,61 @@ VIEW_EXTRA_METHODS: dict[str, str] = {}
 BASE_BLOCK_HEADER_SIZE: int = 10
 
 
+# ---------------------------------------------------------------------------
+# Conformance facts (TASKS.md Block K).
+#
+# PURE EXTRACTION. Nothing here decides what is enforceable -- that is the
+# emitter's allow-list (K3.1), and everything outside it becomes an
+# UNIMPLEMENTED row rather than a silent omission (K3.2). Keeping the judgement
+# out of the model is what lets the emitter be audited against the spec.
+#
+# None of this touches layout: min/max/binding/constraint say what a document
+# must CONTAIN, never where a byte goes. A change here cannot move the wire.
+# ---------------------------------------------------------------------------
+def _conformance_of(el: dict) -> dict:
+    """Extract one element's conformance facts from its StructureDefinition."""
+    binding = el.get("binding") or {}
+    # fixed[x] / pattern[x] are spelled with the type appended, so the key is
+    # discovered rather than named: fixedUri, patternCodeableConcept, ...
+    fixed_key = next((k for k in el if k.startswith("fixed")), None)
+    pattern_key = next((k for k in el if k.startswith("pattern")), None)
+    return {
+        "min": int(el.get("min") or 0),
+        "max": el.get("max"),
+        "constraints": [
+            {
+                "key": c.get("key", ""),
+                "severity": c.get("severity", ""),
+                "human": c.get("human", ""),
+                "expression": c.get("expression", ""),
+            }
+            for c in (el.get("constraint") or [])
+        ],
+        "binding_strength": binding.get("strength", ""),
+        # Same "|version" strip codesystems.py applies -- one spelling of a
+        # ValueSet URL, so the emitter can match bindings to expansions.
+        "binding_valueset": (binding.get("valueSet") or "").split("|")[0],
+        "fixed": {"key": fixed_key, "value": el[fixed_key]} if fixed_key else None,
+        "pattern": {"key": pattern_key, "value": el[pattern_key]} if pattern_key else None,
+    }
+
+
 # =========================================================================
 # merge_fhir_versions
 # =========================================================================
 def merge_fhir_versions(schemas_by_version, root_resource):
     master_blocks = {}
+    # Resource-level invariants (dom-*, pat-1, ...) hang off the ROOT element,
+    # which the field loop below skips by design. Captured here and attached to
+    # the root block after the merge, because that block does not exist until
+    # its first child creates it.
+    root_conformance: dict[str, dict] = {}
     for v_idx, (v_name, elements) in enumerate(schemas_by_version):
         for el in elements:
             path = el.get("path", "")
+            if path == root_resource:
+                root_conformance[v_name] = _conformance_of(el)
+                continue
             if not path.startswith(root_resource) or len(path.split(".")) == 1:
                 continue
             parent_path = ".".join(path.split(".")[:-1])
@@ -69,7 +116,15 @@ def merge_fhir_versions(schemas_by_version, root_resource):
             choice_types = [t.get("code") for t in el.get("type", [])] if is_choice else []
 
             if parent_path not in master_blocks:
-                master_blocks[parent_path] = {"layout": [], "seen": set(), "sizes": {}}
+                master_blocks[parent_path] = {
+                    "layout": [],
+                    "seen": set(),
+                    "sizes": {},
+                    # field name -> its layout entry. Conformance is recorded on
+                    # EVERY version pass, while a layout entry is created only on
+                    # the first, so the two need different lookups.
+                    "by_name": {},
+                }
             blk = master_blocks[parent_path]
             f_type = _tm.sanitize_fhir_type(
                 el.get("type", [{"code": "BackboneElement"}])[0].get("code", "BackboneElement")
@@ -126,6 +181,8 @@ def merge_fhir_versions(schemas_by_version, root_resource):
                     "first_version_name": v_name,
                     "first_version_idx": v_idx,
                     "offset": off,
+                    # version name -> _conformance_of(el); filled just below.
+                    "conformance": {},
                 }
                 override = BLOCK_FIELD_OVERRIDES.get((parent_path, field_name))
                 if override:
@@ -137,7 +194,18 @@ def merge_fhir_versions(schemas_by_version, root_resource):
                 # the enclosing struct, so no special handling needed.
                 blk["layout"].append(field_entry)
                 blk["seen"].add(field_name)
+                blk["by_name"][field_name] = field_entry
+            # Outside the first-seen branch on purpose: R4 and R5 disagree about
+            # some cardinalities, and a rule emitted from one revision must not
+            # be enforced against a document written as the other. The emitter
+            # turns this per-version map into version-masked rows (K-WO-4, D8).
+            existing_field = blk["by_name"].get(field_name)
+            if existing_field is not None:
+                existing_field["conformance"][v_name] = _conformance_of(el)
             blk["sizes"][v_name] = blk["layout"][-1]["offset"] + blk["layout"][-1]["size"]
+
+    if root_resource in master_blocks:
+        master_blocks[root_resource]["conformance"] = root_conformance
 
     for parent_path, blk in master_blocks.items():
         for f in blk["layout"]:

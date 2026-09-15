@@ -19,6 +19,9 @@ cc_library(
             "src/FF_Ingestor.cpp",
             "src/FF_Extensions.cpp",
             "generated_src/FF_IngestMappings.cpp",
+            # The conformance layer is opt-in and lives in its own target; see
+            # fastfhir_conformance below. Linking it here would defeat the split.
+            "generated_src/FF_Conformance_Layer.cpp",
         ],
     ),
     hdrs = glob(["include/*.hpp", "generated_src/*.hpp"]),
@@ -35,6 +38,21 @@ cc_library(
     ],
     copts = _COPTS,
     deps = [":fastfhir", "@simdjson//:simdjson"],
+)
+
+# ── Conformance layer (opt-in) ─────────────────────────────────────
+# Not a dependency of anything: a target links it only when it wants FHIR
+# conformance checking, exactly as CMake's FASTFHIR_BUILD_CONFORMANCE=OFF
+# default arranges. Structural validation is unconditional and lives in
+# :fastfhir; this checks cardinality and required elements, which say nothing
+# about whether the bytes parse.
+cc_library(
+    name = "fastfhir_conformance",
+    srcs = ["generated_src/FF_Conformance_Layer.cpp"],
+    hdrs = ["src/conformance/FF_ConformanceEngine.hpp"],
+    copts = _COPTS,
+    includes = ["src/conformance"],
+    deps = [":fastfhir"],
 )
 
 # ── CLI tools ──────────────────────────────────────────────────────

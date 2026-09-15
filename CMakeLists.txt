@@ -83,6 +83,7 @@ option(FASTFHIR_BUILD_TESTS        "Build C++ test suite" ON)
 option(FASTFHIR_RUN_GENERATOR      "Run code generator at configure time" ON)
 option(FASTFHIR_GENERATE_ON_BUILD  "Regenerate sources on every build" OFF)
 option(FASTFHIR_ENABLE_EXTENSIONS  "Enable WASM extension codec" OFF)
+option(FASTFHIR_BUILD_CONFORMANCE  "Build the attachable FHIR conformance layer" OFF)
 
 # Comma-separated LIST of resource groupings; the generator compiles their union.
 # Real deployments compose -- a payer needs US Core *and* claims. Accepted names
@@ -203,6 +204,11 @@ endif()
 file(GLOB FASTFHIR_GENERATED_SOURCES CONFIGURE_DEPENDS generated_src/*.cpp)
 file(GLOB FASTFHIR_GENERATED_HEADERS CONFIGURE_DEPENDS generated_src/*.hpp)
 list(REMOVE_ITEM FASTFHIR_GENERATED_SOURCES "${FASTFHIR_GENERATED_DIR}/FF_IngestMappings.cpp")
+# The conformance layer is generated into the same directory but must NEVER be
+# swept into the core library: it is opt-in by design (see fastfhir_conformance
+# below), and it needs src/conformance/ on the include path, which fastfhir_obj
+# does not have. Without this line the GLOB above links it into every build.
+list(REMOVE_ITEM FASTFHIR_GENERATED_SOURCES "${FASTFHIR_GENERATED_DIR}/FF_Conformance_Layer.cpp")
 
 if(NOT FASTFHIR_GENERATED_SOURCES)
     message(FATAL_ERROR "No generated sources. Enable FASTFHIR_RUN_GENERATOR or run generator manually.")
@@ -349,6 +355,27 @@ _ff_enable_switch_warnings(ff_compact)
 # All test registration — executables, CTest entries, dependency chains,
 # resource locks, and the Python suite — lives in tests/tests.cmake so this
 # file stays a readable build definition. Self-gating on FASTFHIR_BUILD_TESTS.
+# ── Conformance layer (opt-in, TASKS.md Block K) ────────────────
+# Deliberately its own target and OFF by default. Conformance policy is a
+# development-time aid, not a production dependency -- the Vulkan arrangement --
+# so a shipped product links it only when it asks for it, and a detached
+# Builder::append pays one null check. It has a real source file, so the
+# object-only Xcode trap documented at the `fastfhir` target does not apply.
+if(FASTFHIR_BUILD_CONFORMANCE)
+    add_library(fastfhir_conformance STATIC
+        ${FASTFHIR_GENERATED_DIR}/FF_Conformance_Layer.cpp
+        src/conformance/FF_ConformanceEngine.hpp
+    )
+    add_library(FastFHIR::conformance ALIAS fastfhir_conformance)
+    target_include_directories(fastfhir_conformance PUBLIC
+        $<BUILD_INTERFACE:${FASTFHIR_INCLUDE_DIR}>
+        $<BUILD_INTERFACE:${FASTFHIR_GENERATED_DIR}>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/conformance>
+    )
+    target_compile_features(fastfhir_conformance PUBLIC cxx_std_20)
+    _ff_enable_switch_warnings(fastfhir_conformance)
+endif()
+
 include(tests/tests.cmake)
 # ── Python bindings ────────────────────────────────────────────
 if(FASTFHIR_BUILD_PYTHON_BINDINGS)
@@ -449,15 +476,21 @@ if(FASTFHIR_BUILD_TESTS)
     # Must match the ctest registration list at the `foreach(_standalone ...)` above:
     # a target registered as a test but absent here builds nothing and ctest reports
     # "Not Run". add_ff_cpp_test() does neither for you.
-    list(APPEND _BUILD_ALL ff_test_readme ff_roundtrip
+    list(APPEND _BUILD_ALL ff_test_readme ff_test_readme_examples ff_roundtrip
          ff_test_primitives ff_test_memory ff_test_simd
          ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor
          ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary
-         ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue
+         ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
          ff_test_abstraction_parity ff_test_recovery ff_test_views)
+    if(FASTFHIR_BUILD_CONFORMANCE)
+        list(APPEND _BUILD_ALL ff_test_conformance ff_example_conformance)
+    endif()
 endif()
 if(FASTFHIR_BUILD_PYTHON_BINDINGS)
     list(APPEND _BUILD_ALL fastfhir_python)
+endif()
+if(FASTFHIR_BUILD_CONFORMANCE)
+    list(APPEND _BUILD_ALL fastfhir_conformance)
 endif()
 add_custom_target(build_all DEPENDS ${_BUILD_ALL})
 
@@ -504,6 +537,9 @@ if(CMAKE_GENERATOR STREQUAL "Xcode")
     set_target_properties(${_FF_XCODE_EXTRA_TARGET} PROPERTIES FOLDER "Libraries")
 endif()
 set_target_properties(ff_export ff_compact  PROPERTIES FOLDER "Tools")
+if(FASTFHIR_BUILD_CONFORMANCE)
+    set_target_properties(fastfhir_conformance PROPERTIES FOLDER "Libraries")
+endif()
 set_target_properties(build_all             PROPERTIES FOLDER "CMake")
 if(FASTFHIR_BUILD_INGESTOR)
     set_target_properties(fastfhir_ingestor fastfhir_ingest_obj
@@ -517,10 +553,11 @@ if(FASTFHIR_BUILD_PYTHON_BINDINGS AND TARGET fastfhir_python)
     set_target_properties(fastfhir_python PROPERTIES FOLDER "Libraries")
 endif()
 if(FASTFHIR_BUILD_TESTS)
-    foreach(_t ff_test_readme ff_roundtrip ff_test_primitives ff_test_memory
+    foreach(_t ff_test_readme ff_test_readme_examples ff_roundtrip
+               ff_test_primitives ff_test_memory
                ff_test_simd ff_test_amend ff_test_cc ff_test_bundle
                ff_test_compactor ff_test_graph_bounds ff_test_datetime
-               ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue
+               ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
                ff_test_api ff_test_dictionary ff_test_abstraction_parity
                ff_test_recovery ff_test_views)
         if(TARGET ${_t})
@@ -563,12 +600,14 @@ endif()
 # being configured and the property is silently dropped (verified). Run the suite
 # with `ctest --preset xcode` instead, or flip CMAKE_XCODE_GENERATE_SCHEME back to
 # ON in CMakePresets.json to get a scheme for every target.
-foreach(_t build_all fastfhir fastfhir_ingestor ff_ingest ff_export ff_compact ff_roundtrip ff_test_readme
+foreach(_t build_all fastfhir fastfhir_ingestor ff_ingest ff_export ff_compact ff_roundtrip
+           ff_test_readme ff_test_readme_examples
            ff_test_primitives ff_test_memory ff_test_simd ff_test_amend
            ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds
-           ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue
+           ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
            ff_test_datetime ff_test_api ff_test_dictionary ff_test_abstraction_parity
-           ff_test_recovery ff_test_views)
+           ff_test_recovery ff_test_views
+           fastfhir_conformance ff_test_conformance ff_example_conformance)
     if(TARGET ${_t})
         set_target_properties(${_t} PROPERTIES XCODE_GENERATE_SCHEME ON)
     endif()
