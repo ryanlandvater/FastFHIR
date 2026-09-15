@@ -49,6 +49,11 @@ DEFAULT_SYNTHEA_DIR = os.environ.get("FASTFHIR_SYNTHEA_DIR", "")
 # How large a memory arena to allocate for ingest (256 MB)
 ARENA_SIZE = 256 * 1024 * 1024
 
+# Exit code for "the gate could not run" (no corpus on this machine). Registered
+# as py_roundtrip's SKIP_RETURN_CODE in tests/tests.cmake, so ctest reports the
+# run as Skipped instead of Passed. 77 is the automake/ctest convention.
+SKIP_RETURN_CODE = 77
+
 
 # ─── C++ harness wrapper ────────────────────────────────────────────────────
 
@@ -116,6 +121,7 @@ def run_roundtrip_test(
     *,
     harness_path: str = "ff_roundtrip",
     debug: bool = False,
+    timeout: float = 120.0,
 ) -> tuple[bool, list[DiffEntry], str, DiffStats]:
     """Run one round-trip test on a Synthea fixture.
 
@@ -138,6 +144,9 @@ def run_roundtrip_test(
     Returns (ok, diffs, report, stats).  `stats` carries how much of the SOURCE
     the comparison actually reached -- see DiffStats: zero diffs over zero
     compared values is not a passing round-trip, it is an untested one.
+
+    `timeout` exists so the error-path tests (test_roundtrip_errors.py) can
+    reach the TimeoutExpired handler without waiting two minutes.
     """
     # Load input
     with open(fixture_path, "r") as f:
@@ -153,15 +162,21 @@ def run_roundtrip_test(
             argv,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=timeout,
         )
     except FileNotFoundError:
         return _harness_failure(
             f"C++ harness not found: {harness_path}. Build with: "
             "cmake --build . --target ff_roundtrip"
         )
+    except PermissionError:
+        # The path exists but cannot be executed (a directory, or a file
+        # without the execute bit). Uncaught, this was a traceback out of main().
+        return _harness_failure(f"C++ harness is not executable: {harness_path}")
     except subprocess.TimeoutExpired:
-        return _harness_failure(f"Harness timed out after 120s on {fixture_path.name}")
+        return _harness_failure(
+            f"Harness timed out after {timeout:g}s on {fixture_path.name}"
+        )
 
     if result.returncode == 2 and debug:
         return _harness_failure(
@@ -277,16 +292,30 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Resolve fixtures
+    # Resolve fixtures.
+    #
+    # COV-2 (P0-2): "found nothing" must never read as "passed". This returned 0
+    # for an empty discovery, which is the exact shape of the 2026-08-13 vacuous
+    # pass: a temporary Bundle filter in discover_fixtures excluded every
+    # fixture, the gate ran nothing, and ctest reported PASS. Two cases, told
+    # apart because they mean different things:
+    #   - no corpus on this machine (unset, or the directory does not exist):
+    #     the gate could not run. Exit SKIP_RETURN_CODE, which tests.cmake
+    #     registers, so ctest reports "Skipped" -- visible, and not a pass.
+    #   - a corpus directory that yields zero fixtures: something between the
+    #     corpus and the gate is broken. That is a failure.
     if args.fixture:
         fixtures = [Path(args.fixture)]
     else:
+        if not args.synthea_dir or not Path(args.synthea_dir).is_dir():
+            print(f"SKIP: no Synthea corpus at '{args.synthea_dir}' -- round-trip gate NOT RUN")
+            print("Set FASTFHIR_SYNTHEA_DIR or pass --synthea-dir")
+            return SKIP_RETURN_CODE
         fixtures = discover_fixtures(args.synthea_dir)
         if not fixtures:
-            print(f"No Synthea fixtures found under '{args.synthea_dir}'")
-            print("Set FASTFHIR_SYNTHEA_DIR or pass --synthea-dir")
-            # Not a failure — tests may be skipped in CI without Synthea data
-            return 0
+            print(f"FAIL: Synthea directory '{args.synthea_dir}' exists but yielded 0 fixtures")
+            print("A gate that finds nothing to check has checked nothing (P0-2).")
+            return 1
 
     # Run per-fixture
     passed = 0
@@ -325,13 +354,18 @@ def main() -> int:
     total = passed + failed
     print(f"\n{'='*60}")
     print(f"Results: {passed}/{total} passed, {failed}/{total} failed")
-    if failed == 0:
-        print(f"✅ All round-trip tests passed — {total_compared} source values compared, "
-              f"every one present in the round-trip.")
-        return 0
-    else:
+    if failed != 0:
         print(f"❌ {failed} fixture(s) had unexpected differences.")
         return 1
+    # The per-fixture floor (coverage findings) already fails a fixture that
+    # compared nothing; this is the corpus-level half, so a run whose total is
+    # zero cannot be reported as a pass however it got there (COV-2).
+    if total_compared == 0:
+        print("❌ Every fixture passed but 0 source values were compared -- nothing was tested.")
+        return 1
+    print(f"✅ All round-trip tests passed — {total_compared} source values compared, "
+          f"every one present in the round-trip.")
+    return 0
 
 
 if __name__ == "__main__":

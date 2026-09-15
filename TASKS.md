@@ -89,7 +89,7 @@ proves it. Those are the ones to take if you are picking without other context.
 | **A29** | Orphaned `tests/test_ff_dictionary.py` still present and still broken. **The overlap question A29.1 asks is now answered** — see the note under A29 | **yes** | `^### A29\.` |
 | **A19.2 / A19.3** | 15 generator modules still lack `from __future__ import annotations`, so the 3.11 floor stays an accident of the interpreter rather than a property of the code | **yes** | `A19\.2` |
 | **A14.2 / A14.4** | The arena floor fixed the symptom; a `claim_space()` failure on the worker path still has no clean diagnostic, and the tiny-bundle reproducer is not checked in | **yes** | `A14\.2` |
-| **A22.2 / A20.2** | Both error paths that were broken are fixed but still unexercised — no test points the harness at a missing binary or a timeout | **yes** | `A22\.2` |
+| **A20.2** | The four-places registration comment moved to `tests/tests.cmake` and was never extended | **yes** | `A20\.2` |
 | **A23.9** | The adversarial fixtures the Synthea corpus cannot provide (empty string in a `string[]`, empty `dateTime`, id-only resource, `Quantity` with no `comparator`). The corpus has **zero** empty strings, which is why A23.6/A24/A25 all survived it | **yes** | `A23\.9` |
 | **A3** | Narrowed by measurement: the write-path examples in `include/FastFHIR.hpp` are already on the `FF_*` API. Two **read** lines are stale (`FieldKeys::Observation::STATUS`, `.value().as_string()`), and `auto status` is declared twice in one scope | **yes** | `^### A3\.` |
 | **A27.6 / A27.7** | Passthrough itself is done (`RECOVER_FF_OPAQUE_JSON` is live). What remains is the module-registry hook and deriving the profile groupings from the published IG packages instead of a transcribed list | no — design | `A27\.6` |
@@ -106,7 +106,7 @@ proves it. Those are the ones to take if you are picking without other context.
 | **P1** | CAPI-1, 2, 3, 8, **16** | Consumer-API gaps: inline-block array writes, validator/deserializer disagreement, `ChoiceEntry` across arenas, allocating `entries()`. **CAPI-16 is new (2026-09-10)**: a `code` field cannot be assigned through a mutable handle at all — it throws, and four README blocks documented it working. Read A8.2 before starting it | `^## CAPI-` |
 | **P1** | Block C | Archive recovery subsystem — **governed by P0-3; do not start before REC-10** | `^## Block C` |
 | **P1** | DT-2.4, DT-3, DT-4 | Packed date/time: array-typed fields, ingest/export, wire baseline | `^## DT-` |
-| **P1** | COV-1, **COV-2** | Writer-vs-reader coverage. **COV-2 is new (2026-09-10)** and self-contained: `py_roundtrip` still passes when it finds zero fixtures, which is the 2026-08-13 vacuous pass waiting to happen again. It is filed under A23 because that is where the incident is recorded. | `COV-[23]` |
+| **P1** | COV-1 | Writer-vs-reader coverage: COV-1.2–1.4 open | `^## COV-1` |
 | **P2** | AR-2, **AR-6** | The schema tables disagree with the wire (6 array fields) and with each other (70 of 85 choice slots) | `^## AR-[26]` |
 | **P2** | CAPI-4, 5, 7, 9, 10, 11, 14 | Consumer-API ergonomics and doc gaps | `^## CAPI-` |
 | **P2** | Block B | Test coverage: builder, parser, pipeline, byte fixtures. **B7 is the "assert against bytes" one** | `^## Block B` |
@@ -1886,48 +1886,6 @@ not, producing the exact inverse.
 - Verify: `rm -rf build && cmake -S . -B build -DFASTFHIR_BUILD_TESTS=ON -DFASTFHIR_BUILD_INGESTOR=ON && cmake --build build --target build_all -j && ctest --test-dir build -N | tail -1`
   then `ctest --test-dir build -R cpp_ --output-on-failure`.
 
-### A22. `DiffKind` import — FIXED; the error path is still unexercised (A22.2)
-
-> **RECONCILED 2026-09-10 by measurement.** `DiffKind` is imported at
-> `tests/python/test_roundtrip.py:39`, so neither handler raises `NameError` any more.
-> A22.1 is done. **A22.2 is the half that matters and it is still open** — this was a
-> classic error-path-never-executed bug, and the fix is still verified by nothing. Neither
-> branch has ever run.
->
-> **Second defect on the same path, found 2026-09-15.** When `stats` was added to the
-> success return (P0-2), the six error returns in `run_roundtrip_test` kept returning
-> three values, so `main()`'s four-way unpack raised `ValueError` and again destroyed the
-> "harness not found" message — observed under the Xcode preset, whose harness path was
-> wrong. Fixed by one `_harness_failure()` helper returning the same four-tuple. This is
-> the second time this path has broken unseen, which is the argument for A22.2: the test
-> must assert on the message, not merely that the run fails.
-
-**Context:** `tests/python/test_roundtrip.py:33-38` imports `diff_doms`,
-`filter_allowlisted`, `format_diff_report` and `DiffEntry` from `roundtrip_diff` — but not
-`DiffKind`, which the module also defines (`roundtrip_diff.py:19`). Both exception handlers
-in `run_roundtrip_test` construct `DiffEntry(kind=DiffKind.VALUE_MISMATCH, …)`, so the
-error path raises `NameError: name 'DiffKind' is not defined` and destroys the diagnostic it
-was written to produce:
-
-```
-tests/python/test_roundtrip.py:107, in run_roundtrip_test
-    path="", kind=DiffKind.VALUE_MISMATCH,
-NameError: name 'DiffKind' is not defined
-```
-
-Observed masking a real failure: the harness was genuinely missing (A20), and instead of the
-intended "C++ harness not found: … Build with: cmake --build . --target ff_roundtrip", the
-run died with a `NameError`. Classic error-path-never-executed bug.
-
-- [ ] A22.2 Add a test that exercises both handlers — point the harness path at a
-  nonexistent binary, and at a command that sleeps past the timeout — asserting the intended
-  message reaches the caller. Without it the fix is unverified: neither branch has ever run.
-- Acceptance: with `FASTFHIR_ROUNDTRIP_HARNESS` set to a nonexistent path, the suite reports
-  the "harness not found" message and not a `NameError`.
-- Verify: `ctest --test-dir build -R py_roundtrip --output-on-failure`.
-
----
-
 ### A23. Synthea Bundle round-trip — FIXED 2026-08/09; A23.8 and A23.9 remain
 
 > **RECONCILED 2026-09-10 by measurement.** The umbrella defect is closed. `py_roundtrip`
@@ -1942,7 +1900,7 @@ run died with a `NameError`. Classic error-path-never-executed bug.
 > `~/Documents/fixes/FastFHIR-bundle-encoding-root-cause.md`. It was deleted from this file
 > per the policy at the top: completed work is not archived here.
 >
-> **One corpus-level P0-2 hole is left, and it is not A23's** — see COV-2 below.
+> The corpus-level P0-2 hole (COV-2) is closed — see the COMPLETED table.
 
 - [ ] A23.9 Add the adversarial fixtures the Synthea corpus cannot provide: empty string in
       a `string[]` element, empty `dateTime`, a resource carrying only an `id`, and a
@@ -1951,20 +1909,7 @@ run died with a `NameError`. Classic error-path-never-executed bug.
       Every one of those four inputs round-trips correctly today, so this task **pins**
       behaviour rather than fixing it — write it as a regression gate, not a bug hunt.
       Pairs naturally with B7's fixture work.
-- [ ] COV-2 Close the corpus-level P0-2 hole in `py_roundtrip`. The *per-fixture* floor is
-      armed, but `main()` still `return 0`s when `discover_fixtures` finds nothing
-      (`tests/python/test_roundtrip.py`, "Not a failure — tests may be skipped in CI
-      without Synthea data"), and `total_compared` is printed without ever being asserted.
-      That is the exact shape of the 2026-08-13 vacuous pass: a temporary Bundle skip in
-      `discover_fixtures` excluded *every* fixture — all of them are Bundles — so the gate
-      ran nothing and reported PASS. Assert a floor on both the fixture count and
-      `total_compared`, and make "no fixtures" a skip the harness reports rather than a
-      silent zero-coverage pass. Small and self-contained.
-- Acceptance: A23.9's four inputs are checked in and gated; `py_roundtrip` fails when
-  pointed at an empty fixture directory instead of passing.
-- Verify: `ctest --test-dir build -R py_roundtrip --output-on-failure`, then
-  `python3 tests/python/test_roundtrip.py --synthea-dir /tmp/empty-dir --harness build/ff_roundtrip; echo "rc=$?"`
-  → must be non-zero once COV-2 lands.
+- Acceptance (A23.9): the four inputs are checked in and gated by `py_roundtrip`.
 
 - [ ] A23.8 *(a DECISION, not a claimable task — read before acting)* Contain rather than
       detect: have `append_obj` claim `data_size + REDZONE`, canary the redzone, and verify
@@ -4948,6 +4893,8 @@ This list exists so finished work is not re-litigated, **not** as a progress log
 
 | Date | Item | Outcome |
 |---|---|---|
+| 2026-09-15 | **A22.2** | `tests/python/test_roundtrip_errors.py` (ctest `py_roundtrip_errors`, 10 cases) drives every harness error path with a stand-in harness — missing, non-executable, hung (via the new `timeout=` parameter), and failing — both through `run_roundtrip_test` and through `main()`, where the three-value unpack bug lived, and asserts on the message, not just the failure. A passing control (a harness that echoes its input) proves the gate is not simply failing everything. Found and handled on the way: a non-executable harness raised `PermissionError` out of `main()`. |
+| 2026-09-15 | **COV-2** | `py_roundtrip` no longer passes on an empty corpus. No corpus configured or directory absent → exit 77, registered as `SKIP_RETURN_CODE`, so ctest reports Skipped; a directory that yields zero fixtures → exit 1; a run that compared 0 source values → exit 1. The acceptance line's A23.9 half (adversarial fixtures) stays open under A23. |
 | 2026-09-15 | **COV-3** | `cpp_ff_test_recovery` failed intermittently (29/500 under load). Not an unseeded RNG — the suite has none — but the fixture's ingest layout, which is scheduler order by design. Cause: REC-23's locality demotion assumed a field's targets ascend with parent order, which holds for a single `append<T>` subtree (15,971/16,107 on a real bundle) but not for resource tuples, whose targets the Ingestor appends independently (239/306). It demoted a correct 1-bit repoint of `Observation.contained[0]` to Unrecovered. Fix: `src/FF_Recovery.cpp` skips locality for `FF_FIELD_RESOURCE` (exclusivity still applies). Measured on byte-identical corrupted Synthea streams: +27 correct repoints at 512 flips on each of two bundles, wrong attachments unchanged (16 and 5). Tests: the generational test checks every chain on two fixtures, one built through the Builder with contained resources deliberately out of parent order, plus a one-flip-per-resource-tuple sweep; both fail deterministically with the fix reverted. 0/500 under load after. |
 | 2026-09-15 | **TASKS.md trim** | Finished sections removed rather than kept as history: RT-1, DT-1, AR-1, AR-4, API-1, CONC-0/1/2, GEN-1, XP-1, XP-2, LOG-1, J9, Block K's K1–K6 + work order, the py_roundtrip DOM-parity work order, and the throughput topic's closed findings. One row each below; detail is in git history. |
 | 2026-09-15 | **LOG-1** | `ConcurrentLogger::log` reserves by `compare_exchange_weak` and refuses an entry that does not fit; `m_dropped` counts refusals and surfaces as a `[Warning]`. `ff_test_logger` fails 8 checks against the old `fetch_add`. |
@@ -4964,7 +4911,7 @@ This list exists so finished work is not re-litigated, **not** as a progress log
 | 2026-08-19 | **RT-1** | Round-trip entries aligned by identity before diffing (eb008e2). |
 | 2026-08-19 | **Read-path throughput** | Zero-allocation claim holds at `-O3`; `reflected_fields()` callers migrated to `reflected_fields_view()`. Open directions kept in the topic section. |
 | 2026-09-15 | **Builder handle rename** | The public handle was `FF_Stream = std::shared_ptr<Builder>`, a second name for `Builder` that added no layer. Renamed to match the class and the other handles: `FF_Stream`→`FF_Builder`, `FF_CreateStream`→`FF_CreateBuilder`, `FF_Stream{CreateInfo,AppendObject,SetRoot,Finalize,Query}[Info]`→`FF_Builder…`, Info field `.stream`→`.builder` (including `FF_IngestInfo`). Python: `ff.Stream`→`ff.Builder`, `StreamNode`→`BuilderNode`, `Ingestor.ingest(stream=)`→`builder=`. `FF_StreamCompaction`, `StreamHead` and "stream" meaning the bytes are unchanged. API only, no wire change. **Benchmark repo must re-sync (execution contract rule 9).** |
-| 2026-09-15 | **Xcode preset test signal** | `ctest --preset xcode` reported 14 Python failures that were all configuration: (1) the build dir resolved `.venv/bin/python`, which held only pip — pytest installed into it; (2) the README compile gate called the toolchain `clang++` with no sysroot (`'bit' file not found`) — `test_readme_compiles.py` now passes `-isysroot` from `SDKROOT`/`xcrun`, overridable with `--sysroot`; (3) the 12 tests that `import fastfhir` were registered with bindings OFF — now gated on `FASTFHIR_BUILD_PYTHON_BINDINGS`; (4) `py_roundtrip` pointed at `<build>/ff_roundtrip`, which a multi-config generator never writes — now `$<TARGET_FILE:ff_roundtrip>`. Result: xcode 43/43, ninja 55/55. Fixing (4) exposed a second A22 defect, recorded there. |
+| 2026-09-15 | **Xcode preset test signal** | `ctest --preset xcode` reported 14 Python failures that were all configuration: (1) the build dir resolved `.venv/bin/python`, which held only pip — pytest installed into it; (2) the README compile gate called the toolchain `clang++` with no sysroot (`'bit' file not found`) — `test_readme_compiles.py` now passes `-isysroot` from `SDKROOT`/`xcrun`, overridable with `--sysroot`; (3) the 12 tests that `import fastfhir` were registered with bindings OFF — now gated on `FASTFHIR_BUILD_PYTHON_BINDINGS`; (4) `py_roundtrip` pointed at `<build>/ff_roundtrip`, which a multi-config generator never writes — now `$<TARGET_FILE:ff_roundtrip>`. Result: xcode 43/43, ninja 55/55. Fixing (4) exposed a second defect on the A22 error path; the A22.2 row covers the test that now pins it. |
 | 2026-09-10 | **Block A reconciliation** | Every Block A row re-measured against the built tree, not re-read. Nine of thirteen Priority-Index rows described defects that no longer reproduce; the sections below were rewritten to state the residual only. The rows immediately following are what that pass closed. No code changed. |
 | 2026-09-10 | **A12** | `Reference.reference` truncation. Round-trips exactly; the simdjson buffer-reuse hypothesis (A12.1) was confirmed and fixed, and A12.2's whole-strategy audit is now gated **by type** rather than by spelling in `tests/generator/test_no_dangling_views.py`. Verify: the `urn:uuid:` repro under A12 exports byte-identical. |
 | 2026-09-10 | **A24** | Absent `code` enums fabricated real clinical values (63 POD members, 72 enums). Closed by the pinned `FF_UNSET = 255` sentinel. A24.5's three unmasked fields — `identifier.use`, `priority`, `reaction.severity` — all round-trip. Verify: `./build/ff_roundtrip /tmp/bare.json` returns exactly `{"resourceType":"Patient","id":"only-an-id"}`. |

@@ -400,9 +400,20 @@ if(FASTFHIR_BUILD_TESTS)
                 --harness "$<TARGET_FILE:ff_roundtrip>"
                 --debug-on-failure
         )
+        # SKIP_RETURN_CODE: no Synthea corpus on this machine means the gate did
+        # not run, and ctest must say "Skipped", never "Passed" (COV-2). A corpus
+        # directory that yields no fixtures still fails.
         set_tests_properties(py_roundtrip PROPERTIES
             DEPENDS "py_setup;ff_roundtrip"
+            SKIP_RETURN_CODE 77
         )
+
+        # The gate's own failure paths (A22.2 / COV-2): a missing, non-executable,
+        # hung or failing harness, and empty or absent corpora, each driven by a
+        # stand-in harness. Needs neither the C++ build nor Synthea, so no DEPENDS.
+        add_test(NAME py_roundtrip_errors
+            COMMAND "${_PY}" -m pytest "${_PY_DIR}/test_roundtrip_errors.py" -v)
+        set_tests_properties(py_roundtrip_errors PROPERTIES TIMEOUT 120)
 
         # PYTHONPATH for the py_* tests: the staged importable package
         # (build/python, assembled by fastfhir_python's POST_BUILD step — A21)
@@ -412,7 +423,7 @@ if(FASTFHIR_BUILD_TESTS)
         else()
             set(_PYTHONPATH "${CMAKE_CURRENT_BINARY_DIR}/python:${_PY_DIR}")
         endif()
-        set_tests_properties(py_setup py_roundtrip ${_PY_BINDING_TESTS}
+        set_tests_properties(py_setup py_roundtrip py_roundtrip_errors ${_PY_BINDING_TESTS}
             PROPERTIES ENVIRONMENT "PYTHONPATH=${_PYTHONPATH}")
     endif()
 endif()
