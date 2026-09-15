@@ -293,27 +293,37 @@ if(FASTFHIR_BUILD_TESTS)
                 "import glob,os,tempfile; d=os.path.join(tempfile.gettempdir(),'fastfhir_test_artifacts'); os.makedirs(d,exist_ok=True); [os.remove(p) for p in glob.glob(os.path.join(d,'*.ffhr')) if os.path.isfile(p)]"
         )
 
-        # Python test entries
-        macro(_add_py_test NAME FN)
-            add_test(NAME "py_${NAME}"
-                COMMAND "${_PY}" -m pytest "${_PY_DIR}/test_readme.py::${FN}" -v)
-        endmacro()
+        # Python test entries. Everything in this block imports `fastfhir`,
+        # which exists only when the bindings are built -- the xcode presets
+        # leave them OFF, and registering these there reported every one as a
+        # failure of the code when it was a property of the configuration.
+        # py_readme_cpp_compiles and py_roundtrip import no fastfhir module and
+        # stay registered below.
+        set(_PY_BINDING_TESTS "")
+        if(FASTFHIR_BUILD_PYTHON_BINDINGS)
+            macro(_add_py_test NAME FN)
+                add_test(NAME "py_${NAME}"
+                    COMMAND "${_PY}" -m pytest "${_PY_DIR}/test_readme.py::${FN}" -v)
+                list(APPEND _PY_BINDING_TESTS "py_${NAME}")
+            endmacro()
 
-        _add_py_test(getting_started test_getting_started)
-        foreach(N RANGE 1 10)
-            _add_py_test("test_${N}" "test_${N}")
-        endforeach()
+            _add_py_test(getting_started test_getting_started)
+            foreach(N RANGE 1 10)
+                _add_py_test("test_${N}" "test_${N}")
+            endforeach()
 
-        # Executes the code blocks in python/README.md AS PUBLISHED, rather than
-        # re-implementing them the way test_readme.py does. That distinction is
-        # not academic: test_readme.py's test_1 sets `stream.root` before
-        # finalize() and the README's Example 1 did not, so the suite was green
-        # while the first example a Python user copies died with
-        # "Cannot finalize because root is unset/invalid". Self-contained (it
-        # seeds its own fixtures in a temp dir), so no DEPENDS ordering.
-        add_test(NAME py_readme_examples
-            COMMAND "${_PY}" -m pytest "${_PY_DIR}/test_readme_examples.py" -v)
-        set_tests_properties(py_readme_examples PROPERTIES TIMEOUT 300)
+            # Executes the code blocks in python/README.md AS PUBLISHED, rather than
+            # re-implementing them the way test_readme.py does. That distinction is
+            # not academic: test_readme.py's test_1 sets `builder.root` before
+            # finalize() and the README's Example 1 did not, so the suite was green
+            # while the first example a Python user copies died with
+            # "Cannot finalize because root is unset/invalid". Self-contained (it
+            # seeds its own fixtures in a temp dir), so no DEPENDS ordering.
+            add_test(NAME py_readme_examples
+                COMMAND "${_PY}" -m pytest "${_PY_DIR}/test_readme_examples.py" -v)
+            set_tests_properties(py_readme_examples PROPERTIES TIMEOUT 300)
+            list(APPEND _PY_BINDING_TESTS py_readme_examples)
+        endif()
 
         # The C++ counterpart of py_readme_examples: compiles every ```cpp block
         # in the ROOT README.md as published. ff_test_readme is a hand-written
@@ -355,17 +365,27 @@ if(FASTFHIR_BUILD_TESTS)
             set_tests_properties(py_readme_cpp_compiles PROPERTIES TIMEOUT 600)
         endif()
 
-        set_tests_properties(py_getting_started PROPERTIES DEPENDS py_setup)
-        set_tests_properties(py_test_1          PROPERTIES DEPENDS py_getting_started)
-        set_tests_properties(py_test_2          PROPERTIES DEPENDS py_test_1)
-        set_tests_properties(py_test_3          PROPERTIES DEPENDS py_test_2)
-        set_tests_properties(py_test_4          PROPERTIES DEPENDS py_test_1)
-        set_tests_properties(py_test_5          PROPERTIES DEPENDS py_test_3)
-        set_tests_properties(py_test_6          PROPERTIES DEPENDS py_test_1)
-        set_tests_properties(py_test_7          PROPERTIES DEPENDS py_setup)
-        set_tests_properties(py_test_8          PROPERTIES DEPENDS py_test_5)
-        set_tests_properties(py_test_9          PROPERTIES DEPENDS "py_test_3;py_test_6")
-        set_tests_properties(py_test_10         PROPERTIES DEPENDS py_setup)
+        if(FASTFHIR_BUILD_PYTHON_BINDINGS)
+            set_tests_properties(py_getting_started PROPERTIES DEPENDS py_setup)
+            set_tests_properties(py_test_1          PROPERTIES DEPENDS py_getting_started)
+            set_tests_properties(py_test_2          PROPERTIES DEPENDS py_test_1)
+            set_tests_properties(py_test_3          PROPERTIES DEPENDS py_test_2)
+            set_tests_properties(py_test_4          PROPERTIES DEPENDS py_test_1)
+            set_tests_properties(py_test_5          PROPERTIES DEPENDS py_test_3)
+            set_tests_properties(py_test_6          PROPERTIES DEPENDS py_test_1)
+            set_tests_properties(py_test_7          PROPERTIES DEPENDS py_setup)
+            set_tests_properties(py_test_8          PROPERTIES DEPENDS py_test_5)
+            set_tests_properties(py_test_9          PROPERTIES DEPENDS "py_test_3;py_test_6")
+            set_tests_properties(py_test_10         PROPERTIES DEPENDS py_setup)
+
+            set_tests_properties(py_setup py_getting_started
+                py_test_1 py_test_2 py_test_3 py_test_4 py_test_5 py_test_7 py_test_8 py_test_9
+                PROPERTIES RESOURCE_LOCK ff_py_patient_ffhr)
+            set_tests_properties(py_setup
+                py_test_6 py_test_9 py_test_10
+                PROPERTIES RESOURCE_LOCK ff_py_bundle_ffhr)
+        endif()
+
         # Round-trip DOM parity test (Synthea fixtures)
         # --debug-on-failure re-runs a FAILING fixture through to_debug_json, so
         # the report names the recovery tag, field kind and byte offset behind
@@ -377,7 +397,7 @@ if(FASTFHIR_BUILD_TESTS)
         add_test(NAME py_roundtrip
             COMMAND "${_PY}" "${_PY_DIR}/test_roundtrip.py"
                 --synthea-dir "${_SYNTHEA_DIR}"
-                --harness "${CMAKE_CURRENT_BINARY_DIR}/ff_roundtrip"
+                --harness "$<TARGET_FILE:ff_roundtrip>"
                 --debug-on-failure
         )
         set_tests_properties(py_roundtrip PROPERTIES
@@ -392,19 +412,8 @@ if(FASTFHIR_BUILD_TESTS)
         else()
             set(_PYTHONPATH "${CMAKE_CURRENT_BINARY_DIR}/python:${_PY_DIR}")
         endif()
-        set_tests_properties(py_setup py_getting_started
-            py_test_1 py_test_2 py_test_3 py_test_4 py_test_5 py_test_6
-            py_test_7 py_test_8 py_test_9 py_test_10 py_roundtrip
-            py_readme_examples
+        set_tests_properties(py_setup py_roundtrip ${_PY_BINDING_TESTS}
             PROPERTIES ENVIRONMENT "PYTHONPATH=${_PYTHONPATH}")
-
-
-        set_tests_properties(py_setup py_getting_started
-            py_test_1 py_test_2 py_test_3 py_test_4 py_test_5 py_test_7 py_test_8 py_test_9
-            PROPERTIES RESOURCE_LOCK ff_py_patient_ffhr)
-        set_tests_properties(py_setup
-            py_test_6 py_test_9 py_test_10
-            PROPERTIES RESOURCE_LOCK ff_py_bundle_ffhr)
     endif()
 endif()
 

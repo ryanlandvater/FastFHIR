@@ -79,17 +79,17 @@ Size FF_MemoryCapacity(const FF_Memory& memory) noexcept
 }
 
 // =====================================================================
-// STREAM API
+// BUILDER API
 // =====================================================================
-FF_Result FF_CreateStream(const FF_StreamCreateInfo& info, FF_Stream& out_stream) noexcept
+FF_Result FF_CreateBuilder(const FF_BuilderCreateInfo& info, FF_Builder& out_builder) noexcept
 {
-    out_stream.reset();
+    out_builder.reset();
     const bool has_backing = info.filepath != nullptr || info.shm_name != nullptr;
     if (info.arena && has_backing)
-        return FF_Invalid("FF_CreateStream", "arena is exclusive with filepath/shm_name");
+        return FF_Invalid("FF_CreateBuilder", "arena is exclusive with filepath/shm_name");
     if (info.shm_name && info.filepath)
-        return FF_Invalid("FF_CreateStream", "shm_name and filepath are mutually exclusive");
-    return FF_Guard("FF_CreateStream", [&] {
+        return FF_Invalid("FF_CreateBuilder", "shm_name and filepath are mutually exclusive");
+    return FF_Guard("FF_CreateBuilder", [&] {
         Memory arena;
         if (info.arena)
             arena = *info.arena;
@@ -99,33 +99,33 @@ FF_Result FF_CreateStream(const FF_StreamCreateInfo& info, FF_Stream& out_stream
             arena = Memory::create(info.capacity, info.shm_name);
         else
             arena = Memory::create(info.capacity);
-        out_stream = std::make_shared<Builder>(arena, info.version);
+        out_builder = std::make_shared<Builder>(arena, info.version);
     });
 }
 
-FF_Result FF_StreamSetRoot(const FF_StreamSetRootInfo& info) noexcept
+FF_Result FF_BuilderSetRoot(const FF_BuilderSetRootInfo& info) noexcept
 {
-    if (!info.stream)
-        return FF_Invalid("FF_StreamSetRoot", "null stream handle");
-    return FF_Guard("FF_StreamSetRoot", [&] { info.stream->set_root(info.root); });
+    if (!info.builder)
+        return FF_Invalid("FF_BuilderSetRoot", "null builder handle");
+    return FF_Guard("FF_BuilderSetRoot", [&] { info.builder->set_root(info.root); });
 }
 
-FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo& info, Memory::View& out_view) noexcept
+FF_Result FF_BuilderFinalize(const FF_BuilderFinalizeInfo& info, Memory::View& out_view) noexcept
 {
     out_view = Memory::View();
-    if (!info.stream)
-        return FF_Invalid("FF_StreamFinalize", "null stream handle");
-    return FF_Guard("FF_StreamFinalize", [&] {
-        out_view = info.stream->finalize(info.algorithm, info.hasher);
+    if (!info.builder)
+        return FF_Invalid("FF_BuilderFinalize", "null builder handle");
+    return FF_Guard("FF_BuilderFinalize", [&] {
+        out_view = info.builder->finalize(info.algorithm, info.hasher);
     });
 }
 
-FF_Result FF_StreamQuery(const FF_StreamQueryInfo& info, Parser& out_parser) noexcept
+FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo& info, Parser& out_parser) noexcept
 {
     out_parser = Parser();
-    if (!info.stream)
-        return FF_Invalid("FF_StreamQuery", "null stream handle");
-    return FF_Guard("FF_StreamQuery", [&] { out_parser = info.stream->query(); });
+    if (!info.builder)
+        return FF_Invalid("FF_BuilderQuery", "null builder handle");
+    return FF_Guard("FF_BuilderQuery", [&] { out_parser = info.builder->query(); });
 }
 
 // =====================================================================

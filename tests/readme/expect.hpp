@@ -167,12 +167,12 @@ inline void seal_resource(const fs::path& path, std::string_view json)
     std::error_code ec;
     fs::remove(path, ec);
     auto mem = FastFHIR::Memory::createFromFile(path.string(), 64 * 1024 * 1024);
-    FastFHIR::FF_StreamCreateInfo stream_info;
-    stream_info.arena = std::make_shared<FastFHIR::Memory>(mem);
-    stream_info.version = FHIR_VERSION_R5;
-    FastFHIR::FF_Stream stream;
-    if (!FastFHIR::FF_CreateStream(stream_info, stream))
-        throw std::runtime_error("fixture: FF_CreateStream failed");
+    FastFHIR::FF_BuilderCreateInfo builder_info;
+    builder_info.arena = std::make_shared<FastFHIR::Memory>(mem);
+    builder_info.version = FHIR_VERSION_R5;
+    FastFHIR::FF_Builder builder;
+    if (!FastFHIR::FF_CreateBuilder(builder_info, builder))
+        throw std::runtime_error("fixture: FF_CreateBuilder failed");
 
     FastFHIR::FF_IngestorCreateInfo ingestor_info;
     FastFHIR::FF_Ingestor ingestor;
@@ -183,24 +183,24 @@ inline void seal_resource(const fs::path& path, std::string_view json)
     Size count = 0;
     const auto r = FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
         .ingestor = ingestor,
-        .stream = stream,
+        .builder = builder,
         .source_type = FF_SOURCE_FHIR_JSON,
         .payload = json,
     }, handle, count);
     if (r.code != FF_SUCCESS)
         throw std::runtime_error("fixture: ingest failed: " + r.message);
 
-    if (!FastFHIR::FF_StreamSetRoot(FastFHIR::FF_StreamSetRootInfo{
-            .stream = stream, .root = handle}))
-        throw std::runtime_error("fixture: FF_StreamSetRoot failed");
+    if (!FastFHIR::FF_BuilderSetRoot(FastFHIR::FF_BuilderSetRootInfo{
+            .builder = builder, .root = handle}))
+        throw std::runtime_error("fixture: FF_BuilderSetRoot failed");
 
     FastFHIR::Memory::View view;
-    if (!FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
-            .stream = stream,
+    if (!FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
+            .builder = builder,
             .algorithm = FF_CHECKSUM_SHA256,
             .hasher = sha256_hasher,
         }, view))
-        throw std::runtime_error("fixture: FF_StreamFinalize failed");
+        throw std::runtime_error("fixture: FF_BuilderFinalize failed");
 }
 
 /// Read back a sealed file and hand out the root node's JSON, for expectations
@@ -303,7 +303,7 @@ inline std::string exported_json(const fs::path& path)
             "Example 2: unexpected family name via PatientData");
 
 // ── Example 3 — Re-open a .ffhr file and enrich it in place ─────────────────
-// Needs a SEALED archive: the block calls stream->root_handle(), which is null
+// Needs a SEALED archive: the block calls builder->root_handle(), which is null
 // until the stream has a root written. Assert on the re-opened file, because
 // "enrich in place" is a claim about what is on disk afterwards.
 #define FF_README_SETUP_EXAMPLE_3_ENRICH                                        \

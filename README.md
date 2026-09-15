@@ -18,8 +18,8 @@ Healthcare interoperability has historically relied on formats that are **inhere
 import fastfhir as ff
 from fastfhir.fields import Patient
 
-with ff.Stream(ff.Memory.create_from_file("patient.ffhr"), ff.FhirVersion.R5) as stream:
-    print(stream.root[Patient.ID].value())       # "patient-1"  — no parse step
+with ff.Builder(ff.Memory.create_from_file("patient.ffhr"), ff.FhirVersion.R5) as builder:
+    print(builder.root[Patient.ID].value())       # "patient-1"  — no parse step
 ```
 
 C++ and Python are both first-class; neither is a port of the other.
@@ -383,7 +383,7 @@ auto root = parser.root();
 
 ## Step 3 — Build a FastFHIR record from FHIR JSON
 
-`FF_Stream` writes binary data into the `Memory` arena; `FF_Ingestor` converts FHIR JSON into
+`FF_Builder` writes binary data into the `Memory` arena; `FF_Ingestor` converts FHIR JSON into
 the binary layout for you. Together they replace the traditional parse → validate →
 serialize pipeline with a single in-place ingestion pass.
 
@@ -396,11 +396,11 @@ serialize pipeline with a single in-place ingestion pass.
 // Use an anonymous arena for this example — swap in createFromFile() to persist to disk.
 auto mem = FastFHIR::Memory::create(/*Optionally provide arena upper bounds (something like 4 GB)*/);
 
-FastFHIR::FF_StreamCreateInfo stream_info;
-stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
-stream_info.version = FHIR_VERSION_R5;
-FastFHIR::FF_Stream stream;
-FastFHIR::FF_CreateStream(stream_info, stream);
+FastFHIR::FF_BuilderCreateInfo builder_info;
+builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+builder_info.version = FHIR_VERSION_R5;
+FastFHIR::FF_Builder builder;
+FastFHIR::FF_CreateBuilder(builder_info, builder);
 
 FastFHIR::FF_IngestorCreateInfo ingestor_info;
 FastFHIR::FF_Ingestor ingestor;
@@ -419,7 +419,7 @@ FastFHIR::Reflective::ObjectHandle patient_handle;
 Size parsed_count = 0;
 FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
     .ingestor    = ingestor,
-    .stream      = stream,
+    .builder     = builder,
     .source_type = FF_SOURCE_FHIR_JSON,
     .payload     = json,
 }, patient_handle, parsed_count);
@@ -433,12 +433,12 @@ patient_handle[FastFHIR::Fields::PATIENT::BIRTH_DATE] = std::string_view("1990-0
 // throws (CAPI-16). Set code fields at ingest, as this example does.
 
 // Seal the stream (no checksum for brevity; see API Examples for SHA-256).
-FastFHIR::FF_StreamSetRoot(FastFHIR::FF_StreamSetRootInfo{
-    .stream = stream,
-    .root   = patient_handle,
+FastFHIR::FF_BuilderSetRoot(FastFHIR::FF_BuilderSetRootInfo{
+    .builder = builder,
+    .root    = patient_handle,
 });
 FastFHIR::Memory::View view;          // a lifetime-safe window over the sealed bytes
-FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{.stream = stream}, view);
+FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{.builder = builder}, view);
 
 // Read it back immediately — zero copies, same arena pages.
 FastFHIR::Parser parser(view.data(), view.size());
@@ -477,11 +477,11 @@ sealed FastFHIR archive on disk.
 // Map the arena straight to a file — every write goes directly to disk
 auto mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
 
-FastFHIR::FF_StreamCreateInfo stream_info;
-stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
-stream_info.version = FHIR_VERSION_R5;
-FastFHIR::FF_Stream stream;
-FastFHIR::FF_CreateStream(stream_info, stream);
+FastFHIR::FF_BuilderCreateInfo builder_info;
+builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+builder_info.version = FHIR_VERSION_R5;
+FastFHIR::FF_Builder builder;
+FastFHIR::FF_CreateBuilder(builder_info, builder);
 
 FastFHIR::FF_IngestorCreateInfo ingestor_info;
 FastFHIR::FF_Ingestor ingestor;
@@ -494,16 +494,16 @@ FastFHIR::Reflective::ObjectHandle patient_handle;
 Size parsed_count = 0;
 FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
     .ingestor    = ingestor,
-    .stream      = stream,
+    .builder     = builder,
     .source_type = FF_SOURCE_FHIR_JSON,
     .payload     = json_string,
 }, patient_handle, parsed_count);
 
 // Inspect while the stream is still open — zero heap allocations.
 // Read through the handle the ingest returned, NOT through a Parser: until
-// FF_StreamSetRoot and FF_StreamFinalize have run there is no FF_HEADER and no
+// FF_BuilderSetRoot and FF_BuilderFinalize have run there is no FF_HEADER and no
 // root pointer in the arena, so `Parser(mem)` fails header validation and
-// FF_StreamQuery has no root to hand back.
+// FF_BuilderQuery has no root to hand back.
 auto root = patient_handle.as_node();
 std::string_view id     = root[FastFHIR::Fields::PATIENT::ID];    // "patient-1"
 std::string_view gender = root[FastFHIR::Fields::PATIENT::GENDER]; // "male"
@@ -518,13 +518,13 @@ for (auto& name_entry : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
 }
 
 // Seal with a SHA-256 footer — writes header + hash directly into the mapped pages
-FastFHIR::FF_StreamSetRoot(FastFHIR::FF_StreamSetRootInfo{
-    .stream = stream,
-    .root   = patient_handle,
+FastFHIR::FF_BuilderSetRoot(FastFHIR::FF_BuilderSetRootInfo{
+    .builder = builder,
+    .root    = patient_handle,
 });
 FastFHIR::Memory::View view;
-FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
-    .stream    = stream,
+FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
+    .builder   = builder,
     .algorithm = FF_CHECKSUM_SHA256,
     .hasher    = [](const unsigned char* data, size_t len) {
         std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
@@ -646,18 +646,18 @@ pointers). The file grows solely by the delta; no copy of existing data is ever 
 
 auto mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
 
-FastFHIR::FF_StreamCreateInfo stream_info;
-stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
-stream_info.version = FHIR_VERSION_R5;
-FastFHIR::FF_Stream stream;
-FastFHIR::FF_CreateStream(stream_info, stream);
+FastFHIR::FF_BuilderCreateInfo builder_info;
+builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+builder_info.version = FHIR_VERSION_R5;
+FastFHIR::FF_Builder builder;
+FastFHIR::FF_CreateBuilder(builder_info, builder);
 
 FastFHIR::FF_IngestorCreateInfo ingestor_info;
 FastFHIR::FF_Ingestor ingestor;
 FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
 
 // Obtain a mutable handle to the existing root
-auto patient = stream->root_handle();
+auto patient = builder->root_handle();
 
 // Append or overwrite scalar fields (new bytes appended; field pointer amended)
 patient[FastFHIR::Fields::PATIENT::BIRTH_DATE] = std::string_view("1990-03-21");
@@ -673,8 +673,8 @@ FastFHIR::FF_IngestInsertAtField(FastFHIR::FF_IngestInsertInfo{
 
 // Re-seal with an updated checksum — original data untouched, new tail written
 FastFHIR::Memory::View view;
-FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
-    .stream    = stream,
+FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
+    .builder   = builder,
     .algorithm = FF_CHECKSUM_SHA256,
     .hasher    = [](const unsigned char* data, size_t len) {
         std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
@@ -729,17 +729,17 @@ std::string raw_json;
 
 // ── Step 2: ingest and enrich ──
 auto mem2 = FastFHIR::Memory::create(256 * 1024 * 1024);
-FastFHIR::FF_StreamCreateInfo stream_info;
-stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem2);
-stream_info.version = FHIR_VERSION_R5;
-FastFHIR::FF_Stream stream;
-FastFHIR::FF_CreateStream(stream_info, stream);
+FastFHIR::FF_BuilderCreateInfo builder_info;
+builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem2);
+builder_info.version = FHIR_VERSION_R5;
+FastFHIR::FF_Builder builder;
+FastFHIR::FF_CreateBuilder(builder_info, builder);
 
 FastFHIR::Reflective::ObjectHandle patient_handle;
 Size count = 0;
 FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
     .ingestor    = ingestor,
-    .stream      = stream,
+    .builder     = builder,
     .source_type = FF_SOURCE_FHIR_JSON,
     .payload     = raw_json,
 }, patient_handle, count);
@@ -754,13 +754,13 @@ FastFHIR::FF_IngestInsertAtField(FastFHIR::FF_IngestInsertInfo{
 });
 
 // ── Step 3: seal and send back — view reads straight from the arena ──
-FastFHIR::FF_StreamSetRoot(FastFHIR::FF_StreamSetRootInfo{
-    .stream = stream,
-    .root   = patient_handle,
+FastFHIR::FF_BuilderSetRoot(FastFHIR::FF_BuilderSetRootInfo{
+    .builder = builder,
+    .root    = patient_handle,
 });
 FastFHIR::Memory::View view;
-FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
-    .stream    = stream,
+FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
+    .builder   = builder,
     .algorithm = FF_CHECKSUM_CRC32,
 }, view);
 
@@ -785,11 +785,11 @@ are ever written back to disk.
 // Map the entire bundle — address space reserved, pages not loaded until accessed
 auto mem = FastFHIR::Memory::createFromFile("bundle.ffhr", 8ULL * 1024 * 1024 * 1024);
 
-FastFHIR::FF_StreamCreateInfo stream_info;
-stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
-stream_info.version = FHIR_VERSION_R5;
-FastFHIR::FF_Stream stream;
-FastFHIR::FF_CreateStream(stream_info, stream);
+FastFHIR::FF_BuilderCreateInfo builder_info;
+builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+builder_info.version = FHIR_VERSION_R5;
+FastFHIR::FF_Builder builder;
+FastFHIR::FF_CreateBuilder(builder_info, builder);
 
 FastFHIR::FF_IngestorCreateInfo ingestor_info;
 FastFHIR::FF_Ingestor ingestor;
@@ -816,7 +816,7 @@ FastFHIR::Reflective::ObjectHandle obs_handle;
 Size count = 0;
 FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
     .ingestor    = ingestor,
-    .stream      = stream,
+    .builder     = builder,
     .source_type = FF_SOURCE_FHIR_JSON,
     .payload     = R"({
         "resourceType": "Observation",
@@ -828,13 +828,13 @@ FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
 }, obs_handle, count);
 
 // Amend the ROOT record — the handle the stream already owns
-auto root_handle = stream->root_handle();
+auto root_handle = builder->root_handle();
 root_handle[FastFHIR::Fields::BUNDLE::TIMESTAMP] = std::string_view("2026-09-09T00:00:00Z");
 
 // Reseal — rewrites only the header + checksum pages, nothing else
 FastFHIR::Memory::View view;
-FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
-    .stream    = stream,
+FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
+    .builder   = builder,
     .algorithm = FF_CHECKSUM_SHA256,
     .hasher    = [](const unsigned char* data, size_t len) {
         std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
@@ -865,18 +865,18 @@ once on the caller thread and sealed with a checksum.
 
 std::vector<uint8_t> serialize_bundle_parallel(const std::vector<ObservationData>& raw_observations) {
     auto mem = FastFHIR::Memory::create(256 * 1024 * 1024); // Allocate 256 MB VMA arena
-    FastFHIR::FF_StreamCreateInfo stream_info;
-    stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
-    stream_info.version = FHIR_VERSION_R5;
-    FastFHIR::FF_Stream stream;
-    FastFHIR::FF_CreateStream(stream_info, stream);
+    FastFHIR::FF_BuilderCreateInfo builder_info;
+    builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+    builder_info.version = FHIR_VERSION_R5;
+    FastFHIR::FF_Builder builder;
+    FastFHIR::FF_CreateBuilder(builder_info, builder);
 
     // 1) Concurrently append Observation resources into one shared lock-free stream.
     std::vector<BundleentryData> entries(raw_observations.size());
-    auto to_entry = [&stream](const ObservationData& obs) -> BundleentryData {
+    auto to_entry = [&builder](const ObservationData& obs) -> BundleentryData {
         BundleentryData entry{};
         entry.resource = static_cast<ResourceReference>(
-            FastFHIR::FF_StreamAppendObject(stream, obs)
+            FastFHIR::FF_BuilderAppendObject(builder, obs)
         );
         return entry;
     };
@@ -900,13 +900,13 @@ std::vector<uint8_t> serialize_bundle_parallel(const std::vector<ObservationData
     bundle.type = FF_BundleType::Collection;
     bundle.entry = std::move(entries);
 
-    FastFHIR::FF_StreamSetRoot(FastFHIR::FF_StreamSetRootInfo{
-        .stream = stream,
-        .root   = FastFHIR::FF_StreamAppendObject(stream, bundle),
+    FastFHIR::FF_BuilderSetRoot(FastFHIR::FF_BuilderSetRootInfo{
+        .builder = builder,
+        .root    = FastFHIR::FF_BuilderAppendObject(builder, bundle),
     });
     FastFHIR::Memory::View view;
-    FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
-        .stream    = stream,
+    FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
+        .builder   = builder,
         .algorithm = FF_CHECKSUM_SHA256,
     }, view);
 

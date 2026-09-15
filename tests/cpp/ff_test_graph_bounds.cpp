@@ -33,17 +33,17 @@ using namespace FastFHIR;
 
 
 // Wire a Patient root to a list of Identifier blocks through identifier[].
-static void wire_root(FF_Stream stream, const std::vector<Offset>& ids, std::string_view id) {
-    auto harr = stream->append_obj(ids, RECOVER_FF_IDENTIFIER);
+static void wire_root(FF_Builder builder, const std::vector<Offset>& ids, std::string_view id) {
+    auto harr = builder->append_obj(ids, RECOVER_FF_IDENTIFIER);
     // Assign the view directly. `p.id = std::string(id)` would bind the view to
     // a temporary that dies at the semicolon, so append_obj below would copy
     // freed memory into the arena (-Wdangling-assignment-gsl). Every caller
     // passes a string literal, so the view outlives the append that reads it.
     PatientData p; p.id = id;
-    auto hp = FF_StreamAppendObject(stream, p);
-    stream->amend_pointer(hp.offset(), FF_PATIENT::IDENTIFIER, harr.offset());
-    FF_StreamSetRoot(FF_StreamSetRootInfo{
-        .stream = stream,
+    auto hp = FF_BuilderAppendObject(builder, p);
+    builder->amend_pointer(hp.offset(), FF_PATIENT::IDENTIFIER, harr.offset());
+    FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+        .builder = builder,
         .root = hp,
     });
 }
@@ -54,19 +54,19 @@ int main() {
     // must see X again while X is still an ancestor of the node enqueuing it.
     {
         Memory mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         IdentifierData ix, iy;
-        auto hx = FF_StreamAppendObject(stream, ix);
-        auto hy = FF_StreamAppendObject(stream, iy);
-        stream->amend_pointer(hx.offset(), FF_IDENTIFIER::TYPE, hy.offset());
-        stream->amend_pointer(hy.offset(), FF_IDENTIFIER::TYPE, hx.offset());
-        wire_root(stream, {hx.offset(), hy.offset()}, "cycle");
+        auto hx = FF_BuilderAppendObject(builder, ix);
+        auto hy = FF_BuilderAppendObject(builder, iy);
+        builder->amend_pointer(hx.offset(), FF_IDENTIFIER::TYPE, hy.offset());
+        builder->amend_pointer(hy.offset(), FF_IDENTIFIER::TYPE, hx.offset());
+        wire_root(builder, {hx.offset(), hy.offset()}, "cycle");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
         Parser source;
         CHECK(FF_Parse(FF_ParseInfo{
@@ -88,23 +88,23 @@ int main() {
     // ArchiveContext::MAX_NODE_DEPTH (64).
     {
         Memory mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         constexpr int CHAIN = 70;
         std::vector<Reflective::ObjectHandle> ids;
         for (int i = 0; i < CHAIN; ++i) {
             IdentifierData d;
-            ids.push_back(FF_StreamAppendObject(stream, d));
+            ids.push_back(FF_BuilderAppendObject(builder, d));
         }
         for (int i = 0; i + 1 < CHAIN; ++i) {
-            stream->amend_pointer(ids[i].offset(), FF_IDENTIFIER::TYPE, ids[i + 1].offset());
+            builder->amend_pointer(ids[i].offset(), FF_IDENTIFIER::TYPE, ids[i + 1].offset());
         }
-        wire_root(stream, {ids[0].offset()}, "deep");
+        wire_root(builder, {ids[0].offset()}, "deep");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
         Parser source;
         CHECK(FF_Parse(FF_ParseInfo{
@@ -128,24 +128,24 @@ int main() {
     // the ctest TIMEOUT catches.
     {
         Memory mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         CodeableConceptData cc;                       // the shared subtree
-        auto hcc = FF_StreamAppendObject(stream, cc);
+        auto hcc = FF_BuilderAppendObject(builder, cc);
         constexpr int N = 200;
         std::vector<Offset> ids;
         for (int i = 0; i < N; ++i) {
             IdentifierData d;
-            auto h = FF_StreamAppendObject(stream, d);
-            stream->amend_pointer(h.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
+            auto h = FF_BuilderAppendObject(builder, d);
+            builder->amend_pointer(h.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
             ids.push_back(h.offset());
         }
-        wire_root(stream, ids, "dag");
+        wire_root(builder, ids, "dag");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
         Parser source;
         CHECK(FF_Parse(FF_ParseInfo{
@@ -167,16 +167,16 @@ int main() {
     // "validate file structure" (XP-2.2).
     {
         Memory mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         IdentifierData id;
-        auto hid = FF_StreamAppendObject(stream, id);
-        wire_root(stream, {hid.offset()}, "root-bounds");
+        auto hid = FF_BuilderAppendObject(builder, id);
+        wire_root(builder, {hid.offset()}, "root-bounds");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
 
         // A well-formed stream still parses.
@@ -209,20 +209,20 @@ int main() {
     // constructs a Parser successfully and only then asks for the walk.
     {
         Memory mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         IdentifierData ix, iy;
-        auto hx = FF_StreamAppendObject(stream, ix);
-        auto hy = FF_StreamAppendObject(stream, iy);
+        auto hx = FF_BuilderAppendObject(builder, ix);
+        auto hy = FF_BuilderAppendObject(builder, iy);
         CodeableConceptData cc;
-        auto hcc = FF_StreamAppendObject(stream, cc);
-        stream->amend_pointer(hx.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
-        wire_root(stream, {hx.offset(), hy.offset()}, "deep");
+        auto hcc = FF_BuilderAppendObject(builder, cc);
+        builder->amend_pointer(hx.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
+        wire_root(builder, {hx.offset(), hy.offset()}, "deep");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
 
         FastFHIR::Parser good(view.data(), view.size());
@@ -281,22 +281,22 @@ int main() {
     // accepted there, however well-formed it is in isolation.
     {
         Memory mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         MetaData meta;
-        auto hmeta = FF_StreamAppendObject(stream, meta);
+        auto hmeta = FF_BuilderAppendObject(builder, meta);
         PatientData p; p.id = "meta-case";
-        auto hp = FF_StreamAppendObject(stream, p);
-        stream->amend_pointer(hp.offset(), FF_PATIENT::META, hmeta.offset());
-        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-            .stream = stream,
+        auto hp = FF_BuilderAppendObject(builder, p);
+        builder->amend_pointer(hp.offset(), FF_PATIENT::META, hmeta.offset());
+        CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder,
             .root = hp,
         }), "set root");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
 
         FastFHIR::Parser good(view.data(), view.size());
@@ -321,19 +321,19 @@ int main() {
     // validate_FFHR_stream_deep() is the pass that looks.
     {
         Memory mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         PatientData p; p.id = "scalar-split"; p.active = true;
-        auto hp = FF_StreamAppendObject(stream, p);
-        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-            .stream = stream,
+        auto hp = FF_BuilderAppendObject(builder, p);
+        CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder,
             .root = hp,
         }), "set root");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
 
         std::vector<BYTE> bytes(view.data(), view.data() + view.size());
@@ -361,23 +361,23 @@ int main() {
     // STRING_TYPES. Section 7 below is the tripwire for that.
     {
         Memory mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         IdentifierData idd;
-        auto hid = FF_StreamAppendObject(stream, idd);
-        auto harr = stream->append_obj(std::vector<Offset>{hid.offset()}, RECOVER_FF_IDENTIFIER);
+        auto hid = FF_BuilderAppendObject(builder, idd);
+        auto harr = builder->append_obj(std::vector<Offset>{hid.offset()}, RECOVER_FF_IDENTIFIER);
         PatientData p; p.id = "flagged-slot";
-        auto hp = FF_StreamAppendObject(stream, p);
-        stream->amend_pointer(hp.offset(), FF_PATIENT::IDENTIFIER, harr.offset());
-        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-            .stream = stream,
+        auto hp = FF_BuilderAppendObject(builder, p);
+        builder->amend_pointer(hp.offset(), FF_PATIENT::IDENTIFIER, harr.offset());
+        CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder,
             .root = hp,
         }), "set root");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
 
         const Offset pat = hp.offset();
@@ -445,19 +445,19 @@ int main() {
     // Node::print_json still dereferenced it.
     {
         Memory mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         ObservationData o; o.id = "choice-variant";
-        auto ho = FF_StreamAppendObject(stream, o);
-        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-            .stream = stream,
+        auto ho = FF_BuilderAppendObject(builder, o);
+        CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder,
             .root = ho,
         }), "set root");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
 
         const Offset obs = ho.offset();
@@ -521,19 +521,19 @@ int main() {
     // a parsed stream, which that file has no machinery for.
     {
         Memory mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         ObservationData o; o.id = "flagged-code-decode";
-        auto ho = FF_StreamAppendObject(stream, o);
-        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-            .stream = stream,
+        auto ho = FF_BuilderAppendObject(builder, o);
+        CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder,
             .root = ho,
         }), "set root");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
 
         const Offset obs = ho.offset();
@@ -585,12 +585,12 @@ int main() {
     // the tripwire itself is deleted in the same change that adds them.
     {
         Memory mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         PatientData p; p.id = "dt-flagged";
-        auto hp = FF_StreamAppendObject(stream, p);
+        auto hp = FF_BuilderAppendObject(builder, p);
         // A real packed date makes the baseline a legal non-null slot — the
         // control that proves the discriminator (bit 63), not the slot kind,
         // is what makes a value an edge.
@@ -599,14 +599,14 @@ int main() {
         // not an ancestor (so the cycle check cannot fire first), and not an
         // FF_STRING — only the expected-tag check can catch it.
         IdentifierData d2; d2.id = "sibling";
-        auto hd2 = FF_StreamAppendObject(stream, d2);
-        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-            .stream = stream,
+        auto hd2 = FF_BuilderAppendObject(builder, d2);
+        CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder,
             .root = hp,
         }), "set root");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
 
         const Offset pat = hp.offset();

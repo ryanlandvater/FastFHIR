@@ -39,10 +39,10 @@ int main()
       ]})";
 
     auto mem = Memory::create(64ull * 1024 * 1024);
-    FF_StreamCreateInfo stream_info;
-    stream_info.arena = std::make_shared<Memory>(mem);
-    FF_Stream stream;
-    CHECK(FF_CreateStream(stream_info, stream), "create stream");
+    FF_BuilderCreateInfo builder_info;
+    builder_info.arena = std::make_shared<Memory>(mem);
+    FF_Builder builder;
+    CHECK(FF_CreateBuilder(builder_info, builder), "create stream");
     FF_IngestorCreateInfo ingestor_info;
     FF_Ingestor ingestor;
     CHECK(FF_CreateIngestor(ingestor_info, ingestor), "create ingestor");
@@ -51,7 +51,7 @@ int main()
 
     FF_Result result = FF_Ingest(FF_IngestInfo{
         .ingestor = ingestor,
-        .stream = stream,
+        .builder = builder,
         .source_type = FF_SOURCE_FHIR_JSON,
         .payload = kBundle,
     }, root, parsed);
@@ -64,13 +64,13 @@ int main()
         return 1;
     }
 
-    CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-        .stream = stream,
+    CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+        .builder = builder,
         .root = root,
     }), "set root");
     Memory::View view;
-    CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-        .stream = stream,
+    CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+        .builder = builder,
     }, view), "finalize");
     CHECK(!view.empty(), "sealed stream is non-empty");
 
@@ -112,10 +112,10 @@ int main()
         simdjson::padded_string padded(kBundle, std::strlen(kBundle));
 
         auto mem2 = Memory::create(64ull * 1024 * 1024);
-        FF_StreamCreateInfo stream_info2;
-        stream_info2.arena = std::make_shared<Memory>(mem2);
-        FF_Stream stream2;
-        CHECK(FF_CreateStream(stream_info2, stream2), "create stream (zero-copy)");
+        FF_BuilderCreateInfo builder_info2;
+        builder_info2.arena = std::make_shared<Memory>(mem2);
+        FF_Builder builder2;
+        CHECK(FF_CreateBuilder(builder_info2, builder2), "create stream (zero-copy)");
         FF_IngestorCreateInfo ingestor_info2;
         FF_Ingestor ingestor2;
         CHECK(FF_CreateIngestor(ingestor_info2, ingestor2), "create ingestor (zero-copy)");
@@ -124,7 +124,7 @@ int main()
 
         FF_Result r2 = FF_Ingest(FF_IngestInfo{
             .ingestor = ingestor2,
-            .stream = stream2,
+            .builder = builder2,
             .source_type = FF_SOURCE_FHIR_JSON,
             .payload = std::string_view(padded.data(), padded.length()),
             .payload_capacity = padded.length() + simdjson::SIMDJSON_PADDING,
@@ -134,13 +134,13 @@ int main()
                   (r2.code == FF_SUCCESS ? "ok" : r2.message) + ")");
 
         if (r2.code == FF_SUCCESS) {
-            CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-                .stream = stream2,
+            CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+                .builder = builder2,
                 .root = root2,
             }), "set root (zero-copy)");
             Memory::View view2;
-            CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-                .stream = stream2,
+            CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+                .builder = builder2,
             }, view2), "finalize (zero-copy)");
             Parser parser2;
             CHECK(FF_Parse(FF_ParseInfo{
@@ -177,10 +177,10 @@ int main()
             R"({"resourceType":"Patient","id":"p1","active":true,"gender":"male"})";
 
         auto mem3 = Memory::create(FastFHIR::Ingest::FF_MIN_ARENA);
-        FF_StreamCreateInfo stream_info3;
-        stream_info3.arena = std::make_shared<Memory>(mem3);
-        FF_Stream stream3;
-        CHECK(FF_CreateStream(stream_info3, stream3), "create stream (tiny)");
+        FF_BuilderCreateInfo builder_info3;
+        builder_info3.arena = std::make_shared<Memory>(mem3);
+        FF_Builder builder3;
+        CHECK(FF_CreateBuilder(builder_info3, builder3), "create stream (tiny)");
         FF_IngestorCreateInfo ingestor_info3;
         FF_Ingestor ingestor3;
         CHECK(FF_CreateIngestor(ingestor_info3, ingestor3), "create ingestor (tiny)");
@@ -189,7 +189,7 @@ int main()
 
         FF_Result r3 = FF_Ingest(FF_IngestInfo{
             .ingestor = ingestor3,
-            .stream = stream3,
+            .builder = builder3,
             .source_type = FF_SOURCE_FHIR_JSON,
             .payload = kTiny,
         }, root3, parsed3);
@@ -198,13 +198,13 @@ int main()
                   (r3.code == FF_SUCCESS ? "ok" : r3.message) + ")");
 
         if (r3.code == FF_SUCCESS) {
-            CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-                .stream = stream3,
+            CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+                .builder = builder3,
                 .root = root3,
             }), "set root (tiny)");
             Memory::View view3;
-            CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-                .stream = stream3,
+            CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+                .builder = builder3,
             }, view3), "finalize (tiny)");
             Parser parser3;
             CHECK(FF_Parse(FF_ParseInfo{

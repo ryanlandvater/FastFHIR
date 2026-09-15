@@ -47,19 +47,19 @@ std::vector<BYTE> write_observation(const ObservationData& observation,
 {
     threw = false;
     what.clear();
-    FF_StreamCreateInfo stream_info;
-    FF_Stream           stream;
-    if (!FF_CreateStream(stream_info, stream))
+    FF_BuilderCreateInfo builder_info;
+    FF_Builder           builder;
+    if (!FF_CreateBuilder(builder_info, builder))
         return {};
     if (hooks != nullptr)
-        stream->attach_layer(hooks);
+        builder->attach_layer(hooks);
 
     // append_obj, not append: it is the public entry point, and it reaches the
     // layer through the same append<T_Data> the ingest workers use.
     try
     {
-        Reflective::ObjectHandle root = stream->append_obj(observation);
-        if (!FF_StreamSetRoot(FF_StreamSetRootInfo{.stream = stream, .root = root}))
+        Reflective::ObjectHandle root = builder->append_obj(observation);
+        if (!FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root}))
             return {};
     }
     catch (const std::runtime_error& e)
@@ -70,7 +70,7 @@ std::vector<BYTE> write_observation(const ObservationData& observation,
     }
 
     Memory::View view;
-    if (!FF_StreamFinalize(FF_StreamFinalizeInfo{.stream = stream}, view))
+    if (!FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view))
         return {};
     return std::vector<BYTE>(view.data(), view.data() + view.size());
 }
@@ -213,16 +213,16 @@ void descent_reaches_a_nested_backbone()
     entry.request->url = "Patient/1";
     bundle.entry.push_back(std::move(entry));
 
-    FF_StreamCreateInfo stream_info;
-    FF_Stream           stream;
-    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+    FF_BuilderCreateInfo builder_info;
+    FF_Builder           builder;
+    REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
     ValidationHooks hooks = conformance_layer();
-    stream->attach_layer(&hooks);
+    builder->attach_layer(&hooks);
 
     std::string what;
     try
     {
-        stream->append_obj(bundle);
+        builder->append_obj(bundle);
     }
     catch (const std::runtime_error& e)
     {
@@ -304,14 +304,14 @@ void what_was_not_checked_is_visible()
     // A resource with only UNIMPLEMENTED rows must still write cleanly: those
     // rows are records, not checks.
     ValidationHooks hooks = conformance_layer();
-    FF_StreamCreateInfo stream_info;
-    FF_Stream           stream;
-    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
-    stream->attach_layer(&hooks);
+    FF_BuilderCreateInfo builder_info;
+    FF_Builder           builder;
+    REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
+    builder->attach_layer(&hooks);
     PatientData patient;
     patient.id = "p1";
     std::string what;
-    try { stream->append_obj(patient); }
+    try { builder->append_obj(patient); }
     catch (const std::runtime_error& e) { what = e.what(); }
     CHECK(what.empty(), "an UNIMPLEMENTED row never fires: " << what);
 }
@@ -382,18 +382,18 @@ void a_numeric_max_is_enforced()
 void an_abi_mismatch_is_refused()
 {
     TEST_GROUP("abi");
-    FF_StreamCreateInfo stream_info;
-    FF_Stream           stream;
-    REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
+    FF_BuilderCreateInfo builder_info;
+    FF_Builder           builder;
+    REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
 
     ValidationHooks stale = conformance_layer();
     stale.abi_version = FF_CONFORMANCE_ABI + 1;
     std::string what;
-    try { stream->attach_layer(&stale); }
+    try { builder->attach_layer(&stale); }
     catch (const std::runtime_error& e) { what = e.what(); }
     CHECK(what.find("ABI mismatch") != std::string::npos,
           "a layer from another release is refused at attach: " << what);
-    CHECK(stream->layer() == nullptr, "the refused layer was not attached");
+    CHECK(builder->layer() == nullptr, "the refused layer was not attached");
 }
 
 // ── 11. Version masking: R4 and R5 disagree, and the layer knows ──────────
@@ -409,13 +409,13 @@ void a_rule_only_applies_to_the_revision_that_states_it()
     ValidationHooks hooks = conformance_layer();
     for (const FHIR_VERSION version : {FHIR_VERSION_R5, FHIR_VERSION_R4})
     {
-        FF_StreamCreateInfo stream_info;
-        stream_info.version = version;
-        FF_Stream stream;
-        REQUIRE(FF_CreateStream(stream_info, stream), "create stream");
-        stream->attach_layer(&hooks);
+        FF_BuilderCreateInfo builder_info;
+        builder_info.version = version;
+        FF_Builder builder;
+        REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
+        builder->attach_layer(&hooks);
         std::string what;
-        try { stream->append_obj(condition); }
+        try { builder->append_obj(condition); }
         catch (const std::runtime_error& e) { what = e.what(); }
 
         const bool named = what.find("Condition.clinicalStatus") != std::string::npos;
@@ -452,14 +452,14 @@ void a_rule_only_applies_to_the_revision_that_states_it()
 std::vector<BYTE> ingest_bundle(const std::string& json, const ValidationHooks* hooks,
                                 uint32_t concurrency)
 {
-    FF_StreamCreateInfo stream_info;
-    stream_info.arena   = std::make_shared<Memory>(Memory::create(2ull * 1024 * 1024 * 1024));
-    stream_info.version = FHIR_VERSION_R5;
-    FF_Stream stream;
-    if (!FF_CreateStream(stream_info, stream))
+    FF_BuilderCreateInfo builder_info;
+    builder_info.arena   = std::make_shared<Memory>(Memory::create(2ull * 1024 * 1024 * 1024));
+    builder_info.version = FHIR_VERSION_R5;
+    FF_Builder builder;
+    if (!FF_CreateBuilder(builder_info, builder))
         return {};
     if (hooks != nullptr)
-        stream->attach_layer(hooks);
+        builder->attach_layer(hooks);
 
     FF_IngestorCreateInfo ingestor_info;
     ingestor_info.concurrency = concurrency;
@@ -471,7 +471,7 @@ std::vector<BYTE> ingest_bundle(const std::string& json, const ValidationHooks* 
     Size                     resource_count = 0;
     const FF_Result ingest = FF_Ingest(FF_IngestInfo{
         .ingestor         = ingestor,
-        .stream           = stream,
+        .builder          = builder,
         .source_type      = FF_SOURCE_FHIR_JSON,
         .extension_filter = FF_ExtensionFilterMode::FILTER_NONE,
         .payload          = json,
@@ -481,11 +481,11 @@ std::vector<BYTE> ingest_bundle(const std::string& json, const ValidationHooks* 
         printf("    ingest failed: %s\n", ingest.message.c_str());
         return {};
     }
-    if (!FF_StreamSetRoot(FF_StreamSetRootInfo{.stream = stream, .root = root}))
+    if (!FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root}))
         return {};
 
     Memory::View view;
-    if (!FF_StreamFinalize(FF_StreamFinalizeInfo{.stream = stream}, view))
+    if (!FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view))
         return {};
     return std::vector<BYTE>(view.data(), view.data() + view.size());
 }

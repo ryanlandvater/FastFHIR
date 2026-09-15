@@ -88,12 +88,35 @@ def discover_fixtures(synthea_dir: str) -> list[Path]:
 # ─── Per-fixture round-trip test ─────────────────────────────────────────────
 
 
+def _harness_failure(message: str) -> tuple[bool, list[DiffEntry], str, DiffStats]:
+    """A fixture that never reached the diff: one finding, no report, empty stats.
+
+    Same four-tuple as the success path. These returns once carried three
+    values after `stats` was added, so a missing harness surfaced as an
+    unpacking ValueError in main() instead of this message.
+    """
+    return (
+        False,
+        [
+            DiffEntry(
+                path="",
+                kind=DiffKind.VALUE_MISMATCH,
+                expected=None,
+                actual=None,
+                message=message,
+            )
+        ],
+        "",
+        DiffStats(),
+    )
+
+
 def run_roundtrip_test(
     fixture_path: Path,
     *,
     harness_path: str = "ff_roundtrip",
     debug: bool = False,
-) -> tuple[bool, list[DiffEntry], str]:
+) -> tuple[bool, list[DiffEntry], str, DiffStats]:
     """Run one round-trip test on a Synthea fixture.
 
     Invokes the C++ ff_roundtrip harness to:
@@ -133,63 +156,21 @@ def run_roundtrip_test(
             timeout=120,
         )
     except FileNotFoundError:
-        return (
-            False,
-            [
-                DiffEntry(
-                    path="",
-                    kind=DiffKind.VALUE_MISMATCH,
-                    expected=None,
-                    actual=None,
-                    message=f"C++ harness not found: {harness_path}. Build with: "
-                    "cmake --build . --target ff_roundtrip",
-                )
-            ],
-            "",
+        return _harness_failure(
+            f"C++ harness not found: {harness_path}. Build with: "
+            "cmake --build . --target ff_roundtrip"
         )
     except subprocess.TimeoutExpired:
-        return (
-            False,
-            [
-                DiffEntry(
-                    path="",
-                    kind=DiffKind.VALUE_MISMATCH,
-                    expected=None,
-                    actual=None,
-                    message=f"Harness timed out after 120s on {fixture_path.name}",
-                )
-            ],
-            "",
-        )
+        return _harness_failure(f"Harness timed out after 120s on {fixture_path.name}")
 
     if result.returncode == 2 and debug:
-        return (
-            False,
-            [
-                DiffEntry(
-                    path="",
-                    kind=DiffKind.VALUE_MISMATCH,
-                    expected=None,
-                    actual=None,
-                    message="--debug needs a Debug build; to_debug_json is compiled out under NDEBUG",
-                )
-            ],
-            "",
+        return _harness_failure(
+            "--debug needs a Debug build; to_debug_json is compiled out under NDEBUG"
         )
 
     if result.returncode != 0:
-        return (
-            False,
-            [
-                DiffEntry(
-                    path="",
-                    kind=DiffKind.VALUE_MISMATCH,
-                    expected=None,
-                    actual=None,
-                    message=f"Harness exited code {result.returncode}: {result.stderr.strip()}",
-                )
-            ],
-            "",
+        return _harness_failure(
+            f"Harness exited code {result.returncode}: {result.stderr.strip()}"
         )
 
     output_json = result.stdout
@@ -198,36 +179,12 @@ def run_roundtrip_test(
     try:
         input_dom = json.loads(input_json)
     except json.JSONDecodeError as e:
-        return (
-            False,
-            [
-                DiffEntry(
-                    path="",
-                    kind=DiffKind.VALUE_MISMATCH,
-                    expected=None,
-                    actual=None,
-                    message=f"Failed to parse input JSON: {e}",
-                )
-            ],
-            "",
-        )
+        return _harness_failure(f"Failed to parse input JSON: {e}")
 
     try:
         output_dom = json.loads(output_json)
     except json.JSONDecodeError as e:
-        return (
-            False,
-            [
-                DiffEntry(
-                    path="",
-                    kind=DiffKind.VALUE_MISMATCH,
-                    expected=None,
-                    actual=None,
-                    message=f"Failed to parse output JSON: {e}",
-                )
-            ],
-            "",
-        )
+        return _harness_failure(f"Failed to parse output JSON: {e}")
 
     # In debug mode the DOM arrives wrapped in wire metadata. Strip it back to
     # the shape print_json would have produced, so exactly one differ is used

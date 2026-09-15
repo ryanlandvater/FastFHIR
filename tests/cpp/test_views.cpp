@@ -52,11 +52,11 @@ static void CHECK(bool ok, const std::string &what)
 static std::shared_ptr<Memory> build_patient(Memory::View &view_out)
 {
     auto arena = std::make_shared<Memory>(Memory::create(16 * 1024 * 1024));
-    FF_StreamCreateInfo stream_info;
-    stream_info.arena = arena;
-    stream_info.version = FHIR_VERSION_R5;
-    FF_Stream stream;
-    if (!FF_CreateStream(stream_info, stream))
+    FF_BuilderCreateInfo builder_info;
+    builder_info.arena = arena;
+    builder_info.version = FHIR_VERSION_R5;
+    FF_Builder builder;
+    if (!FF_CreateBuilder(builder_info, builder))
         return nullptr;
 
     FF_IngestorCreateInfo ingestor_info;
@@ -74,18 +74,18 @@ static std::shared_ptr<Memory> build_patient(Memory::View &view_out)
     Reflective::ObjectHandle root;
     Size count = 0;
     auto res = FF_Ingest(FF_IngestInfo{.ingestor = ingestor,
-                                       .stream = stream,
+                                       .builder = builder,
                                        .source_type = FF_SOURCE_FHIR_JSON,
                                        .extension_filter = FF_ExtensionFilterMode::FILTER_NONE,
                                        .payload = json},
                          root, count);
     if (res.failed())
         return nullptr;
-    if (!FF_StreamSetRoot(FF_StreamSetRootInfo{.stream = stream, .root = root}))
+    if (!FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root}))
         return nullptr;
-    if (!FF_StreamFinalize(
-            FF_StreamFinalizeInfo{
-                .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = ff_test::sha256},
+    if (!FF_BuilderFinalize(
+            FF_BuilderFinalizeInfo{
+                .builder = builder, .algorithm = FF_CHECKSUM_SHA256, .hasher = ff_test::sha256},
             view_out))
         return nullptr;
     return arena;

@@ -31,33 +31,33 @@ int main() {
     // Patient -> identifier[] -> { X, Y }, and both X and Y point their
     // `type` slot at the SAME CodeableConcept block C.
     auto mem = Memory::create(1ull << 22);
-    FF_StreamCreateInfo stream_info;
-    stream_info.arena = std::make_shared<Memory>(mem);
-    FF_Stream stream;
-    CHECK(FF_CreateStream(stream_info, stream), "create stream");
+    FF_BuilderCreateInfo builder_info;
+    builder_info.arena = std::make_shared<Memory>(mem);
+    FF_Builder builder;
+    CHECK(FF_CreateBuilder(builder_info, builder), "create stream");
 
     CodeableConceptData cc;                       // the shared subtree
-    auto hcc = FF_StreamAppendObject(stream, cc);
+    auto hcc = FF_BuilderAppendObject(builder, cc);
 
     IdentifierData ix, iy;                        // the two parents
-    auto hx = FF_StreamAppendObject(stream, ix);
-    auto hy = FF_StreamAppendObject(stream, iy);
-    stream->amend_pointer(hx.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
-    stream->amend_pointer(hy.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
+    auto hx = FF_BuilderAppendObject(builder, ix);
+    auto hy = FF_BuilderAppendObject(builder, iy);
+    builder->amend_pointer(hx.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
+    builder->amend_pointer(hy.offset(), FF_IDENTIFIER::TYPE, hcc.offset());
 
-    auto harr = stream->append_obj(std::vector<Offset>{hx.offset(), hy.offset()},
+    auto harr = builder->append_obj(std::vector<Offset>{hx.offset(), hy.offset()},
                                    RECOVER_FF_IDENTIFIER);
     PatientData p; p.id = "p1";
-    auto hp = FF_StreamAppendObject(stream, p);
-    stream->amend_pointer(hp.offset(), FF_PATIENT::IDENTIFIER, harr.offset());
-    CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-        .stream = stream,
+    auto hp = FF_BuilderAppendObject(builder, p);
+    builder->amend_pointer(hp.offset(), FF_PATIENT::IDENTIFIER, harr.offset());
+    CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+        .builder = builder,
         .root = hp,
     }), "set root");
 
     Memory::View view;
-    CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-        .stream = stream,
+    CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+        .builder = builder,
     }, view), "finalize");
     CHECK(!view.empty(), "builder finalize produced a stream");
 
@@ -107,30 +107,30 @@ int main() {
     // sizes are equal.
     {
         Memory mem2 = Memory::create(1ull << 22);
-        FF_StreamCreateInfo stream_info2;
-        stream_info2.arena = std::make_shared<Memory>(mem2);
-        FF_Stream stream2;
-        CHECK(FF_CreateStream(stream_info2, stream2), "create stream (twin)");
+        FF_BuilderCreateInfo builder_info2;
+        builder_info2.arena = std::make_shared<Memory>(mem2);
+        FF_Builder builder2;
+        CHECK(FF_CreateBuilder(builder_info2, builder2), "create stream (twin)");
         CodeableConceptData cc1, cc2;
-        auto hcc1 = FF_StreamAppendObject(stream2, cc1);
-        auto hcc2 = FF_StreamAppendObject(stream2, cc2);
+        auto hcc1 = FF_BuilderAppendObject(builder2, cc1);
+        auto hcc2 = FF_BuilderAppendObject(builder2, cc2);
         IdentifierData tx, ty;
-        auto htx = FF_StreamAppendObject(stream2, tx);
-        auto hty = FF_StreamAppendObject(stream2, ty);
-        stream2->amend_pointer(htx.offset(), FF_IDENTIFIER::TYPE, hcc1.offset());
-        stream2->amend_pointer(hty.offset(), FF_IDENTIFIER::TYPE, hcc2.offset());
-        auto harr2 = stream2->append_obj(std::vector<Offset>{htx.offset(), hty.offset()},
+        auto htx = FF_BuilderAppendObject(builder2, tx);
+        auto hty = FF_BuilderAppendObject(builder2, ty);
+        builder2->amend_pointer(htx.offset(), FF_IDENTIFIER::TYPE, hcc1.offset());
+        builder2->amend_pointer(hty.offset(), FF_IDENTIFIER::TYPE, hcc2.offset());
+        auto harr2 = builder2->append_obj(std::vector<Offset>{htx.offset(), hty.offset()},
                                          RECOVER_FF_IDENTIFIER);
         PatientData p2; p2.id = "p2";
-        auto hp2 = FF_StreamAppendObject(stream2, p2);
-        stream2->amend_pointer(hp2.offset(), FF_PATIENT::IDENTIFIER, harr2.offset());
-        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-            .stream = stream2,
+        auto hp2 = FF_BuilderAppendObject(builder2, p2);
+        builder2->amend_pointer(hp2.offset(), FF_PATIENT::IDENTIFIER, harr2.offset());
+        CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder2,
             .root = hp2,
         }), "set root (twin)");
         Memory::View view2;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream2,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder2,
         }, view2), "finalize (twin)");
         Parser source2;
         CHECK(FF_Parse(FF_ParseInfo{
@@ -165,10 +165,10 @@ int main() {
     // Compactor::archive able to tell "absent" from "never written".
     {
         Memory cmem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo stream_info3;
-        stream_info3.arena = std::make_shared<Memory>(cmem);
-        FF_Stream stream3;
-        CHECK(FF_CreateStream(stream_info3, stream3), "create stream (deferred)");
+        FF_BuilderCreateInfo builder_info3;
+        builder_info3.arena = std::make_shared<Memory>(cmem);
+        FF_Builder builder3;
+        CHECK(FF_CreateBuilder(builder_info3, builder3), "create stream (deferred)");
 
         CodingData coding;
         coding.system = "http://example.org/local-codes";
@@ -179,23 +179,23 @@ int main() {
         // choice carries its DECODED value (ChoiceBlock wraps structs holding
         // unique_ptr members), so a copy is no longer available to take.
         ccc.coding.push_back(std::move(coding));
-        auto hccc = FF_StreamAppendObject(stream3, ccc);
+        auto hccc = FF_BuilderAppendObject(builder3, ccc);
 
         IdentifierData cid;
-        auto hcid = FF_StreamAppendObject(stream3, cid);
-        stream3->amend_pointer(hcid.offset(), FF_IDENTIFIER::TYPE, hccc.offset());
+        auto hcid = FF_BuilderAppendObject(builder3, cid);
+        builder3->amend_pointer(hcid.offset(), FF_IDENTIFIER::TYPE, hccc.offset());
 
-        auto carr = stream3->append_obj(std::vector<Offset>{hcid.offset()}, RECOVER_FF_IDENTIFIER);
+        auto carr = builder3->append_obj(std::vector<Offset>{hcid.offset()}, RECOVER_FF_IDENTIFIER);
         PatientData cp; cp.id = "p3";
-        auto hcp = FF_StreamAppendObject(stream3, cp);
-        stream3->amend_pointer(hcp.offset(), FF_PATIENT::IDENTIFIER, carr.offset());
-        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-            .stream = stream3,
+        auto hcp = FF_BuilderAppendObject(builder3, cp);
+        builder3->amend_pointer(hcp.offset(), FF_PATIENT::IDENTIFIER, carr.offset());
+        CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder3,
             .root = hcp,
         }), "set root (deferred)");
         Memory::View cview;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream3,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder3,
         }, cview), "finalize (deferred)");
 
         Parser csource;

@@ -93,11 +93,11 @@ int main(int argc, char** argv) {
 
         // 2. Allocate arena + stream
         auto mem = Memory::create(arena_size);
-        FF_StreamCreateInfo stream_info;
-        stream_info.arena = std::make_shared<Memory>(mem);
-        stream_info.version = FHIR_VERSION_R5;
-        FF_Stream stream;
-        if (!FF_CreateStream(stream_info, stream)) {
+        FF_BuilderCreateInfo builder_info;
+        builder_info.arena = std::make_shared<Memory>(mem);
+        builder_info.version = FHIR_VERSION_R5;
+        FF_Builder builder;
+        if (!FF_CreateBuilder(builder_info, builder)) {
             std::cerr << "create stream failed\n";
             return 1;
         }
@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
         Size resource_count = 0;
         auto result = FF_Ingest(FF_IngestInfo{
             .ingestor = ingestor,
-            .stream = stream,
+            .builder = builder,
             .source_type = FF_SOURCE_FHIR_JSON,
             .extension_filter = FF_ExtensionFilterMode::FILTER_NONE,
             .payload = json_str,
@@ -132,16 +132,16 @@ int main(int argc, char** argv) {
         }
 
         // 4. Seal
-        if (!FF_StreamSetRoot(FF_StreamSetRootInfo{
-                .stream = stream,
+        if (!FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+                .builder = builder,
                 .root = root_handle,
             })) {
             std::cerr << "set_root failed\n";
             return 1;
         }
         Memory::View view;
-        if (!FF_StreamFinalize(FF_StreamFinalizeInfo{
-                .stream = stream,
+        if (!FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+                .builder = builder,
                 .algorithm = FF_CHECKSUM_SHA256,
                 .hasher = ff_test::sha256,
             }, view)) {

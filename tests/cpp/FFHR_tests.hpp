@@ -115,8 +115,8 @@ namespace ff_test
 // `cond` is evaluated EXACTLY ONCE (2026-09-10). It used to be evaluated twice
 // -- once by CHECK and again by the `if` -- which was invisible for a plain
 // comparison and wrong for the 60 call sites whose condition is a call:
-// `REQUIRE(FF_StreamFinalize(...), "finalize")` sealed the stream twice, and
-// `REQUIRE(FF_CreateStream(...))` built two. Those tests were passing on the
+// `REQUIRE(FF_BuilderFinalize(...), "finalize")` sealed the stream twice, and
+// `REQUIRE(FF_CreateBuilder(...))` built two. Those tests were passing on the
 // SECOND call's behaviour, in a state no documented usage produces. Keep the
 // single evaluation: a macro that runs its argument twice cannot be used to
 // check anything that does work.

@@ -74,15 +74,15 @@ struct PyMemory {
     }
 };
 
-struct PyStream {
-    FF_Stream m_builder;
+struct PyBuilder {
+    FF_Builder m_builder;
     bool m_closed = false;
 
-    PyStream(PyMemory& mem, FHIR_VERSION fhir_version) {
-        FF_StreamCreateInfo info;
+    PyBuilder(PyMemory& mem, FHIR_VERSION fhir_version) {
+        FF_BuilderCreateInfo info;
         info.version = fhir_version;
         info.arena = mem.m_core;
-        FF_Result res = FF_CreateStream(info, m_builder);
+        FF_Result res = FF_CreateBuilder(info, m_builder);
         if (!res) throw std::runtime_error(res.message);
     }
 
@@ -92,12 +92,12 @@ struct PyStream {
     }
 
     Builder& get() {
-        if (m_closed || !m_builder) throw py::value_error("I/O operation on closed FastFHIR Stream.");
+        if (m_closed || !m_builder) throw py::value_error("I/O operation on closed FastFHIR Builder.");
         return *m_builder;
     }
     
     const Builder& get() const {
-        if (m_closed || !m_builder) throw py::value_error("I/O operation on closed FastFHIR Stream.");
+        if (m_closed || !m_builder) throw py::value_error("I/O operation on closed FastFHIR Builder.");
         return *m_builder;
     }
 };
@@ -107,11 +107,11 @@ struct PyStream {
 // =====================================================================
 // These carry the shared_ptr seamlessly through Python to guarantee memory safety
 // without altering the lightweight C++ AST architecture.
-struct PyStreamNode {
+struct PyBuilderNode {
     std::shared_ptr<Builder> builder;
     Reflective::ObjectHandle handle;
 
-    PyStreamNode(std::shared_ptr<Builder> b, Reflective::ObjectHandle h) : builder(std::move(b)), handle(h) {}
+    PyBuilderNode(std::shared_ptr<Builder> b, Reflective::ObjectHandle h) : builder(std::move(b)), handle(h) {}
 };
 
 struct PyMutableEntry {
@@ -246,7 +246,7 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
                 return py::none();
             }
             if (!recursive) {
-                return py::cast(PyStreamNode(entry_wrapper.builder, elevated));
+                return py::cast(PyBuilderNode(entry_wrapper.builder, elevated));
             }
             return materialize_handle_value(entry_wrapper.builder, elevated);
         }
@@ -310,7 +310,7 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
                 return py::none();
             }
             if (!recursive) {
-                return py::cast(PyStreamNode(entry_wrapper.builder, elevated));
+                return py::cast(PyBuilderNode(entry_wrapper.builder, elevated));
             }
             return materialize_handle_value(entry_wrapper.builder, elevated);
         }
@@ -400,10 +400,10 @@ static std::string render_parser_json(const Parser& parser) {
 }
 
 /// Snapshot the live stream via the FF_* surface; query() is private on Builder.
-static Parser stream_query(const PyStream& self) {
+static Parser builder_query(const PyBuilder& self) {
     Parser parser;
-    FF_Result res = FF_StreamQuery(FF_StreamQueryInfo{
-        .stream = self.m_builder,
+    FF_Result res = FF_BuilderQuery(FF_BuilderQueryInfo{
+        .builder = self.m_builder,
     }, parser);
     if (!res) throw std::runtime_error(res.message);
     return parser;
@@ -509,8 +509,8 @@ static py::list collect_filled_object_items(const std::shared_ptr<Builder>& buil
 // Type-Safe Python to C++ Assignment Dispatcher
 // =====================================================================
 void assign_py_obj(Reflective::MutableEntry& entry, py::handle obj, Reflective::ObjectHandle& parent_handle, const FF_FieldKey& key) {
-    if (py::isinstance<PyStreamNode>(obj)) {
-        entry = obj.cast<PyStreamNode>().handle;
+    if (py::isinstance<PyBuilderNode>(obj)) {
+        entry = obj.cast<PyBuilderNode>().handle;
         return;
     } 
     if (py::isinstance<py::str>(obj)) {
@@ -533,8 +533,8 @@ void assign_py_obj(Reflective::MutableEntry& entry, py::handle obj, Reflective::
     if (py::isinstance<py::list>(obj) || py::isinstance<py::dict>(obj)) {
         if (py::isinstance<py::list>(obj)) {
             auto list = obj.cast<py::list>();
-            if (!list.empty() && py::isinstance<PyStreamNode>(list[0])) {
-                auto wrappers = list.cast<std::vector<PyStreamNode>>();
+            if (!list.empty() && py::isinstance<PyBuilderNode>(list[0])) {
+                auto wrappers = list.cast<std::vector<PyBuilderNode>>();
                 if (FF_IsResourceTag(wrappers[0].handle.recovery())) {
                     std::vector<ResourceReference> refs;
                     for (const auto& w : wrappers) refs.push_back({w.handle.offset(), w.handle.recovery()});
@@ -574,7 +574,7 @@ void assign_py_obj(Reflective::MutableEntry& entry, py::handle obj, Reflective::
 // =====================================================================
 // Deep AST Traversal Helper (Executes entirely in C++)
 // =====================================================================
-PyMutableEntry resolve_ast_path(const PyStreamNode& root, py::tuple path) {
+PyMutableEntry resolve_ast_path(const PyBuilderNode& root, py::tuple path) {
     if (path.empty()) throw py::value_error("FastFHIR: Cannot traverse an empty AST path.");
 
     auto get_next_leaf = [](Reflective::ObjectHandle parent, py::handle item) -> Reflective::MutableEntry {
@@ -686,26 +686,26 @@ PYBIND11_MODULE(_core, m) {
     // =====================================================================
     // 3. Object Proxies
     // =====================================================================
-    py::class_<PyStreamNode>(m, "StreamNode")
-        .def_property_readonly("offset", [](const PyStreamNode& s) { return s.handle.offset(); })
-        .def_property_readonly("recovery_tag", [](const PyStreamNode& s) { return s.handle.recovery(); })
-        .def("is_array", [](const PyStreamNode& s) { return s.handle.is_array(); })
-        .def("to_json", [](const PyStreamNode& s) { return render_handle_json(s.handle); })
-        .def("__str__", [](const PyStreamNode& s) { return render_handle_json(s.handle); })
-        .def("__repr__", [](const PyStreamNode& s) { return render_handle_json(s.handle); })
-        .def("__bool__", [](const PyStreamNode& s) { return s.handle.offset() != FF_NULL_OFFSET; })
-        .def("__eq__", [](const PyStreamNode& self, py::object other) -> py::object {
+    py::class_<PyBuilderNode>(m, "BuilderNode")
+        .def_property_readonly("offset", [](const PyBuilderNode& s) { return s.handle.offset(); })
+        .def_property_readonly("recovery_tag", [](const PyBuilderNode& s) { return s.handle.recovery(); })
+        .def("is_array", [](const PyBuilderNode& s) { return s.handle.is_array(); })
+        .def("to_json", [](const PyBuilderNode& s) { return render_handle_json(s.handle); })
+        .def("__str__", [](const PyBuilderNode& s) { return render_handle_json(s.handle); })
+        .def("__repr__", [](const PyBuilderNode& s) { return render_handle_json(s.handle); })
+        .def("__bool__", [](const PyBuilderNode& s) { return s.handle.offset() != FF_NULL_OFFSET; })
+        .def("__eq__", [](const PyBuilderNode& self, py::object other) -> py::object {
             RECOVERY_TAG other_tag = FF_RECOVER_UNDEFINED;
             if (try_extract_recovery_tag(other, other_tag)) {
                 return py::bool_(self.handle.recovery() == other_tag);
             }
             return py::reinterpret_borrow<py::object>(Py_NotImplemented);
         })
-        .def("__len__", [](const PyStreamNode& s) -> size_t {
+        .def("__len__", [](const PyBuilderNode& s) -> size_t {
             if (!s.handle.is_array()) return 0;
             return s.handle.size();
         })
-        .def("__iter__", [](const PyStreamNode& self) {
+        .def("__iter__", [](const PyBuilderNode& self) {
             if (self.handle.is_array()) {
                 // For arrays, yield each entry as a PyMutableEntry
                 py::list items;
@@ -717,7 +717,7 @@ PYBIND11_MODULE(_core, m) {
                 return py::iter(collect_filled_object_values(self.builder, self.handle));
             }
         })
-        .def("items", [](const PyStreamNode& self, bool recursive) {
+        .def("items", [](const PyBuilderNode& self, bool recursive) {
             // Dict-like items() for nodes; for arrays, iterate as (index, item) pairs
             py::list items;
             if (self.handle.is_array()) {
@@ -739,15 +739,15 @@ PYBIND11_MODULE(_core, m) {
             }
             return items;
         }, py::arg("recursive") = false)
-        .def("__getitem__", [](const PyStreamNode& self, const std::string& key) -> py::object {
+        .def("__getitem__", [](const PyBuilderNode& self, const std::string& key) -> py::object {
             throw py::key_error("FastFHIR Python API requires generated Field objects.");
         })
-        .def("__getitem__", [](const PyStreamNode& self, const PythonFieldProxy& field) {
+        .def("__getitem__", [](const PyBuilderNode& self, const PythonFieldProxy& field) {
             if (field.registry_index >= FastFHIR::FieldKeys::RegistrySize) throw py::index_error();
             const auto& key = *FastFHIR::FieldKeys::Registry[field.registry_index];
             return PyMutableEntry(self.builder, self.handle[key]);
         })
-        .def("__getitem__", [](const PyStreamNode& self, py::object ast_node) {
+        .def("__getitem__", [](const PyBuilderNode& self, py::object ast_node) {
             // Support both explicit ASTNode objects and field path instances
             if (py::hasattr(ast_node, "path")) {
                 return resolve_ast_path(self, ast_node.attr("path").cast<py::tuple>());
@@ -755,7 +755,7 @@ PYBIND11_MODULE(_core, m) {
             // Fallback: try to treat it as a field path by looking for a __call__ or recovery_tag
             throw py::type_error("FastFHIR: Expected ASTNode with .path attribute or field path accessor.");
         })
-        .def("__setitem__", [](PyStreamNode& self, const PythonFieldProxy& field, py::object value) {
+        .def("__setitem__", [](PyBuilderNode& self, const PythonFieldProxy& field, py::object value) {
             // Direct field assignment (the documented API:
             // patient_node[Patient.ACTIVE] = True). Must be registered BEFORE
             // the generic py::object overload below or pybind11 dispatches
@@ -765,7 +765,7 @@ PYBIND11_MODULE(_core, m) {
             PyMutableEntry leaf(self.builder, self.handle[key]);
             assign_py_obj(leaf.entry, value, self.handle, key);
         })
-        .def("__setitem__", [](PyStreamNode& self, py::object ast_node, py::object value) {
+        .def("__setitem__", [](PyBuilderNode& self, py::object ast_node, py::object value) {
             if (!py::hasattr(ast_node, "path")) throw py::type_error("Requires ASTNode.");
             py::tuple path = ast_node.attr("path").cast<py::tuple>();
             
@@ -850,13 +850,13 @@ PYBIND11_MODULE(_core, m) {
         })
         .def("__getitem__", [](const PyMutableEntry& self, py::object ast) {
             if (!py::hasattr(ast, "path")) throw py::type_error("Requires ASTNode.");
-            return resolve_ast_path(PyStreamNode(self.builder, self.entry.as_handle()), ast.attr("path").cast<py::tuple>());
+            return resolve_ast_path(PyBuilderNode(self.builder, self.entry.as_handle()), ast.attr("path").cast<py::tuple>());
         })
         .def("__setitem__", [](const PyMutableEntry& self, py::object ast, py::object value) {
             if (!py::hasattr(ast, "path")) throw py::type_error("Requires ASTNode.");
             py::tuple path = ast.attr("path").cast<py::tuple>();
             
-            PyStreamNode elevated(self.builder, self.entry.as_handle());
+            PyBuilderNode elevated(self.builder, self.entry.as_handle());
             PyMutableEntry leaf = resolve_ast_path(elevated, path);
             py::handle last = path[path.size() - 1];
             
@@ -877,30 +877,30 @@ PYBIND11_MODULE(_core, m) {
         });
 
     // =====================================================================
-    // 4. Stream (Builder Wrapper) & Context Manager
+    // 4. Builder Wrapper & Context Manager
     // =====================================================================
-    py::class_<PyStream, std::shared_ptr<PyStream>>(m, "Stream")
+    py::class_<PyBuilder, std::shared_ptr<PyBuilder>>(m, "Builder")
         .def(py::init<PyMemory&, FHIR_VERSION>(), py::arg("memory"), py::arg("fhir_version") = FHIR_VERSION_R5)
-        .def("__enter__", [](PyStream& self) -> PyStream& { return self; })
-        .def("__exit__", [](PyStream& self, py::object, py::object, py::object) { self.close(); })
+        .def("__enter__", [](PyBuilder& self) -> PyBuilder& { return self; })
+        .def("__exit__", [](PyBuilder& self, py::object, py::object, py::object) { self.close(); })
         .def_property("root", 
-            [](PyStream& self) { return PyStreamNode(self.m_builder, self.get().root_handle()); }, 
-            [](PyStream& self, const PyStreamNode& handle) {
-                FF_Result res = FF_StreamSetRoot(FF_StreamSetRootInfo{
-                    .stream = self.m_builder,
+            [](PyBuilder& self) { return PyBuilderNode(self.m_builder, self.get().root_handle()); }, 
+            [](PyBuilder& self, const PyBuilderNode& handle) {
+                FF_Result res = FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+                    .builder = self.m_builder,
                     .root = handle.handle,
                 });
                 if (!res) throw std::runtime_error(res.message);
             }
         )
-        .def("query", [](const PyStream& self) { return stream_query(self); })
-        .def_property_readonly("version", [](const PyStream& self) { return stream_query(self).version(); })
-        .def_property_readonly("root_type", [](const PyStream& self) { return stream_query(self).root_type(); })
-        .def_property_readonly("checksum", [](const PyStream& self) { return stream_query(self).checksum(); })
-        .def("to_json", [](const PyStream& self) { return render_parser_json(stream_query(self)); })
-        .def("__str__", [](const PyStream& self) { return render_parser_json(stream_query(self)); })
-        .def("__repr__", [](const PyStream& self) { return render_parser_json(stream_query(self)); })
-        .def("finalize", [](PyStream& self, FF_Checksum_Algorithm algo, py::object py_hasher) {
+        .def("query", [](const PyBuilder& self) { return builder_query(self); })
+        .def_property_readonly("version", [](const PyBuilder& self) { return builder_query(self).version(); })
+        .def_property_readonly("root_type", [](const PyBuilder& self) { return builder_query(self).root_type(); })
+        .def_property_readonly("checksum", [](const PyBuilder& self) { return builder_query(self).checksum(); })
+        .def("to_json", [](const PyBuilder& self) { return render_parser_json(builder_query(self)); })
+        .def("__str__", [](const PyBuilder& self) { return render_parser_json(builder_query(self)); })
+        .def("__repr__", [](const PyBuilder& self) { return render_parser_json(builder_query(self)); })
+        .def("finalize", [](PyBuilder& self, FF_Checksum_Algorithm algo, py::object py_hasher) {
             FF_HashCallback cpp_hasher = nullptr;
             if (!py_hasher.is_none()) {
                 cpp_hasher = [py_hasher](const unsigned char* data, Size size) -> std::vector<BYTE> {
@@ -910,15 +910,15 @@ PYBIND11_MODULE(_core, m) {
                 };
             }
             Memory::View out;
-            FF_Result res = FF_StreamFinalize(FF_StreamFinalizeInfo{
-                .stream = self.m_builder,
+            FF_Result res = FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+                .builder = self.m_builder,
                 .algorithm = algo,
                 .hasher = cpp_hasher,
             }, out);
             if (!res) throw std::runtime_error(res.message);
             return out;
         }, py::arg("algo") = FF_CHECKSUM_NONE, py::arg("hasher") = py::none())
-        .def("compact", [](PyStream& self, FF_Checksum_Algorithm algo, py::object py_hasher) {
+        .def("compact", [](PyBuilder& self, FF_Checksum_Algorithm algo, py::object py_hasher) {
             FF_HashCallback cpp_hasher = nullptr;
             if (!py_hasher.is_none()) {
                 cpp_hasher = [py_hasher](const unsigned char* data, Size size) -> std::vector<BYTE> {
@@ -929,18 +929,18 @@ PYBIND11_MODULE(_core, m) {
             }
             Memory::View out;
             FF_Result res = FF_Compact(FF_CompactInfo{
-                .source = stream_query(self),
+                .source = builder_query(self),
                 .algorithm = algo,
                 .hasher = cpp_hasher,
             }, out);
             if (!res) throw std::runtime_error(res.message);
             return out;
         }, py::arg("algo") = FF_CHECKSUM_NONE, py::arg("hasher") = py::none())
-        .def_property_readonly("has_url_directory", [](const PyStream& self) {
-            return stream_query(self).has_url_directory();
+        .def_property_readonly("has_url_directory", [](const PyBuilder& self) {
+            return builder_query(self).has_url_directory();
         })
-        .def_property_readonly("url_directory", [](const PyStream& self) -> py::object {
-            Parser q = stream_query(self);
+        .def_property_readonly("url_directory", [](const PyBuilder& self) -> py::object {
+            Parser q = builder_query(self);
             if (!q.has_url_directory()) return py::none();
             const BYTE* base = q.data();
             FF_URL_DIRECTORY dir = q.url_directory();
@@ -959,11 +959,11 @@ PYBIND11_MODULE(_core, m) {
             d["entries"] = entries;
             return d;
         })
-        .def_property_readonly("has_module_registry", [](const PyStream& self) {
-            return stream_query(self).has_module_registry();
+        .def_property_readonly("has_module_registry", [](const PyBuilder& self) {
+            return builder_query(self).has_module_registry();
         })
-        .def_property_readonly("module_registry", [](const PyStream& self) -> py::object {
-            Parser q = stream_query(self);
+        .def_property_readonly("module_registry", [](const PyBuilder& self) -> py::object {
+            Parser q = builder_query(self);
             if (!q.has_module_registry()) return py::none();
             const BYTE* base = q.data();
             FF_MODULE_REGISTRY reg(q.module_registry_offset(), q.size_bytes(), q.version());
@@ -1004,10 +1004,10 @@ PYBIND11_MODULE(_core, m) {
             if (!res) throw std::runtime_error(res.message);
             return ingestor;
         }), py::arg("logger_capacity") = 64 * 1024 * 1024, py::arg("concurrency") = 0)
-        .def("ingest", [](const FF_Ingestor& self, PyStream& stream, FF_SourceType type, std::string_view payload) {
+        .def("ingest", [](const FF_Ingestor& self, PyBuilder& builder, FF_SourceType type, std::string_view payload) {
             FF_IngestInfo info{
                 .ingestor = self,
-                .stream = stream.m_builder,
+                .builder = builder.m_builder,
                 .source_type = type,
                 .payload = payload,
             };
@@ -1015,8 +1015,8 @@ PYBIND11_MODULE(_core, m) {
             Size count = 0;
             FF_Result res = FF_Ingest(info, root, count);
             if (res.failed()) throw std::runtime_error(res.message);
-            return py::make_tuple(PyStreamNode(stream.m_builder, root), static_cast<size_t>(count));
-        }, py::arg("stream"), py::arg("source_type"), py::arg("payload"))
+            return py::make_tuple(PyBuilderNode(builder.m_builder, root), static_cast<size_t>(count));
+        }, py::arg("builder"), py::arg("source_type"), py::arg("payload"))
         .def("reset", [](FF_Ingestor_t& self) { return self.impl.reset(); })
         .def_property_readonly("is_faulted", [](FF_Ingestor_t& self) { return self.impl.is_faulted(); });
 }

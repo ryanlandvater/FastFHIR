@@ -19,22 +19,22 @@
  * #include <openssl/sha.h>
  *
  * // 1. Build a stream
- * FastFHIR::FF_StreamCreateInfo create_info;          // defaults: 4 GB arena, R5
- * FastFHIR::FF_Stream stream;
- * FastFHIR::FF_CreateStream(create_info, stream);
+ * FastFHIR::FF_BuilderCreateInfo create_info;          // defaults: 4 GB arena, R5
+ * FastFHIR::FF_Builder builder;
+ * FastFHIR::FF_CreateBuilder(create_info, builder);
  *
  * ObservationData obs;
- * auto root = FastFHIR::FF_StreamAppendObject(stream, obs); // never throws
+ * auto root = FastFHIR::FF_BuilderAppendObject(builder, obs); // never throws
  * root["status"] = "final";                                  // mutable handle path
- * FastFHIR::FF_StreamSetRoot(FastFHIR::FF_StreamSetRootInfo{
- *     .stream = stream,
+ * FastFHIR::FF_BuilderSetRoot(FastFHIR::FF_BuilderSetRootInfo{
+ *     .builder = builder,
  *     .root = root,
  * });
  *
  * // Seal the file with a lambda crypto callback
  * FastFHIR::Memory::View payload;
- * FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
- *     .stream = stream,
+ * FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
+ *     .builder = builder,
  *     .algorithm = FF_CHECKSUM_SHA256,
  *     .hasher = [](const unsigned char* byte_start, Size bytes_to_hash) -> std::vector<BYTE> {
  *         std::vector<BYTE> hash(SHA256_DIGEST_LENGTH);
@@ -66,22 +66,22 @@
  * #include <thread>
  * #include <vector>
  *
- * FastFHIR::FF_StreamCreateInfo create_info;
+ * FastFHIR::FF_BuilderCreateInfo create_info;
  * create_info.capacity = 2ULL * 1024 * 1024 * 1024;   // 2GB Virtual Arena
- * FastFHIR::FF_Stream stream;
- * FastFHIR::FF_CreateStream(create_info, stream);
+ * FastFHIR::FF_Builder builder;
+ * FastFHIR::FF_CreateBuilder(create_info, builder);
  * std::vector<std::thread> pool;
  *
  * // 32 threads simultaneously serializing AI inferences into the same stream
  * for (int i = 0; i < 32; ++i) {
- *      pool.emplace_back([stream, i]() {
+ *      pool.emplace_back([builder, i]() {
  *      // 1. Thread-local work (AI inference, data fetching, etc.)
  *      
  *      ObservationData local_obs;
  *      local_obs.status = "preliminary";
  *      // 2. Lock-free 1-clock-cycle atomic claim and concurrent write
  *      // No mutexes. No heap allocations. No pointer invalidation.
- *      auto handle = FastFHIR::FF_StreamAppendObject(stream, local_obs);
+ *      auto handle = FastFHIR::FF_BuilderAppendObject(builder, local_obs);
  *      // 3. (Optional) push handle.offset() to a lock-free queue to link to a Bundle later
  * });
  * }
@@ -130,7 +130,7 @@ namespace FastFHIR {
 // signatures.
 //
 // Design conventions (see Iris-Headers for the origin of this shape):
-//   - Handles are shared-ownership value types: FF_Memory, FF_Stream,
+//   - Handles are shared-ownership value types: FF_Memory, FF_Builder,
 //     FF_Ingestor. Copy them freely; they refer to one underlying object.
 //   - Create/lifecycle functions follow the Vulkan pattern: an Info struct
 //     in, a `T& out` parameter, an FF_Result out. Errors never throw — the
@@ -160,14 +160,14 @@ inline FF_Version FF_GetVersion() noexcept
 // HANDLES
 // =====================================================================
 // FF_Memory  — virtual memory arena (RAM, SHM, or file-backed).
-// FF_Stream  — a buildable FastFHIR stream (the old Builder).
+// FF_Builder — writes a FastFHIR stream into a Memory arena.
 // FF_Ingestor — concurrent clinical-data ingestion engine.
 //
 // FF_Ingestor_t is intentionally opaque: its definition lives in the internal
 // FF_Ingestor.hpp so this header never drags in simdjson/WAMR.
 
 using FF_Memory   = std::shared_ptr<Memory>;
-using FF_Stream   = std::shared_ptr<Builder>;
+using FF_Builder  = std::shared_ptr<Builder>;
 class FF_Ingestor_t;
 using FF_Ingestor = std::shared_ptr<FF_Ingestor_t>;
 
@@ -200,10 +200,10 @@ FF_EXPORT Size FF_MemorySize(const FF_Memory& memory) noexcept;
 FF_EXPORT Size FF_MemoryCapacity(const FF_Memory& memory) noexcept;
 
 // =====================================================================
-// STREAM API
+// BUILDER API
 // =====================================================================
-/** @brief Parameters for creating a buildable FastFHIR stream. */
-struct FF_StreamCreateInfo {
+/** @brief Parameters for creating a builder (and the arena it writes into). */
+struct FF_BuilderCreateInfo {
     Size        capacity = 4ULL * 1024 * 1024 * 1024; ///< Sparse virtual reservation.
     FHIR_VERSION version  = FHIR_VERSION_R5;          ///< FHIR schema revision for the stream.
     FF_Memory   arena    = nullptr;                   ///< Existing arena to build into; exclusive with filepath/shm_name.
@@ -212,7 +212,7 @@ struct FF_StreamCreateInfo {
 };
 
 /** @brief Creates a stream. @p out_stream is null on failure. */
-FF_EXPORT FF_Result FF_CreateStream(const FF_StreamCreateInfo& info, FF_Stream& out_stream) noexcept;
+FF_EXPORT FF_Result FF_CreateBuilder(const FF_BuilderCreateInfo& info, FF_Builder& out_builder) noexcept;
 
 /** @brief Appends a typed resource/backbone value and returns a mutable handle for `[]` access.
  *
@@ -223,42 +223,42 @@ FF_EXPORT FF_Result FF_CreateStream(const FF_StreamCreateInfo& info, FF_Stream& 
  * @return A valid ObjectHandle, or a null handle on failure (never throws).
  */
 template <typename T_Data>
-inline Reflective::ObjectHandle FF_StreamAppendObject(FF_Stream stream, const T_Data& data) noexcept
+inline Reflective::ObjectHandle FF_BuilderAppendObject(FF_Builder builder, const T_Data& data) noexcept
 {
-    if (!stream) return {};
+    if (!builder) return {};
     try {
-        return stream->append_obj(data);
+        return builder->append_obj(data);
     } catch (const std::exception&) {
         return {};
     }
 }
 
 /** @brief Parameters for assigning the stream's root resource. */
-struct FF_StreamSetRootInfo {
-    FF_Stream               stream = nullptr;
-    Reflective::ObjectHandle root;  ///< Handle returned by FF_StreamAppendObject.
+struct FF_BuilderSetRootInfo {
+    FF_Builder               builder = nullptr;
+    Reflective::ObjectHandle root;  ///< Handle returned by FF_BuilderAppendObject.
 };
 
-/** @brief Assigns the root resource of the stream (must precede finalize). */
-FF_EXPORT FF_Result FF_StreamSetRoot(const FF_StreamSetRootInfo& info) noexcept;
+/** @brief Assigns the root resource of the builder's stream (must precede finalize). */
+FF_EXPORT FF_Result FF_BuilderSetRoot(const FF_BuilderSetRootInfo& info) noexcept;
 
 /** @brief Parameters for sealing a stream into its final on-disk form. */
-struct FF_StreamFinalizeInfo {
-    FF_Stream             stream    = nullptr;
+struct FF_BuilderFinalizeInfo {
+    FF_Builder            builder   = nullptr;
     FF_Checksum_Algorithm algorithm = FF_CHECKSUM_NONE;
     FF_HashCallback       hasher    = nullptr;  ///< Optional; required when algorithm != NONE.
 };
 
 /** @brief Seals the stream (header + optional checksum) and returns a zero-copy view of it. */
-FF_EXPORT FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo& info, Memory::View& out_view) noexcept;
+FF_EXPORT FF_Result FF_BuilderFinalize(const FF_BuilderFinalizeInfo& info, Memory::View& out_view) noexcept;
 
 /** @brief Parameters for snapshotting a stream's current state mid-build. */
-struct FF_StreamQueryInfo {
-    FF_Stream stream = nullptr;
+struct FF_BuilderQueryInfo {
+    FF_Builder builder = nullptr;
 };
 
 /** @brief Returns a read-only Parser over the stream's current state (nearly zero-cost). */
-FF_EXPORT FF_Result FF_StreamQuery(const FF_StreamQueryInfo& info, Parser& out_parser) noexcept;
+FF_EXPORT FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo& info, Parser& out_parser) noexcept;
 
 // =====================================================================
 // PARSE API
@@ -300,14 +300,14 @@ FF_EXPORT FF_Result FF_CreateIngestor(const FF_IngestorCreateInfo& info, FF_Inge
 /** @brief Parameters for ingesting one clinical payload into a stream. */
 struct FF_IngestInfo {
     FF_Ingestor    ingestor  = nullptr;
-    FF_Stream      stream    = nullptr;  ///< Destination stream.
+    FF_Builder     builder   = nullptr;  ///< Destination builder.
     FF_SourceType  source_type = FF_SOURCE_FHIR_JSON;
     FF_ExtensionFilterMode extension_filter = FF_ExtensionFilterMode::FILTER_ALL_KNOWN; ///< URL-directory suppression policy.
     const std::string_view payload;      ///< Raw source document — never modified.
     Size           payload_capacity = 0; ///< Allocated bytes at payload.data() incl. simdjson slack; 0 = safe copy.
 };
 
-/** @brief Parses @p payload and appends the resulting object(s) to @p info.stream.
+/** @brief Parses @p payload and appends the resulting object(s) to @p info.builder.
  *
  * @param out_root        Mutable handle of the inserted root object.
  * @param out_parsed_count Number of top-level resources parsed.

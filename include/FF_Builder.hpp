@@ -34,12 +34,12 @@ namespace FastFHIR
     // FF_* external API (declared fully in FastFHIR.hpp). Forward declarations
     // live here so the sealed-stream lifecycle methods can be private and
     // reachable only from the FF_* wrapper layer in src/FF_API.cpp.
-    struct FF_StreamSetRootInfo;
-    struct FF_StreamFinalizeInfo;
-    struct FF_StreamQueryInfo;
-    FF_Result FF_StreamSetRoot(const FF_StreamSetRootInfo&) noexcept;
-    FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo&, Memory::View&) noexcept;
-    FF_Result FF_StreamQuery(const FF_StreamQueryInfo&, Parser&) noexcept;
+    struct FF_BuilderSetRootInfo;
+    struct FF_BuilderFinalizeInfo;
+    struct FF_BuilderQueryInfo;
+    FF_Result FF_BuilderSetRoot(const FF_BuilderSetRootInfo&) noexcept;
+    FF_Result FF_BuilderFinalize(const FF_BuilderFinalizeInfo&, Memory::View&) noexcept;
+    FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo&, Parser&) noexcept;
 
     // =====================================================================
     // BUILDER
@@ -55,9 +55,9 @@ namespace FastFHIR
     class Builder
     {
         friend class FastFHIR::AdvancedBuilderAccess;
-        friend FF_Result FF_StreamSetRoot(const FF_StreamSetRootInfo&) noexcept;
-        friend FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo&, Memory::View&) noexcept;
-        friend FF_Result FF_StreamQuery(const FF_StreamQueryInfo&, Parser&) noexcept;
+        friend FF_Result FF_BuilderSetRoot(const FF_BuilderSetRootInfo&) noexcept;
+        friend FF_Result FF_BuilderFinalize(const FF_BuilderFinalizeInfo&, Memory::View&) noexcept;
+        friend FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo&, Parser&) noexcept;
 
         Memory m_memory;
         BYTE *const m_base;
@@ -394,8 +394,8 @@ namespace FastFHIR
 
     private:
         // Sealed-stream lifecycle. Private: the only entry points are the
-        // friend FF_* functions (FF_StreamSetRoot / FF_StreamFinalize /
-        // FF_StreamQuery) declared above — see FastFHIR.hpp.
+        // friend FF_* functions (FF_BuilderSetRoot / FF_BuilderFinalize /
+        // FF_BuilderQuery) declared above — see FastFHIR.hpp.
         using HashCallback = std::function<std::vector<BYTE>(const unsigned char *byte_start, Size bytes_to_hash)>;
         void set_root(const Reflective::ObjectHandle &handle);
         Memory::View finalize(FF_Checksum_Algorithm algo = FF_CHECKSUM_NONE, const HashCallback &hasher = nullptr);

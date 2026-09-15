@@ -207,10 +207,10 @@ def main() -> int:
     mem = ff.Memory.create_from_file(str(ffhr_path), capacity=capacity_bytes)
     timings["create_memory"] = time.perf_counter() - t0
 
-    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+    with ff.Builder(mem, ff.FhirVersion.R5) as builder:
         t0 = time.perf_counter()
         bundle_json = build_bundle_json(args.count)
-        bundle_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, bundle_json)
+        bundle_node, count = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, bundle_json)
         timings["ingest_bundle"] = time.perf_counter() - t0
         if count < 1:
             raise RuntimeError(f"ingest parsed {count} resources")
@@ -232,9 +232,9 @@ def main() -> int:
         patient[Patient.TELECOM] = telecom
         timings["patch_array_assignment"] = time.perf_counter() - t0
 
-        stream.root = bundle_node
+        builder.root = bundle_node
         t0 = time.perf_counter()
-        stream.finalize(ff.Checksum.SHA256)
+        builder.finalize(ff.Checksum.SHA256)
         timings["finalize"] = time.perf_counter() - t0
     mem.close()
 
@@ -243,9 +243,9 @@ def main() -> int:
     mem2 = ff.Memory.create_from_file(str(ffhr_path), capacity=capacity_bytes)
     timings["reopen_memory"] = time.perf_counter() - t0
 
-    with ff.Stream(mem2, ff.FhirVersion.R5) as stream2:
+    with ff.Builder(mem2, ff.FhirVersion.R5) as builder2:
         t0 = time.perf_counter()
-        bundle2 = stream2.root
+        bundle2 = builder2.root
         patient2 = find_patient(bundle2, "patient-1")
         appointment2 = find_appointment(bundle2, "appointment-1")
         appointment3 = find_appointment(bundle2, "appointment-2")

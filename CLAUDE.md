@@ -202,7 +202,7 @@ Builder at all (**CAPI-16**).
 
 **`REQUIRE(cond, msg)` used to evaluate `cond` TWICE** (fixed 2026-09-10, same pass).
 Invisible for a comparison, wrong for the 60 sites whose condition is a call:
-`REQUIRE(FF_StreamFinalize(...), "finalize")` sealed the stream twice. Those tests were
+`REQUIRE(FF_BuilderFinalize(...), "finalize")` sealed the stream twice. Those tests were
 asserting on the second call's behaviour, in a state no documented usage produces.
 
 **A new C++ test needs registering in FOUR places in `CMakeLists.txt`**, not one:

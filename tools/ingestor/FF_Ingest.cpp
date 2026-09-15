@@ -189,10 +189,10 @@ int main(int argc, char *argv[])
         size_t capacity_hint =
             std::max(json_buffer.size() * 2, FastFHIR::Ingest::FF_MIN_ARENA);
 
-        FF_StreamCreateInfo stream_info;
-        stream_info.capacity = capacity_hint;
-        FF_Stream stream;
-        FF_Result result = FF_CreateStream(stream_info, stream);
+        FF_BuilderCreateInfo builder_info;
+        builder_info.capacity = capacity_hint;
+        FF_Builder builder;
+        FF_Result result = FF_CreateBuilder(builder_info, builder);
         if (!result)
         {
             std::cerr << "[FastFHIR Injest CLI] Fatal Arena/Stream Error: " << result.message << "\n";
@@ -213,7 +213,7 @@ int main(int argc, char *argv[])
         // parse this buffer in place instead of memcpy'ing the whole document.
         FF_IngestInfo ingest_info{
             .ingestor = ingestor,
-            .stream = stream,
+            .builder = builder,
             .source_type = source_type,
             .payload = payload,
             .payload_capacity = json_buffer.size() + simdjson::SIMDJSON_PADDING};
@@ -234,8 +234,8 @@ int main(int argc, char *argv[])
 
         std::cerr << "[FastFHIR Injest CLI] Successfully parsed " << parsed_count << " resources.\n";
 
-        result = FF_StreamSetRoot(FF_StreamSetRootInfo{
-            .stream = stream,
+        result = FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder,
             .root = root_handle,
         });
         if (!result)
@@ -245,8 +245,8 @@ int main(int argc, char *argv[])
         }
 
         Memory::View view;
-        result = FF_StreamFinalize(FF_StreamFinalizeInfo{
-                                       .stream = stream,
+        result = FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+                                       .builder = builder,
                                        .algorithm = FF_CHECKSUM_SHA256,
                                        .hasher = [](const unsigned char *data, Size size) {
                                            // Pre-allocate strictly to the compile-time upper bound

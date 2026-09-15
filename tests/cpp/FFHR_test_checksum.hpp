@@ -22,7 +22,7 @@
 namespace ff_test
 {
     /// Matches FastFHIR's HashCallback signature, so it is passed straight to
-    /// FF_StreamFinalize / Builder::finalize as `.hasher`.
+    /// FF_BuilderFinalize / Builder::finalize as `.hasher`.
     inline std::vector<BYTE> sha256(const unsigned char *data, Size len)
     {
         std::vector<BYTE> hash(EVP_MAX_MD_SIZE);

@@ -25,20 +25,20 @@ using namespace FastFHIR;
 int main() {
     // ── Shared fixture: one sealed stream + parsed view, for the Parser and
     //    Memory::View out-params that need a real object to be "populated".
-    FF_StreamCreateInfo stream_info;
-    FF_Stream stream;
-    CHECK(FF_CreateStream(stream_info, stream), "create fixture stream");
+    FF_BuilderCreateInfo builder_info;
+    FF_Builder builder;
+    CHECK(FF_CreateBuilder(builder_info, builder), "create fixture stream");
 
     PatientData p; p.id = "p1";
-    auto root = FF_StreamAppendObject(stream, p);
-    CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-        .stream = stream,
+    auto root = FF_BuilderAppendObject(builder, p);
+    CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+        .builder = builder,
         .root = root,
     }), "set fixture root");
 
     Memory::View sealed_view;
-    CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-        .stream = stream,
+    CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+        .builder = builder,
     }, sealed_view), "finalize fixture stream");
     CHECK(!sealed_view.empty(), "fixture stream sealed non-empty");
 
@@ -63,37 +63,37 @@ int main() {
         CHECK(!memory, "FF_CreateMemory cleared out_memory on invalid args");
     }
 
-    // ── 2. FF_CreateStream — arena + filepath mutually exclusive ────────────
+    // ── 2. FF_CreateBuilder — arena + filepath mutually exclusive ────────────
     {
-        FF_StreamCreateInfo ok;
-        FF_Stream s;
-        CHECK(FF_CreateStream(ok, s) && s, "pre-populate stream handle");
+        FF_BuilderCreateInfo ok;
+        FF_Builder s;
+        CHECK(FF_CreateBuilder(ok, s) && s, "pre-populate stream handle");
 
-        FF_StreamCreateInfo bad;
+        FF_BuilderCreateInfo bad;
         bad.arena = std::make_shared<Memory>(Memory::create(1ull << 20));
         bad.filepath = "/tmp/fastfhir-would-never-exist";
-        FF_Result r = FF_CreateStream(bad, s);
-        CHECK(r.failed(), "FF_CreateStream rejects arena + filepath");
-        CHECK(!s, "FF_CreateStream cleared out_stream on invalid args");
+        FF_Result r = FF_CreateBuilder(bad, s);
+        CHECK(r.failed(), "FF_CreateBuilder rejects arena + filepath");
+        CHECK(!s, "FF_CreateBuilder cleared out_stream on invalid args");
     }
 
-    // ── 3. FF_StreamFinalize — null stream ──────────────────────────────────
+    // ── 3. FF_BuilderFinalize — null stream ──────────────────────────────────
     {
         Memory::View view = sealed_view;  // populated
         CHECK(!view.empty(), "pre-populate out_view");
-        FF_Result r = FF_StreamFinalize(FF_StreamFinalizeInfo{}, view);
-        CHECK(r.failed(), "FF_StreamFinalize rejects null stream");
+        FF_Result r = FF_BuilderFinalize(FF_BuilderFinalizeInfo{}, view);
+        CHECK(r.failed(), "FF_BuilderFinalize rejects null stream");
         CHECK(view.data() == nullptr && view.size() == 0,
-              "FF_StreamFinalize cleared out_view on invalid args");
+              "FF_BuilderFinalize cleared out_view on invalid args");
     }
 
-    // ── 4. FF_StreamQuery — null stream ─────────────────────────────────────
+    // ── 4. FF_BuilderQuery — null stream ─────────────────────────────────────
     {
         Parser parser = sealed_parser;  // populated
         CHECK(static_cast<bool>(parser), "pre-populate out_parser");
-        FF_Result r = FF_StreamQuery(FF_StreamQueryInfo{}, parser);
-        CHECK(r.failed(), "FF_StreamQuery rejects null stream");
-        CHECK(!parser, "FF_StreamQuery cleared out_parser on invalid args");
+        FF_Result r = FF_BuilderQuery(FF_BuilderQueryInfo{}, parser);
+        CHECK(r.failed(), "FF_BuilderQuery rejects null stream");
+        CHECK(!parser, "FF_BuilderQuery cleared out_parser on invalid args");
     }
 
     // ── 5. FF_Parse — null buffer with nonzero size ─────────────────────────
@@ -115,12 +115,12 @@ int main() {
               "FF_Compact cleared out_view on invalid args");
     }
 
-    // ── 7. FF_Ingest — null ingestor / null destination stream ──────────────
+    // ── 7. FF_Ingest — null ingestor / null destination builder─────────────
     {
         // Pre-populate out_root via a real ingest.
-        FF_StreamCreateInfo stream_info2;
-        FF_Stream stream2;
-        CHECK(FF_CreateStream(stream_info2, stream2), "create ingest stream");
+        FF_BuilderCreateInfo builder_info2;
+        FF_Builder builder2;
+        CHECK(FF_CreateBuilder(builder_info2, builder2), "create ingest stream");
         FF_IngestorCreateInfo ingestor_info;
         FF_Ingestor ingestor;
         CHECK(FF_CreateIngestor(ingestor_info, ingestor), "create ingestor");
@@ -131,7 +131,7 @@ int main() {
         Size out_count = 0;
         FF_Result ok = FF_Ingest(FF_IngestInfo{
             .ingestor = ingestor,
-            .stream = stream2,
+            .builder = builder2,
             .source_type = FF_SOURCE_FHIR_JSON,
             .payload = kPatient,
         }, out_root, out_count);
@@ -158,9 +158,9 @@ int main() {
     // itself and passes even if both are wrong. Ground truth is the TARGET
     // BLOCK'S HEADER, read from the sealed buffer at the node's own offset.
     {
-        FF_StreamCreateInfo stream_info;
-        FF_Stream stream;
-        CHECK(FF_CreateStream(stream_info, stream), "create bundle stream");
+        FF_BuilderCreateInfo builder_info;
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(builder_info, builder), "create bundle stream");
         FF_IngestorCreateInfo ingestor_info;
         FF_Ingestor ingestor;
         CHECK(FF_CreateIngestor(ingestor_info, ingestor), "create bundle ingestor");
@@ -184,15 +184,15 @@ int main() {
         Size ingested = 0;
         CHECK(FF_Ingest(FF_IngestInfo{
             .ingestor = ingestor,
-            .stream = stream,
+            .builder = builder,
             .source_type = FF_SOURCE_FHIR_JSON,
             .payload = kMixed,
         }, root_handle, ingested), "ingest the mixed bundle");
-        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-            .stream = stream, .root = root_handle}), "set mixed bundle root");
+        CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder, .root = root_handle}), "set mixed bundle root");
 
         Memory::View sealed;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{.stream = stream}, sealed),
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, sealed),
               "finalize mixed bundle");
 
         Parser parser;

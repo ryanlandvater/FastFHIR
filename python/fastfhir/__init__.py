@@ -11,7 +11,7 @@ from .fields import *
 Memory          = _core.Memory
 MemoryView      = _core.MemoryView
 StreamHead      = _core.StreamHead
-StreamNode      = _core.StreamNode
+BuilderNode     = _core.BuilderNode
 Ingestor        = _core.Ingestor
 
 # Enums
@@ -34,9 +34,9 @@ def _default_crc32_hasher(view: memoryview) -> bytes:
     return zlib.crc32(view).to_bytes(4, byteorder='little')
 
 # ---------------------------------------------------------
-# Stream Wrapper (Enhances C++ Builder)
+# Builder Wrapper (Enhances C++ Builder)
 # ---------------------------------------------------------
-class Stream(_core.Stream):
+class Builder(_core.Builder):
     """
     Pythonic context manager for FastFHIR stream generation.
     Handles automatic injection of Python hashing algorithms.

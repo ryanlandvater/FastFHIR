@@ -228,7 +228,7 @@ def generate_store_fields(layout, block_struct_name, ptr_name, data_name):
             # cannot.
             #
             # The padding has to be determinate at all because finalize hashes
-            # EVERY byte from base() to the hash slot (FF_StreamFinalize in
+            # EVERY byte from base() to the hash slot (FF_BuilderFinalize in
             # FF_Memory.hpp), so an unwritten half makes two logically identical
             # documents digest differently. It reads as zero today only because
             # claim_space hands back untouched sparse-mmap pages -- the OS's

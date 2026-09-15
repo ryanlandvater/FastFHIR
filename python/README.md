@@ -23,8 +23,8 @@ with open("patient.json") as f:
 # Map the arena straight to a file — every write goes directly to disk
 mem = ff.Memory.create_from_file("patient.ffhr", capacity=64 * 1024 * 1024)
 
-with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-    patient_node, _ = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_string)
+with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+    patient_node, _ = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, json_string)
 
     # Inspect while still in the stream
     print(patient_node[Patient.ID].value())       # "patient-1"
@@ -32,17 +32,17 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
     print(patient_node[Patient.ACTIVE].value())   # True
 
     for name_entry in patient_node[Patient.NAME]:
-        name   = name_entry.value()                                   # StreamNode
+        name   = name_entry.value()                                  # BuilderNode
         family = name[HumanName.FAMILY].value()                    # str
         given  = [g.value() for g in name[HumanName.GIVEN]]       # list[str]
         print(given, family)   # ['Ryan', 'Eric'] Landvater
 
     # Name the root before sealing. A stream with no root cannot be re-opened,
     # so finalize() refuses rather than writing an unreadable file.
-    stream.root = patient_node
+    builder.root = patient_node
 
     # Seal the file — writes the header + SHA-256 footer into the mapped pages
-    stream.finalize(algo=ff.Checksum.SHA256)
+    builder.finalize(algo=ff.Checksum.SHA256)
 
 mem.close()   # patient.ffhr is now a valid, portable FastFHIR archive
 ```
@@ -51,7 +51,7 @@ mem.close()   # patient.ffhr is now a valid, portable FastFHIR archive
 
 ## 2 — Open and read a `.ffhr` file
 
-Mount an existing archive and traverse directly via `stream.root`.
+Mount an existing archive and traverse directly via `builder.root`.
 Do not recover context with `to_json()` followed by re-ingest.
 
 ```py
@@ -61,10 +61,10 @@ from fastfhir.fields import Patient, HumanName
 
 mem = ff.Memory.create_from_file("patient.ffhr", capacity=64 * 1024 * 1024)
 
-with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-    patient_node = stream.root
+with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+    patient_node = builder.root
     if not patient_node:
-        raise RuntimeError("stream.root is null; archive root must be set before read.")
+        raise RuntimeError("builder.root is null; archive root must be set before read.")
 
     # Scalars coerce directly to Python types
     pid     = patient_node[Patient.ID].value()        # str
@@ -105,10 +105,10 @@ from fastfhir.fields import Patient
 # Mount the existing archive — it stays mapped to the same file
 mem = ff.Memory.create_from_file("patient.ffhr", capacity=64 * 1024 * 1024)
 
-with ff.Stream(mem, ff.FhirVersion.R4) as stream:
+with ff.Builder(mem, ff.FhirVersion.R4) as builder:
     # Intentionally pass R4 to demonstrate existing-archive fallback:
     # builder degrades to the stream header version for in-place enrichment.
-    patient_node = stream.root
+    patient_node = builder.root
 
     # Add or overwrite scalar fields (appends new bytes, amends pointer)
     patient_node[Patient.BIRTHDATE] = "1990-03-21"
@@ -122,7 +122,7 @@ with ff.Stream(mem, ff.FhirVersion.R4) as stream:
     }
 
     # Re-seal with updated checksum — old data untouched, new tail written
-    stream.finalize(algo=ff.Checksum.SHA256)
+    builder.finalize(algo=ff.Checksum.SHA256)
 
 mem.close()   # patient.ffhr now contains the enriched record
 ```
@@ -169,8 +169,8 @@ with conn:
     # Keep a copy of your transport payload for ingestion framing.
     raw = inbound_payload.decode()
 
-    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-        patient_node, _ = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, raw)
+    with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+        patient_node, _ = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, raw)
 
         # ── Step 3: enrich in place ──
         patient_node[Patient.ACTIVE] = True
@@ -181,8 +181,8 @@ with conn:
         }
 
         # ── Step 4: seal and send back — buffer reads straight from the arena ──
-        stream.root = patient_node
-        final_view = stream.finalize(algo=ff.Checksum.CRC32)
+        builder.root = patient_node
+        final_view = builder.finalize(algo=ff.Checksum.CRC32)
 
     conn.sendall(final_view)   # zero-copy egress
 
@@ -210,9 +210,9 @@ ingestor = ff.Ingestor()
 # Map the entire 5 GB archive — address space is reserved, pages are not loaded
 mem = ff.Memory.create_from_file("bundle.ffhr", capacity=8 * 1024 ** 3)  # 8 GB cap
 
-with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-    json_str = stream.to_json()
-    bundle_node, _ = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_str)
+with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+    json_str = builder.to_json()
+    bundle_node, _ = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, json_str)
 
     # Walk bundle.entry; the OS faults in only the pages we read
     target_patient = None
@@ -241,14 +241,14 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
         "subject": {"reference": "Patient/patient-42"},
         "valueQuantity": {"value": 94.0, "unit": "mg/dL", "system": "http://unitsofmeasure.org"}
     }
-    ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json.dumps(new_obs))
+    ingestor.ingest(builder, ff.SourceType.FHIR_JSON, json.dumps(new_obs))
 
     # Amend the patient record to reference the new observation
     target_patient[Patient.TELECOM] = {"system": "phone", "value": "555-0199"}
 
     # Reseal — rewrites only the header + checksum pages, nothing else
-    stream.root = bundle_node
-    stream.finalize(algo=ff.Checksum.SHA256)
+    builder.root = bundle_node
+    builder.finalize(algo=ff.Checksum.SHA256)
 
 mem.close()   # bundle.ffhr updated; 5 GB of untouched entries were never copied
 ```
@@ -257,7 +257,7 @@ mem.close()   # bundle.ffhr updated; 5 GB of untouched entries were never copied
 
 ## 6 — Compact a finalized stream
 
-Once a stream is sealed, `stream.compact()` re-encodes the root object in dense
+Once a stream is sealed, `builder.compact()` re-encodes the root object in dense
 presence-bitmap layout. The compacted archive is written into **a fresh arena
 sized from the source** — the source stream and its file are never modified.
 
@@ -275,10 +275,10 @@ import fastfhir as ff
 # Source: any previously finalized .ffhr file.
 src_mem = ff.Memory.create_from_file("patient.ffhr", capacity=64 * 1024 * 1024)
 
-with ff.Stream(src_mem, ff.FhirVersion.R5) as stream:
+with ff.Builder(src_mem, ff.FhirVersion.R5) as builder:
     # compact() allocates its own destination arena, writes the dense archive,
     # and seals it. The source stream and its backing arena are untouched.
-    compact_view = stream.compact(algo=ff.Checksum.SHA256)
+    compact_view = builder.compact(algo=ff.Checksum.SHA256)
     print(f"original : {src_mem.size:,} bytes")
     print(f"compact  : {compact_view.size:,} bytes")
 
@@ -292,7 +292,7 @@ src_mem.close()   # patient.compact.ffhr is a sealed compact FastFHIR archive
 A compact archive can be verified byte-scan or by forwarding `compact_view`
 (a buffer-protocol object) directly over a socket or to `open(..., 'wb').write(...)`.
 
-Note: `ff.Stream` cannot be constructed on a compact archive for mutation —
+Note: `ff.Builder` cannot be constructed on a compact archive for mutation —
 compact streams are read-only archival representations.
 
 ---
@@ -371,7 +371,7 @@ entry = node[ff.Patient.ACTIVE]
 
 | Operation | Returns | Notes |
 |---|---|---|
-| `entry.value()` | `bool` / `int` / `float` / `str` / `StreamNode` / `None` | Scalars coerced; blocks/arrays return a `StreamNode` |
+| `entry.value()` | `bool` / `int` / `float` / `str` / `BuilderNode` / `None` | Scalars coerced; blocks/arrays return a `BuilderNode` |
 | `bool(entry)` | `bool` | `True` if the field is present and populated |
 | `len(entry)` | `int` | Element count for arrays; `0` for non-arrays |
 | `for e in entry` | `MutableEntry` | Iterate array elements |
@@ -389,12 +389,12 @@ entry = node[ff.Patient.ACTIVE]
 | `int32 / uint32 / int64 / uint64` | `int` |
 | `float64` | `float` |
 | `string / code` | `str` |
-| `block / resource / array` | `StreamNode` |
+| `block / resource / array` | `BuilderNode` |
 | absent or null | `None` |
 
 ---
 
-### `StreamNode` — a live proxy into the arena
+### `BuilderNode` — a live proxy into the arena
 
 ```py
 node = patient_entry.value()   # for block/array entries
@@ -433,17 +433,17 @@ mem = ff.Memory.create_from_file("data.ffhr", capacity=4 * 1024**3)   # file-bac
 
 ---
 
-### `ff.Stream`
+### `ff.Builder`
 
 ```py
-with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+with ff.Builder(mem, ff.FhirVersion.R5) as builder:
     ...
-    stream.finalize(algo=ff.Checksum.SHA256)
+    builder.finalize(algo=ff.Checksum.SHA256)
 ```
 
 | Member | Returns | Notes |
 |---|---|---|
-| `.root` | `StreamNode` | Root node |
+| `.root` | `BuilderNode` | Root node |
 | `.version` | `FhirVersion` | R4 or R5 |
 | `.root_type` | `ResourceType` | Resource kind at root |
 | `.to_json()` | `str` | Full stream JSON |
@@ -463,21 +463,21 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
 
 ```py
 ingestor = ff.Ingestor(concurrency=4)
-node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_string)
-# node  → StreamNode at root resource
+node, count = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, json_string)
+# node  → BuilderNode at root resource
 # count → number of resources written
 ```
 
 | Member | Returns | Notes |
 |---|---|---|
-| `.ingest(stream, source_type, payload)` | `(StreamNode, int)` | Root node and the resource count written |
+| `.ingest(builder, source_type, payload)` | `(BuilderNode, int)` | Root node and the resource count written |
 | `.is_faulted` | `bool` | The engine hit an unrecoverable error and will refuse further work |
 | `.reset()` | `str` | Clear the fault and return the drained diagnostic log |
 
 > A resource type outside the compiled `FASTFHIR_PRODUCTION_PROFILE` is **not
 > dropped** — it is retained verbatim as opaque JSON and re-emitted byte-for-byte,
 > so the document round-trips losslessly. What you lose is typed access: those
-> fields are not reachable through `StreamNode` subscripting. Check the ingest
+> fields are not reachable through `BuilderNode` subscripting. Check the ingest
 > result's warnings if you need to know which types took that path.
 
 ---
@@ -497,8 +497,8 @@ ingestor = ff.Ingestor()
 with open("bundle.json") as f:
     bundle_json = f.read()
 
-with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-    bundle_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, bundle_json)
+with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+    bundle_node, count = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, bundle_json)
 
     for bundle_entry in bundle_node[Bundle.ENTRY]:
         resource = bundle_entry[BundleEntry.RESOURCE]
@@ -510,7 +510,7 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
 
         # ── Patient ──────────────────────────────────────────────────────
         if node_val.recovery_tag == RT.Patient:
-            patient = node_val                                      # StreamNode
+            patient = node_val                                     # BuilderNode
 
             pid     = patient[Patient.ID].value()                  # str
             active  = patient[Patient.ACTIVE].value()              # bool
@@ -518,7 +518,7 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
             dob     = patient[Patient.BIRTHDATE].value()           # str
 
             for name_entry in patient[Patient.NAME]:
-                name   = name_entry.value()                        # StreamNode
+                name   = name_entry.value()                       # BuilderNode
                 use    = name[HumanName.USE].value()               # str
                 family = name[HumanName.FAMILY].value()            # str
                 given  = [g.value() for g in name[HumanName.GIVEN]]  # list[str]
@@ -533,7 +533,7 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
         elif node_val.recovery_tag == RT.Observation:
             obs    = node_val
             status = obs[Observation.STATUS].value()               # str
-            code   = obs[Observation.CODE].value()                 # StreamNode or None
+            code   = obs[Observation.CODE].value()                # BuilderNode or None
 
             if code:
                 for coding_entry in code[CodeableConcept.CODING]:
@@ -544,7 +544,7 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
 
             value_entry = obs[Observation.VALUE]
             if value_entry:
-                qty = value_entry.value()                          # StreamNode
+                qty = value_entry.value()                         # BuilderNode
                 print(f"  value: {qty[Quantity.VALUE].value()} {qty[Quantity.UNIT].value()}")
 
         # ── DiagnosticReport ──────────────────────────────────────────────
@@ -554,6 +554,6 @@ with ff.Stream(mem, ff.FhirVersion.R5) as stream:
             print(f"  report status: {status}")
 
     # Always name the root before sealing, or finalize() refuses.
-    stream.root = bundle_node
-    stream.finalize(algo=ff.Checksum.SHA256)
+    builder.root = bundle_node
+    builder.finalize(algo=ff.Checksum.SHA256)
 ```

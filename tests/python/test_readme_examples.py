@@ -149,11 +149,11 @@ def _seed_fixtures(workdir: Path) -> None:
     # Example 5 re-opens an EXISTING sealed bundle.ffhr, so one has to exist.
     mem = ff.Memory.create_from_file(str(workdir / "bundle.ffhr"), capacity=512 * 1024 * 1024)
     try:
-        with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+        with ff.Builder(mem, ff.FhirVersion.R5) as builder:
             ingestor = ff.Ingestor()
-            root, _ = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json.dumps(BUNDLE_JSON))
-            stream.root = root
-            stream.finalize(ff.Checksum.SHA256)
+            root, _ = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, json.dumps(BUNDLE_JSON))
+            builder.root = root
+            builder.finalize(ff.Checksum.SHA256)
     finally:
         mem.close()
 

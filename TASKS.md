@@ -3313,8 +3313,8 @@ the sanitizer leg (**G2**) and then Block **K**, the conformance validation laye
 
 > **RECONCILED 2026-09-10 by measurement. The task is real but three quarters smaller than
 > it reads.** The write path in both `@code` blocks was migrated to the `FF_*` API at some
-> point after this task was written: `FF_StreamCreateInfo` / `FF_CreateStream` /
-> `FF_StreamAppendObject` / `FF_StreamSetRoot` / `FF_StreamFinalize` / `FF_Parse` are all
+> point after this task was written: `FF_BuilderCreateInfo` / `FF_CreateBuilder` /
+> `FF_BuilderAppendObject` / `FF_BuilderSetRoot` / `FF_BuilderFinalize` / `FF_Parse` are all
 > correct as shown, and `FastFHIR::Parser::create` and `Builder builder;` are gone. So
 > A3.2's premise ("`Builder` must be constructed with a `Memory`") no longer applies at all
 > — do not "fix" Example 2's construction; it is already right.
@@ -3356,7 +3356,7 @@ the sanitizer leg (**G2**) and then Block **K**, the conformance validation laye
   std::string_view status = parser.root()[FastFHIR::Fields::OBSERVATION::STATUS];
   ```
 - [x] A3.2 ~~Fix Example 2 (concurrent generation)~~ — **no longer applicable.** Example 2
-  already constructs via `FF_StreamCreateInfo` + `FF_CreateStream` with
+  already constructs via `FF_BuilderCreateInfo` + `FF_CreateBuilder` with
   `create_info.capacity`, which is the current API. Verify it still reads that way before
   concluding the same; do not reintroduce a `Memory`-taking `Builder`.
 - [ ] A3.3 Compile-check both snippets: create a scratch file `tests/cpp/scratch_doc.cpp`
@@ -4412,7 +4412,7 @@ Order matters: C1 → C2 → C3…C8. `Blocked on Q1` for C1.
   now a supported operation — document this in `include/FF_Builder.hpp` above the amend
   declarations. Also add pre-write target-block RECOVERY tag validation when policy is
   ATTEMPT_REPAIR (from C2).
-- [ ] C7. **Python exception mapping:** in `python/FF_PythonBindings.cpp` (PyStream is
+- [ ] C7. **Python exception mapping:** in `python/FF_PythonBindings.cpp` (PyBuilder is
   defined at ~line 64), register a custom exception
   `fastfhir.RecoveryRequired` via `py::register_exception` /
   `py::register_exception_translator` that catches C++ exceptions whose `what()` starts
@@ -6529,7 +6529,7 @@ compiler will read.
 
    | Defect | Block | Truth |
    |---|---|---|
-   | `Parser(mem).root()` before `finalize()` | Example 1 | no `FF_HEADER` yet → "magic bytes mismatch". `FF_StreamQuery` also fails (no root until `FF_StreamSetRoot`). The pre-seal read is `patient_handle.as_node()` |
+   | `Parser(mem).root()` before `finalize()` | Example 1 | no `FF_HEADER` yet → "magic bytes mismatch". `FF_BuilderQuery` also fails (no root until `FF_BuilderSetRoot`). The pre-seal read is `patient_handle.as_node()` |
    | `string_view birthdate = root[BIRTH_DATE]` | Step 3 | packed date/time slot → throws "Node is not a string or code". **The same page warns about this under Example 2** — it contradicted itself |
    | `handle[GENDER] = std::string_view("male")` | Step 3 + 3 more | **throws.** No `amend_code` exists on the Builder → **CAPI-16** |
    | Example 5 searched for `patient-42` | Example 5 | the example is only meaningful against a bundle that contains it; the fixture now does |

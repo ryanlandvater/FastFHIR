@@ -66,12 +66,12 @@ ObservationData incomplete_observation()
     return observation;
 }
 
-FF_Stream new_stream()
+FF_Builder new_builder()
 {
-    FF_StreamCreateInfo info;
-    FF_Stream           stream;
-    expect(static_cast<bool>(FF_CreateStream(info, stream)), "stream created");
-    return stream;
+    FF_BuilderCreateInfo info;
+    FF_Builder           builder;
+    expect(static_cast<bool>(FF_CreateBuilder(info, builder)), "stream created");
+    return builder;
 }
 
 } // namespace
@@ -82,22 +82,22 @@ int main()
     {
         // ── 1. Detached: conformance is not the library's business ─────────
         {
-            FF_Stream stream = new_stream();
-            stream->append_obj(incomplete_observation());
+            FF_Builder builder = new_builder();
+            builder->append_obj(incomplete_observation());
             std::printf("1. detached append of an Observation with no status: "
                         "accepted (one null check)\n");
         }
 
         // ── 2. Attached, Throw: the same input is rejected, with a citation ─
         {
-            FF_Stream       stream = new_stream();
-            ValidationHooks hooks  = conformance_layer();  // copy, then customise
-            stream->attach_layer(&hooks);
+            FF_Builder      builder = new_builder();
+            ValidationHooks hooks   = conformance_layer();  // copy, then customise
+            builder->attach_layer(&hooks);
 
             std::string why;
             try
             {
-                stream->append_obj(incomplete_observation());
+                builder->append_obj(incomplete_observation());
             }
             catch (const std::runtime_error& e)
             {
@@ -114,7 +114,7 @@ int main()
         // data is never dropped for failing a check, but the failure is counted
         // and logged where a caller cannot miss it.
         {
-            FF_Stream             stream = new_stream();
+            FF_Builder            builder = new_builder();
             ConcurrentLogger      logger;
             std::atomic<uint64_t> failures{0};
 
@@ -122,9 +122,9 @@ int main()
             hooks.policy     = LayerPolicy::Report;
             hooks.diagnostic = &logger;
             hooks.failures   = &failures;
-            stream->attach_layer(&hooks);
+            builder->attach_layer(&hooks);
 
-            stream->append_obj(incomplete_observation());
+            builder->append_obj(incomplete_observation());
             expect(failures.load() == 1, "the failure was counted");
             std::printf("3. attached append, Report policy: stored, %llu failure(s) counted\n"
                         "      %s",
@@ -136,9 +136,9 @@ int main()
         // Nothing about the Bundle itself is wrong. The layer walks into the
         // entry, then into its request, and finds the missing method there.
         {
-            FF_Stream       stream = new_stream();
-            ValidationHooks hooks  = conformance_layer();
-            stream->attach_layer(&hooks);
+            FF_Builder      builder = new_builder();
+            ValidationHooks hooks   = conformance_layer();
+            builder->attach_layer(&hooks);
 
             BundleData bundle;
             bundle.type = FF_BundleType::Collection;
@@ -150,7 +150,7 @@ int main()
             std::string why;
             try
             {
-                stream->append_obj(bundle);
+                builder->append_obj(bundle);
             }
             catch (const std::runtime_error& e)
             {
@@ -190,17 +190,17 @@ int main()
             good.code   = std::make_unique<CodeableConceptData>();
 
             auto seal = [&](bool attach) {
-                FF_Stream       stream = new_stream();
-                ValidationHooks hooks  = conformance_layer();
+                FF_Builder      builder = new_builder();
+                ValidationHooks hooks   = conformance_layer();
                 if (attach)
-                    stream->attach_layer(&hooks);
-                auto root = stream->append_obj(good);
+                    builder->attach_layer(&hooks);
+                auto root = builder->append_obj(good);
                 expect(static_cast<bool>(
-                           FF_StreamSetRoot(FF_StreamSetRootInfo{.stream = stream, .root = root})),
+                           FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root})),
                        "root set");
                 Memory::View view;
                 expect(static_cast<bool>(
-                           FF_StreamFinalize(FF_StreamFinalizeInfo{.stream = stream}, view)),
+                           FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view)),
                        "stream sealed");
                 return std::string(reinterpret_cast<const char*>(view.data()), view.size());
             };

@@ -118,11 +118,11 @@ static FixtureResult compact_roundtrip_json(const std::string& json) {
     FixtureResult result;
 
     auto mem = Memory::create(2ull * 1024 * 1024 * 1024);
-    FF_StreamCreateInfo stream_info;
-    stream_info.arena = std::make_shared<Memory>(mem);
-    stream_info.version = FHIR_VERSION_R5;
-    FF_Stream stream;
-    if (!FF_CreateStream(stream_info, stream)) return result;
+    FF_BuilderCreateInfo builder_info;
+    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.version = FHIR_VERSION_R5;
+    FF_Builder builder;
+    if (!FF_CreateBuilder(builder_info, builder)) return result;
 
     FF_IngestorCreateInfo ingestor_info;
     FF_Ingestor ingestor;
@@ -132,7 +132,7 @@ static FixtureResult compact_roundtrip_json(const std::string& json) {
     Size resource_count = 0;
     const auto ingest = FF_Ingest(FF_IngestInfo{
         .ingestor         = ingestor,
-        .stream           = stream,
+        .builder          = builder,
         .source_type      = FF_SOURCE_FHIR_JSON,
         .extension_filter = FF_ExtensionFilterMode::FILTER_NONE,
         .payload          = json,
@@ -142,12 +142,12 @@ static FixtureResult compact_roundtrip_json(const std::string& json) {
         return result;
     }
 
-    if (!FF_StreamSetRoot(FF_StreamSetRootInfo{.stream = stream, .root = root_handle}))
+    if (!FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root_handle}))
         return result;
 
     Memory::View view;
-    if (!FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream, .algorithm = FF_CHECKSUM_SHA256, .hasher = ff_test::sha256}, view))
+    if (!FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder, .algorithm = FF_CHECKSUM_SHA256, .hasher = ff_test::sha256}, view))
         return result;
     if (view.empty()) return result;
 

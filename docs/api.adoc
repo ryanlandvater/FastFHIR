@@ -23,7 +23,7 @@ toc::[]
 
 The surface follows the Iris/Vulkan shape:
 
-* **Handles** are shared-ownership value types: `FF_Memory`, `FF_Stream`,
+* **Handles** are shared-ownership value types: `FF_Memory`, `FF_Builder`,
   `FF_Ingestor`. Copy them freely; they all refer to one underlying object.
 * **Create/lifecycle functions** follow the Vulkan pattern: an Info struct in,
   a `T& out` parameter, an `FF_Result` out. Errors never throw — the
@@ -33,7 +33,7 @@ The surface follows the Iris/Vulkan shape:
   over a buffer, returned by value from `FF_Parse`.
 * **The mutation path is unchanged**: once an object is appended, fields are
   written with the reflective handle (`handle[key] = value`), exactly as before.
-  String values are assigned as `std::string_view`; see the Stream API section.
+  String values are assigned as `std::string_view`; see the Builder API section.
 
 == Version
 
@@ -49,7 +49,7 @@ FF_Version FF_GetVersion() noexcept;
 
 ```cpp
 using FF_Memory   = std::shared_ptr<Memory>;      // virtual memory arena
-using FF_Stream   = std::shared_ptr<Builder>;     // buildable FastFHIR stream
+using FF_Builder  = std::shared_ptr<Builder>;     // writes a FastFHIR stream
 class FF_Ingestor_t;                              // opaque; hides simdjson
 using FF_Ingestor = std::shared_ptr<FF_Ingestor_t>; // concurrent ingestion engine
 ```
@@ -60,20 +60,20 @@ lives in the internal `FF_Ingestor.hpp` so consumers never see simdjson/WAMR.
 ```mermaid
 classDiagram
     class FF_Memory { }
-    class FF_Stream { }
+    class FF_Builder { }
     class FF_Ingestor { }
     class Memory { }
     class Builder { }
     class FF_Ingestor_t { }
     FF_Memory --> Memory : shared_ptr
-    FF_Stream --> Builder : shared_ptr
+    FF_Builder --> Builder : shared_ptr
     FF_Ingestor --> FF_Ingestor_t : shared_ptr (opaque)
     class FF_Result { }
-    class FF_StreamCreateInfo { }
+    class FF_BuilderCreateInfo { }
     class FF_ParseInfo { }
     class FF_IngestInfo { }
-    FF_StreamCreateInfo --> FF_Memory : arena (optional)
-    FF_IngestInfo --> FF_Stream : stream
+    FF_BuilderCreateInfo --> FF_Memory : arena (optional)
+    FF_IngestInfo --> FF_Builder : builder
     FF_IngestInfo --> FF_Ingestor : ingestor
 ```
 
@@ -148,7 +148,7 @@ Unknown codes classify as `FAILURE` — a stale or typo'd code fails safe.
 using FF_HashCallback = std::function<std::vector<BYTE>(const unsigned char* byte_start, Size bytes_to_hash)>;
 ```
 
-Optional checksum callback used by `FF_StreamFinalize` and `FF_Compact`.
+Optional checksum callback used by `FF_BuilderFinalize` and `FF_Compact`.
 Required when the chosen algorithm is not `FF_CHECKSUM_NONE`.
 
 == Memory (arena) API
@@ -171,10 +171,10 @@ Size      FF_MemoryCapacity(const FF_Memory& memory) noexcept;
 * Raw-arena access (network `StreamHead`, `claim_space`) remains available
   through the underlying `Memory` value type.
 
-== Stream API
+== Builder API
 
 ```cpp
-struct FF_StreamCreateInfo {
+struct FF_BuilderCreateInfo {
     Size        capacity = 4 GiB;   // sparse virtual reservation
     FHIR_VERSION version  = FHIR_VERSION_R5;
     FF_Memory   arena    = nullptr; // existing arena to build into; exclusive with filepath/shm_name
@@ -182,37 +182,37 @@ struct FF_StreamCreateInfo {
     const char* shm_name = nullptr; // cross-process SHM arena; exclusive with arena/filepath
 };
 
-FF_Result FF_CreateStream(const FF_StreamCreateInfo& info, FF_Stream& out_stream) noexcept;
+FF_Result FF_CreateBuilder(const FF_BuilderCreateInfo& info, FF_Builder& out_builder) noexcept;
 
 template <typename T_Data>
-Reflective::ObjectHandle FF_StreamAppendObject(FF_Stream stream, const T_Data& data) noexcept;
+Reflective::ObjectHandle FF_BuilderAppendObject(FF_Builder builder, const T_Data& data) noexcept;
 
-struct FF_StreamSetRootInfo {
-    FF_Stream               stream = nullptr;
-    Reflective::ObjectHandle root;   // handle returned by FF_StreamAppendObject
+struct FF_BuilderSetRootInfo {
+    FF_Builder               builder = nullptr;
+    Reflective::ObjectHandle root;   // handle returned by FF_BuilderAppendObject
 };
 
-FF_Result FF_StreamSetRoot(const FF_StreamSetRootInfo& info) noexcept;
+FF_Result FF_BuilderSetRoot(const FF_BuilderSetRootInfo& info) noexcept;
 
-struct FF_StreamFinalizeInfo {
-    FF_Stream             stream    = nullptr;
+struct FF_BuilderFinalizeInfo {
+    FF_Builder            builder   = nullptr;
     FF_Checksum_Algorithm algorithm = FF_CHECKSUM_NONE;
     FF_HashCallback       hasher    = nullptr;  // required when algorithm != NONE
 };
 
-FF_Result FF_StreamFinalize(const FF_StreamFinalizeInfo& info, Memory::View& out_view) noexcept;
+FF_Result FF_BuilderFinalize(const FF_BuilderFinalizeInfo& info, Memory::View& out_view) noexcept;
 
-struct FF_StreamQueryInfo { FF_Stream stream = nullptr; };
-FF_Result FF_StreamQuery(const FF_StreamQueryInfo& info, Parser& out_parser) noexcept;
+struct FF_BuilderQueryInfo { FF_Builder builder = nullptr; };
+FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo& info, Parser& out_parser) noexcept;
 ```
 
-`FF_StreamAppendObject` is the one two-argument entry point: the payload is a
+`FF_BuilderAppendObject` is the one two-argument entry point: the payload is a
 template parameter, so it cannot live in an Info struct without forcing a copy.
 It returns a valid `ObjectHandle`, or a **null handle on failure** (never
 throws). Once you have the handle, mutate fields with the reflective path:
 
 ```cpp
-auto root = FastFHIR::FF_StreamAppendObject(stream, obs);
+auto root = FastFHIR::FF_BuilderAppendObject(builder, obs);
 root["status"] = std::string_view("final");                 // string key
 root[FastFHIR::Fields::OBSERVATION::STATUS]                 // typed key, same field
     = std::string_view("final");
@@ -280,7 +280,7 @@ FF_Result FF_CreateIngestor(const FF_IngestorCreateInfo& info, FF_Ingestor& out_
 
 struct FF_IngestInfo {
     FF_Ingestor           ingestor  = nullptr;
-    FF_Stream             stream    = nullptr;  // destination stream
+    FF_Builder            builder   = nullptr;  // destination builder
     FF_SourceType         source_type = FF_SOURCE_FHIR_JSON;
     const std::string_view payload;             // raw source document — never modified
     Size                  payload_capacity = 0; // allocated bytes incl. simdjson slack; 0 = safe copy
@@ -313,12 +313,12 @@ FF_Result FF_IngestInsertAtField(const FF_IngestInsertInfo& info) noexcept;
 
 ```mermaid
 flowchart LR
-    A[FF_CreateMemory] --> B[FF_CreateStream]
+    A[FF_CreateMemory] --> B[FF_CreateBuilder]
     C[FF_CreateIngestor] --> D[FF_Ingest]
     B --> D
-    D --> E[FF_StreamAppendObject + handle path]
-    E --> F[FF_StreamSetRoot]
-    F --> G[FF_StreamFinalize]
+    D --> E[FF_BuilderAppendObject + handle path]
+    E --> F[FF_BuilderSetRoot]
+    F --> G[FF_BuilderFinalize]
     G --> H[FF_Parse]
     H --> I[read path: Node / Entry / print_json]
     H --> J[FF_Compact]
@@ -329,7 +329,7 @@ flowchart LR
 * **`Builder::set_root` / `finalize` / `query`** — private; reachable only
   through the FF_* functions above.
 * **`Builder::append_obj(const std::vector<Offset>&, RECOVERY_TAG)`** — still
-  public on the `Builder` behind `FF_Stream`, and callable as
+  public on the `Builder` behind `FF_Builder`, and callable as
   `stream->append_obj(offsets, tag)`; it is what backs
   `MutableEntry::operator=(vector<Offset>)`. It has no `FF_*` wrapper, so it is
   outside the covered surface without being unreachable.

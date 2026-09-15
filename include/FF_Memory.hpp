@@ -205,7 +205,7 @@ namespace FastFHIR
         private:
             friend class Memory;
             // Non-const so View stays copy-assignable (FF_* out-parameter
-            // pattern, e.g. FF_StreamFinalize(..., Memory::View& out)).
+            // pattern, e.g. FF_BuilderFinalize(..., Memory::View& out)).
             std::shared_ptr<FF_Memory_t> m_vma_ref = nullptr;
             explicit View(std::shared_ptr<FF_Memory_t> vma_ref) : m_vma_ref(std::move(vma_ref)) {}
         };

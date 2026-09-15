@@ -122,13 +122,33 @@ _FEATURES: dict[str, tuple[str, str]] = {
 }
 
 
-def _feature_available(name: str, cxx: str, include_dirs: list[str]) -> bool:
+def _macos_sysroot() -> str | None:
+    """The macOS SDK path, or None off macOS or when xcrun cannot answer.
+
+    Only the /usr/bin/c++ shim finds the SDK on its own. The Xcode generator
+    hands CMake the toolchain's clang++ directly, and that binary has no
+    default sysroot, so without -isysroot every block fails on <bit>.
+    """
+    if sys.platform != "darwin":
+        return None
+    if os.environ.get("SDKROOT"):
+        return os.environ["SDKROOT"]
+    try:
+        proc = subprocess.run(["xcrun", "--show-sdk-path"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _feature_available(name: str, cxx: list[str], include_dirs: list[str]) -> bool:
     """True when the header behind an optional feature is on the include path."""
     header, _macro = _FEATURES[name]
     with tempfile.TemporaryDirectory() as td:
         probe = Path(td) / "probe.cpp"
         probe.write_text(f"#include <{header}>\nint main(){{}}\n", encoding="utf-8")
-        cmd = [cxx, "-std=c++20", "-fsyntax-only"]
+        cmd = [*cxx, "-std=c++20", "-fsyntax-only"]
         for d in include_dirs:
             cmd += ["-I", d]
         cmd.append(str(probe))
@@ -170,13 +190,13 @@ def build_tu(fence: Fence) -> str:
     return "\n".join(parts) + "\n"
 
 
-def compile_one(fence: Fence, cxx: str, include_dirs: list[str],
+def compile_one(fence: Fence, cxx: list[str], include_dirs: list[str],
                 keep_dir: Path | None = None) -> tuple[bool, str]:
     tu = build_tu(fence)
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / f"ff_readme_fence_{fence.index}.cpp"
         src.write_text(tu, encoding="utf-8")
-        cmd = [cxx, "-std=c++20", "-fsyntax-only", "-DASIO_STANDALONE"]
+        cmd = [*cxx, "-std=c++20", "-fsyntax-only", "-DASIO_STANDALONE"]
         for feature in fence.requires:
             cmd.append(f"-D{_FEATURES[feature][1]}")
         for d in include_dirs:
@@ -244,6 +264,8 @@ def main() -> int:
     ap.add_argument("--readme", default=str(_REPO_ROOT / "README.md"))
     ap.add_argument("--build-dir", default=str(_REPO_ROOT / "build"))
     ap.add_argument("--cxx", default=os.environ.get("CXX") or "c++")
+    ap.add_argument("--sysroot", default=None,
+                    help="-isysroot for the compiler (macOS default: xcrun --show-sdk-path)")
     ap.add_argument("--include-dir", action="append", default=[],
                     help="extra -I directory (repeatable)")
     ap.add_argument("--only", type=int, action="append", default=[],
@@ -261,6 +283,8 @@ def main() -> int:
         print(f"README compile gate: no C++ compiler found (tried {args.cxx!r}).")
         print("Set CXX or pass --cxx. Refusing to report success on zero blocks.")
         return 2
+    sysroot = args.sysroot or _macos_sysroot()
+    compiler = [cxx, "-isysroot", sysroot] if sysroot else [cxx]
 
     readme = Path(args.readme)
     fences = extract(readme)
@@ -309,7 +333,7 @@ def main() -> int:
         # because "did not run" must never be invisible.
         missing = [f for f in fence.requires
                    if not feature_cache.setdefault(
-                       f, _feature_available(f, cxx, include_dirs))]
+                       f, _feature_available(f, compiler, include_dirs))]
         if missing:
             why = ", ".join(f"{m} (<{_FEATURES[m][0]}> not on the include path)"
                             for m in missing)
@@ -317,7 +341,7 @@ def main() -> int:
             print(f"  n/a   {fence.label}: requires {why}")
             continue
 
-        ok, err = compile_one(fence, cxx, include_dirs, keep_dir)
+        ok, err = compile_one(fence, compiler, include_dirs, keep_dir)
         if ok:
             compiled += 1
             print(f"  ok    {fence.label} [{fence.mode}]")

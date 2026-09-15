@@ -28,12 +28,12 @@ int main() {
     // 1. FF_NULL_OFFSET as object_offset must be rejected, not wrapped.
     {
         auto mem = Memory::create(1ull << 20);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         std::string msg;
-        try { stream->amend_pointer(FF_NULL_OFFSET, 8, 64); }
+        try { builder->amend_pointer(FF_NULL_OFFSET, 8, 64); }
         catch (const std::runtime_error& e) { msg = e.what(); }
         // Must be rejected by the BOUNDS check. If the addition wraps, the
         // slot pointer is wild and the already-assigned probe reads garbage --
@@ -45,34 +45,34 @@ int main() {
     //    underflow m_active_mutators and finalize() would then hang or seal early.
     {
         auto mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         PatientData p; p.id = "p1";
-        auto handle = FF_StreamAppendObject(stream, p);
-        CHECK(FF_StreamSetRoot(FF_StreamSetRootInfo{
-            .stream = stream,
+        auto handle = FF_BuilderAppendObject(builder, p);
+        CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder,
             .root = handle,
         }), "set root");
         Memory::View view;
-        CHECK(FF_StreamFinalize(FF_StreamFinalizeInfo{
-            .stream = stream,
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
         }, view), "finalize");
         CHECK(!view.empty(), "finalize() completes after amends (mutator count balanced)");
     }
     // 3. Amending an already-assigned slot must still be refused.
     {
         auto mem = Memory::create(1ull << 22);
-        FF_StreamCreateInfo info;
+        FF_BuilderCreateInfo info;
         info.arena = std::make_shared<Memory>(mem);
-        FF_Stream stream;
-        CHECK(FF_CreateStream(info, stream), "create stream");
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
         PatientData p; p.id = "p1";
-        auto handle = FF_StreamAppendObject(stream, p);
+        auto handle = FF_BuilderAppendObject(builder, p);
         bool threw = false;
         try {
-            stream->amend_pointer(handle.offset(), FF_PATIENT::ID, 128);
+            builder->amend_pointer(handle.offset(), FF_PATIENT::ID, 128);
         } catch (const std::runtime_error&) { threw = true; }
         CHECK(threw, "already-assigned slot refused");
     }

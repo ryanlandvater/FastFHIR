@@ -1585,10 +1585,10 @@ FF_Result FF_Ingest(const FF_IngestInfo& info, Reflective::ObjectHandle& out_roo
     out_parsed_count = 0;
     if (!info.ingestor)
         return FF_Result{FF_INVALID_ARGUMENT, "FF_Ingest: null ingestor"};
-    if (!info.stream)
-        return FF_Result{FF_INVALID_ARGUMENT, "FF_Ingest: null destination stream"};
+    if (!info.builder)
+        return FF_Result{FF_INVALID_ARGUMENT, "FF_Ingest: null destination builder"};
     try {
-        Ingest::IngestRequest request{*info.stream, info.source_type, info.extension_filter,
+        Ingest::IngestRequest request{*info.builder, info.source_type, info.extension_filter,
                                       info.payload, info.payload_capacity};
         // size_t vs Size (uint64_t) are distinct types on LP64; bridge via a local.
         size_t parsed_count = 0;

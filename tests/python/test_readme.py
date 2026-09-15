@@ -169,23 +169,23 @@ def test_getting_started():
 
     # Step 3: Ingest inline JSON, enrich with typed fields, and seal.
     ingestor = ff.Ingestor()
-    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-        patient_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, GETTING_STARTED_JSON)
+    with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+        patient_node, count = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, GETTING_STARTED_JSON)
         assert count > 0, "getting-started ingest parsed 0 resources"
         assert patient_node, "getting-started patient handle is null"
 
         patient_node[Patient.ACTIVE]    = True
         patient_node[Patient.BIRTHDATE] = "1990-03-21"
 
-        stream.root = patient_node
-        view = stream.finalize(ff.Checksum.SHA256)
+        builder.root = patient_node
+        view = builder.finalize(ff.Checksum.SHA256)
         assert view is not None and view.size > 0, "getting-started finalize returned empty view"
     mem.close()
 
     # Step 1: Re-open and verify the sealed archive.
     mem2 = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(mem2, ff.FhirVersion.R5) as stream2:
-        node = stream2.root
+    with ff.Builder(mem2, ff.FhirVersion.R5) as builder2:
+        node = builder2.root
         assert node, "getting-started root is null after seal"
 
         pid    = node[Patient.ID].value()
@@ -221,8 +221,8 @@ def test_1():
         json_string = f.read()
 
     mem = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-        patient_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, json_string)
+    with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+        patient_node, count = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, json_string)
         print(f"  ingest count : {count}")
 
         pid    = patient_node[Patient.ID].value()
@@ -245,8 +245,8 @@ def test_1():
         assert family == "Landvater",   f"expected 'Landvater', got {family!r}"
         assert "Ryan" in last_given,    f"'Ryan' not in {last_given!r}"
 
-        stream.root = patient_node
-        stream.finalize(ff.Checksum.SHA256)
+        builder.root = patient_node
+        builder.finalize(ff.Checksum.SHA256)
 
     mem.close()
     assert os.path.exists(PATIENT_FFHR), "patient.ffhr not created"
@@ -264,8 +264,8 @@ if __name__ == "__main__": run("Example 1 — Ingest patient.json → save patie
 # ═════════════════════════════════════════════════════════════════════════════
 def test_2():
     mem = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-        patient_node = stream.root
+    with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+        patient_node = builder.root
         if not patient_node:
             raise RuntimeError('stream.root is null; archive root must be set before read.')
 
@@ -306,8 +306,8 @@ if __name__ == "__main__": run("Example 2 — Open and read patient.ffhr", test_
 def test_3():
     ingestor = ff.Ingestor()
     mem = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(mem, ff.FhirVersion.R4) as stream:
-        patient_node = stream.root
+    with ff.Builder(mem, ff.FhirVersion.R4) as builder:
+        patient_node = builder.root
         if not patient_node:
             raise RuntimeError('stream.root is null; cannot mutate without explicit root.')
 
@@ -322,14 +322,14 @@ def test_3():
             "use":    "mobile"
         }
 
-        stream.root = patient_node
-        stream.finalize(ff.Checksum.SHA256)
+        builder.root = patient_node
+        builder.finalize(ff.Checksum.SHA256)
     mem.close()
 
     # Verify the enrichment persisted
     mem2 = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(mem2, ff.FhirVersion.R4) as stream2:
-        patient_node2 = stream2.root
+    with ff.Builder(mem2, ff.FhirVersion.R4) as builder2:
+        patient_node2 = builder2.root
         dob    = patient_node2[Patient.BIRTHDATE].value()
         active = patient_node2[Patient.ACTIVE].value()
         print(f"  birthDate after enrich : {dob!r}")
@@ -353,10 +353,10 @@ def test_4():
             json_src = f.read()
 
         mem_srv = ff.Memory.create_from_file(clean_ffhr, capacity=8 * 1024 * 1024)
-        with ff.Stream(mem_srv, ff.FhirVersion.R5) as stream_srv:
-            srv_node, _ = ff.Ingestor().ingest(stream_srv, ff.SourceType.FHIR_JSON, json_src)
-            stream_srv.root = srv_node
-            stream_srv.finalize(ff.Checksum.SHA256)
+        with ff.Builder(mem_srv, ff.FhirVersion.R5) as builder_srv:
+            srv_node, _ = ff.Ingestor().ingest(builder_srv, ff.SourceType.FHIR_JSON, json_src)
+            builder_srv.root = srv_node
+            builder_srv.finalize(ff.Checksum.SHA256)
         mem_srv.close()
 
         seed_size = os.path.getsize(clean_ffhr)
@@ -425,8 +425,8 @@ def test_4():
                 probe.__exit__(None, None, None)
 
             # Step 3: enrich in-memory archive and finalize (Segment E.3 behavior).
-            with ff.Stream(mem_http, ff.FhirVersion.R5) as stream:
-                patient_node = stream.root
+            with ff.Builder(mem_http, ff.FhirVersion.R5) as builder:
+                patient_node = builder.root
                 if not patient_node:
                     raise RuntimeError('stream.root is null; cannot mutate without explicit root.')
 
@@ -436,8 +436,8 @@ def test_4():
                     "use": "mobile"
                 }
 
-                stream.root = patient_node
-                outbound_ffhr = bytes(stream.finalize(ff.Checksum.SHA256))
+                builder.root = patient_node
+                outbound_ffhr = bytes(builder.finalize(ff.Checksum.SHA256))
 
             # Step 4: PUT enriched payload back to server.
             conn_put = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
@@ -477,8 +477,8 @@ if __name__ == "__main__": run("Example 4 — Static HTTP GET/PUT with patient.f
 def test_5():
     # Step 1: re-open the same archive from Example 1.
     mem = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-        patient_node = stream.root
+    with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+        patient_node = builder.root
         if not patient_node:
             raise RuntimeError('stream.root is null; cannot mutate without explicit root.')
 
@@ -486,14 +486,14 @@ def test_5():
         # reassigning pointer fields that were already populated in prior tests.
         patient_node[Patient.DECEASED] = False
 
-        stream.root = patient_node
-        stream.finalize(ff.Checksum.SHA256)
+        builder.root = patient_node
+        builder.finalize(ff.Checksum.SHA256)
     mem.close()
 
     # Step 2: verify the second mutation persisted.
     mem2 = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(mem2, ff.FhirVersion.R5) as stream2:
-        verify_node = stream2.root
+    with ff.Builder(mem2, ff.FhirVersion.R5) as builder2:
+        verify_node = builder2.root
         if not verify_node:
             raise RuntimeError('stream.root is null; archive root must be set before verify.')
 
@@ -512,19 +512,19 @@ def test_6():
     # Step A: ingest bundle with two patients.
     ingestor = ff.Ingestor()
     mem = ff.Memory.create_from_file(BUNDLE_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-        bundle_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, BUNDLE_JSON)
+    with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+        bundle_node, count = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, BUNDLE_JSON)
         assert count >= 2, f"expected at least 2 resources, got {count}"
         print(f"  bundle ingested : {count} resources")
-        stream.root = bundle_node
-        stream.finalize(ff.Checksum.SHA256)
+        builder.root = bundle_node
+        builder.finalize(ff.Checksum.SHA256)
     mem.close()
 
     # Step B: re-open and find patient-1.
     ingestor2 = ff.Ingestor()
     mem2 = ff.Memory.create_from_file(BUNDLE_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(mem2, ff.FhirVersion.R5) as stream2:
-        bundle_node2 = stream2.root
+    with ff.Builder(mem2, ff.FhirVersion.R5) as builder2:
+        bundle_node2 = builder2.root
         assert bundle_node2, "bundle root is null after seal"
 
         target_patient = None
@@ -546,14 +546,14 @@ def test_6():
         target_patient[Patient.TELECOM] = {"system": "phone", "value": "555-0199", "use": "mobile"}
 
         # Step D: reseal.
-        stream2.root = bundle_node2
-        stream2.finalize(ff.Checksum.SHA256)
+        builder2.root = bundle_node2
+        builder2.finalize(ff.Checksum.SHA256)
     mem2.close()
 
     # Step E: verify patient-1 enriched, patient-2 untouched.
     mem3 = ff.Memory.create_from_file(BUNDLE_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(mem3, ff.FhirVersion.R5) as stream3:
-        bundle_node3 = stream3.root
+    with ff.Builder(mem3, ff.FhirVersion.R5) as builder3:
+        bundle_node3 = builder3.root
         assert bundle_node3
 
         found_enriched = False
@@ -592,7 +592,7 @@ def test_7():
     errors       = []
     lock         = threading.Lock()
 
-    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
+    with ff.Builder(mem, ff.FhirVersion.R5) as builder:
         def worker(i):
             try:
                 obs_json = json.dumps({
@@ -602,7 +602,7 @@ def test_7():
                     "code": {"coding": [{"system": "http://loinc.org", "code": "8867-4"}]}
                 })
                 local_ingestor = ff.Ingestor()
-                node, _ = local_ingestor.ingest(stream, ff.SourceType.FHIR_JSON, obs_json)
+                node, _ = local_ingestor.ingest(builder, ff.SourceType.FHIR_JSON, obs_json)
                 with lock:
                     node_results[i] = node
             except Exception as e:
@@ -618,12 +618,12 @@ def test_7():
         assert not errors, f"thread errors: {errors}"
         assert all(r is not None for r in node_results), "not all threads produced a handle"
 
-        stream.root = node_results[0]
-        stream.finalize(ff.Checksum.SHA256)
+        builder.root = node_results[0]
+        builder.finalize(ff.Checksum.SHA256)
     mem.close()
 
     print(f"  {N} threads completed lock-free writes")
-    print(f"  all {N} StreamNode handles valid")
+    print(f"  all {N} BuilderNode handles valid")
 
 if __name__ == "__main__": run("Example 7 — Lock-free concurrent generation", test_7)
 
@@ -634,8 +634,8 @@ def test_8():
     # Source: sealed patient.ffhr produced by test_1 / test_3.
     src_mem     = ff.Memory.create_from_file(PATIENT_FFHR,         capacity=64 * 1024 * 1024)
 
-    with ff.Stream(src_mem, ff.FhirVersion.R5) as src_stream:
-        compact_view = src_stream.compact(ff.Checksum.SHA256)
+    with ff.Builder(src_mem, ff.FhirVersion.R5) as src_builder:
+        compact_view = src_builder.compact(ff.Checksum.SHA256)
 
     src_size = src_mem.size
     src_mem.close()
@@ -650,7 +650,7 @@ def test_8():
     # gender is a dictionary-backed code (AdministrativeGender), so the compact
     # archive stores its code ID, not the literal string — asserting its absence
     # pins that behavior. Reading the value back would need a Parser over compact
-    # memory, which the Python bindings do not expose yet (Stream wraps Builder,
+    # memory, which the Python bindings do not expose yet (ff.Builder wraps the C++ Builder,
     # which refuses compact archives). Tracked with TASKS.md WO-4 notes.
     assert b"male" not in compact_bytes, "dictionary code must be stored as an ID, not a literal"
     # Persist the golden compact fixture (FF_Compact allocates its own arena).
@@ -665,8 +665,8 @@ if __name__ == "__main__": run("Example 8 — Post-finalize archival compaction"
 def test_9():
     # Patient — verify array-tagged NAME key and element traversal.
     src_mem = ff.Memory.create_from_file(PATIENT_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(src_mem, ff.FhirVersion.R5) as stream:
-        patient_root = stream.root
+    with ff.Builder(src_mem, ff.FhirVersion.R5) as builder:
+        patient_root = builder.root
         assert patient_root, "standard patient root is null"
 
         name_entry = patient_root[Patient.NAME]
@@ -686,8 +686,8 @@ def test_9():
 
     # Bundle — verify array-tagged ENTRY key and resource field.
     bundle_mem = ff.Memory.create_from_file(BUNDLE_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(bundle_mem, ff.FhirVersion.R5) as bundle_stream:
-        bundle_root = bundle_stream.root
+    with ff.Builder(bundle_mem, ff.FhirVersion.R5) as bundle_builder:
+        bundle_root = bundle_builder.root
         assert bundle_root, "standard bundle root is null"
 
         entry_count = sum(1 for _ in bundle_root[Bundle.ENTRY])
@@ -709,8 +709,8 @@ if __name__ == "__main__": run("Example 9 — Standard array-tagged field key co
 def test_10():
     ingestor = ff.Ingestor()
     mem = ff.Memory.create_from_file(BUNDLE_COMPLEX_FFHR, capacity=64 * 1024 * 1024)
-    with ff.Stream(mem, ff.FhirVersion.R5) as stream:
-        bundle_node, count = ingestor.ingest(stream, ff.SourceType.FHIR_JSON, BUNDLE_COMPLEX_JSON)
+    with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+        bundle_node, count = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, BUNDLE_COMPLEX_JSON)
         assert bundle_node, "complex bundle handle is null"
 
         # Verify source observation value[x] and nested component value[x].
@@ -728,12 +728,12 @@ def test_10():
             assert "nested-choice" in obs_json_str, f"source component value[x] mismatch"
         assert found_obs_source, "source complex bundle observation not found"
 
-        stream.root = bundle_node
-        source_view = stream.finalize(ff.Checksum.SHA256)
+        builder.root = bundle_node
+        source_view = builder.finalize(ff.Checksum.SHA256)
         assert source_view.size > 0, "complex bundle finalize returned empty view"
 
         # Compact the sealed source into a fresh arena (FF_Compact allocates it).
-        compact_view = stream.compact(ff.Checksum.SHA256)
+        compact_view = builder.compact(ff.Checksum.SHA256)
         assert compact_view.size > 0, "complex compact archive view is empty"
 
         compact_bytes = bytes(compact_view)
