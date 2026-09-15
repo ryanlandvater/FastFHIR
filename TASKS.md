@@ -112,7 +112,7 @@ proves it. Those are the ones to take if you are picking without other context.
 | **P2** | Block B | Test coverage: builder, parser, pipeline, byte fixtures. **B7 is the "assert against bytes" one** | `^## Block B` |
 | **P2–P3** | Blocks D, E, F, G, H, I | WASM, hygiene (35 items, mostly small), benchmarks, security, packaging, spec | `^## Block ` |
 | **planned** | Block J | External code systems. **J4/J5/J6 gated on A8.** J1's layer boundary is now Block K's `ValidationHooks`, so J needs a LOADER, not a mechanism — see J1's "Reconciliation OUTCOME". J3/J7/J8 need neither | `^## Block J` |
-| ✅ done | Block K | Conformance validation layer — **implemented 2026-09-09**, ctest 46/46 (54/54 on 2026-09-15 with the README gates; real-pipeline + TSan coverage added that day). Two decisions still open for Ryan: the `ConcurrentLogger` sink (K1.2) and whether J4.1 attaches here (J1) | `^## Block K` |
+| ✅ done | Block K | Conformance validation layer — **implemented 2026-09-09**, ctest 46/46 (54/54 on 2026-09-15 with the README gates; real-pipeline + TSan coverage added that day). K1.2's sink is **decided (2026-09-15): the parallel logger, reserving by CAS — LOG-1**. One decision still open for Ryan: whether J4.1 attaches here (J1) | `^## Block K` |
 
 **Standing policy, applies to every item above:** a gate that returns zero results must not
 pass (P0-2). Assert a non-zero floor before asserting any equality.
@@ -5476,7 +5476,9 @@ boundary where it is used today; it is wrong for a check that may run per field.
   fields — the invariant key (`"pat-1"`) and the resource URL — as `const char*` pointing
   at generated static storage. `noexcept`, no allocation, trivially copyable; assert both
   with `static_assert(std::is_trivially_copyable_v<Status>)`.
-- [x] **K1.2** ✅ with **one deviation that needs Ryan's sign-off.**
+- [x] **K1.2** ✅ with **one deviation — signed off (Ryan, 2026-09-15): keep a parallel
+  logger that many threads drop entries into at once, with the reservation done by a CAS
+  on the log head. Done as LOG-1 (2026-09-15).**
   `ValidationHooks` carries `next`, plus `abi_version` FIRST (refused at
   `attach_layer`, so J1.2 has a field to reject on), `entries`/`count`,
   `policy`, and `failures` (a caller-owned `std::atomic<uint64_t>*`, which is
@@ -6116,6 +6118,10 @@ sequenceDiagram
 1. **D4 sink type:** `ConcurrentLogger*` (recommended; lock-free, already owned by the
    Ingestor, static messages so no allocation) vs K1.2's `std::string*` (IFE's choice;
    a data race under the concurrent ingest unless documented as single-thread-only).
+   > Answer (Ryan, 2026-09-15): **the parallel logger, with a CAS to the log location** so
+   > entries are dropped in simultaneously by multiple threads. The same race exists in
+   > IFE, which also writes on multiple threads — filed there as
+   > `../Iris-File-Extension/TASKS.md` VL-1. FastFHIR's change is LOG-1.
 2. **J4.1 move** (see the J1 reconciliation preview): terminology checks attach at the K
    boundary over the POCO instead of inside `ENCODE_FF_CODE`.
 3. **`abi_version` now** (recommended, one `uint32_t`, costs nothing) so J1.2 has a field
@@ -7212,6 +7218,66 @@ controls, so `python/FF_PythonBindings.cpp` exposes nothing from Block K
       a stub that raises) when it is OFF — the layer is opt-in in Python too.
 - Acceptance: a Python test ingests one Synthea bundle with the layer attached under
   `Report` and asserts a non-zero failure count and an unchanged `print_json`.
+
+---
+
+## LOG-1 — `ConcurrentLogger` reserves with `fetch_add`; reserve with a CAS instead (P1)
+
+> ✅ **DONE 2026-09-15**, in the conformance-layer PR. `ConcurrentLogger::log` claims by
+> `compare_exchange_weak` and refuses an entry that does not fit without moving the head;
+> `m_dropped` counts refusals and the overflow is reported as a `[Warning]` line, so the
+> Ingestor lifts it into the `FF_Result` instead of it being lost. **Red-green:** the new
+> `ff_test_logger` (4 cases / 20 checks) fails **8 checks against the old `fetch_add`
+> claim** — NUL bytes in the output single-threaded and under contention, a torn line,
+> and `stored + dropped` off by one — and passes against the CAS. Green under
+> `-fsanitize=thread` together with `ff_test_conformance`; ctest 55/55. The line
+> references below describe the header BEFORE the change.
+
+**Decided 2026-09-15 (Ryan, K1.2 / D4):** the conformance sink is a parallel logger that
+many threads write into at once, and a writer claims its log location with a
+compare-and-swap. `ConcurrentLogger::log` (`include/FF_Logger.hpp:33`) claims with
+`m_head.fetch_add(len)` (`:37`) and checks capacity **afterwards**. That is lock-free, but
+the claim cannot be refused, and three defects follow from it:
+
+1. **An overflowing entry leaves a hole inside the readable range.** When
+   `offset + len > m_capacity` the message is skipped, but the head has already moved
+   past capacity. The bytes from `offset` to `m_capacity` were never written, and
+   `to_string()` / `flush_to()` return them (`min(total, capacity)`) — NUL bytes, because
+   `make_unique<char[]>` (`:28`) zero-fills. The truncation count also includes the
+   reservation of an entry that was never partly written.
+2. **`clear()` (`:86`) races any in-flight writer.** A writer that reserved before the
+   `store(0)` copies into space the next writer after it is handed again, so two
+   entries interleave byte-for-byte.
+3. **Readers see reserved-but-unwritten space.** `to_string()` reads up to the head,
+   which includes entries whose `memcpy` has not finished. `flush_to` documents
+   "after all worker threads have joined"; `to_string` does not, and the Report-policy
+   tests call it.
+
+- [x] LOG-1.1 Reserve with a `compare_exchange_weak` loop that computes
+      `offset + len` first and **refuses** (without moving the head) when it exceeds
+      capacity; count refused entries in a separate `std::atomic<size_t> m_dropped`,
+      and report that count, not a byte difference. The head then never exceeds
+      capacity, so the readable range contains only claimed entries. Same shape as
+      `Memory::claim_space` (`src/FF_Memory.cpp`), which is already a CAS loop —
+      reuse the pattern, do not invent a second one.
+- [x] LOG-1.2 ✅ **Documented, not watermarked:** concurrent claims complete out of
+      order, so a single committed watermark cannot pass an unfinished entry below a
+      finished one; it would need per-entry state. `to_string()`, `flush_to()` and
+      `clear()` are documented as valid only once writers stop (the Ingestor reads
+      after its pool joins); `has_logs()` and `dropped()` are safe at any time.
+      Original: Make an entry's bytes visible only once written: either a second
+      "committed" watermark advanced after the copy, or document on `to_string()` as on
+      `flush_to()` that it is valid only after writers stop. Pick one and say so in the
+      header.
+- [x] LOG-1.3 ✅ Kept and documented single-owner; it now also resets `m_dropped`.
+      `Ingestor::reset()` is its caller. Original: `clear()`: document it as single-owner (no writer may be running), or
+      remove it in favour of constructing a new logger. Do not add a lock — invariant 6.
+- [x] LOG-1.4 ✅ `tests/cpp/test_logger.cpp`, registered in CMake (all four places)
+      and Bazel. Original: Test under ThreadSanitizer: N threads × M entries into a logger sized to
+      overflow partway; assert no race, every returned line is a complete entry,
+      no NUL byte in the output, and `lines + m_dropped == N × M`.
+- Acceptance: `ff_test_conformance` (whose case 12 shares one logger across the ingest
+  pool) and the new logger test are green under `-fsanitize=thread`.
 
 ---
 

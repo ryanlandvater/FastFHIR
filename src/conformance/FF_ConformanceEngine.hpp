@@ -214,7 +214,7 @@ template <typename T>
 /// The LAYER reports, not the Builder: in a chain only the layer that found the
 /// fault knows which sink is its own. Every operand is static storage from the
 /// generated tables, so this allocates nothing and is safe on an ingest worker
-/// -- ConcurrentLogger::log is a lock-free reservation.
+/// -- ConcurrentLogger::log claims its range with a lock-free CAS (LOG-1).
 inline void report(const ValidationHooks* self, const Status& status) noexcept
 {
     if (self == nullptr)

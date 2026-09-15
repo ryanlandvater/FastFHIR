@@ -45,6 +45,8 @@ def fastfhir_tests(copts = []):
         ("test_dictionary", "test_dictionary.cpp"),
         # AR-4.4: the first direct FIFO::Queue test. Header-only, no ingestor.
         ("test_queue", "ff_test_queue.cpp"),
+        # LOG-1: ConcurrentLogger claim/refusal/contention. Header-only.
+        ("test_logger", "test_logger.cpp"),
     ]:
         cc_test(
             name = name,

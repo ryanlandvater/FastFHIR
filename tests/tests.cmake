@@ -149,6 +149,8 @@ if(FASTFHIR_BUILD_TESTS)
     # AR-4.4: FIFO::Queue had no direct test until a lock-free defect in it
     # silently dropped 2,000 tasks per ingest (AR-3). Header-only, no ingestor.
     add_ff_cpp_test(ff_test_queue      tests/cpp/ff_test_queue.cpp)
+    # LOG-1: ConcurrentLogger's CAS claim, refusal and contention. Header-only.
+    add_ff_cpp_test(ff_test_logger     tests/cpp/test_logger.cpp)
     # COV-1.1: validates streams the WRITER produced, so unlike the other
     # standalone suites it drives the ingestor, needs the checksum hasher, and
     # needs the fixture path -- it is deliberately fed real documents. Without
@@ -210,7 +212,7 @@ if(FASTFHIR_BUILD_TESTS)
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_abstraction_parity ff_test_recovery ff_test_views)
+    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger ff_test_abstraction_parity ff_test_recovery ff_test_views)
     if(FASTFHIR_BUILD_CONFORMANCE)
         list(APPEND _FF_STANDALONE_TESTS ff_test_conformance ff_example_conformance)
     endif()
