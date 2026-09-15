@@ -13,7 +13,7 @@ maintainer direction. New source files copy the MPL header from any file in `src
 **Pending work lives in `TASKS.md`** — read its Execution contract before claiming a task.
 Blocks A–E are engineering debt (build fixes, tests, recovery, WASM, hygiene); Blocks F–I
 are strategic (benchmark publication, security hardening, packaging, specification).
-Blocks J and K are **planned, unstarted**. Block J is external code systems (LOINC, SNOMED, …) in
+Block J is **planned, unstarted**; **Block K is IMPLEMENTED (2026-09-09)**. Block J is external code systems (LOINC, SNOMED, …) in
 two halves: generated compile-time headers (`FF_EXTERNAL_CODE::LOINC::X`) and optional
 runtime validation layers discovered Vulkan-style, where a missing layer just means the
 check does not run. Neither ever enters the permanent ledger or the wire format. Q14 and
@@ -24,8 +24,12 @@ Iris File Extension's. It rests on one split: **structural validation is inline 
 mandatory** (offsets, recovery tags, bounds — wrong means unreadable bytes), **conformance
 validation is optional and attachable** (cardinality, required fields, bound ValueSets —
 wrong means a valid file a FHIR server rejects). A stream written with the layer attached
-must be byte-identical to one written without it. Do K before J: K's hooks struct is the
-interface J's discovered layers should populate, not a second mechanism. Read K0 first.
+must be byte-identical to one written without it. K was done first, and its `ValidationHooks`
+(`include/FF_Conformance.hpp`) IS the interface J's discovered layers populate — J needs a
+loader, not a second mechanism. J1.2's separate C ABI is struck and J5.2 is already done;
+the reconciliation is recorded under J1 in TASKS.md. The 145 required ValueSet bindings the
+layer already emits as `UNIMPLEMENTED` rows, each carrying its ValueSet URL, are J4's
+worklist. Read K0 and the Block K work order first.
 The former checklist/plan docs (audit, integration-revision, project-progress,
 generator-refactor, unification, refactor-history) were consolidated into TASKS.md and
 deleted; consult git history if you need them.
@@ -41,7 +45,8 @@ deleted; consult git history if you need them.
 | `generated_src/` | Generator output (~75 C++ files), including `FF_Codes.hpp`, the dictionary tables projected from `dictionaries/*.json`, and `FF_RecoveryTags.hpp` projected from `master_tags.json`. **Gitignored** — produced at CMake configure time. Most of it requires network (HL7 / packages.fhir.org); the dictionary projection does not, needing only the committed ledger. |
 | `python/` | pybind11 bindings (`FF_PythonBindings.cpp` → `_core`) + `fastfhir` package. `fastfhir.fields` is a generated **package** (`<build>/python/fields/`, one module + `.pyi` per resource, plus `py.typed`), emitted by `generator/bindings/python_fields.py` at build time — it is not a single `fields.py`, and it is not written into the source tree. |
 | `tools/` | CLI tools: `ingestor/FF_Ingest.cpp`, `exporter/FF_Export.cpp`, `compactor/FF_Compact.cpp`. |
-| `tests/` | `cpp/` (standalone-main tests via ctest), `python/` (README/round-trip suites via ctest `py_*`), `generator/` (pytest wire-format gate). **Shared C++ harness: `tests/cpp/FFHR_tests.hpp`** (counters, `CHECK`/`CHECK_EQ`/`CHECK_NE`/`REQUIRE`, `TEST_GROUP`, `ff_test::run`/`set_filter`/`report`), **`FFHR_test_corpus.hpp`** (`find_bundles`, `read_file`), **`FFHR_test_checksum.hpp`** (`sha256`). Split by dependency on purpose — the corpus header needs `<filesystem>` and the checksum header links OpenSSL, so a test that only asserts pulls in neither. `tests/cpp` is on the include path; include by bare name. |
+| `src/conformance/` + `include/FF_Conformance.hpp` | **The attachable conformance layer (Block K).** `FF_Conformance.hpp` is the boundary — `Status`, `Rule`, `ValidationHooks`, `dispatch()` — and deliberately includes no FastFHIR header, so it compiles standalone. `src/conformance/FF_ConformanceEngine.hpp` is the ONE interpreter of the generated rule tables. Built only under `FASTFHIR_BUILD_CONFORMANCE` (default **OFF**, ON in every preset) as `fastfhir_conformance`; the CMake glob and the Bazel glob both exclude `generated_src/FF_Conformance_Layer.cpp` by name so it can never be linked into the core by accident. Worked example: `examples/conformance_layer.cpp`, registered as a test so it cannot rot. |
+| `tests/` | `cpp/` (standalone-main tests via ctest), `python/` (README/round-trip suites via ctest `py_*`), `generator/` (pytest wire-format gate), `readme/` (the README compile gate's extractor + context stanzas — see the doc-drift note below). **Shared C++ harness: `tests/cpp/FFHR_tests.hpp`** (counters, `CHECK`/`CHECK_EQ`/`CHECK_NE`/`REQUIRE`, `TEST_GROUP`, `ff_test::run`/`set_filter`/`report`), **`FFHR_test_corpus.hpp`** (`find_bundles`, `read_file`), **`FFHR_test_checksum.hpp`** (`sha256`). Split by dependency on purpose — the corpus header needs `<filesystem>` and the checksum header links OpenSSL, so a test that only asserts pulls in neither. `tests/cpp` is on the include path; include by bare name. |
 | `architecture.md` | Deep reference for the binary format, VMA, builder, and read path. Read it before touching wire-format code. **§3.4 is the value-representation contract** — how absence is spelled, why enum ordinal `0` is a VALUE and not a missing field, why the `double` sentinel cannot be tested with `!=`, and what a dictionary ID does and does not mean. Read it before writing anything that decides whether a field is set. |
 | `terminology_layer_architecture.md` | CodeableConcept / code-system encoding design. |
 
@@ -159,11 +164,53 @@ the first failure where the shared `CHECK` accumulates — a different contract,
 duplicate one. Per-check `PASS` lines are now off by default and restored with
 `FF_TEST_VERBOSE=1`.
 
+**The README is EXTRACTED, not re-implemented (2026-09-10).** Two gates read
+`README.md` itself:
+
+| Gate | Mechanism |
+|---|---|
+| `py_readme_cpp_compiles` | every ```cpp block extracted and built `-fsyntax-only` (23 blocks) |
+| `cpp_readme_*` | 7 blocks extracted and **executed**; `tests/readme/generate_examples.py` emits the test at build time |
+
+**Do not add a hand-written test for a README example.** That is what existed before, and
+it is why the docs rotted: `tests/cpp/test_readme.cpp` re-implements the numbered examples,
+so it proved the examples worked and said nothing about the page. Every C++ block on the
+page drifted onto a dead `FastFHIR::Builder` / `Ingest::Ingestor` API while `ctest` stayed
+green — 0 `FF_*` calls in the README against 30 in the test that was supposedly its
+contract. A parallel implementation is a second thing to maintain, not a gate.
+
+**A block declares itself with an invisible `<!-- ff-compile: ... -->` comment**:
+`program` | `fragment` | `expressions` | `skip reason=` | `needs=` | `requires=` |
+`run=<id>`. `run=` is the one that matters — it makes the block EXECUTE. Fixtures and
+assertions live in `tests/readme/expect.hpp` as `FF_README_SETUP_<ID>` /
+`FF_README_EXPECT_<ID>` macros that expand around the block inside its own scope, so they
+read its locals without the documentation ever mentioning a test. The runner `chdir`s into
+the artifact dir, so a block's `"patient.ffhr"` needs no rewriting. Only three things are
+not verbatim, all reported: a `program` block's `main` is renamed, and those two macros.
+
+**What turning them on found**, none of it explained by the rename: `FastFHIR::Size` and
+`FastFHIR::FF_SOURCE_FHIR_JSON` (both **global**), a bare string literal through
+`handle[KEY]` (needs `std::string_view` — `char[N]` has no `TypeTraits`), `Entry::kind()`
+called as a function when it is a data member, two blocks reaching through `ingestor->impl`
+into a type `FastFHIR.hpp:166` calls **intentionally opaque** when public
+`FF_IngestInsertAtField` exists, and a `__cpp_lib_execution` guard that selects an overload
+libc++ does not provide. Execution then found four the compiler could not: a block that
+constructed a `Parser` over the arena **before `finalize()` wrote the header**, one that
+read a packed date/time slot as a `string_view` (which the same page warns against), and
+`handle[GENDER] = "male"`, which simply **throws** — there is no `amend_code` on the
+Builder at all (**CAPI-16**).
+
+**`REQUIRE(cond, msg)` used to evaluate `cond` TWICE** (fixed 2026-09-10, same pass).
+Invisible for a comparison, wrong for the 60 sites whose condition is a call:
+`REQUIRE(FF_StreamFinalize(...), "finalize")` sealed the stream twice. Those tests were
+asserting on the second call's behaviour, in a state no documented usage produces.
+
 **A new C++ test needs registering in FOUR places in `CMakeLists.txt`**, not one:
 `add_ff_cpp_test(...)`, the ctest `foreach(_standalone ...)`, the `_BUILD_ALL` list, and
 the two IDE folder/scheme lists. `add_ff_cpp_test` only creates the target — a test
 registered with ctest but missing from `_BUILD_ALL` builds nothing and reports **"Not
-Run"**, which is task A20 and is easy to reintroduce.
+Run"**. That was task A20 (closed 2026-09-10 — `_BUILD_ALL` now carries every test target);
+the trap it came from is still one edit away, which is why this paragraph stays.
 
 **Randomised suites pin their seed.** `ff_test_datetime` samples dates rather than
 enumerating them, so it fixes a default seed, prints it on every run, and takes
@@ -308,6 +355,31 @@ That discipline costs nothing to keep now, and it is the habit that has to alrea
 place when the format freezes — which is precisely when it stops being recoverable.
 Relaxing invariant 1 would be a separate decision, and it is Ryan's alone.
 
+**What the redundancy is worth, measured (2026-09-08).** The self-offset
+`VALIDATION` witness and the duplicated tuple tag are not free — they cost wire
+bytes on every block — and the benchmark now prices them against competitors
+that were given a real repair pass (HAPI's lenient posture, Mirth's segment
+resynchronisation, `jsonrepair`'s rule set), not against nothing. On the same
+Synthea corpus, 34,839 content-verified leaves per arm, 20 replicates per point:
+
+| k=2048 flips | recovery ON | recovery OFF | recovery cost |
+|---|---|---|---|
+| FastFHIR | **95.9%** | **74.6%** | **84 ms** |
+| HL7v2 | 72.4% | 65.6% | 645 ms |
+| NDJSON | 55.2% | 27.0% | 2,509 ms |
+| FHIR JSON | 37.8% | 0.0% | 5,638 ms |
+
+Two results matter more than the headline percentage. **FastFHIR reads 74.6% of
+a badly damaged stream with recovery switched OFF** — that is the witness check
+in the ordinary read path refusing to follow a block that does not vouch for
+itself, and no competitor has an equivalent (JSON reads 0.0%: one flip breaks
+the whole-document parse). And **FastFHIR's recovery cost is flat** — 52–84 ms
+across a 2000× damage range — because checking a witness already on the wire is
+work proportional to the STREAM. A format without redundancy must SEARCH for a
+repair that parses, so its cost tracks the DAMAGE: JSON's rises 123×.
+Full numbers and caveats: FastFHIR-benchmark README § "Recovery under
+corruption". Do not quote these without the ZFX caveat recorded there.
+
 **A block that does not vouch for itself is not a block.** Every block carries a
 self-offset witness — its `VALIDATION` word holds its own offset — and both
 `validate_FFHR_stream()` and `Recovery` test it. The **navigation path did not**:
@@ -450,6 +522,22 @@ decide whether a version gate is wanted.
    null sentinels instead of throwing on absent fields. (A structured
    `"FastFHIR RECOVERY_REQUIRED:"` message convention is planned in TASKS.md Block C — it
    does not exist in the code yet; don't invent it outside that block.)
+5a. **Validation is two things, and only one of them is mandatory.** *Structural*
+   validation — a block sits at its own offset, carries the right tag, fits in the arena —
+   is inline, unconditional, and the subject of every invariant above. Wrong there means
+   **unreadable bytes**. *Conformance* validation — `Observation.status` is required,
+   `Bundle.entry.request.method` is required — is optional and attachable
+   (`Builder::attach_layer`), and wrong there means **a readable file a FHIR server
+   rejects**. The layer OBSERVES: a stream written with it attached is byte-identical to
+   one written without it, which holds because the check runs **before `claim_space()`**,
+   so even a rejected write leaves the arena untouched. `ff_test_conformance`'s
+   byte-identity case asserts it in both directions, including on the failing path.
+   **A conformance failure must never reach the wire, and must never be spelled as a
+   structural one.** Conformance defaults to `LayerPolicy::Throw`; a terminology layer
+   (Block J) sets `Report`, which stores the data and counts the failure (J5). The layer
+   reports its own diagnostics through the lock-free `ConcurrentLogger`, never a
+   `std::string` sink — `append` runs on the ingest worker pool.
+
 6. **Concurrency contract:** `claim_space()` appends are lock-free and thread-safe;
    pointer amendments and finalize are not concurrency-protected (see TASKS.md Q9). Don't
    introduce mutexes into the append hot path.

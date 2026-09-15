@@ -10,6 +10,7 @@
 #pragma once
 
 #include "FF_Parser.hpp"
+#include "FF_Conformance.hpp"
 #include <atomic>
 #include <functional>
 #include <string>
@@ -62,6 +63,8 @@ namespace FastFHIR
         BYTE *const m_base;
         Offset m_url_dir_offset = FF_NULL_OFFSET;
         Offset m_module_reg_offset = FF_NULL_OFFSET;
+        /// The attached conformance layer, or null. Borrowed; see attach_layer().
+        const Conformance::ValidationHooks* m_layer = nullptr;
         Offset m_root_offset;
         RECOVERY_TAG m_root_recovery;
         FHIR_VERSION m_fhir_rev;
@@ -137,6 +140,11 @@ namespace FastFHIR
                                   size_t total_bytes, AssignedProbe probe,
                                   const char* what);
 
+        /// Runs the attached layer's check for one block type and enacts its
+        /// policy. Out of line so append<T_Data> stays a template over one
+        /// branch; only ever reached when m_layer is non-null.
+        void _check_conformance(RECOVERY_TAG tag, const void* data);
+
     public:
         Builder(const Builder &) = delete;
         Builder &operator=(const Builder &) = delete;
@@ -178,6 +186,31 @@ namespace FastFHIR
         Offset module_reg_offset() const { return m_module_reg_offset; }
 
         /**
+         * @brief Attaches an optional conformance layer to every subsequent append.
+         *
+         * Structural validation is unconditional and is not what this is: a layer
+         * checks FHIR-level conformance — cardinality, required elements, bound
+         * ValueSets — and it OBSERVES ONLY. The check runs before any arena space
+         * is claimed, so a stream written with a layer attached is byte-identical
+         * to one written without it, including on the failing path.
+         *
+         * @param hooks Borrowed, and must outlive this Builder. Null detaches.
+         *              Copy Conformance::conformance_layer()'s struct before
+         *              setting policy/next/diagnostic/failures on it — the layer
+         *              it returns is shared and immutable.
+         *
+         * @throws std::runtime_error if any layer in the chain reports an ABI
+         *         version this build does not speak.
+         *
+         * Attach before the first append. Attaching concurrently with appends is
+         * a data race, exactly as the amend/finalize paths are (TASKS.md Q9).
+         */
+        void attach_layer(const Conformance::ValidationHooks* hooks);
+
+        /// The attached layer, or null.
+        const Conformance::ValidationHooks* layer() const noexcept { return m_layer; }
+
+        /**
          * @brief Constructs a builder bound to an existing Virtual Memory Arena.
          *
          * @param memory Shared pointer to an initialized FF_Memory providing the arena for building or modifying the stream.
@@ -204,6 +237,13 @@ namespace FastFHIR
                 Builder *self;
                 ~MutationGuard() { self->end_mutation(); }
             } guard{this};
+
+            // Conformance BEFORE claim_space, deliberately: a rejected write must
+            // leave the arena exactly as it found it, which is what makes the
+            // layer's byte-identity guarantee hold even when it fires. Detached
+            // -- what a shipped build runs -- this is one predictable branch.
+            if (m_layer != nullptr)
+                _check_conformance(TypeTraits<T_Data>::recovery, &data);
 
             // Automatically resolved via ffc.py generated traits
             Size data_size = TypeTraits<T_Data>::size(data, m_fhir_rev);

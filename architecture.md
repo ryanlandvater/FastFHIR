@@ -610,7 +610,10 @@ Consequently `Quantity.code = "F"` and a US Core `birthsex = "F"` share one ID:
 that ID denotes the string `"F"`. The CodeSystem comes from the element's
 binding. `FF_CODE::UCUM::F` names the string, so comparing a stored code against
 it cannot distinguish systems. Whether a code is valid for its element is
-conformance, handled by an attachable layer (TASKS.md Block K).
+conformance, handled by an attachable layer (`include/FF_Conformance.hpp`,
+TASKS.md Block K). That layer records the binding and its ValueSet URL but does
+not check membership: membership against a real terminology release is Block J's
+work, reached through the same `ValidationHooks` struct.
 
 #### Where the polymorphic slots are documented
 

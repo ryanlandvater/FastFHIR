@@ -77,6 +77,48 @@ if(FASTFHIR_BUILD_TESTS)
     endif()
     target_link_libraries(ff_test_readme PRIVATE fastfhir_ingestor OpenSSL::Crypto)
     _ff_enable_switch_warnings(ff_test_readme)
+    # ── ff_test_readme_examples: the README's OWN blocks, executed ─────
+    # Generated from README.md at build time, not written by hand. This is the
+    # parity half of the doc gate: py_readme_cpp_compiles proves the published
+    # blocks still name real API, and this proves they still WORK -- by running
+    # the published bytes rather than a re-implementation of them, which is how
+    # test_readme.cpp above drifted onto a dead API while ctest stayed green.
+    #
+    # DEPENDS on README.md, so editing an example rebuilds and re-runs it.
+    # BYPRODUCTS/generated file lives in the build tree: it is derived output
+    # and must never be committed (CLAUDE.md invariant 2).
+    set(_README_EXAMPLES_SRC "${CMAKE_BINARY_DIR}/generated_tests/readme_examples.generated.cpp")
+    add_custom_command(
+        OUTPUT "${_README_EXAMPLES_SRC}"
+        COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/readme/generate_examples.py"
+                --readme "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+                --out    "${_README_EXAMPLES_SRC}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/readme/generate_examples.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/readme/extract.py"
+        COMMENT "Extracting runnable README.md examples"
+        VERBATIM
+    )
+    add_executable(ff_test_readme_examples "${_README_EXAMPLES_SRC}")
+    target_include_directories(ff_test_readme_examples PRIVATE
+        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR} ${ASIO_INCLUDE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/readme
+    )
+    target_compile_definitions(ff_test_readme_examples PRIVATE
+        ASIO_STANDALONE
+        FASTFHIR_TEST_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/tests/cpp"
+    )
+    if(WIN32)
+        target_compile_definitions(ff_test_readme_examples PRIVATE
+            _WIN32_WINNT=0x0601 WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(ff_test_readme_examples PRIVATE ws2_32)
+    endif()
+    target_link_libraries(ff_test_readme_examples
+        PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
+    _ff_enable_switch_warnings(ff_test_readme_examples)
+
     # ── Round-trip harness (invoked by Python DOM parity tests) ──
     add_executable(ff_roundtrip tests/cpp/ff_roundtrip.cpp)
     target_include_directories(ff_roundtrip PRIVATE
@@ -137,6 +179,19 @@ if(FASTFHIR_BUILD_TESTS)
     # both-halves never-silent. Needs the ingestor to build the fixture stream.
     # The generated lazy-view layer. Needs the ingestor + hasher because it
     # reads real writer output rather than a hand-built buffer (COV-1).
+    # The conformance layer test links the OPT-IN layer library, so it exists
+    # only when that option is on. Registered in all four places CLAUDE.md
+    # names -- here, the ctest foreach below, _BUILD_ALL, and the IDE lists --
+    # because add_ff_cpp_test() only creates the target.
+    if(FASTFHIR_BUILD_CONFORMANCE)
+        add_ff_cpp_test(ff_test_conformance tests/cpp/test_conformance.cpp)
+        target_link_libraries(ff_test_conformance PRIVATE fastfhir_conformance)
+        # The worked example is registered as a test so it cannot rot: an
+        # example that stops compiling is documentation that lies.
+        add_ff_cpp_test(ff_example_conformance examples/conformance_layer.cpp)
+        target_link_libraries(ff_example_conformance PRIVATE fastfhir_conformance)
+    endif()
+
     add_ff_cpp_test(ff_test_views tests/cpp/test_views.cpp)
     target_link_libraries(ff_test_views
         PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
@@ -150,7 +205,11 @@ if(FASTFHIR_BUILD_TESTS)
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    foreach(_standalone ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_abstraction_parity ff_test_recovery ff_test_views)
+    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_abstraction_parity ff_test_recovery ff_test_views)
+    if(FASTFHIR_BUILD_CONFORMANCE)
+        list(APPEND _FF_STANDALONE_TESTS ff_test_conformance ff_example_conformance)
+    endif()
+    foreach(_standalone ${_FF_STANDALONE_TESTS})
         add_test(NAME "cpp_${_standalone}" COMMAND ${_standalone})
     endforeach()
 
@@ -162,6 +221,25 @@ if(FASTFHIR_BUILD_TESTS)
         add_test(NAME "cpp_${NAME}"
             COMMAND ff_test_readme --filter "${FILTER}")
     endmacro()
+
+    # One ctest entry per executed README block. The --filter values are the
+    # block's own `run=` ids from README.md, so a failure names the block a
+    # reader would have copied.
+    foreach(_ex step1_parse step3_build example_1_ingest example_2_read
+                example_3_enrich example_5_surgical example_6_concurrent)
+        add_test(NAME "cpp_readme_${_ex}"
+            COMMAND ff_test_readme_examples --filter "${_ex}")
+    endforeach()
+    # They share patient.ffhr / bundle.ffhr in the artifact dir. Each block
+    # seeds its own fixtures (see tests/readme/expect.hpp), so they are correct
+    # in isolation -- but not concurrently, because two of them write the same
+    # filename. Serialise on the same locks the hand-written suite uses.
+    set_tests_properties(
+        cpp_readme_step1_parse cpp_readme_example_1_ingest
+        cpp_readme_example_2_read cpp_readme_example_3_enrich
+        PROPERTIES RESOURCE_LOCK ff_readme_patient_ffhr)
+    set_tests_properties(cpp_readme_example_5_surgical
+        PROPERTIES RESOURCE_LOCK ff_readme_bundle_ffhr)
 
     _add_cpp_test(getting_started "Getting Started — Step 2 -> Step 3 -> Step 1")
     _add_cpp_test(test_1  "Example 1 — Ingest patient.json → save patient.ffhr")
@@ -229,6 +307,46 @@ if(FASTFHIR_BUILD_TESTS)
         add_test(NAME py_readme_examples
             COMMAND "${_PY}" -m pytest "${_PY_DIR}/test_readme_examples.py" -v)
         set_tests_properties(py_readme_examples PROPERTIES TIMEOUT 300)
+
+        # The C++ counterpart of py_readme_examples: compiles every ```cpp block
+        # in the ROOT README.md as published. ff_test_readme is a hand-written
+        # parallel implementation of the same examples, so it proves they WORK
+        # and cannot prove the README's own bytes are valid -- which is how all
+        # six C++ examples drifted onto a dead Builder/Ingestor API while ctest
+        # stayed green. -fsyntax-only, so it needs headers and no libraries.
+        #
+        # The include dirs are passed explicitly rather than probed: the gate
+        # must see the SAME third-party headers this build compiles against.
+        # Its standalone fallback reads them out of CMakeCache.txt.
+        set(_README_GATE_ARGS
+            --readme "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+            --build-dir "${CMAKE_CURRENT_BINARY_DIR}"
+            --cxx "${CMAKE_CXX_COMPILER}"
+            --include-dir "${FASTFHIR_INCLUDE_DIR}"
+            --include-dir "${FASTFHIR_GENERATED_DIR}"
+        )
+        if(ASIO_INCLUDE_DIR)
+            list(APPEND _README_GATE_ARGS --include-dir "${ASIO_INCLUDE_DIR}")
+        endif()
+        if(OPENSSL_INCLUDE_DIR)
+            list(APPEND _README_GATE_ARGS --include-dir "${OPENSSL_INCLUDE_DIR}")
+        endif()
+        if(simdjson_SOURCE_DIR)
+            list(APPEND _README_GATE_ARGS --include-dir "${simdjson_SOURCE_DIR}/include")
+        endif()
+        # Registered only with the ingestor: four of the README's blocks include
+        # <FF_Ingestor.hpp>, which includes simdjson, and simdjson is only
+        # fetched when FASTFHIR_BUILD_INGESTOR is ON. Without it the gate could
+        # not check the examples that matter, and a gate that checks the
+        # leftovers while reporting success is worse than no gate. Every preset
+        # enables the ingestor. NOTE: deliberately absent from the PYTHONPATH
+        # list below -- it imports no fastfhir module, so it runs without the
+        # staged Python package and before the bindings are built.
+        if(FASTFHIR_BUILD_INGESTOR)
+            add_test(NAME py_readme_cpp_compiles
+                COMMAND "${_PY}" "${_PY_DIR}/test_readme_compiles.py" ${_README_GATE_ARGS})
+            set_tests_properties(py_readme_cpp_compiles PROPERTIES TIMEOUT 600)
+        endif()
 
         set_tests_properties(py_getting_started PROPERTIES DEPENDS py_setup)
         set_tests_properties(py_test_1          PROPERTIES DEPENDS py_getting_started)

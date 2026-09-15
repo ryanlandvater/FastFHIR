@@ -4,6 +4,7 @@
 .vscode/
 .idea/
 build*/
+*handoff.md
 fhir_specs/
 fhir_packages/
 generated_src/

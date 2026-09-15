@@ -1,40 +1,118 @@
 # FastFHIR — Consolidated Task Backlog
 
-> **This file is the single source of truth for pending work.** It absorbed and replaced
-> the former checklist docs (`audit.md`, `audit.todo.md`, `audit.repomap.md`,
-> `integration_revision.todo.md`, `project_progress.prompt.md`,
-> `generator_refactor_plan.md`, `unification.plan.md`, `refactor_history.md`), which have
-> been deleted; their content survives in git history. Every item below was re-verified
-> against the tree on 2026-07-06.
->
-> Read `CLAUDE.md` first — it defines the invariants you must not break.
->
-> **Completed work is deleted from this file, not archived in it** (last sweep
-> 2026-08-27: 1,461 lines of finished work orders and checked items removed). Git history
-> is the record — `git log -S'<task id>' -- TASKS.md` finds any of it. The short ledger at
-> the bottom exists only so a finished item is not re-opened by someone who does not know
-> it landed; it is one line per item and must stay that way.
+> **This file is the single source of truth for pending work.** Read `CLAUDE.md` first —
+> it defines the invariants you must not break. Completed work is **deleted** from this
+> file, not archived in it; git history is the record (`git log -S'<task id>' -- TASKS.md`).
+> The short ledger at the bottom exists only so a finished item is not re-opened, and is
+> one line per item.
+
+## ▶ START HERE — how to work this file
+
+1. **Pick ONE task ID** from the [Priority Index](#-priority-index) below (e.g. `A20`,
+   `DT-3`, `REC-12`). One task = one commit. Do not batch unless a task says
+   "do together with".
+2. **Run the task's `Locate` command before editing anything.** Line numbers in this file
+   drift as the tree changes. If the output does not match the *Current state* the task
+   shows, **STOP** — do not improvise. Leave the box unchecked and add
+   `> STALE (date): <what you found instead>` under the task.
+3. **Do not start a task marked `Blocked on Q#`** unless that question in
+   [Questions for Ryan](#questions-for-ryan) has text after `> Answer:`.
+4. **Every acceptance criterion is mandatory**, and the `Verify` command must exit 0.
+5. **Check the box in the same commit** as the code, appending the short hash:
+   `- [x] ... (abc1234)`.
+
+The full rules, including the ones about wire constants and generated files, are in the
+[Execution contract](#execution-contract-read-before-claiming-anything). Read it once.
+
+### Notation — what a path in this file means
+
+A flash model stalls when it cannot tell "go read this" from "go write this". So:
+
+| Written as | Means | What to do |
+|---|---|---|
+| `src/FF_Parser.cpp:1826` | Exists **now**, at roughly that line | Re-grep for the quoted code; the line number is a hint, the quoted text is the anchor |
+| `FF_Parser.hpp` (bare name) | A header in `include/` **or** `generated_src/` | Both are on the compiler path, so includes are bare. `ls include/X generated_src/X` to find it |
+| ⛏ `tests/cpp/test_builder.cpp` | **Does not exist — the task creates it** | Not a stale reference. Create it |
+| ↗ `bench/harness.hpp` | Lives in **another repository** | `../FastFHIR-benchmark` or `../Iris-File-Extension`. Do not look for it here, and do not create it |
+| ~~`ffc.py`~~ | **Deleted or renamed.** Historical context only | Do not go looking. `git log --diff-filter=D` if you truly need it |
+| A task ID with **no `### ` section** (e.g. `A24`) | **Finished and closed.** Prose elsewhere still cites it as history | Look it up in the [Completed ledger](#-completed--one-line-each-do-not-re-open). Do **not** re-open it, and do not treat the citation as a live task |
+
+**When a task's prose predates a rename**, the rename is recorded in the
+[Completed ledger](#-completed--one-line-each-do-not-re-open) at the bottom. Two that
+recur: `generated_src/FF_Recovery.hpp` → `generated_src/FF_RecoveryTags.hpp` (2026-08-27),
+and the legacy `tools/generator/ffc.py` → the `generator/` package (`model/`, `emit/`,
+`bindings/`).
+
+### Two standing policies, no exceptions
+
+- **P0-2 — a gate that returns zero results must not pass.** Assert a non-zero floor
+  before asserting any equality. An empty walk satisfies every assertion you can write
+  about its contents. See the section below.
+- **Prefer a test through the real pipeline over a hand-built buffer.** A synthetic
+  fixture proves the reader agrees with *your idea* of the format, not with the writer.
+  This is COV-1, and it is how three defects shipped under a green suite.
 
 ---
 
 # ▶ PRIORITY INDEX
 
-Everything currently open, most urgent first. Deep detail lives in the sections named.
+Everything currently open, most urgent first. Deep detail lives in the sections named; the
+**Find** column is a `grep -n` pattern for this file, because line numbers drift.
 
-| Priority | Item | What it is | Where |
+**Self-contained** means: one file or two, no blocked question, and a `Verify` command that
+proves it. Those are the ones to take if you are picking without other context.
+
+## The correctness backlog — Block A (start here for self-contained work)
+
+> **RECONCILED 2026-09-10 against the built tree.** Every row below was re-measured, not
+> re-read. **Nine of the thirteen rows this table used to carry described defects that no
+> longer reproduce** — the round-trip corruption cluster (A12/A23/A24/A25/A26) and the four
+> build faults (A4/A14/A19/A20/A22) are fixed, and `py_roundtrip` is green on 342 fixtures.
+> Those are now in the [Completed ledger](#-completed--one-line-each-do-not-re-open) with
+> the command that proves each one.
+>
+> **What that means for you:** the *residual* subtasks below are hardening and follow-up —
+> a test the fix never got, a comment the invariant never got. They are real work, but the
+> parent defect is gone, so **do not expect the "Current state" of a fixed parent to
+> reproduce.** Each row states the residual only. The one row that is still a live
+> data-correctness defect is **A8**.
+
+| ID | Residual work — the parent defect is fixed unless marked LIVE | Self-contained | Find |
 |---|---|---|---|
-| **P0** | **P0-3 / REC-10…17** | Recovery: stream map, bit-similarity edge restoration, `src/FF_Recovery.cpp` | `^# ▶ P0-3` |
+| **A8** | **LIVE DEFECT.** CodeableConcept system discriminator never set — `external_system` is emitted **0 times** in `generated_src/`, so every external code encodes as `UNKNOWN`. **A8.2 MUST land before A8.1** (populating the map arms every divergent SIZE/STORE branch at once). Gates Block J | no — sequenced | `^### A8\.` |
+| **A17** | Pin the R4-prefix invariant: ⛏ `tests/generator/test_version_prefix.py` does not exist and `generator/pipeline.py:43` still carries a bare `versions = ["R4", "R5"]` with nothing marking it load-bearing | **yes** | `^### A17\.` |
+| **A18** | Fail loudly when R4 and R5 disagree: `merge.py:133` still falls through on a repeat sighting with no comparison and no `raise` | **yes** | `^### A18\.` |
+| **A9.2** | `array_entries_are_offsets` is a dead second source of truth — still threaded through 9 call sites in `FF_Parser.{hpp,cpp}`, `FF_Compactor.cpp` and `emit/views.py`; nothing consumes it | **yes** | `A9\.2` |
+| **A13.3** | `build_bundle_entry_chunks` (`src/FF_Ingestor.cpp:670`) still copies every bundle entry into its own `padded_string`. A14 is fixed, so the reason to defer this is gone | **yes** | `A13\.3` |
+| **A15.6** | `_OFFSET_FIELD` (`wire_witness.py:58`) drops any vtable line carrying a trailing comment, and the gate would still pass on the shorter list | **yes** | `A15\.6` |
+| **A4.3** | ⛏ `tests/generator/test_compiles.py` does not exist — the witness reads constants by regex and cannot see an emitter that produces non-compiling C++ | **yes** | `A4\.3` |
+| **A29** | Orphaned `tests/test_ff_dictionary.py` still present and still broken. **The overlap question A29.1 asks is now answered** — see the note under A29 | **yes** | `^### A29\.` |
+| **A19.2 / A19.3** | 15 generator modules still lack `from __future__ import annotations`, so the 3.11 floor stays an accident of the interpreter rather than a property of the code | **yes** | `A19\.2` |
+| **A14.2 / A14.4** | The arena floor fixed the symptom; a `claim_space()` failure on the worker path still has no clean diagnostic, and the tiny-bundle reproducer is not checked in | **yes** | `A14\.2` |
+| **A22.2 / A20.2** | Both error paths that were broken are fixed but still unexercised — no test points the harness at a missing binary or a timeout | **yes** | `A22\.2` |
+| **A23.9** | The adversarial fixtures the Synthea corpus cannot provide (empty string in a `string[]`, empty `dateTime`, id-only resource, `Quantity` with no `comparator`). The corpus has **zero** empty strings, which is why A23.6/A24/A25 all survived it | **yes** | `A23\.9` |
+| **A3** | Narrowed by measurement: the write-path examples in `include/FastFHIR.hpp` are already on the `FF_*` API. Two **read** lines are stale (`FieldKeys::Observation::STATUS`, `.value().as_string()`), and `auto status` is declared twice in one scope | **yes** | `^### A3\.` |
+| **A27.6 / A27.7** | Passthrough itself is done (`RECOVER_FF_OPAQUE_JSON` is live). What remains is the module-registry hook and deriving the profile groupings from the published IG packages instead of a transcribed list | no — design | `A27\.6` |
+| **A23.8** | ⚠ A *decision*, not a claimable task — redzone canary around `append_obj`. Read it before claiming | — | `A23\.8` |
+
+## Everything else, by priority
+
+| Priority | Item | What it is | Find |
+|---|---|---|---|
+| **P0** | **P0-3 / REC-10…17** | Recovery: stream map, bit-similarity edge restoration, `src/FF_Recovery.cpp`. Has its own work order written for a flash model | `^# ▶ P0-3` |
 | **P0** | **REC-20** | Recovery: cross-reference the two producers' holes, match 10-byte tuples by Hamming | `^# ▶ REC-20` |
-| **P1** | **REC-21** | Recovery: arrays in holes — bound the count by geometry, propose then confirm | `^# ▶ REC-21` |
 | **P0** | **AMEND/APPEND** | Amend + append must take the abstraction types, not only JSON (CAPI-12) | `^# ▶ P0 — AMEND` |
-| **P1** | CAPI-1, 2, 3, 8 | Consumer-API gaps: inline-block array writes, validator/deserializer disagreement, `ChoiceEntry` across arenas, allocating `entries()` | `^# ▶ WORK ORDER — PUBLIC API` |
+| **P1** | **REC-21** | Recovery: arrays in holes — bound the count by geometry, propose then confirm | `^# ▶ REC-21` |
+| **P1** | CAPI-1, 2, 3, 8, **16** | Consumer-API gaps: inline-block array writes, validator/deserializer disagreement, `ChoiceEntry` across arenas, allocating `entries()`. **CAPI-16 is new (2026-09-10)**: a `code` field cannot be assigned through a mutable handle at all — it throws, and four README blocks documented it working. Read A8.2 before starting it | `^## CAPI-` |
 | **P1** | Block C | Archive recovery subsystem — **governed by P0-3; do not start before REC-10** | `^## Block C` |
 | **P1** | DT-1 remainder, DT-3, DT-4 | Packed date/time: array-typed fields, ingest/export, wire baseline | `^## DT-` |
-| **P1** | RT-1, AR-1, AR-4, COV-1 | Round-trip identity, array dispatch, queue lifetime, writer-vs-reader coverage | `^## AR-`, `^## COV-1` |
-| **P2** | AR-2, **AR-6** | The schema tables disagree with the wire (6 array fields) and with each other (85 choice slots, 70 disagree / 15 agree-wrongly) | `^## AR-2`, `^## AR-6` |
-| **P2** | CAPI-4, 5, 7, 9, 10, 11, 14 | Consumer-API ergonomics and doc gaps | `^# ▶ WORK ORDER — PUBLIC API` |
-| **P2–P3** | Blocks B, D, E, F, G, H, I | Coverage, WASM, hygiene, benchmarks, security, packaging, spec | `^## Block ` |
-| **planned** | Blocks J, K | External code systems; conformance validation layer. **K before J** (CLAUDE.md) | `^## Block J`, `^## Block K` |
+| **P1** | RT-1, AR-1, AR-4, COV-1, **COV-2**, **COV-3** | Round-trip identity, array dispatch, queue lifetime, writer-vs-reader coverage. **COV-2 is new (2026-09-10)** and self-contained: `py_roundtrip` still passes when it finds zero fixtures, which is the 2026-08-13 vacuous pass waiting to happen again. It is filed under A23 because that is where the incident is recorded. **COV-3** records a single unreproduced flake in `cpp_ff_test_recovery`, which takes no `--seed` and so cannot be replayed | `COV-[23]` |
+| **P2** | AR-2, **AR-6** | The schema tables disagree with the wire (6 array fields) and with each other (70 of 85 choice slots) | `^## AR-[26]` |
+| **P2** | CAPI-4, 5, 7, 9, 10, 11, 14 | Consumer-API ergonomics and doc gaps | `^## CAPI-` |
+| **P2** | Block B | Test coverage: builder, parser, pipeline, byte fixtures. **B7 is the "assert against bytes" one** | `^## Block B` |
+| **P2–P3** | Blocks D, E, F, G, H, I | WASM, hygiene (35 items, mostly small), benchmarks, security, packaging, spec | `^## Block ` |
+| **planned** | Block J | External code systems. **J4/J5/J6 gated on A8.** J1's layer boundary is now Block K's `ValidationHooks`, so J needs a LOADER, not a mechanism — see J1's "Reconciliation OUTCOME". J3/J7/J8 need neither | `^## Block J` |
+| ✅ done | Block K | Conformance validation layer — **implemented 2026-09-09**, ctest 46/46. Two decisions still open for Ryan: the `ConcurrentLogger` sink (K1.2) and whether J4.1 attaches here (J1) | `^## Block K` |
 
 **Standing policy, applies to every item above:** a gate that returns zero results must not
 pass (P0-2). Assert a non-zero floor before asserting any equality.
@@ -98,6 +176,13 @@ Precedent from the same repo, same class: a traversal that visited **1 node inst
 ---
 
 # ▶ P0-3 — RECOVERY MUST RECONCILE **BOTH** WITNESSES OF EVERY EDGE
+
+> ↗ **Every `bench/…` path in this section is in the COMPANION REPO**
+> `../FastFHIR-benchmark`, not in this tree — `bench/bench_test_5.hpp`,
+> `bench/corruption_probe.cpp`, `bench/harness.hpp`, and the `handoff.md` quoted below.
+> There is no `bench/` here and you must not create one. Work that changes the corruption
+> probe or the recovery measurement happens in that repo; work on `src/FF_Recovery.cpp`
+> happens here.
 
 **Filed 2026-08-26 (Ryan). HIGH priority — this is the governing principle for Block C
 and for the shipped `FastFHIR::Recovery` class, both of which currently implement half
@@ -2028,6 +2113,114 @@ canary out (no scan, no counter writes), and `ff_test_queue` proves both.
 
 ---
 
+## API-1 — A resource slot's concrete type is on the wire but unreachable (P1)
+
+**The format writes the answer twice and the read API exposes neither cheaply.**
+A resource reference is a 10-byte tuple `{offset(8), tag(2)}`, so the concrete
+type is recorded beside the offset AND in the target block's header — the
+redundancy CLAUDE.md's polymorphic-slot table describes, and the same one the
+recovery adjudicator relies on. But `Entry::target_recovery` carries the STATIC
+`key.child_recovery` for an `FF_FIELD_RESOURCE` slot (i.e.
+`RECOVER_FF_RESOURCE`, the polymorphic base). Only `FF_FIELD_CHOICE` reads the
+runtime tag (`standard_node_lookup_field`, `src/FF_Parser.cpp:1826`).
+
+**Consequence:** a consumer cannot ask "is this entry an Observation?" without
+`as_node()` — following the offset and touching the target block. On a
+type-filtered scan that is one dereference, and one potential cache miss, per
+record, to learn something already sitting in the slot it just read.
+
+Measured in FastFHIR-benchmark's new `test_3_selective` (2026-09-08), a
+selective "find the LOINC 2085-9 results" query over a 64 MB corpus: 0.589 ms,
+where JSON is 2.406 ms. Every one of the 1,473 entries is dereferenced purely
+to read a type that never required it.
+
+### Fix — additive, not a change of meaning
+
+Add an accessor that reads the tuple's tag half on demand:
+
+```cpp
+/// The concrete RECOVERY_TAG recorded BESIDE the offset in a 10-byte
+/// {offset, tag} tuple (FF_FIELD_RESOURCE / FF_FIELD_CHOICE). Reads the
+/// slot only -- it does NOT follow the offset. FF_RECOVER_UNDEFINED for
+/// slot kinds that are not tuples.
+RECOVERY_TAG concrete_recovery() const;
+```
+
+⚠ **Do NOT repurpose `target_recovery` instead.** `print_json` and the debug
+metadata path compare `GetTypeFromTag(f.child_recovery)` against
+`GetTypeFromTag(e.target_recovery)` (`src/FF_Parser.cpp:1195`) and derive the
+choice suffix from it (`:1034`, `:1199`, `:1251`). Changing what that field
+means for resource slots would alter export behaviour to buy a read-path
+optimisation, which is the wrong trade. Additive costs nothing.
+
+**It is a read of bytes the reader already has**, so it cannot disagree with the
+target header without the stream being damaged — and when it does disagree,
+that is precisely the two-copies-disagree case `Recovery`'s adjudicator exists
+to settle. A consumer wanting certainty still calls `as_node()`; a consumer
+filtering a scan does not need it.
+
+- [x] **API-1.1** ✅ **DONE 2026-09-08.** `Entry::concrete_recovery()`
+      (`include/FF_Parser.hpp`, defined in `src/FF_Parser.cpp` beside
+      `Entry::operator std::string_view()`, which is already there because it
+      needs `FF_Ops.hpp`). Reads the tuple's tag half at +8 via
+      `FF_GET_RECOVERY_TAG`; bounds-checked with `ff_slot_width(kind)` and
+      answers `FF_RECOVER_UNDEFINED` on an unreadable slot rather than
+      fabricating a tag (invariant 10). Additive — `target_recovery` is
+      untouched, so `print_json` and the debug metadata path are unaffected.
+      **ctest 44/44.**
+- [x] **API-1.2** ✅ **DONE 2026-09-09.** In `tests/cpp/test_api.cpp` (which
+      already links the ingestor, so no new target and no four-place
+      registration). Ingests a five-entry mixed Bundle through the real
+      pipeline, seals it, and for every entry compares the tuple's tag against
+      the target block's header tag. `ff_test_api` 44 -> 68 checks, 0 failures.
+      ⚠ **THE OBVIOUS TEST IS VACUOUS — do not "simplify" it back.**
+      `slot.as_node().recovery()` is NOT a second witness:
+      `standard_entry_as_node`'s `FF_FIELD_RESOURCE` branch builds that Node with
+      `FF_GET_RECOVERY_TAG(base, slot_offset)`, the exact bytes
+      `concrete_recovery()` returns, so comparing them compares a value with
+      itself and passes even when both are wrong. Ground truth is the SECOND
+      copy: read the tuple's first 8 bytes (the target's absolute offset)
+      straight from the sealed buffer, then read the tag in the block header
+      there. `Node::offset()` is **protected by design** — a consumer is never
+      handed raw arena offsets — so that is not an API gap and must not be filed
+      as one. Also asserted: `concrete_recovery()` is never `RECOVER_FF_RESOURCE`
+      (the polymorphic base `target_recovery` still carries, unchanged);
+      `FF_RECOVER_UNDEFINED` for STRING, BLOCK, CODE and ARRAY slots; the
+      out-of-profile `ImagingStudy` reports `RECOVER_FF_OPAQUE_JSON`; and the
+      P0-2 floors (all five entries compared, >= 4 distinct tags).
+- [x] **API-1.3** ✅ **MEASURED, AND IT IS NOT A PERFORMANCE FIX.**
+      `test_3_selective` on a 64 MB corpus: **0.589 ms → 0.574 ms, 1.03×.**
+      The hedge written when this was filed was correct — the corpus is ~99%
+      Observations, so the type filter rejects ~1% of records and saving one
+      dereference on 1% saves nothing. Keep the accessor: it closes a real gap
+      between what the wire format records and what the read API can reach, and
+      it makes a type-filtered scan honest. **Do not cite it as a speedup.**
+
+### What the selective query actually spends its time on (measured 2026-09-08)
+
+Neither `2085-9` nor `http://loinc.org` is in `dictionaries/master_codes.json`
+(5,084 interned strings; LOINC is not among them). `Coding.code` is a
+`FF_FIELD_CODE` slot, so with no dictionary ID it takes the
+`FF_CODEABLE_CONCEPT_FLAG` fallback: a signed relative offset to a block
+holding the text. The hot path per observation is therefore roughly six
+dependent dereferences — entry → resource → `code` → `coding` array →
+`coding[0]` → the fallback block — ending in a `strcmp`, and at 64 MB each hop
+is a probable cache miss.
+
+**This is the case Block J exists for.** With LOINC interned, `Coding.code`
+holds a `uint32` dictionary ID inline in the slot; resolving `"2085-9"` to its
+ID once before the loop turns the comparison into an integer compare against a
+value already loaded, deleting the last two hops and the string compare
+entirely. That is the change that would make a selective clinical query
+"much faster" — not the type tag, which is what was assumed and is now measured
+at 1.03×.
+
+Cross-reference: FastFHIR-benchmark `TASKS.md` and its README record the
+selective-query numbers (FastFHIR 0.574 ms vs JSON 2.418 ms at 64 MB, 4.2x) and
+the census-vs-selective distinction.
+
+---
+
 ## CONC-0 — Worker pools must default to the PERFORMANCE-core count (P1) ✅ DONE 2026-09-05
 
 **Measured** in FastFHIR-benchmark Test 1: 64 MB Synthea corpus, 4,203
@@ -3105,20 +3298,47 @@ the sanitizer leg (**G2**) and then Block **K**, the conformance validation laye
 
 ---
 
-## Block A — Build & correctness fixes (highest priority, all independent)
+## Block A — Build & correctness fixes (all independent)
 
-### A3. Fix stale API examples in `include/FastFHIR.hpp` doc comment
+> **RECONCILED 2026-09-10.** Read the [Block A table in the PRIORITY INDEX](#the-correctness-backlog--block-a-start-here-for-self-contained-work)
+> before any section here. The round-trip corruption cluster and the build faults are
+> closed; **A8 is the only remaining live data-correctness defect** and everything else in
+> this block is hardening — a test a fix never got, a comment an invariant never got. Each
+> section states its residual in a `RECONCILED` note directly under the heading; where a
+> heading and the prose below it disagree, the note is the current one.
 
-**Context:** The two `@code` Quick Start blocks at `include/FastFHIR.hpp` lines ~17–73
-show an API that no longer exists and will mislead every reader:
-`FastFHIR::Parser::create(...)` (Parser has a public constructor, no `create`),
-`.value().as_string()` (no such methods — use `.as<std::string_view>()`),
-`FastFHIR::FieldKeys::Observation::STATUS` (namespace is `FastFHIR::Fields`, resource
-constants are ALL-CAPS: `Fields::OBSERVATION::STATUS`), and `FastFHIR::Builder builder;`
-(Builder requires `Builder(memory, FHIR_VERSION_R5)`).
 
-- [ ] A3.1 Rewrite Example 1 in the doc comment using this verified pattern (adapted from
-  `tests/cpp/test_readme.cpp` and README "Step 3"):
+### A3. Stale READ lines in the `include/FastFHIR.hpp` doc comment — NARROWED
+
+> **RECONCILED 2026-09-10 by measurement. The task is real but three quarters smaller than
+> it reads.** The write path in both `@code` blocks was migrated to the `FF_*` API at some
+> point after this task was written: `FF_StreamCreateInfo` / `FF_CreateStream` /
+> `FF_StreamAppendObject` / `FF_StreamSetRoot` / `FF_StreamFinalize` / `FF_Parse` are all
+> correct as shown, and `FastFHIR::Parser::create` and `Builder builder;` are gone. So
+> A3.2's premise ("`Builder` must be constructed with a `Memory`") no longer applies at all
+> — do not "fix" Example 2's construction; it is already right.
+>
+> **What is actually left is three lines, all in Example 1's step 3:**
+>
+> ```
+> $ grep -n 'Parser::create\|FieldKeys::\|as_string' include/FastFHIR.hpp
+> 55: * auto status = parser.root()[FastFHIR::FieldKeys::Observation::STATUS].value().as_string();
+> 57: * auto status = parser.root()["status"].value().as_string();
+> ```
+>
+> Three defects in those two lines: the namespace is `FastFHIR::Fields` and resource
+> constants are ALL-CAPS (`Fields::OBSERVATION::STATUS`); `.value().as_string()` does not
+> exist (use `.as<std::string_view>()`, or the implicit conversion the README uses); and
+> **`auto status` is declared twice in the same scope**, so the block as written would not
+> compile even with the other two fixed. Give the second one a different name or comment it
+> out as the alternative it is meant to show.
+
+- [ ] A3.1 Rewrite **only step 3** of Example 1 (lines 53–57). ⚠ **The pattern quoted below
+  is itself stale** — it was written before the `FF_*` migration and uses
+  `Builder builder(mem, ...)` / `builder.append_obj` / `builder.finalize`, none of which is
+  the current spelling. Do not paste it. Take the surrounding `FF_*` calls already in the
+  file, and take the read line from README "Step 1" or `tests/cpp/test_readme.cpp`, both of
+  which compile. Kept here only to show which *concepts* step 3 must cover:
   ```cpp
   auto mem = FastFHIR::Memory::create();
   FastFHIR::Builder builder(mem, FHIR_VERSION_R5);
@@ -3134,25 +3354,34 @@ constants are ALL-CAPS: `Fields::OBSERVATION::STATUS`), and `FastFHIR::Builder b
   FastFHIR::Parser parser(view.data(), view.size());
   std::string_view status = parser.root()[FastFHIR::Fields::OBSERVATION::STATUS];
   ```
-- [ ] A3.2 Fix Example 2 (concurrent generation) the same way: `Builder` must be
-  constructed with a `Memory` (`FastFHIR::Memory::create(2ULL*1024*1024*1024)`), not a raw
-  size. Keep the thread-pool structure of the example.
+- [x] A3.2 ~~Fix Example 2 (concurrent generation)~~ — **no longer applicable.** Example 2
+  already constructs via `FF_StreamCreateInfo` + `FF_CreateStream` with
+  `create_info.capacity`, which is the current API. Verify it still reads that way before
+  concluding the same; do not reintroduce a `Memory`-taking `Builder`.
 - [ ] A3.3 Compile-check both snippets: create a scratch file `tests/cpp/scratch_doc.cpp`
   with `main()` wrapping each snippet, add it temporarily via `add_ff_cpp_test`, build,
   then REMOVE the scratch file and its CMake line before committing. The commit must
   contain only the `FastFHIR.hpp` comment change.
 - Acceptance: no `Parser::create`, `FieldKeys::`, or `.value().as_string()` remains in
   `include/FastFHIR.hpp`; both snippets compiled at least once locally.
-- Verify: `grep -n 'Parser::create\|FieldKeys::\|as_string' include/FastFHIR.hpp` → empty.
+- Verify: `grep -n 'Parser::create\|FieldKeys::\|as_string' include/FastFHIR.hpp` → empty
+  (it returns 2 lines today, both listed in the note above).
 
-### A4. Arm the wire-format gate (currently proves nothing)
+### A4. Wire-format gate — ARMED; only the compile smoke test (A4.3) is left
 
-**Context:** `tests/generator/test_wire_format.py` is meant to pin wire constants
-(recovery tags, dictionary codes, vtable layout) against a committed baseline. Today the
-baseline file `tests/generator/golden/wire_witness.json` does not exist, so every gate
-test calls `pytest.skip` — a green pytest run is meaningless. Additionally
-`tests/generator/conftest.py` falls back to a stale in-repo `generated_src/` when the
-generator fails, converting "generator broken" into "tests pass".
+> **RECONCILED 2026-09-10 by measurement.** The gate is armed and honest.
+> `tests/generator/golden/wire_witness.json` exists (589,530 bytes, 2026-09-04) and
+> `pytest tests/generator -q -rs` reports **54 passed, 0 skipped** — no `SKIPPED` line for
+> `test_wire_format.py`. The Context paragraph below described the 2026-08-12 state and is
+> kept only so the *shape* of the failure stays on record: a gate that skips is
+> indistinguishable from one that passes.
+
+**Context (historical — fixed 2026-08-19, see the note at the end of this task):**
+`tests/generator/test_wire_format.py` pins wire constants (recovery tags, dictionary
+codes, vtable layout) against a committed baseline. The baseline did not exist, so every
+gate test called `pytest.skip`. Additionally `tests/generator/conftest.py` fell back to a
+stale in-repo `generated_src/` when the generator failed, converting "generator broken"
+into "tests pass".
 
 - [ ] A4.3 Add a generated-C++ compile smoke test, `tests/generator/test_compiles.py`:
   regenerate into `tmp_path` (reuse the `regenerated_dir` fixture), write a one-line TU
@@ -3183,10 +3412,25 @@ generator fails, converting "generator broken" into "tests pass".
 > --output-dir <tmp>` tree now contains `FF_Codes.hpp`, `FF_Recovery.hpp`, and
 > `FF_Dictionary_Strings.cpp` (previously missing).
 
-### A8. CodeableConcept system discriminator is never set
+### A8. CodeableConcept system discriminator is never set — **the one LIVE Block A defect**
 
-**Context:** `generator/emit/codesystems.py:148` initialises
-`external_system_map` and returns it at `:286` **without ever populating it**.
+> **RE-CONFIRMED 2026-09-10 by measurement**, while every other Block A defect was being
+> closed. This one still reproduces exactly as written:
+>
+> ```bash
+> grep -rl 'external_system' generated_src | wc -l          # 0
+> grep -n 'external_system_map' generator/emit/codesystems.py
+> # 149:    external_system_map: dict[str, str] = {}  # path -> "FF_ExternalCodeSystem::*"
+> # 320:    return code_enum_map, external_system_map
+> ```
+>
+> Declared at :149, returned at :320, never written to in between. Note the line numbers
+> moved (148/286 → 149/320) but nothing else did. **Take this one first** — it is the only
+> remaining Block A item that is a data-correctness defect rather than hardening, and
+> Block J's J4/J5/J6 are gated on it.
+
+**Context:** `generator/emit/codesystems.py:149` initialises
+`external_system_map` and returns it at `:320` **without ever populating it**.
 So all 102 generated `ENCODE_FF_CODE` call sites take the no-system branch
 (`store.py:287`) and `system` defaults to `FF_CodeableConceptSystem::UNKNOWN`.
 
@@ -3219,7 +3463,7 @@ to work and to round-trip.
 - [ ] A8.3 Round-trip test per system: ingest → export → compare.
 - Verify: `ctest --test-dir build -R cpp_test_9 --output-on-failure`.
 
-### A9. `insert_at_field` rejected `telecom` (cpp_test_5) — FIXED
+### A9. `insert_at_field` rejected `telecom` (cpp_test_5) — FIXED, but A9.2 is still OPEN
 
 **Not a missing feature. The guard was reading a flag that lied.**
 `insert_at_field_json` refused any array whose `FF_FieldKey::array_entries_are_offsets`
@@ -3243,37 +3487,7 @@ the read path was always correct despite the inverted value).
       something `FF_ARRAY::entry_kind()` already states on the wire. Remove it from
       `FF_FieldInfo`/`FF_FieldKey` and from `emit/views.py`.
 
-### A12. `Reference.reference` truncates and corrupts on export
-
-**Context:** one Synthea fixture still round-trips to invalid UTF-8:
-
-```
-expected : "reference":"urn:uuid:13472219-c176-990a-641f-14cf9d4d8480"
-actual   : "reference":"urn:uuid:13472219-c1<garbage>"
-```
-
-Distinct from A10 — `Reference.reference` already assigns its view directly
-(`data.reference = s;`), so the dangling-temporary fix does not apply.
-Reproduces on the single-resource path, so it is not bundle-specific.
-8 of 9 Synthea fixtures round-trip cleanly; this is the ninth.
-
-**Hypothesis, unproven:** simdjson ondemand's `get_string()` returns a view into
-the parser's internal string buffer, which is reused as the parser advances.
-A view captured from a nested sub-object (`Reference_from_json(sub.value_unsafe(),
-...)`) may therefore dangle by the time the store pass runs. The truncation
-pattern — correct prefix, garbage tail — is consistent with buffer reuse. Verify
-before acting on it.
-
-- [ ] A12.1 Confirm or refute the simdjson buffer-reuse hypothesis: log the
-      `string_view` data pointer at ingest and again at store, and see whether
-      it still points inside the live document buffer.
-- [ ] A12.2 If confirmed, this affects every `std::string_view` field reached
-      through a nested object, not just `Reference.reference` — audit the whole
-      zero-copy view strategy against simdjson ondemand's buffer lifetime.
-- Repro: `./build/ff_roundtrip <the AllergyIntolerance entry>` — see
-  `cpp_test_5`'s fixture set.
-
-### A13. simdjson reads now always use a padded buffer — FIXED
+### A13. simdjson reads now always use a padded buffer — FIXED, but A13.3 is still OPEN
 
 `ingest_fhir_json`'s root routing parse called
 `parser.iterate(data, size, size + SIMDJSON_PADDING)`, asserting 64 readable bytes
@@ -3298,7 +3512,20 @@ logged at Info so the slow path is findable. `ff_ingest` already held a
       consumed by the worker path implicated in A14, and changing its lifetimes while
       a live memory-corruption bug sits there would confuse the diagnosis.
 
-### A14. Intermittent worker-thread crash during bundle ingest — OPEN
+### A14. Bundle-ingest crash — FIXED (arena floor); A14.2 and A14.4 remain
+
+> **RECONCILED 2026-09-10 by measurement.** The reproducer this task is built around now
+> exits cleanly, five runs out of five:
+>
+> ```bash
+> printf '{"resourceType":"Bundle","type":"collection","entry":[{"resource":{"resourceType":"Patient","id":"p1","active":true}},{"resource":{"resourceType":"Observation","id":"o1","status":"final"}}]}' > /tmp/tiny.json
+> for i in 1 2 3 4 5; do ./build/ff_ingest /tmp/tiny.json /tmp/tiny.ffhr >/dev/null 2>&1; echo -n "rc=$? "; done
+> # rc=0 rc=0 rc=0 rc=0 rc=0
+> ```
+>
+> A14.1 and A14.3 are done (`FF_MIN_ARENA` floor + the same-class site audit). **A14.2 and
+> A14.4 are the ones that outlive the sizing fix** and are still open — read the WO-2 note
+> at the end of this task, not the diagnosis at the start, for current state.
 
 Found while diagnosing A11; **pre-existing** (reproduced before the A11 fix) and
 **not** fixed by A13. A minimal valid 2-entry bundle crashes ingest on roughly
@@ -3397,7 +3624,16 @@ Evidence (lldb, `EXC_BAD_ACCESS`, several runs):
 
 ---
 
-### A19. Configure fails on a clean tree — no Python version floor
+### A19. Python version floor — ENFORCED in CMake; A19.2 and A19.3 remain
+
+> **RECONCILED 2026-09-10 by measurement.** `CMakeLists.txt:182` now reads
+> `find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)`, so the configure no longer
+> takes whatever `python3` it finds first. A19.1 is done.
+>
+> **A19.2 is still open and still worth doing:** `grep -L "from __future__ import
+> annotations" $(find generator -name '*.py')` returns **15** modules. The CMake floor makes
+> the build work; it does not make the floor a property of the code, so a module moved into
+> another tool's path can still die at import on PEP 604.
 
 **Context:** `CMakeLists.txt:66` called `find_package(Python3 REQUIRED COMPONENTS Interpreter)`
 with no version requirement, so CMake takes whatever `python3` it finds first. On macOS that
@@ -3431,7 +3667,13 @@ can join the list silently. `pyproject.toml` already declares the intended floor
 - Verify: `cmake -S . -B /tmp/ff_cfg_probe -DFASTFHIR_RUN_GENERATOR=ON 2>&1 | grep "Found Python3"`
   → reports a version ≥ 3.11.
 
-### A20. `build_all` does not build the test binaries
+### A20. `build_all` — FIXED; only the comment (A20.2) is left
+
+> **RECONCILED 2026-09-10 by measurement.** `_BUILD_ALL` (`CMakeLists.txt:471–495`) now
+> includes the test binaries — `ff_test_readme`, `ff_roundtrip`, the standalone unit tests,
+> and under `FASTFHIR_BUILD_CONFORMANCE` also `ff_test_conformance` and
+> `ff_example_conformance`. `ctest -N` reports 46 tests and none are "Not Run". A20.1 is
+> done; A20.2 (the comment saying a target must be in **both** places) is not.
 
 **Context:** `_BUILD_ALL` (`CMakeLists.txt:444-452`) is `fastfhir ff_export ff_compact`, plus
 `fastfhir_ingestor ff_ingest`, `ff_test_readme` and `fastfhir_python` under their options. The
@@ -3447,14 +3689,23 @@ The comment at `:285` records the previous half of this bug ("These were built b
 registered, so they compiled and never ran"). The registration was fixed; the build side was
 not, producing the exact inverse.
 
-- [ ] A20.2 Extend the comment at `:285` to say that a target must be in **both** places, and
-  that `add_ff_cpp_test` does neither for you.
+- [ ] A20.2 Extend the four-places comment — it moved to `tests/tests.cmake:142` when test
+  registration was extracted out of `CMakeLists.txt` — to say that a target must be in
+  **both** the ctest list and `_BUILD_ALL`, and that `add_ff_cpp_test` does neither for
+  you. `CLAUDE.md` already carries this warning; the point is to put it where the edit
+  happens.
 - Acceptance: from a clean build dir, `cmake --build build --target build_all -j` followed by
   `ctest` produces zero "Not Run".
 - Verify: `rm -rf build && cmake -S . -B build -DFASTFHIR_BUILD_TESTS=ON -DFASTFHIR_BUILD_INGESTOR=ON && cmake --build build --target build_all -j && ctest --test-dir build -N | tail -1`
   then `ctest --test-dir build -R cpp_ --output-on-failure`.
 
-### A22. `DiffKind` is undefined on the round-trip harness error path
+### A22. `DiffKind` import — FIXED; the error path is still unexercised (A22.2)
+
+> **RECONCILED 2026-09-10 by measurement.** `DiffKind` is imported at
+> `tests/python/test_roundtrip.py:39`, so neither handler raises `NameError` any more.
+> A22.1 is done. **A22.2 is the half that matters and it is still open** — this was a
+> classic error-path-never-executed bug, and the fix is still verified by nothing. Neither
+> branch has ever run.
 
 **Context:** `tests/python/test_roundtrip.py:33-38` imports `diff_doms`,
 `filter_allowlisted`, `format_diff_report` and `DiffEntry` from `roundtrip_diff` — but not
@@ -3482,281 +3733,109 @@ run died with a `NameError`. Classic error-path-never-executed bug.
 
 ---
 
-### A23. Synthea Bundle streams are corrupted — reader/writer layout disagreement; crashes are the tip
+### A23. Synthea Bundle round-trip — FIXED 2026-08/09; A23.8 and A23.9 remain
 
-**Context (revised 2026-08-13 by the A23.1 bisect):** every one of the 111 Synthea
-fixtures is a *Bundle* (patient-bundle exports — there are no per-resource files). The
-"21 crashing / 90 passing" split from the initial scan is a size artifact: ~21 large
-bundles (>600 KB) SIGSEGV the harness (rc=139), but the "passing" ones are corrupt too —
-`Alberto639_…json` exits 0 and emits **invalid JSON** (`"period":,` at char 3928). The
-crash is the tip of systemic corruption in the bundle encode path, not a single element
-shape.
-
-**What the bisect established:**
-
-1. **Intermittence is a race on top of a deterministic bug.** With the default multi-
-   threaded ingestor a bundle crashes ~9/10 runs and occasionally exits 0 or 1. With
-   `Ingestor(…, concurrency=1)` the corruption is **byte-for-byte deterministic**: rc=1,
-   `Error: FastFHIR: Node is not a string or code.`, 14344 B of partial JSON. The race only
-   escalates the same corruption into the segfault (the ASCII-as-offset `LOAD_U16`).
-2. **The writer stores the data; the reader cannot reach it.** The sealed stream contains
-   270 timestamp strings, including both Encounter period bounds, yet **all 44 `period`
-   blocks in the output are empty** (`"period":,`). The "truncated" reference
-   (`urn:uuid:a172af40-3e` + garbage) is the reader taking a length/offset from the wrong
-   byte position — the same disease.
-3. **The corrupted blocks are exactly the R4≠R5-divergent ones.** From the golden witness:
-   `FF_ENCOUNTER` R4=250/R5=338, `FF_ENCOUNTER_PARTICIPANT` 58/66, `FF_CARETEAM_PARTICIPANT`
-   66/76. This is the A17 class: layout depends on revision, and the R4-prefix invariant
-   "holds only as a side effect of iteration order" (A17, open). Bundles are the first
-   fixtures to push R4 JSON through the R5 model at scale — the C++ suite's hand-built
-   patients never touch these blocks.
-4. **`py_roundtrip` was passing vacuously** (2026-08-13 — agent error, corrected): a
-   temporary Bundle skip in `discover_fixtures` excluded *all* fixtures — every fixture is
-   a Bundle — so the gate ran nothing and reported PASS. The skip is reverted;
-   `py_roundtrip` is honestly red until this task lands.
-5. **`print_json` has a robustness bug of its own:** it emits `"period":,` (invalid JSON)
-   for a truthy-but-empty block node instead of `{}` or skipping — every corrupt stream
-   becomes a parse error instead of a diff.
-
-**Hypothesis (strong, not yet proven):** the generated per-version layouts for the
-R4≠R5-divergent blocks disagree between the write path (ingestor's `*_from_json` store
-emit) and the read path (vtable) — most likely the merge precedence A17 warns about
-(`merge.py` lays out fields on first sight, so revision order is load-bearing). Next step:
-walk one Encounter's `period` slot in a sealed stream against both the R4 and R5 vtables
-and name the divergent field.
-
-- [ ] A23.2 Walk one Encounter's `period` slot in a sealed stream against the R4/R5 vtables
-      (`FF_Encounter_internal.hpp`, `FF_DataTypes_internal.hpp`), name the divergent field,
-      and fix the generator (likely `generator/model/merge.py` layout precedence — A17's
-      actual fix) or the reader. Land A17.1/A17.2 in the same change:
-      `test_version_prefix.py` is the regression gate this bug class needs.
-
-> **Progress (2026-08-14):** two deterministic corruption bugs found and FIXED (details and
-> full root-cause analysis in `~/Documents/fixes/FastFHIR-bundle-encoding-root-cause.md`):
-> - **Bug A — dateTime fields dropped at ingest.** `generator/emit/ingest_mappings.py`
->   emitted a "requires Builder context; skipping" stub for every `unique_ptr`-stored
->   string-like field (dateTime/instant/date/time fall through TYPE_MAP to the DEFAULT
->   complex-block mapping → `data_type="Offset"` → `unique_ptr<std::string_view>` POD
->   member), so `Period.start/end`, `recordedDate`, and 60 more fields were never parsed.
->   Fixed: the emitter now parses `data_type == "Offset"` via
->   `make_unique<std::string_view>`. Stub count 63 → 28 (remaining are url_idx/extensions).
-> - **Bug B — code[] arrays undercounted (A8.2 class, proven).** The generated SIZE for
->   `code[]` arrays used dictionary-aware `SIZE_FF_CODE` (0 for dict hits) while the STORE
->   always wrote an `FF_STRING` (14+len) — every resource with a dictionary-backed category
->   (`AllergyIntolerance.category = ["medication"]`) was claimed 24 bytes short, so the next
->   resource's write overwrote the previous one's tail ("RhinoJ" = 5 real bytes + the next
->   block's validation). Fixed in `generator/emit/store.py`: SIZE now uses `SIZE_FF_STRING`.
-> - Verified: harness rc 1 → 0; output 14,530 → 183,572 bytes on one bundle.
-> - **Fixed (A23.3, 2026-08-14):** the READER emitted `"period":{"start":,"end":}` (invalid
->   JSON) for Period blocks whose sealed slots are full — `ParserOps::standard_entry_as_node`
->   kept the schema kind (`FF_FIELD_BLOCK`) after the pointer hop even when the stored block
->   is an `FF_STRING`, so `is_empty()` walked the string as a field-less block → declared
->   empty → `print_json` emitted `"key":` with no value. Fixed at the source: the default
->   branch now re-derives the node kind from the actual recovery tag
->   (`RECOVER_FF_STRING` → `FF_FIELD_STRING`), the same convention `resolve_choice` and
->   `standard_node_entries` already used — so `is_empty()`/`print_json`/`is_string()` all
->   agree without adding recovery-dispatch branches. Same latent mismatch also fixed in
->   `standard_node_lookup_index` (OFFSET/INLINE_BLOCK array paths, reachable from the
->   Python bindings). The multi-threaded race (Bug D) is still open.
-
-> **Progress (2026-08-14, second session) — the contract is now enforced, and enforcing it
-> found three more defects.** Bug B was possible because the single load-bearing invariant
-> of the arena design — *`claim_space(SIZE_FF_X(pod))` then `STORE_FF_X` must consume
-> exactly that many bytes* — was never asserted. It is now (A23.5). Turning it on
-> immediately proved Bug B's fix incomplete: **the same undercount was live in three more
-> places**, because `SIZE_FF_STRING("")` returned 0 while `STORE_FF_STRING(base, off, "")`
-> writes — and returns — a full 14-byte `FF_STRING` header. Reproduced end-to-end:
+> **RECONCILED 2026-09-10 by measurement.** The umbrella defect is closed. `py_roundtrip`
+> is **green on all 342 fixtures in 84 s**, and the per-fixture P0-2 floor is armed
+> (`coverage_findings` in `tests/python/test_roundtrip.py` fails a fixture whose
+> `input_leaves == 0` or whose walk left source values unvisited). A23.4's acceptance —
+> "`py_roundtrip` passes on all fixtures from a clean build" — is met.
 >
-> | Input | claimed | stored | verdict |
-> |---|---|---|---|
-> | `"period": {"start": "", "end": ""}` | 398 | 426 | 28-byte overrun (2 × 14) |
-> | `"given": ["", "John"]` | 370 | 384 | 14-byte overrun |
+> The long root-cause history that used to sit here (Bug A dateTime drop, Bug B `code[]`
+> undercount, the `SIZE_FF_STRING("")` 14-byte overrun, the `"period":,` reader bug, and
+> the A23.5 claim/store agreement assertion that found three more) is in git history and in
+> `~/Documents/fixes/FastFHIR-bundle-encoding-root-cause.md`. It was deleted from this file
+> per the policy at the top: completed work is not archived here.
 >
-> The first was **newly armed by Bug A's own fix**: before it, the `unique_ptr` was always
-> null and the trap was unreachable; after it, `""` parses as `simdjson::SUCCESS` into a
-> *non-null pointer to an empty view*, so SIZE tested `!= nullptr` and added 0 while STORE
-> tested `!= nullptr` and wrote 14. The array case cannot be fixed by a call-site guard —
-> skipping an element would change the element count — so the fix is at the source: a size
-> function reports what the store writes, and "absent" stays the caller's `!empty()` guard.
-> No wire-format change: those 14 bytes were already being written, just not claimed.
-> **0 of the 111 Synthea fixtures contain a single empty string**, which is why the corpus
-> could never have caught this. See `~/Documents/fixes/FastFHIR-bundle-encoding-root-cause.md`
-> for the original two bugs; that doc's claim that the *scalar*-code case "actually agrees"
-> is true only by coincidence — see A8.2, now re-scoped.
+> **One corpus-level P0-2 hole is left, and it is not A23's** — see COV-2 below.
 
-- [ ] A23.8 *(optional, decide before hardening further)* Contain rather than detect:
-      have `append_obj` claim `data_size + REDZONE`, canary the redzone, and verify it
-      after the store, so an overrun lands in dead space instead of the next resource.
-      Debug/ASan presets only — it changes sealed-stream byte offsets, so it must never be
-      on for a build that produces archives.
-- [ ] A23.4 Verify every Synthea fixture round-trips: harness rc=0, valid JSON stdout,
-      `diff_doms` clean per the B5 allow-list; `py_roundtrip` green with the 111 fixtures
-      as the permanent corpus. **Blocked on A24, A25, A26** — with the writer no longer
-      corrupting the arena, `py_roundtrip` runs to completion and reports 0/111, dominated
-      by three defect classes that are not bundle-encode bugs at all (data fabrication,
-      decimal loss, entry loss). Do not chase the raw diff count: `/entry` is 250 in /
-      209 out on the first fixture, and that single misalignment cascades into most of the
-      ~1.9M reported diffs.
 - [ ] A23.9 Add the adversarial fixtures the Synthea corpus cannot provide: empty string in
       a `string[]` element, empty `dateTime`, a resource carrying only an `id`, and a
       `Quantity` with no `comparator`. The corpus has **zero** empty strings and populates
       nearly every code field, which is precisely why A23.6, A24 and A25 all survived it.
-- Acceptance: `py_roundtrip` passes on all 111 fixtures from a clean build.
+      Every one of those four inputs round-trips correctly today, so this task **pins**
+      behaviour rather than fixing it — write it as a regression gate, not a bug hunt.
+      Pairs naturally with B7's fixture work.
+- [ ] COV-2 Close the corpus-level P0-2 hole in `py_roundtrip`. The *per-fixture* floor is
+      armed, but `main()` still `return 0`s when `discover_fixtures` finds nothing
+      (`tests/python/test_roundtrip.py`, "Not a failure — tests may be skipped in CI
+      without Synthea data"), and `total_compared` is printed without ever being asserted.
+      That is the exact shape of the 2026-08-13 vacuous pass: a temporary Bundle skip in
+      `discover_fixtures` excluded *every* fixture — all of them are Bundles — so the gate
+      ran nothing and reported PASS. Assert a floor on both the fixture count and
+      `total_compared`, and make "no fixtures" a skip the harness reports rather than a
+      silent zero-coverage pass. Small and self-contained.
+- Acceptance: A23.9's four inputs are checked in and gated; `py_roundtrip` fails when
+  pointed at an empty fixture directory instead of passing.
 - Verify: `ctest --test-dir build -R py_roundtrip --output-on-failure`, then
-  `for f in build/synthea_fhir_r4/*.json; do ./build/ff_roundtrip "$f" >/dev/null || echo "FAIL $f"; done`.
+  `python3 tests/python/test_roundtrip.py --synthea-dir /tmp/empty-dir --harness build/ff_roundtrip; echo "rc=$?"`
+  → must be non-zero once COV-2 lands.
 
----
+- [ ] A23.8 *(a DECISION, not a claimable task — read before acting)* Contain rather than
+      detect: have `append_obj` claim `data_size + REDZONE`, canary the redzone, and verify
+      it after the store, so an overrun lands in dead space instead of the next resource.
+      Debug/ASan presets only — it changes sealed-stream byte offsets, so it must never be
+      on for a build that produces archives. **Weigh it against what actually closed this
+      class:** A23.5's claim-vs-store equality assertion caught all four overruns by
+      construction and costs no wire bytes. The redzone is defence in depth on top of a
+      hole that is already shut, so it needs Ryan's call on whether the Debug-only
+      divergence in byte offsets is worth it.
 
-### A24. Every absent `code` enum is written as a real clinical value — silent data fabrication
 
-**Severity: highest open defect in the repo.** This is a *write-path* bug: the fabricated
-code goes on the wire, so a downstream FHIR server has no way to tell it from data the
-source system actually asserted. Unlike A23's corruption, which announced itself with a
-segfault, this produces schema-valid, plausible, silently wrong FHIR.
+### A25. `Quantity.value` — FIXED; only the reader's sentinel guard (A25.3) is left
 
-**Mechanism.** Generated code enums have no unset state, and enum value 0 is always a real
-code. The POD member defaults to it, and nothing in `*_from_json` overwrites the default
-when the field is absent from the input, so `STORE` encodes a genuine dictionary code:
-
-```cpp
-// generated_src/FF_CodeSystems.hpp
-enum class FF_AdministrativeGender : uint8_t { Female, Male, Other, Unknown };
-//                                             ^^^^^^ value 0
-// generated_src/FF_Patient.hpp:33
-FF_AdministrativeGender gender = static_cast<FF_AdministrativeGender>(0);
-```
-
-**Repro** — a Patient with nothing but an `id` acquires a gender:
-
-```bash
-echo '{"resourceType":"Bundle","type":"transaction","entry":[{"resource":
-{"resourceType":"Patient","id":"only-an-id"}}]}' > /tmp/bare.json
-./build/ff_roundtrip /tmp/bare.json
-# {"resourceType":"Patient","id":"only-an-id","gender":"female"}
-```
-
-**Blast radius: 63 POD members across 72 enums.** The specific zero-values are bad ones:
-
-| Enum | Value 0 | Consequence |
-|---|---|---|
-| `FF_QuantityComparator` | `<` | **every** unqualified measurement becomes a bounded one — 83 fabrications in one Synthea bundle |
-| `FF_AllergyIntoleranceCriticality` | `High` | an allergy with no recorded criticality reads as life-threatening |
-| `FF_HTTPVerb` | `DELETE` | a Bundle entry with no request method reads as a delete |
-| `FF_MedicationDispenseStatusCodes` | `Cancelled` | dispensed medication reads as cancelled |
-| `FF_EncounterStatus` | `Arrived` | — |
-| `FF_AdministrativeGender` | `Female` | — |
-
-> **DONE 2026-08-14.** Implemented as a pinned sentinel rather than a reordering, so no
-> existing enumerator moved. `UNSET_ENUMERATOR = "FF_UNSET"` / `UNSET_ENUM_VALUE = 255` live
-> in `generator/model/type_map.py` because both `emit/codesystems.py` (declares the enums)
-> and `model/merge.py` (defaults the POD members) need the same spelling, and merge.py must
-> never import from `emit/`. The store path needed **no** change: `serialize_*()` has no
-> case for the sentinel, so it falls through to `default: return ""`, and `ENCODE_FF_CODE`
-> already maps `""` to `FF_CODE_NULL` while `SIZE_FF_CODE` already sizes it as 0 — SIZE and
-> STORE stay in agreement (A23.6). `parse_*()`'s fallback was changed from
-> `static_cast<enum>(0)` to the sentinel, which was the read-side half of the same bug: an
-> unrecognised code silently became a real one. Verified: 72/72 enums carry the sentinel,
-> 63/63 POD members default to it, **0** `static_cast<FF_*>(0)` defaults remain; `ctest`
-> 31/32 (`py_roundtrip` per A23.4); zero new ruff violations (136 before, 136 after).
+> **RECONCILED 2026-09-10 by measurement.** The defect is gone. The original repro now
+> round-trips exactly, and an absent value correctly emits no key at all:
 >
-> **Corpus effect, and a second finding.** Across the 111 fixtures: `EXTRA_KEY` **479,784 →
-> 463,050 (-16,734)** and `TYPE_MISMATCH` **7,425 → 7,023 (-402)**. `comparator`
-> fabrications in one bundle: **83 → 0**. But `MISSING_KEY` rose by **725**, concentrated in
-> three paths — `identifier.use` (+319), `priority` (+402), `reaction.severity` (+4). That is
-> **unmasking, not regression**: `FF_IdentifierUse` value 0 is `Official`, which is exactly
-> what Synthea writes, so the fabricated default was *coincidentally correct* and had been
-> hiding the fact that the pipeline never stores the field at all. The `priority` count
-> moved out of `TYPE_MISMATCH` and into `MISSING_KEY` — same defect, new symptom. Fabricated
-> defaults were inflating the apparent pass rate wherever they happened to guess right.
+> ```bash
+> # was: "low": {"value": 1.84467e+19, "comparator": "<", "unit": "mmol/L"}
+> echo '{"resourceType":"Bundle","type":"transaction","entry":[{"resource":
+> {"resourceType":"Observation","id":"o","status":"final","referenceRange":
+> [{"low":{"value":3.5,"unit":"mmol/L"}}]}}]}' > /tmp/qty.json
+> ./build/ff_roundtrip /tmp/qty.json   # -> "value":3.5 exactly
+> ```
+>
+> A25.1 and A25.2 are done: the value is stored and read. What was never added is A25.3's
+> *defensive* half, and the asymmetry is visible in one screenful of `FF_Parser.cpp` —
+> `FF_FIELD_DATETIME` guards its sentinel (`raw == FF_DATETIME_NULL` → empty string) and
+> `FF_FIELD_FLOAT64`, eight lines above it, does not.
 
-- [ ] A24.5 Chase what the fabrication was masking: `identifier.use`, `priority` and
-      `reaction.severity` are not stored at all (319 / 402 / 4 sites), and only looked
-      correct because enum value 0 happened to equal the value Synthea writes. Likely the
-      same root cause as A26.3 (`fullUrl`/`request` never stored) — check whether these
-      fields reach `*_from_json` at all before assuming a store-side gap.
-- Acceptance: the bare-Patient repro round-trips to exactly its input; `comparator` and
-  `use` no longer appear in `py_roundtrip` output as `EXTRA_KEY`.
-- Verify: `./build/ff_roundtrip /tmp/bare.json | python3 -c "import json,sys;
-  d=json.load(sys.stdin); assert d['entry'][0]['resource'] == {'resourceType':'Patient','id':'only-an-id'}, d"`
-
----
-
-### A25. `Quantity.value` does not round-trip — every decimal reads back as the null sentinel
-
-**Context.** A decimal written into a `Quantity` comes back as `1.84467e+19` — that is
-`FF_NULL_OFFSET` (`0xFFFFFFFFFFFFFFFF`) reinterpreted as a double, so the value is not
-being stored, not being read, or being read from the wrong slot. 74 occurrences in a
-single Synthea bundle. Present on both the choice path (`valueQuantity`) and a plain
-nested one (`referenceRange.low`), so it is not choice-specific.
-
-```bash
-echo '{"resourceType":"Bundle","type":"transaction","entry":[{"resource":
-{"resourceType":"Observation","id":"o","status":"final","referenceRange":
-[{"low":{"value":3.5,"unit":"mmol/L"}}]}}]}' > /tmp/qty.json
-./build/ff_roundtrip /tmp/qty.json
-# "low": {"value": 1.84467e+19, "comparator": "<", "unit": "mmol/L"}
-#                  ^^^^^^^^^^^ FF_NULL_OFFSET as a double   ^^^ A24
-```
-
-- [ ] A25.1 Determine which side drops it — check `*_from_json` populates `QuantityData.value`
-      (decimal is a `SCALAR_PRIMITIVE_TYPE`, so it should be the inline-scalar path, not the
-      `Offset`/`unique_ptr` path that A23 Bug A had to fix), then the STORE slot arithmetic,
-      then `print_json`'s `FF_FIELD_FLOAT64` read.
-- [ ] A25.2 Fix at the source and regenerate. If it is an ingest-mapping gap it is the same
-      class as Bug A — check whether `decimal` is in `TYPE_MAP` at all, since Bug A was
-      caused by `dateTime` being absent from it (`generator/model/type_map.py`).
 - [ ] A25.3 Reader guard: a `FF_FIELD_FLOAT64` slot holding the null sentinel must emit no
-      key, never a number. Printing `FF_NULL_OFFSET` as `1.84467e+19` is the numeric twin of
-      the `"key":,` bug (A23.3).
-- Acceptance: `/tmp/qty.json` round-trips `3.5` exactly.
+      key, never a number. Printing `FF_NULL_OFFSET` as `1.84467e+19` is the numeric twin
+      of the `"key":,` bug (A23.3). **Latent, not live** — absence is currently decided
+      upstream of `print_decimal_json`, so the sentinel is unreachable through the ingest
+      path today; the guard is what keeps it unreachable when a future writer stores one.
+      Both call sites need it: `src/FF_Parser.cpp:1083` (choice variant / array element,
+      no sigfigs byte) and `:1324` (the real 9-byte decimal field slot). Add it inside
+      `print_decimal_json` (`:935`) so one edit covers both, and add a hand-built case to
+      `ff_test_compact_roundtrip`'s deliberately-unpackable family — the corpus cannot
+      produce this input, which is the whole reason it survived.
+- Acceptance: a `FF_FIELD_FLOAT64` slot holding `FF_NULL_OFFSET` exports with the key
+  absent; `/tmp/qty.json` still round-trips `3.5` exactly.
+- Verify: `ctest --test-dir build -R 'cpp_ff_test_compact_roundtrip|py_roundtrip' --output-on-failure`
 
----
 
-### A26. Bundle entries are silently dropped; `fullUrl` and `request` are never stored
+### A27. Verbatim passthrough — SHIPPED (OPQ-1); A27.6 and A27.7 remain
 
-**Context.** First Synthea fixture: `/entry` is **250 in, 209 out** — 41 resources vanish
-with no error, `rc=0`. Separately, `entry.fullUrl` and `entry.request` are absent from
-every output entry (103,195 sites each across the corpus), so even surviving entries lose
-their identity and their transaction semantics.
-
-This is the single largest contributor to `py_roundtrip`'s diff count, and most of it is
-cascade: once entry *N* misaligns, every path below it mismatches. Fix this before reading
-the histogram again.
-
-```bash
-python3 -c "
-import json,subprocess
-f='build/synthea_fhir_r4/Alberto639_Tromp100_aa1a2074-ad05-6d4f-0063-6188c4f25a12.json'
-src=json.load(open(f)); out=json.loads(subprocess.run(['./build/ff_roundtrip',f],
-  capture_output=True,text=True).stdout)
-print(len(src['entry']), '->', len(out['entry']))
-print(list(src['entry'][0]), '->', list(out['entry'][0]))"
-# 250 -> 209
-# ['fullUrl', 'resource', 'request'] -> ['resource']
-```
-
-- [ ] A26.3 Store and emit `entry.fullUrl` and `entry.request`. **Root cause found:** this
-      is not a store-side gap — those fields are never parsed. The bundle-entry patcher is a
-      hardcoded string in `generator/emit/ingest_mappings.py` (~line 495) whose loop body is
-      a single `if (key == "resource")`; `fullUrl`, `request`, `search`, `response` and
-      `link` have no branch at all. Fix by delegating the non-resource fields to the
-      generated `Bundle_entry_from_json` rather than by growing the hardcoded string — the
-      patcher exists only because the entry array is pre-allocated and patched
-      concurrently, and that is orthogonal to which fields get parsed.
-- Acceptance: entry counts match for all 111 fixtures **or** the discard is reported and
-  declared (A26.2b); `fullUrl`/`request` survive.
-- Verify: the snippet above prints `250 -> 250`, or the run prints the DISCARDED summary
-  accounting for exactly the difference.
-
----
-
-### A27. Verbatim passthrough for out-of-profile resources — PLAN (unstarted)
+> **RECONCILED 2026-09-10.** The heading used to read "PLAN (unstarted)" and A27.1–A27.4
+> were unchecked. They are all four **done** — the ledger has recorded it since 2026-08-23
+> as **OPQ-1**, and `CLAUDE.md` documents the shipped design. `RECOVER_FF_OPAQUE_JSON`
+> (`0x0007`) is live: `include/FF_Builder.hpp:721` stores the raw span via
+> `STORE_FF_STRING(..., RECOVER_FF_OPAQUE_JSON)` and the export path splices the payload in
+> unquoted. `CMakePresets.json` deliberately omits the `imaging` grouping so 1,444 real
+> Synthea `ImagingStudy` resources exercise the path on every `py_roundtrip` run, and
+> `tests/cpp/test_api.cpp` (API-1.2) asserts an `ImagingStudy` entry reports exactly that
+> tag. The four boxes below are struck rather than deleted because the numbered plan is
+> referenced from `CLAUDE.md` and from Block J.
+>
+> Note the tag is named `RECOVER_FF_OPAQUE_JSON`, **not** the `RECOVER_FF_OPAQUE_RESOURCE`
+> A27.1 proposed, and it is a projection of `dictionaries/master_tags.json` — it is not
+> hand-written into `include/FF_Recovery.hpp` as A27.1 assumed.
 
 **Decision (Ryan, 2026-08-14):** a resource FastFHIR has no generated type for must be
 **preserved verbatim**, never discarded. Intended architecture: look the type up in a
 module registry (does not exist yet); if no module provides it, store the original JSON
-byte-for-byte. Read A26 first — it establishes that the loss is deterministic, type-aligned,
-and currently only *reported* (A26.2), not prevented.
+byte-for-byte.
 
 **Why passthrough comes before `FASTFHIR_PRODUCTION_PROFILE=all`, measured not assumed:**
 
@@ -3789,29 +3868,21 @@ versions. Worth confirming against the exact US Core version FastFHIR targets be
 treating the list as final — that target version is not currently written down anywhere,
 which is itself worth fixing.
 
-- [ ] A27.1 Reserve **one** new recovery tag for the passthrough block (e.g.
-      `RECOVER_FF_OPAQUE_RESOURCE`) in `include/FF_Recovery.hpp`. Append only — never
-      renumber. This is a permanent wire constant: get sign-off, and record the decision in
-      `dictionaries/README.md` alongside the other ledger rules.
-- [ ] A27.2 Define the block: validation offset + recovery tag + `resourceType` string +
-      raw JSON payload with its length. Keep it a *dumb byte container* — no parsing, no
-      field extraction, no dictionary interaction. It must never enter the permanent code
-      ledger (same rule Block J states for external code systems).
-- [ ] A27.3 Route to it in `generator/emit/ingest_mappings.py`: `dispatch_resource`'s final
-      `else` stops returning `FF_NULL_OFFSET` and instead stores the raw object. Note the
-      ingestor parses with simdjson **on demand**, so capturing the original bytes needs the
-      source span for the entry — `entry_chunks[idx]` in `FF_Ingestor.cpp` already holds
-      exactly that, which is the natural seam.
-- [ ] A27.4 Read path: `print_json` re-emits the stored bytes verbatim, so a bundle
-      round-trips to its input. This is what finally makes A23.4 / A26 acceptance reachable
-      (`250 -> 250`).
-- [ ] A27.5e Profile-filtered emission is deliberately NOT implemented. Ryan offered it
+- [x] A27.1–A27.4 **SHIPPED as OPQ-1 (2026-08-23).** One tag reserved
+      (`RECOVER_FF_OPAQUE_JSON` = `0x0007`, projected from `dictionaries/master_tags.json`);
+      the block is an `FF_STRING` byte-for-byte holding already-serialized JSON; the route is
+      `include/FF_Builder.hpp:721`; and `print_json` splices the payload in **unquoted** via
+      the shared `FF_IsStringLayoutTag(tag)` path. Design and its two traps — a resource
+      slot's kind must follow the tag beside its offset, and no V-Table means no typed
+      access — are documented in `CLAUDE.md` and architecture.md §6.1a.
+> **A27.5e — DECISION, not a task (do not claim).** Profile-filtered emission is
+  deliberately NOT implemented. Ryan offered it
       ("if that makes compilation more palatable"), but a 978-entry enum costs a compiler
       nothing, and a header whose contents varied with the profile would reintroduce exactly
       the build-configuration dependency this task removed. Revisit only if the enum ever
       becomes a measurable compile cost — and if so, filter the generated *C++ structs*,
       which is already what the profile does, not the tag registry.
-- [ ] A27.5c-old **superseded — kept for the reasoning.** Original note: settle the band
+> **A27.5c-old — SUPERSEDED, kept for the reasoning only (do not claim).** Original note: settle the band
       layout before appending ANY tag. Tags are permanent, so a band cannot be re-cut later; appending billing tags at
       `0x03xx` now and discovering the band is too small afterwards is unrecoverable.
 
@@ -3864,37 +3935,6 @@ which is itself worth fixing.
 
 ---
 
-### A28. A standalone generator run does not reproduce `generated_src/python/fields/`
-
-**Found 2026-08-14 while verifying A27.5's determinism claim; pre-existing — reproduced with
-the code stashed, so it is not A27 fallout.** The C++ tree reproduces byte-for-byte. The
-Python field modules do not: **85 of 228 files differ** between a fresh
-`python -m generator --output-dir <tmp>` and what the CMake configure path leaves in
-`generated_src/python/fields/`.
-
-```bash
-python -m generator --output-dir /tmp/gen && diff -rq /tmp/gen/python generated_src/python | wc -l
-# 85
-wc -c /tmp/gen/python/fields/bundle_entry.py generated_src/python/fields/bundle_entry.py
-#   834   (ASTNode class only)
-# 16511   (Field constants AND the ASTNode class)
-```
-
-`emit_python_fields` and `emit_python_ast` (`generator/bindings/python_fields.py`) write the
-**same filename** in the same directory. In a standalone run the second overwrites the
-first; the committed tree somehow carries both. Whatever reconciles them is not in the
-generator, which means the generator alone cannot reproduce its own output — the property
-`tests/generator/test_determinism.py` exists to protect. Related to `755f97a`
-("Fix Python staging…"); confirm that commit did not paper over this.
-
-- [ ] A28.1 Determine which emitter is authoritative for `python/fields/<name>.py` and give
-      them distinct filenames or an explicit merge, so one run produces the final content.
-- [ ] A28.2 Extend `test_determinism.py` to cover `python/`, not just the C++ tree — it
-      would have caught this.
-- Verify: `diff -rq /tmp/gen/python generated_src/python` prints nothing after a configure.
-
----
-
 ### A29. Orphaned, broken test file: `tests/test_ff_dictionary.py`
 
 **Found 2026-08-14 while renaming the emit modules; pre-existing.** The file imports
@@ -3914,10 +3954,21 @@ This is the A15/A20 failure class once more — a check that is never executed i
 indistinguishable from one that passes. The rename to `emit/code_ids.py` updated its import
 path, so it is no *more* broken than before, but it is still dead.
 
-- [ ] A29.1 Decide: fix it against the real API and register it with ctest/pytest, or delete
-      it. Do not leave a third state. If it is fixed, it belongs in `tests/generator/` with
-      the other ledger gates, where `test_code_ids.py` already covers ID stability — check
-      for overlap before reviving it.
+> **The overlap check A29.1 asks for, done 2026-09-10.** The file holds three tests and
+> the answer differs per test, which is why "just delete it" needs one caveat:
+>
+> | Orphaned test | Covered elsewhere? |
+> |---|---|
+> | `test_dictionary_regeneration_no_modifications` | **Yes** — superseded by `tests/generator/test_code_ids.py::test_regeneration_preserves_every_committed_id`, which is stricter (it checks every committed ID, not just the file diff) |
+> | `test_known_extensions_includes_code_system_urls` | **Yes** — `test_code_ids.py` covers the ledger/string-table agreement and the non-redistributable-source refusal |
+> | `test_dictionary_files_compile` | **No** — nothing compiles generated C++ today. This is exactly what **A4.3** proposes, so its intent must land there before this file is deleted, or the coverage is lost silently |
+>
+> So: **delete the file, and do A4.3 in the same commit or before it.** Note the import it
+> fails on (`generate_master_dictionary`) never existed under any name — the real one is
+> `generate_master_codes` — so the file has never once run green.
+
+- [ ] A29.1 Delete `tests/test_ff_dictionary.py`, having first confirmed A4.3 carries the
+      compile-check intent forward (see the table above). Do not leave a third state.
 - [ ] A29.2 Add a collection guard so an unreferenced test file cannot sit unrun again:
       either fold `tests/*.py` into the pytest paths or assert in CI that every `test_*.py`
       is reachable from some harness.
@@ -3925,7 +3976,7 @@ path, so it is no *more* broken than before, but it is still dead.
 
 ---
 
-### A15. Re-arm the two vacuous sections of the wire gate — FIXED 2026-08-14
+### A15. Re-arm the two vacuous sections of the wire gate — FIXED 2026-08-14, but A15.6 is still OPEN
 
 > **DONE. A15.1/A15.2 below had already named both causes correctly** — this note records
 > the fix and the measured result, not a re-diagnosis. The two sections were empty because
@@ -3980,11 +4031,11 @@ python3 -c "import json;print({k:len(v) for k,v in json.load(open('tests/generat
 
 Two independent structural reasons, both verified:
 
-1. `witness()` (`tests/generator/wire_witness.py:99`) scans only
+1. `witness()` (`tests/generator/wire_witness.py:137`) scans only
    `generated_dir.rglob("*.hpp")`. Tag definitions exist in exactly one file in the repo —
    `include/FF_Recovery.hpp` — which is not under `generated_src/`
    (`grep -rl "RECOVER_FF_[A-Z_]* *= *0x" --include='*.hpp' .` returns that file alone).
-2. The `_CODE` regex (`wire_witness.py:34`) matches `FF_[A-Z0-9]+_CODE_[A-Z0-9_]+\s*=\s*0x…`
+2. The code regex (`_CODE_DEF`, `wire_witness.py:44`) matches `FF_CODE_DEF <name> = <n>`
    and its docstring gives `FF_R5_CODE_PERCENT = 0x1CF1F3BB`, "hash-based uint32". Nothing
    in the repo is named or valued that way any more: codes are emitted as
    `FF_CODE_DEF PERCENT = 2;` inside `namespace FastFHIR::FF_CODE`
@@ -4000,10 +4051,11 @@ compares a *value*. The only value pinning anywhere is four hand-written asserti
 `include/FF_Recovery.hpp` declares 168 enumerators. **164 permanent wire values are
 unguarded** — editing one is caught by code review alone.
 
-- [ ] A15.6 While in this file: `_OFFSET_FIELD` (`wire_witness.py:45`) requires a line
+- [ ] A15.6 While in this file: `_OFFSET_FIELD` (`wire_witness.py:58`) requires a line
   ending in `,` or end-of-line, so a vtable entry carrying a trailing `// comment` would
   drop out of the captured field `order` and the gate would still pass on a shorter list.
-  Current output is safe — `generator/model/merge.py:301` emits no trailing comment — so
+  Current output is safe — the `vtable_offsets` emitter at `generator/model/merge.py:396`
+  (`f"        {f['name']:<20}= {prev_name} + {prev_size},\n"`) emits no trailing comment — so
   either tolerate comments in the regex or add a comment at that emitter line stating that
   adding one is a wire-gate change.
 - Locate: `python3 -c "import json;print({k:len(v) for k,v in json.load(open('tests/generator/golden/wire_witness.json')).items()})"`
@@ -4027,15 +4079,15 @@ python3 -c "import json;d=json.load(open('tests/generator/golden/wire_witness.js
 ```
 
 The property holds today **only as a side effect of iteration order**.
-`merge_fhir_versions` (`generator/model/merge.py:57`) walks `schemas_by_version` in list
+`merge_fhir_versions` (`generator/model/merge.py`) walks `schemas_by_version` in list
 order and lays out each field on first sight (`if field_name not in blk["seen"]:`,
-`merge.py:77`). That order comes from `generator/library.py:59` iterating `versions`, which
-is `versions = ["R4", "R5"]` — a bare list literal at `generator/pipeline.py:42` with
-nothing marking it as load-bearing. Reorder it, insert R6 ahead of R5, or parallelise the
+`merge.py:133` as of 2026-09-10). That order comes from `generator/library.py` iterating
+`versions`, which is `versions = ["R4", "R5"]` — a bare list literal at
+`generator/pipeline.py:43` with nothing marking it as load-bearing. Reorder it, insert R6 ahead of R5, or parallelise the
 version loop, and every R4 field offset in those 43 blocks moves. The failure is silent,
 total, and unfixable once streams exist.
 
-- [ ] A17.1 Add a comment at `generator/pipeline.py:42` stating that the order of `versions`
+- [ ] A17.1 Add a comment at `generator/pipeline.py:43` stating that the order of `versions`
   is a wire invariant, not a preference: earlier revisions must be laid out first so that
   each revision's field set is a prefix of the next. Name the test from A17.2 in the comment.
 - [ ] A17.2 Add `tests/generator/test_version_prefix.py`: for every block where
@@ -4051,10 +4103,11 @@ total, and unfixable once streams exist.
 
 ### A18. Fail loudly when R4 and R5 disagree about a field
 
-**Context:** `generator/model/merge.py:77` — `if field_name not in blk["seen"]:` guards the
+**Context:** `generator/model/merge.py:133` (was `:77`; re-verified 2026-09-10) — `if
+field_name not in blk["seen"]:` guards the
 entire field-entry construction, including `is_array` (`el.get("max") == "*"`), `fhir_type`,
 and the resulting `size` / `size_const` / `cpp_type`. On a repeat sighting the loop falls
-through to the running-total update at `merge.py:139`. There is no comparison against the
+through to the running-total update further down the same loop. There is no comparison against the
 stored entry and no diagnostic. So a field that is `0..1` in R4 and `0..*` in R5 is laid out
 with the R4 scalar mapping and cannot hold the R5 value; a retyped field keeps the R4
 mapping. The generator, the emitted C++, the Python bindings and the docs then all agree on
@@ -4460,7 +4513,7 @@ cached binary (`<binary_hash_hex>.wasm`). Never use one where the other is expec
         `requires_byteswap` branches at `include/FF_Ops.hpp:57`, `:63`, `:69`, `:80`, `:85`
         and `:89` execute on no machine anyone here owns, and they are load-bearing for the
         claim "FastFHIR is strictly Little-Endian on the wire" (`FF_Ops.hpp:28`). IFE's
-        equivalent header states the consequence exactly (`src/IFE_Bytes.hpp:148`): the
+        equivalent header states the consequence exactly (`../Iris-File-Extension/src/IFE_Bytes.hpp:148`): the
         big-endian CI job is *the only thing testing that code*, and IFE shipped a wrong
         big-endian branch twice before it existed. B7's fixture is what makes this leg
         meaningful — a byte file written little-endian and read on a big-endian host.
@@ -5061,6 +5114,51 @@ expectation.
 - [ ] J1.4 `terminology_layers.md` (new doc) capturing the model and J0's three
       invariants. Link from `CLAUDE.md`'s repo map.
 
+> ### Reconciliation OUTCOME (K6.2 / K-WO-8, 2026-09-09 — Block K is now implemented)
+>
+> `include/FF_Conformance.hpp` exists and IS the layer boundary. A Block J terminology
+> layer is a `ValidationHooks` whose `entries` point at its own membership checks and
+> whose `policy` is `Report`; it needs no mechanism of its own. Concretely:
+>
+> - **J1.2 is STRUCK as a separate task.** The stable ABI is `ValidationHooks`, and
+>   `abi_version` is its first field — `Builder::attach_layer` walks the whole chain and
+>   throws `"FastFHIR: conformance layer ABI mismatch"` on a value this build does not
+>   speak, which is exactly what J1.2 asked for. What J1 still owns is only the *loading*:
+>   the `extern "C"` factory a dylib exports (`const ValidationHooks* ff_layer_create()`),
+>   manifest discovery, and `FASTFHIR_LAYER_PATH`. Note the boundary is already a CALL,
+>   not a data handoff, which is the constraint J2.3 put on it.
+> - **J4.2 / J4.3 / J4.5 are satisfied by the K contract**, not by separate work: `CheckFn`
+>   is `noexcept`, the layer is resolved once per append rather than per code, and every
+>   check is reentrant because the layer is immutable and the sink is lock-free.
+> - **J5.2 is DONE**: `ValidationHooks::failures` is a caller-owned
+>   `std::atomic<uint64_t>*`, incremented once per reported failure. **J5.1 still stands** —
+>   `ConcurrentLogger` is now the sink type but still has no severity levels.
+> - **The 145 required ValueSet bindings are already emitted**, each as an UNIMPLEMENTED
+>   `Rule` carrying its ValueSet URL in `Rule::binding`. That is the worklist J4 consumes:
+>   a terminology layer answers exactly those rows.
+> - **J8.3 / J8.4 are the same test as K5.4 / K5.1** and can reuse it.
+>
+> **Two J decisions are still Ryan's and are deliberately NOT resolved here:**
+> - **J1.2 "stable C ABI"** → the struct itself. The work order gives `ValidationHooks` a
+>   leading `abi_version` word so a runtime-loaded layer can be refused on mismatch
+>   (J1.2's requirement) without a second interface. What J1 still owns: the `extern "C"`
+>   factory a dylib exports (`const ValidationHooks* ff_layer_create()`), manifest
+>   discovery, `FASTFHIR_LAYER_PATH`. Nothing else.
+> - **J4.1 "hook the check at the `ENCODE_FF_CODE` call site"** → **proposed to move.**
+>   `ENCODE_FF_CODE` runs inside the generated `STORE_*` hot path and has no field
+>   context; the K attachment runs once per POCO, before any byte is claimed, with the
+>   full struct in hand, and costs one null check detached (K2.2). A terminology layer is
+>   then a K layer whose rules say "this field's codes are bound to LOINC" and whose
+>   `check` consults its membership table — the `Rule` row already carries the binding
+>   (K-WO-3). J4.2 (resolve once per system), J4.3 (allocation-free, non-throwing) and
+>   J4.5 (reentrant) are all properties the K contract already imposes on every layer.
+>   **STILL NEEDS RYAN'S DECISION** — it changes J4.1's wording, not its intent
+>   (validation still runs during the write, before the bytes exist). Note the K
+>   attachment point is strictly earlier than `ENCODE_FF_CODE`: it runs before
+>   `claim_space()`, so a terminology check there sees the typed POCO and no bytes have
+>   been written yet.
+ >  (The second open decision is D4's sink type, recorded under K1.2.)
+
 ### J2. Acquisition — **Q15 answered: local data only; no server layer for now**
 
 Sources differ enough that one policy cannot cover them. Citations under Q15.
@@ -5100,7 +5198,7 @@ Tier D (terminology server) is deferred, not deleted.**
       Concrete requirement on J1.2 today: keep the layer C ABI a *call* ("is this code
       valid"), not a data handoff ("give me your sorted array"). That keeps the layer
       implementation free to change without touching the boundary.
-- [ ] J2.3 Build step that turns a release file into generated C++ under the build tree
+- [ ] J2.5 Build step that turns a release file into generated C++ under the build tree
       (mirroring how the generator writes `generated_src/`). Deterministic — two runs
       byte-identical — and **fail loud** when the file is missing or the checksum does
       not match. Never silently emit an empty table; that is precisely the failure mode
@@ -5212,7 +5310,11 @@ name the field being written and not just the code.
       prefix in the message text. There is no way to be loud. Add real severity levels
       (at least Info / Warning / Critical) so a terminology failure can be surfaced
       distinctly and counted.
-- [ ] J5.2 Surface a per-ingest count of failed codes in the result, so a caller sees
+- [x] **J5.2** ✅ **DONE 2026-09-09 with Block K.** `ValidationHooks::failures` is a
+      caller-owned `std::atomic<uint64_t>*`, incremented once per reported failure by
+      the layer that found it (`src/conformance/FF_ConformanceEngine.hpp`, `report()`).
+      A terminology layer sets `LayerPolicy::Report` and gets the count for free.
+      Original text: Surface a per-ingest count of failed codes in the result, so a caller sees
       "1,412 codes failed LOINC membership" without scraping the log text.
 - [ ] J5.3 Message must name the system, the offending code, and the release version the
       layer was built from — a code that is valid in LOINC 2.80 and absent from 2.77 is a
@@ -5275,7 +5377,10 @@ name the field being written and not just the code.
 
 ### J9. Retire the misleading placeholder
 
-- [ ] J9.1 `dictionaries/FF_SNOMED_Concepts.cpp` is a 19-line stub with an empty array,
+- [x] J9.1 ✅ **DONE** — deleted in `2b85197` ("Harden wire witness and external code
+      docs"); verified 2026-09-09 that no CMake/Bazel entry references it and
+      `dictionaries/` holds only the two ledgers and the README. Original text:
+      `dictionaries/FF_SNOMED_Concepts.cpp` is a 19-line stub with an empty array,
       compiled into the library, whose header comment says "Populate from SNOMED CT RF2
       release data". That instruction now contradicts the scope rule in
       `master_codes.json:_scope` — SNOMED values must never live in `dictionaries/`.
@@ -5290,7 +5395,25 @@ name the field being written and not just the code.
 
 ### K0. What this is, and how it differs from Block J
 
-**Planned, unstarted.** Modelled on the Iris File Extension's validation layer
+> ✅ **IMPLEMENTED 2026-09-09.** `include/FF_Conformance.hpp` (boundary),
+> `src/conformance/FF_ConformanceEngine.hpp` (the one interpreter),
+> `generator/emit/conformance.py` -> `generated_src/FF_Conformance_Layer.{hpp,cpp}`,
+> `fastfhir_conformance` (option **OFF** by default, ON in every preset),
+> `tests/cpp/test_conformance.cpp` (11 cases / 45 checks),
+> `tests/generator/test_conformance.py` (6 gates), `examples/conformance_layer.cpp`.
+> **ctest 44 -> 46, all passing; `pytest tests/generator` 48 -> 54; wire witness
+> unchanged, which is the point — this emits no wire constant.** Emitted from the
+> compiled profile: **251 required-element rules, 683 invariants recorded,
+> 145 required bindings recorded, 0 max-cardinality, 0 fixed/pattern.**
+> Read the work order below for the decisions and the three deviations.
+
+> ↗ **Every unprefixed IFE path below is in `../Iris-File-Extension`**, a separate
+> repository — `generated_source/IFE_Blocks.hpp`, `generated_source/IFE_Validation.{hpp,cpp}`,
+> `examples/validation_layer.cpp`, `LessonsFromIFE.md`, `spec/ife_*.json`. Note the
+> collision: this repo now has its own `examples/conformance_layer.cpp`, which is the
+> FastFHIR equivalent, NOT the file being cited.
+
+**Modelled on** the Iris File Extension's validation layer
 (`Iris-File-Extension` @ `3cd0fa0`, `generated_source/IFE_Validation.{hpp,cpp}` +
 `examples/validation_layer.cpp`), which is the same architecture applied to a smaller
 format and is worth reading in full before writing any of this.
@@ -5336,19 +5459,49 @@ the caller. FastFHIR's existing `FF_Result` (`include/FF_Primitives.hpp:221`) ca
 `std::string` **by value**, so constructing one allocates. That is fine at the ingest API
 boundary where it is used today; it is wrong for a check that may run per field.
 
-- [ ] K1.1 New `include/FF_Conformance.hpp`: `enum class Check : uint8_t` (`OK`,
+- [x] **K1.1** ✅ `include/FF_Conformance.hpp`. Compiles standalone
+  (`c++ -std=c++20 -fsyntax-only`, no FastFHIR include: `RECOVERY_TAG` is an
+  opaque enum declaration and `ConcurrentLogger` a forward declaration).
+  `static_assert(std::is_trivially_copyable_v<...>)` on `Rule`, `Status`,
+  `Entry` and `ValidationHooks`; zero `std::string` by value.
+  ⚠ **Deviation, deliberate:** the `Check` and `RuleKind` vocabularies list only
+  what something actually produces. `FIXED_VALUE`, `CODE_NOT_IN_VALUESET` and
+  `INVARIANT` were dropped after measurement (see K3.1) — an enumerator nobody
+  emits is indistinguishable from one that is broken, and `abi_version` exists
+  precisely so Block J can add its own with a bump. Original text:
+  New `include/FF_Conformance.hpp`: `enum class Check : uint8_t` (`OK`,
   `CARDINALITY`, `REQUIRED_MISSING`, `FIXED_VALUE`, `CODE_NOT_IN_VALUESET`,
   `INVARIANT`, …) and a POD `Status` mirroring IFE's, plus the FHIR-specific citation
   fields — the invariant key (`"pat-1"`) and the resource URL — as `const char*` pointing
   at generated static storage. `noexcept`, no allocation, trivially copyable; assert both
   with `static_assert(std::is_trivially_copyable_v<Status>)`.
-- [ ] K1.2 `struct ValidationHooks` with `const ValidationHooks* next` (layers chain) and
+- [x] **K1.2** ✅ with **one deviation that needs Ryan's sign-off.**
+  `ValidationHooks` carries `next`, plus `abi_version` FIRST (refused at
+  `attach_layer`, so J1.2 has a field to reject on), `entries`/`count`,
+  `policy`, and `failures` (a caller-owned `std::atomic<uint64_t>*`, which is
+  J5.2 for free).
+  ⚠ **The sink is `ConcurrentLogger*`, NOT `std::string*`.** IFE is
+  single-threaded; FastFHIR's `append` runs on the ingest worker pool
+  (CLAUDE.md invariant 6), so a `std::string*` sink is a data race by
+  construction. `ConcurrentLogger::log` is a lock-free `fetch_add` reservation,
+  the Ingestor already owns one, and every diagnostic is a static `const char*`
+  from generated storage, so the failure path still allocates nothing. This is
+  a TYPED sink, not the callback + `void* user` pair `3cd0fa0` removed — that
+  lesson is kept. Original text:
+  `struct ValidationHooks` with `const ValidationHooks* next` (layers chain) and
   `std::string* diagnostic` (caller-owned sink; the layer assigns, the caller clears
   before a write and checks non-empty after). IFE moved from a
   `void(*)(const char*, void*)` callback + `void* user` to the plain `std::string*` in
   `3cd0fa0` and the diff is worth reading — it removed a type-erased pointer pair from a
   public struct for no loss of capability. Do not reintroduce the callback.
-- [ ] K1.3 **Dispatch — decide before writing the emitter, `Blocked on Q17`.** IFE names
+- [x] **K1.3** ✅ **Q17 answered (Ryan, 2026-09-09): the tag-keyed table.**
+  Sorted `Entry[]`, `std::lower_bound` in `ValidationHooks::find()`. The
+  generated table names `TypeTraits<T>::recovery` rather than a tag literal, so
+  the tag and the type cannot disagree; the emitter sorts by the ledger's
+  values and the generated file carries `static_assert(entries_are_sorted())`,
+  because a mis-sorted binary search does not fail — it silently stops finding
+  checks. Original text:
+  **Dispatch — decide before writing the emitter, `Blocked on Q17`.** IFE names
   one function pointer per block (18 members). FastFHIR has 141 blocks, so a named member
   per block is a 141-line struct that changes every time a resource is added. The
   alternative is a table indexed by `RECOVERY_TAG` with a type-erased signature, cast back
@@ -5357,6 +5510,9 @@ boundary where it is used today; it is wrong for a check that may run per field.
   (`generated_src/FF_Patient.hpp:104`). Recommendation: the tag-indexed table, because it
   scales with the resource count and because `append_obj` is already templated on
   `T_Data`. Q17 records the decision.
+  > **Decided (Ryan, 2026-09-09): tag-keyed table.** See Q17 and the work order below
+  > (decision D1). `TypeTraits<T>::recovery` is verified at
+  > `generated_src/FF_Patient.hpp:224` (line drifted from 104).
 - Acceptance: header compiles standalone (`c++ -std=c++20 -fsyntax-only`); `Status` is
   trivially copyable; no `std::string` by value anywhere in it.
 
@@ -5376,24 +5532,52 @@ gets the same coverage with:
   boundary, as a Vulkan layer does, never against generated internals";
 - one attachment for the whole stream instead of a parameter at every call.
 
-- [ ] K2.1 `Builder::attach_layer(const ValidationHooks* hooks) noexcept` — a single
+- [x] **K2.1** ✅ `Builder::attach_layer` + `Builder::layer()`, `m_layer` null by
+  default. ⚠ **NOT `noexcept`:** it validates `abi_version` across the whole
+  chain and throws `"FastFHIR: conformance layer ABI mismatch: ..."`. Attach is
+  the one moment where refusing a layer from another release is cheap, loud and
+  before any damage; at dispatch it would be none of those. Original text:
+  `Builder::attach_layer(const ValidationHooks* hooks) noexcept` — a single
   member, null by default. Document that the pointer is borrowed, must outlive the
   Builder, and that the struct is copied by the caller before `diagnostic`/`next` are set
   (IFE returns `const ValidationHooks&` from `conformance_layer()` and tells the caller to
   copy; mirror that).
-- [ ] K2.2 In `append_obj`, before `TypeTraits<T_Data>::store`: if a layer is attached and
+- [x] **K2.2** ✅ **in `Builder::append<T_Data>`, and BEFORE `claim_space()`** —
+  see the correction below for why it is `append` and not `append_obj`, and D3
+  in the work order for why it is before the claim rather than merely before
+  `store`. Detached it is `if (m_layer != nullptr)`, one predictable branch.
+  Release benchmark of the detached path is still owed (execution-contract
+  rule 9 flagged: `Builder::attach_layer`/`layer()` are new public API).
+  Original text:
+  In `append_obj`, before `TypeTraits<T_Data>::store`: if a layer is attached and
   has a check for `TypeTraits<T_Data>::recovery`, run it. Detached, this is one null test.
   Measure it: a benchmark run with and without the layer attached must show no difference
   outside noise on the detached path (flag for the benchmark repo per execution-contract
   rule 9).
-- [ ] K2.3 **Failure policy, two modes.** `CLAUDE.md` invariant 5 says the write path
+  > **CORRECTED 2026-09-09: the attachment point is `Builder::append<T_Data>`
+  > (`include/FF_Builder.hpp:195`), not `append_obj`.** `append_obj` is a one-line
+  > wrapper (`:655`) that calls `append`; `TypeTraits<T_Data>::store` is invoked inside
+  > `append`, not `append_obj`. More importantly the Ingestor's generated `*_from_json`
+  > writes every nested and contained resource with `builder->append(child_data)`
+  > (`generator/emit/ingest_mappings.py:326`) and never touches `append_obj`, so a hook
+  > in `append_obj` would miss every resource inside a Bundle. `append<T_Data>` is the
+  > single choke point every typed POCO passes. Work-order decision D2.
+- [x] **K2.3** ✅ `LayerPolicy::Throw` (default) / `LayerPolicy::Report`, and the
+  policy is carried on the `Status` by `dispatch()` from **the layer that
+  found the fault**, not from the one the caller attached — otherwise a
+  Report-policy terminology layer chained behind a Throw-policy conformance
+  layer would inherit the throw. `Status` becomes an exception at exactly one
+  place, `Builder::_check_conformance`; the layer stays `noexcept`. Original text:
+  **Failure policy, two modes.** `CLAUDE.md` invariant 5 says the write path
   throws. J5 (answered) says terminology failures are a *loud logged warning, never a
   drop*. Both are right for their case, so make it explicit:
   `LayerPolicy::Throw` (default — `std::runtime_error` prefixed `"FastFHIR: "`, message
   formatted from `Status` + citation) and `LayerPolicy::Report` (fill the sink, return,
   continue). Conformance defaults to Throw; a J terminology layer sets Report. Convert
   `Status` → exception **only** at this boundary, so the layer itself stays `noexcept`.
-- [ ] K2.4 Decide and document whether the read path gets hooks too. Recommendation: **no,
+- [x] **K2.4** ✅ **Decided: no read-path hooks in K**, as recommended. Nothing
+  was added to `Node`. Original text:
+  Decide and document whether the read path gets hooks too. Recommendation: **no,
   not in K.** The read path returns falsy Nodes rather than throwing (invariant 5) and is
   the zero-copy hot path; a reader-side conformance check is a separate tool (closer to a
   linter over a finished archive) and should not be smuggled into `Node`.
@@ -5413,25 +5597,54 @@ blocks — with the advantage that it is normative and upstream, and the disadva
 **Cap the expressiveness in writing, per IFE B6 (see the IFE audit of 2026-08-12, in git history).** The generator
 emits checks for a **closed allow-list** of shapes and nothing else:
 
-- [ ] K3.1 Allow-list, in this order of value: (a) `min >= 1` → required-field presence;
+- [x] **K3.1** ✅ **with the allow-list re-scoped by measurement, not by
+  preference.** Measured against the compiled profile BEFORE writing any C++:
+  (a) `min >= 1` — **251 rows, enforced**; (b) numeric `max` — **0 rows**, the
+  base spec spells `max` only as `"1"` or `"*"`; the engine implements the
+  branch and `ff_test_conformance`'s `max_cardinality` case exercises it with a
+  hand-built table, because a branch no rule reaches is not evidence; (c)
+  `fixed[x]`/`pattern[x]` — **0 rows**, fixed values live in PROFILES and the
+  build profile selects resources, not profile constraints; recorded as
+  UNIMPLEMENTED; (d) required bindings — **145 rows, recorded as UNIMPLEMENTED
+  carrying the ValueSet URL**, because membership against a real terminology
+  release is Block J's work reached through this same struct, not a second
+  mechanism. Original text:
+  Allow-list, in this order of value: (a) `min >= 1` → required-field presence;
   (b) `max` bounds on arrays; (c) `fixed[x]` / `pattern[x]` exact-value; (d)
   `binding.strength == "required"` → membership in the bound ValueSet, which reuses the
   dictionary and is the natural bridge to Block J.
-- [ ] K3.2 **Everything else is recorded, not skipped.** Any `constraint[]` whose
+- [x] **K3.2** ✅ 683 invariants recorded as `RuleKind::UNIMPLEMENTED` rows
+  carrying `key`, verbatim `human`, and the reason ("expressed in FHIRPath and
+  is NOT evaluated by this layer"), deduplicated by key per block because
+  `ele-1`/`ext-1`/`dom-*` recur on nearly every element. Queryable through
+  `conformance_rules(tag)`. `tests/generator/test_conformance.py` asserts that
+  **every** `constraint.key` in the compiled StructureDefinitions appears in
+  some table — that gate found six real keys on its first run (`bdl-3a`..`3d`,
+  `docRef-1`, `docRef-2`), which turned out to be the TEST's regex being too
+  narrow for FHIR's own key shapes, not an emitter gap. Original text:
+  **Everything else is recorded, not skipped.** Any `constraint[]` whose
   `expression` the emitter does not implement must be emitted as a listed, queryable
   "unimplemented" entry naming its `key` and `human` text — IFE A5: a blank must not be
   ambiguous between "checked and passed", "deliberately not checked", and "forgotten". A conformance report that cannot say what it did not check is worth
   much less than one that can.
-- [ ] K3.3 No FHIRPath evaluator. If one is ever wanted it is its own project with its own
+- [x] **K3.3** ✅ None written; the module docstring says so and says why.
+  Original text: No FHIRPath evaluator. If one is ever wanted it is its own project with its own
   task; writing a partial one inside the emitter is how the schema becomes a programming
   language. Say so in the emitter's module docstring.
-- [ ] K3.4 Every diagnostic cites its source: the invariant `key` and `human` text
+- [x] **K3.4** ✅ Every row carries `path`, `url` (the canonical
+  StructureDefinition), and either the invariant `key` + verbatim `human` or the
+  element path and the rule that produced it. Cites FHIR, never FastFHIR.
+  Original text: Every diagnostic cites its source: the invariant `key` and `human` text
   verbatim where there is one, else the element path and the rule that produced the check,
   plus the resource's canonical URL. IFE's diagnostics end "Per the IFE specification,
   clause ife-layer-extents"; the FastFHIR equivalent cites FHIR, not FastFHIR — **we do
   not invent normative requirements**, we enforce HL7's. (Once I1's SPEC.md exists it may
   add FastFHIR-specific clauses; those are separate and must be marked as such.)
-- [ ] K3.5 New emitter `generator/emit/conformance.py` producing
+- [x] **K3.5** ✅ `generator/emit/conformance.py`, wired into `library.py` after
+  every block layout is final. ruff + black clean. Emits text only, no offset
+  arithmetic; `tests/generator/test_conformance.py` asserts the output contains
+  no `RECOVER_FF_` literal and no `HEADER_SIZE`. Original text:
+  New emitter `generator/emit/conformance.py` producing
   `generated_src/FF_Conformance_Layer.{hpp,cpp}` and a `conformance_layer()` returning a
   shared immutable `const ValidationHooks&`. Follows the `emit/` boundary rule: no
   arithmetic on byte offsets, text only.
@@ -5440,47 +5653,453 @@ emits checks for a **closed allow-list** of shapes and nothing else:
 
 ### K4. Build: a separate library nobody links by accident
 
-- [ ] K4.1 `fastfhir_conformance` static library, `FASTFHIR_BUILD_CONFORMANCE` default
+- [x] **K4.1** ✅ **and the trap that was waiting here was real.**
+  `file(GLOB FASTFHIR_GENERATED_SOURCES ... generated_src/*.cpp)` would have
+  swept `FF_Conformance_Layer.cpp` straight into `fastfhir_obj` — the exact
+  opposite of "a separate library nobody links by accident", and it would not
+  even have compiled there. Excluded by name in `CMakeLists.txt` and in
+  `BUILD.bazel`, each with a comment saying why. Original text:
+  `fastfhir_conformance` static library, `FASTFHIR_BUILD_CONFORMANCE` default
   **OFF**, not in `_BUILD_ALL` unless enabled. IFE keeps its layer deliberately outside
   the main library and says so in the generated header's comment; mirror that, including
   the comment explaining *why* it is outside.
-- [ ] K4.2 Add to the `xcode` preset (`FASTFHIR_BUILD_CONFORMANCE=ON`) so it is present
+- [x] **K4.2** ✅ Set in the **`base`** preset, so `ninja`, `xcode` and
+  `xcode-asan` all carry it and CI runs the tests, while a bare
+  `cmake -S . -B build` stays OFF. `FOLDER "Libraries"` + schemes. Original text:
+  Add to the `xcode` preset (`FASTFHIR_BUILD_CONFORMANCE=ON`) so it is present
   while debugging and absent in a default release build — the whole point of the split.
   Give it a `Tests`/`Libraries` FOLDER per the IDE-layout block.
-- [ ] K4.3 Confirm the object-only-target trap does not apply (it has real sources), and
+- [x] **K4.3** ✅ Verified both ways. It has a real source, so the Xcode
+  object-only trap does not apply (noted in a comment at the target). With the
+  option **OFF**: zero conformance targets, `FF_Conformance_Layer.cpp` compiled
+  into nothing, core library links, **ctest back to 44**. Original text:
+  Confirm the object-only-target trap does not apply (it has real sources), and
   that a build with the option OFF links and runs unchanged.
 
 ### K5. Tests — red-green, and one that pins the wire
 
-- [ ] K5.1 Detached: a spec-violating but structurally valid `PatientData` writes and
+- [x] **K5.1** ✅ — **but NOT with `PatientData`, which is the wrong fixture and
+  was the one this task named.** Patient declares no `min >= 1` at its top
+  level; every required element it has lives in a backbone. Measured, then
+  switched to `ObservationData` (`status` and `code` are both min 1). A test
+  built on the original fixture would have gone green while proving nothing.
+  Original text: Detached: a spec-violating but structurally valid `PatientData` writes and
   reports success. This is the first test IFE's example makes, and it is the one that
   proves conformance is opt-in.
-- [ ] K5.2 Attached: the same input fails, the `Status` names the right field, and the
+- [x] **K5.2** ✅ Asserts the prefix `"FastFHIR: conformance: "`, the element
+  name, the rule text, and the canonical URL — the citation itself, not merely
+  that something was non-empty. `Report` mode additionally asserts the sink
+  content and `failures == 1`. Original text:
+  Attached: the same input fails, the `Status` names the right field, and the
   sink holds the citation. Assert the citation text, not just that it is non-empty.
-- [ ] K5.3 Chaining: a second hooks struct with `next` set is reached only when the first
+- [x] **K5.3** ✅ Three orderings: tracing-then-conformance (reached),
+  conformance-fails-then-tracing (not reached), and conforming input through the
+  whole chain (reached). Original text:
+  Chaining: a second hooks struct with `next` set is reached only when the first
   passes; assert both orderings.
-- [ ] K5.4 **Byte-identity:** write the same valid resource with and without the layer,
+- [x] **K5.4** ✅ **Both directions, including the failing path**: a
+  Report-policy failure still writes byte-identical output, which is what the
+  before-`claim_space()` ordering buys. Guarded against vacuity by asserting
+  `failures > 0` in the same case — identical empty buffers would otherwise
+  "pass" (P0-2). Original text: **Byte-identity:** write the same valid resource with and without the layer,
   `memcmp` the two arenas. Any difference means the layer is encoding something, which K0
   forbids. Pairs naturally with B7's byte fixture.
-- [ ] K5.5 Red-green every check the emitter produces, per `LessonsFromIFE.md` C2: for
+- [x] **K5.5** ✅ Red-green for every kind that exists: `REQUIRED` (detached
+  accepts / attached rejects), `MAX_CARDINALITY` (hand-built table, 2 passes /
+  3 fails), `UNIMPLEMENTED` (asserted never to fire), plus **descent**
+  (`Bundle.entry.request.method`, three levels down, is the case that fails
+  silently if descent is broken) and **version masking**
+  (`Condition.clinicalStatus` is required in R5 and not in R4 — a real
+  disagreement the model surfaced, and the same POCO is rejected by an R5
+  stream and accepted by an R4 one). Original text:
+  Red-green every check the emitter produces, per `LessonsFromIFE.md` C2: for
   each allow-listed shape, construct input that violates it and confirm the layer fires.
   A generated check that has never fired is not evidence (C1).
 
 ### K6. Docs and the Block J reconciliation
 
-- [ ] K6.1 `examples/conformance_layer.cpp` — a worked example in the shape of IFE's
+- [x] **K6.1** ✅ `examples/conformance_layer.cpp` (the `examples/` directory did
+  not exist), six numbered cases with `expect()` throwing, registered as ctest
+  `cpp_ff_example_conformance`. Original text:
+  `examples/conformance_layer.cpp` — a worked example in the shape of IFE's
   `examples/validation_layer.cpp`: detached, attached, chained, with `expect()` throwing so
   a demo cannot silently pass. Register it as a test so it cannot rot.
-- [ ] K6.2 Re-read J1 with K1's hooks struct in hand and cut what is now redundant —
+- [x] **K6.2** ✅ Done as K-WO-8; the outcome is recorded under J1. Original text:
+  Re-read J1 with K1's hooks struct in hand and cut what is now redundant —
   specifically J1.2's separate C ABI. Record the outcome under J1 rather than silently
   editing it.
-- [ ] K6.3 `CLAUDE.md`: one line in the repo map for the layer, and the K0 split
+- [x] **K6.3** ✅ Repo-map row for `src/conformance/` + `include/FF_Conformance.hpp`,
+  and a new **invariant 5a** stating the structural/conformance split, the
+  byte-identity guarantee and its before-`claim_space()` reason.
+  `architecture.md` §3.4 now points at the header and says the layer records
+  bindings without checking membership. Original text:
+  `CLAUDE.md`: one line in the repo map for the layer, and the K0 split
   (structural mandatory / conformance attachable) added near invariant 5, which currently
   describes only the exception convention.
-- [ ] K6.4 README: state plainly that FastFHIR is a serialization library, not a FHIR
+- [x] **K6.4** ✅ A conformance bullet under "Type Safety & Validated FHIR
+  Format" (where "Strict Schema Validation" was the sentence most likely to be
+  misread as conformance), plus a **Scope** callout: no REST, no SMART on FHIR,
+  no OAuth; the layer checks resources, not interactions. Original text:
+  README: state plainly that FastFHIR is a serialization library, not a FHIR
   server — no REST, no SMART on FHIR, no OAuth (verified absent 2026-08-12). The
   conformance layer checks *resources*, not *interactions*, and readers will otherwise
   assume a validation layer implies server-side validation. Do together with I3.
+
+### Work order — Block K (flash model executes this)
+
+> **Written 2026-09-09 from a read of the code, not from memory.** Every `file:line` below
+> was verified that day with `grep`; re-verify per execution-contract rule 2 before
+> editing. IFE reference read in full: `../Iris-File-Extension/generated_source/`
+> `IFE_Blocks.hpp:224–260` (Check/Status), `:657–700` (ValidationHooks),
+> `IFE_Validation.cpp` (check shape, chaining, `__report`), `examples/validation_layer.cpp`,
+> and commit `3cd0fa0` (callback → `std::string*`).
+
+**Ground rules.** Match the surrounding hand-tuned C++ (CLAUDE.md's two-regime rule) and
+`../Arbiter/directives/style_guide.md`: early return, no nesting beyond 3 levels, RAII,
+`noexcept` on leaf helpers, specific exceptions carrying the offending value, **define a
+convention once** (one absence overload set, one chain walker — IFE repeats its chain tail
+in every generated check; do not copy that), and **emit data, not logic** (`emit/`
+boundary rule: no arithmetic on byte offsets). The layer observes; it never encodes.
+
+#### Decisions folded in (D1–D8)
+
+- **D1 — Dispatch (Q17, answered).** A sorted table of `{RECOVERY_TAG, CheckFn}` entries,
+  looked up with `std::lower_bound`. The generated layer's table is `static constexpr`;
+  a Block J layer builds its own. Detached cost: one null test. Attached cost: ≤10
+  compares over ≤990 tags, paid only when a layer is present.
+- **D2 — Attachment point is `Builder::append<T_Data>` (`include/FF_Builder.hpp:195`).**
+  Every typed POCO passes through it: `append_obj` (`:655`) → `append`; generated
+  `*_from_json` → `builder->append(child_data)` (`generator/emit/ingest_mappings.py:326`)
+  for nested and contained resources; `dispatch_resource` → `append_obj`
+  (`ingest_mappings.py:614`). Exempt **by construction**, not by rule: `append_opaque_json`
+  (no POCO; an out-of-profile resource has no checker) and `append(offsets, tag)` (offset
+  arrays; no POCO).
+- **D3 — The check runs BEFORE `claim_space`.** A Throw-policy failure then leaves the
+  arena untouched — no claimed-but-unwritten hole — and K5.4's byte-identity holds even
+  on the failing path. Consequence: unlike IFE's `Status::at`, there is no arena offset to
+  report, because none exists yet. `Status` carries the FHIR path instead.
+- **D4 — The diagnostic sink is `ConcurrentLogger*`, not `std::string*`. ⚠ Deviates
+  from K1.2 as written; needs Ryan's OK.** Reason: `append` runs concurrently on the
+  ingest worker pool (CLAUDE.md invariant 6); IFE is single-threaded and its
+  `std::string*` sink is a data race here. `ConcurrentLogger::log` (`include/FF_Logger.hpp:36`)
+  is a lock-free `fetch_add` reservation, the Ingestor already owns one (`m_logger`), and
+  every diagnostic the layer emits is a **static `const char*` from generated storage**, so
+  the failure path allocates nothing. Not a callback (the thing `3cd0fa0` removed): a
+  typed sink. A caller-owned `std::atomic<uint64_t>* failures` beside it gives J5.2's
+  count for free.
+- **D5 — Checks are table-driven, not emitted per-field code.** Each block type gets a
+  `constexpr Rule[]` (data) and a three-line `check_<BLOCK>` that casts `const void*` back
+  to `<Block>Data` and calls one generic engine, `run_rules<T>`, which walks the existing
+  generated `visit_fields(d, f)` (`generator/emit/poco_visit.py`) with an ordinal counter.
+  Rules carry the field's **visit ordinal**, so matching a rule to a field is an integer
+  compare, never `strcmp`. K3.2's "unimplemented" entries are rows of the same table with
+  `kind = UNIMPLEMENTED`, so they are queryable by the same API. The absence spelling per
+  POCO field type is an **overload set defined once** (architecture.md §3.4 is the
+  contract): `std::string_view`/`std::string` → `.empty()`; `std::unique_ptr<X>` →
+  `nullptr`; `std::vector<X>` → `.empty()`; enum → `== E::FF_UNSET`; `uint8_t` →
+  `FF_NULL_UINT8`; `double` → `std::bit_cast<uint64_t>(v) == FF_NULL_UINT64` (**never
+  `!=` on the NaN**); `ChoiceEntry` → `tag == FF_RECOVER_UNDEFINED`; `ResourceReference`
+  → `offset == FF_NULL_OFFSET`. A POCO field type with no overload is a **compile error**,
+  which is the coverage gate for the set — a new field type cannot silently pass.
+- **D6 — Descent is intra-layer.** After its own rules, the engine descends into
+  `unique_ptr<X>` and each `vector<X>` element via `self->find(TypeTraits<X>::recovery)`
+  — the SAME layer's table, no chain walk. Chain walking (`next`) happens exactly once, at
+  the root dispatch. This is how `Bundle.entry.request.method` (min 1) is enforced when a
+  `BundleData` is appended, and it is why the table is keyed on **every** block tag
+  (resource, backbone, data type), not only the resource band. `ResourceReference`
+  members are NOT descended: the referenced resource was appended — and checked — on its
+  own `append` call before the parent existed.
+- **D7 — `LayerPolicy` is a member of `ValidationHooks`,** so the layer's author declares
+  it (K2.3: conformance defaults to `Throw`; a J terminology layer sets `Report`), and
+  `Builder::append` enacts it at the boundary — the only place `Status` becomes an
+  exception. The layer itself stays `noexcept`.
+- **D8 — Version-aware rules.** R4 and R5 can disagree on `min`/`constraint`. Each `Rule`
+  carries a version bitmask; the engine receives `m_fhir_rev` from the Builder and skips
+  rows not in the mask. Disagreements are **recorded**, not fatal (unlike A18, which
+  guards layout — a layout disagreement corrupts bytes, a cardinality disagreement does
+  not).
+
+#### The types (what K-WO-1 writes)
+
+```mermaid
+classDiagram
+    class Check { <<enum uint8_t>> OK; REQUIRED_MISSING; CARDINALITY_MAX; FIXED_VALUE; CODE_NOT_IN_VALUESET }
+    class RuleKind { <<enum uint8_t>> REQUIRED; MAX_CARDINALITY; FIXED_VALUE; VALUESET_MEMBER; UNIMPLEMENTED }
+    class LayerPolicy { <<enum uint8_t>> Throw; Report }
+    class Rule {
+        uint16_t ordinal
+        RuleKind kind
+        uint8_t versions
+        uint32_t min
+        uint32_t max
+        const char* path
+        const char* key
+        const char* human
+        const char* url
+        const char* const* valueset
+        uint32_t valueset_count
+    }
+    class Status {
+        Check code
+        RECOVERY_TAG block
+        const char* path
+        const char* key
+        const char* human
+        const char* url
+        uint64_t found
+        uint64_t expected
+        explicit operator bool()
+    }
+    class Entry { RECOVERY_TAG tag; CheckFn check }
+    class ValidationHooks {
+        uint32_t abi_version
+        const Entry* entries
+        uint32_t count
+        LayerPolicy policy
+        const ValidationHooks* next
+        ConcurrentLogger* diagnostic
+        atomic_uint64* failures
+        find(RECOVERY_TAG) const Entry*
+    }
+    class Builder {
+        const ValidationHooks* m_layer
+        attach_layer(const ValidationHooks*) noexcept
+        append~T~(const T ref) Offset
+        _conform(RECOVERY_TAG, const void*)
+    }
+    class GeneratedLayer {
+        <<generated>>
+        conformance_layer() const ValidationHooks&
+        conformance_rules(RECOVERY_TAG) span~const Rule~
+    }
+    ValidationHooks *-- Entry
+    ValidationHooks --> ValidationHooks : next
+    ValidationHooks --> LayerPolicy
+    Entry --> Status : CheckFn returns
+    Rule --> RuleKind
+    Status --> Check
+    Builder --> ValidationHooks : borrows
+    GeneratedLayer ..|> ValidationHooks : populates
+    GeneratedLayer *-- Rule
+```
+
+```mermaid
+sequenceDiagram
+    participant C as caller / ingest worker
+    participant B as Builder::append<T>
+    participant H as ValidationHooks chain
+    participant E as run_rules<T> (engine)
+    participant M as Memory
+    C->>B: append(data)
+    B->>B: try_begin_mutation()
+    alt m_layer == nullptr (detached)
+        Note over B: one null test, nothing else
+    else attached
+        B->>H: dispatch(tag = TypeTraits<T>::recovery, &data, version)
+        loop each layer via next
+            H->>E: entry.check(&data, version, self)
+            E->>E: own Rule[] over visit_fields ordinals
+            E->>E: descend unique_ptr/vector children via self->find(child tag)
+            E-->>H: Status
+        end
+        H-->>B: first failing Status, or OK
+        alt Status failed
+            B->>B: policy Throw → runtime_error("FastFHIR: conformance ...")
+            B->>B: policy Report → diagnostic->log(static msg); ++*failures
+        end
+    end
+    B->>M: claim_space(size)
+    B->>M: TypeTraits<T>::store(...)
+```
+
+#### Tasks
+
+- [x] **K-WO-1. `include/FF_Conformance.hpp` — the boundary types (K1.1–K1.3).** ✅ Done. See K1.1–K1.3 for the two deviations (trimmed vocabulary, `ConcurrentLogger` sink).
+  *Original:*
+  *Locate:* `ls include/FF_Conformance.hpp` → must not exist.
+  *Change:* new header, MPL header copied from `src/`, namespace
+  `FastFHIR::Conformance`. Declares, in this order: `enum class Check`, `enum class
+  RuleKind`, `enum class LayerPolicy`, `struct Rule`, `struct Status` (POD; `explicit
+  operator bool() const noexcept { return code == Check::OK; }`), `using CheckFn =
+  Status(*)(const void* data, uint32_t fhir_version, const ValidationHooks* self)
+  noexcept;`, `struct Entry`, `struct ValidationHooks` with `abi_version` FIRST (the one
+  field a future J loader may read before trusting the rest; `FF_CONFORMANCE_ABI = 1`),
+  `[[nodiscard]] const Entry* find(RECOVERY_TAG) const noexcept` (`std::lower_bound`),
+  and ONE free function `Status dispatch(const ValidationHooks* head, RECOVERY_TAG tag,
+  const void* data, uint32_t version) noexcept` that walks `next` and stops at the first
+  failure. `static_assert(std::is_trivially_copyable_v<Status>)` and the same for `Rule`
+  and `Entry`. Dependencies: `<atomic>`, `<cstdint>`, `<algorithm>`, `<type_traits>`,
+  and an **opaque enum declaration** `enum RECOVERY_TAG : uint16_t;` plus a forward
+  `class ConcurrentLogger;` — so the header does not pull `FF_Primitives.hpp` and the
+  acceptance test below is honest. Document: the pointer is borrowed and must outlive the
+  Builder; copy `conformance_layer()`'s struct before setting `diagnostic`/`failures`/
+  `next` (IFE's rule); the sink message is static and the failure path allocates nothing.
+  *Verify:* `c++ -std=c++20 -fsyntax-only -Iinclude -Igenerated_src include/FF_Conformance.hpp`
+  exits 0; `grep -c "std::string " include/FF_Conformance.hpp` → 0.
+- [x] **K-WO-2. Builder attachment (K2.1–K2.3).** ✅ Done. **The stated attachment point was WRONG and is corrected in place:** the hook is in `Builder::append<T_Data>` (`FF_Builder.hpp:195`), not `append_obj`. The generated ingest path writes every nested and contained resource with `builder->append(child_data)` and never calls `append_obj`, so a hook there would have missed every resource inside a Bundle — the common case. ctest stayed 44/44 across the change.
+  *Original:*
+  *Locate:* `grep -n "Offset m_module_reg_offset\|Offset append(const T_Data" include/FF_Builder.hpp`
+  → `64`, `195`. `grep -n "MutationGuard" include/FF_Builder.hpp` → the guard at `:201`.
+  *Change:* member `const Conformance::ValidationHooks* m_layer = nullptr;` beside
+  `m_module_reg_offset`; `void attach_layer(const Conformance::ValidationHooks*)
+  noexcept;` and `const Conformance::ValidationHooks* layer() const noexcept;`. In
+  `append<T_Data>`, immediately after the guard and **before** `TypeTraits<T_Data>::size`:
+  `if (m_layer) _conform(TypeTraits<T_Data>::recovery, &data);` — nothing else changes in
+  the template. `_conform(RECOVERY_TAG, const void*)` is out of line in
+  `src/FF_Builder.cpp`: calls `Conformance::dispatch(m_layer, tag, data, m_fhir_rev)`; on
+  failure, `Report` → `if (diagnostic) diagnostic->log(status.human)` (static string) and
+  `if (failures) failures->fetch_add(1, relaxed)`, return; `Throw` →
+  `std::runtime_error("FastFHIR: conformance: " + path + ": " + human + " [" + key + "] ("
+  + url + ")")` — formatting is allowed here because the exception allocates anyway.
+  `FF_Builder.hpp` includes `FF_Conformance.hpp`; nothing in the core library references
+  the generated layer, so the core links unchanged with the option OFF. Python bindings:
+  `attach_layer` is **not** exposed in K (pybind11 cannot hand over a borrowed C++
+  pointer safely); record as a follow-up under CAPI.
+  *Verify:* `ctest --preset ninja` — same pass count as before the change (44/44 on
+  2026-09-09). Detached-cost measurement per K2.2 is a **Release** measurement (CLAUDE.md
+  "Performance measurements: Release only"): run FastFHIR-benchmark Test 1 against
+  `build-opt` before and after; flag the API addition for that repo (rule 9).
+- [x] **K-WO-3. Generator model: capture the conformance data (prerequisite for K3).** ✅ Done. `_conformance_of()` in `generator/model/merge.py`, recorded on EVERY version pass (a layout entry is created only on the first, so the two need different lookups — hence the new `by_name` index) and root-element constraints attached to the block. Zero new ruff errors, black clean, witness unchanged, `pytest tests/generator` 48 passed.
+  *Original:*
+  *Locate:* `grep -n '"is_array": is_array' generator/model/merge.py` → `119`;
+  `grep -n 'len(path.split(".")) == 1' generator/model/merge.py` → `63` (**the root
+  element is skipped here** — resource-level invariants such as `dom-*` and `pat-1`
+  live on it, so they must be captured on the block, not the field).
+  *Change:* extend `field_entry` (`merge.py:107–125`) with `"min": int(el.get("min",
+  0))`, `"max_card": el.get("max")` (kept as the spec's string: `"*"` or a number),
+  `"constraints": [{key, severity, human, expression}]` from `el.get("constraint", [])`,
+  `"binding_strength"`, `"binding_valueset"` (split off `|version`, as
+  `codesystems.py:167` does), and `"fixed"`/`"pattern"` as `{fhir_type, value}` from
+  whichever `fixed<Type>`/`pattern<Type>` key is present. Capture root-element
+  `constraint[]` into `master_blocks[root]["constraints"]` before the `continue`. Per
+  version: keep a `versions` bitmask per rule; when R4 and R5 disagree on `min`, record
+  both rows with different masks (D8) and print the disagreement count. `type_map.py`
+  is untouched — none of this affects layout.
+  *Verify:* `pytest tests/generator -q` green; `git diff --stat
+  tests/generator/golden/wire_witness.json` → empty (no wire constant may move).
+- [x] **K-WO-4. Emitter `generator/emit/conformance.py` → `generated_src/FF_Conformance_Layer.{hpp,cpp}` (K3.1–K3.5).** ✅ Done, with the allow-list re-scoped by measurement (K3.1). The P0-2 gate is in the emitter: it raises if the required-rule count is ever zero.
+  *Original:*
+  *Locate:* `grep -n "generate_reflection_dispatch" generator/library.py` → `409` (wire
+  the new emitter beside it, after all block layouts are final);
+  `grep -n "def _build_bundle_index\|expansion" generator/emit/codesystems.py` → `70`,
+  `108` (reuse for ValueSet expansion — do not write a second one).
+  *Change:* per block type with tag `T` (resource, backbone, data type — every struct
+  that has a `TypeTraits<>` specialisation; assert that set equals the set of emitted
+  tables): (a) `static constexpr Rule <BLOCK>_RULES[] = {…}`; (b) `static Status
+  check_<BLOCK>(const void* d, uint32_t v, const ValidationHooks* self) noexcept {
+  return run_rules(*static_cast<const <Block>Data*>(d), <BLOCK>_RULES, v, self); }`;
+  (c) one sorted `static constexpr Entry ENTRIES[]`; (d) `const ValidationHooks&
+  conformance_layer() noexcept` (IFE's shape: function-local static, policy `Throw`);
+  (e) `std::span<const Rule> conformance_rules(RECOVERY_TAG) noexcept` for K3.2's
+  queryability. Rows, by K3.1's allow-list: `REQUIRED` for `min >= 1` (ordinal = visit
+  order; `url` = the resource's canonical URL); `MAX_CARDINALITY` for a numeric `max >
+  1` on an array; `FIXED_VALUE` where `fixed`/`pattern` is present — **expect ≈0 rows in
+  the base spec** (fixed values live in profiles, and the profile option selects
+  resources, not profile constraints; print the count and say so in the module
+  docstring); `VALUESET_MEMBER` for `binding_strength == "required"` on
+  `CodeableConcept`/`Coding`-typed fields (e.g. `Condition.clinicalStatus`), with the
+  expansion emitted once per ValueSet as a sorted `const char*[]` — **enum-typed `code`
+  fields get NO row**: the POCO type admits only a valid enumerator or `FF_UNSET`, so
+  membership holds by construction (architecture.md §3.4), and the docstring says so;
+  `UNIMPLEMENTED` for every `constraint[]` entry (key, human, url), root-element
+  invariants included, de-duplicated by key per block (`ele-1`/`ext-1`/`dom-*` recur on
+  every element). **No FHIRPath evaluator** (K3.3) — the module docstring states it.
+  The hand-written engine (`run_rules<T>`, the absence overload set, descent per D6,
+  `std::visit` over `ChoiceBlock` for `ChoiceEntry::block`) lives in
+  `src/conformance/FF_ConformanceEngine.hpp`, compiled only into the layer library —
+  it needs generated `visit_fields` and so cannot live in `include/`.
+  *Verify:* emitted layer compiles under `-Wall -Wextra -Werror=switch` (the
+  first-party switch policy); `pytest tests/generator -q` green; witness unchanged;
+  **P0-2 gate in the emitter**: `REQUIRED` row count must be > 0 (Observation.status,
+  Bundle.type, Encounter.status are certain), and every `constraint.key` found in the
+  compiled StructureDefinitions must appear in some table — a zero or a missing key
+  fails the run, loudly.
+- [x] **K-WO-5. Build (K4.1–K4.3).** ✅ Done, CMake and Bazel both, including the GLOB exclusion that K4.1 records.
+  *Original:*
+  *Locate:* `grep -n "^option(FASTFHIR_ENABLE_EXTENSIONS\|^set(_BUILD_ALL\|FOLDER \"Libraries\"" CMakeLists.txt`
+  → `85`, `444`, `502`; `python3 -c "import json;print(json.load(open('CMakePresets.json'))['configurePresets'][0]['cacheVariables'])"`
+  → the `base` preset.
+  *Change:* `option(FASTFHIR_BUILD_CONFORMANCE "Build the attachable conformance layer"
+  OFF)` after line 85; `add_library(fastfhir_conformance STATIC
+  generated_src/FF_Conformance_Layer.cpp)` with the same include dirs and
+  `_ff_enable_switch_warnings` as `fastfhir_obj`, `add_library(FastFHIR::conformance
+  ALIAS …)`; appended to `_BUILD_ALL` **only** inside `if(FASTFHIR_BUILD_CONFORMANCE)`;
+  `FOLDER "Libraries"` and the scheme list. It has a real source, so the Xcode
+  object-only trap does not apply (K4.3) — say so in a comment beside the target.
+  `CMakePresets.json`: `FASTFHIR_BUILD_CONFORMANCE: ON` in `base` (so `ninja`, `xcode`
+  and `xcode-asan` all carry it and CI runs the tests), while a bare `cmake -S . -B build`
+  stays OFF — which is K4.2's intent. Bazel mirror: `cc_library(name =
+  "fastfhir_conformance")` in `BUILD.bazel` (Q5: Bazel and CMake are equal priority).
+  *Verify:* configure with the option OFF → `ninja -C build -t targets all | grep -c
+  conformance` = 0 and ctest count unchanged; ON → the library builds and links.
+- [x] **K-WO-6. Tests (K5.1–K5.5) — `tests/cpp/test_conformance.cpp` + `tests/generator/test_conformance.py`.** ✅ Done. 11 C++ cases / 45 checks and 6 generator gates. **ctest 44 → 46** (the example is registered too), `pytest tests/generator` 48 → 54.
+  *Original:*
+  *Locate:* `grep -n "function(add_ff_cpp_test" tests/tests.cmake` → `19`;
+  `grep -n "_BUILD_ALL\|FOLDER \"Tests\"\|XCODE_GENERATE_SCHEME ON" CMakeLists.txt`
+  (the four-places rule from CLAUDE.md still holds; three of them now live across
+  `tests/tests.cmake` and `CMakeLists.txt`); `tests/tests.bzl:20` for the Bazel list.
+  The C++ test links `fastfhir_conformance` and is registered only under the option.
+  *Change:* using the shared harness (`FFHR_tests.hpp`; no private counters):
+  1. **Detached (K5.1):** `ObservationData` with `status = FF_UNSET` and `code =
+     nullptr` (both `min = 1`) appends and `finalize` succeeds. `PatientData` is the
+     wrong fixture — Patient has no `min ≥ 1` element.
+  2. **Attached (K5.2):** same input, `Status.code == REQUIRED_MISSING`, `path ==
+     "Observation.status"`, `url == "http://hl7.org/fhir/StructureDefinition/Observation"`;
+     the `ConcurrentLogger` sink's `to_string()` contains the emitted `human` text
+     verbatim; `failures == 1` under `Report`; `Throw` raises `std::runtime_error` whose
+     `what()` starts with `"FastFHIR: conformance: Observation.status"`.
+  3. **Chaining (K5.3):** a hand-built `ValidationHooks` with one `Entry` for
+     `RECOVER_FF_OBSERVATION` whose check records that it ran; assert it is reached only
+     when the generated layer passes, in both orders.
+  4. **Byte identity (K5.4):** two Builders, one attached, same valid resource;
+     `memcmp` over the finalized views. *Locate first:* `grep -n "TIMESTAMP\|time(" src/FF_Builder.cpp`
+     — if `finalize` stamps a time, compare from `FF_HEADER::HEADER_SIZE` onward and
+     compare the header separately with that field masked. Then the real-pipeline form
+     CLAUDE.md's COV-1 asks for: ingest one Synthea bundle twice via `Ingestor`, with and
+     without the layer in `Report` mode, and require identical bytes plus a non-zero
+     `failures` count (P0-2: a zero would mean the layer never ran).
+  5. **Red-green per kind (K5.5):** `REQUIRED` (case 2); `VALUESET_MEMBER`
+     (`ConditionData.clinicalStatus` with coding `"bogus"` fails, `"active"` passes —
+     Condition is in `us-core`); `MAX_CARDINALITY` and `FIXED_VALUE` — if the emitter
+     reports zero rows of a kind, the test asserts that count instead of faking a
+     fixture; **descent (D6):** a `BundleData` whose entry has a `request` with `method
+     = FF_UNSET` fails with `path == "Bundle.entry.request.method"`; **UNIMPLEMENTED
+     (K3.2):** `conformance_rules(RECOVER_FF_PATIENT)` contains key `"pat-1"` with kind
+     `UNIMPLEMENTED`, and no input ever fires it.
+  6. **Concurrency:** case 4's ingest under the `xcode-asan` preset (TSan if available)
+     — the sink is the lock-free logger, so no race is expected; a race here is a D4
+     regression.
+  `tests/generator/test_conformance.py`: regenerate into a temp dir (never the working
+  tree — GEN-1.5), parse `FF_Conformance_Layer.cpp`, and assert (a) `REQUIRED` rows > 0,
+  (b) every `constraint.key` in the compiled SDs appears in a table, (c) the set of
+  tables equals the set of `TypeTraits<>` specialisations in the generated headers, (d)
+  the witness is byte-identical.
+  *Verify:* `ctest --preset ninja -R conformance --output-on-failure` and
+  `pytest tests/generator/test_conformance.py -q`, both green; total ctest count = 44 +
+  the new registrations.
+- [x] **K-WO-7. Example and docs (K6.1, K6.3, K6.4).** ✅ Done.
+  *Original:* `examples/` does not exist yet
+  (`ls examples` → no such directory); create it with `examples/conformance_layer.cpp`
+  in the shape of IFE's example — detached, attached, chained, `expect()` throwing —
+  registered as ctest `ff_example_conformance` so it cannot rot. `CLAUDE.md`: one
+  repo-map row for `FF_Conformance.hpp` + the layer library, and the K0 split
+  (structural mandatory / conformance attachable) beside invariant 5. `architecture.md`
+  §3.4 already says "handled by an attachable layer (TASKS.md Block K)" — point it at
+  the header and copy the class diagram above (style guide: a classDiagram is required
+  for a set of collaborating types). README: the K6.4 sentence, together with I3.
+- [x] **K-WO-8. Reconcile J1 (K6.2).** ✅ Recorded under J1 as "Reconciliation
+  OUTCOME", with J1.2 struck, J5.2 satisfied, and the two items that still need
+  Ryan's decision left explicitly open rather than resolved unilaterally.
+
+#### Decisions needed from Ryan before K-WO-1 starts
+
+1. **D4 sink type:** `ConcurrentLogger*` (recommended; lock-free, already owned by the
+   Ingestor, static messages so no allocation) vs K1.2's `std::string*` (IFE's choice;
+   a data race under the concurrent ingest unless documented as single-thread-only).
+2. **J4.1 move** (see the J1 reconciliation preview): terminology checks attach at the K
+   boundary over the POCO instead of inside `ENCODE_FF_CODE`.
+3. **`abi_version` now** (recommended, one `uint32_t`, costs nothing) so J1.2 has a field
+   to refuse on, or defer to J.
 
 ---
 
@@ -5495,7 +6114,14 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
   to one call site, correct by construction because the tag comes from the traits)?
   Recommendation: the tag-indexed table. IFE could afford named members at 18 blocks;
   FastFHIR cannot at 141.
-  > Answer:
+  > Answer (Ryan, 2026-09-09): **Table keyed by RECOVERY_TAG.** The attachable object is a
+  > fixed-shape table from tag to one generic checker signature. `append_obj<T>` reads
+  > `TypeTraits<T>::recovery` (already the constant it stamps on the block), finds the
+  > entry, and passes `&data`; the generated checker casts back to `const T*`. Adding a
+  > resource never changes the object's layout, Block J layers populate the same table,
+  > and the single type-erased cast is pinned by a generated test. Clarified during the
+  > decision: the POCO carries no tag as data; the tag is a compile-time property of its
+  > type, which is why no lookup on the data is needed.
 
 - **Q1 (blocks C1, C2):** `recover_archive` atomicity — must repairs be all-or-nothing on
   the original archive, or should recovery always operate on a copy and swap on success?
@@ -5673,25 +6299,19 @@ Answers unblock the tasks referencing them. Write answers inline after `> Answer
 
 ---
 
-## Execution plan (current session)
+## Execution plan — ~~removed 2026-09-10~~, use the PRIORITY INDEX instead
 
-**Principle:** one task per commit, verify before moving on. Blocks executed in dependency order.
-
-| Phase | Block | Tasks | Status |
-|---|---|---|---|
-| 1 — Build hygiene | A2 | Normalize `#include` paths (A2.1→A2.5), full rebuild (A2.6) | Starting now |
-| 1 — Build hygiene | A3 | Fix stale API examples in `FastFHIR.hpp` doc comment | After A2 |
-| 1 — Build hygiene | A4 | Implement wire-format gate (`tests/generator/test_wire_format.py`) | After A3 |
-| 1 — Wire gate | A15–A18 | Re-arm the vacuous witness sections, prefix-based vtable check, R4-prefix invariant, R4/R5 divergence guard (IFE audit 2026-08-12) | After A4 — A15 and A16 first; they protect data already on disk |
-| 2 — Round-trip | B5 | JSON round-trip fidelity triage (B5.1, B5.2) | After A4 |
-| 2 — Round-trip | B1–B4, B6 | Remaining B-block tests | After B5 |
-| 3 — Recovery | C1–C2, C6 | Recovery orchestrator + policy + CAS | After B-block |
-| 3 — Recovery | C3–C5, C7–C8 | Header repair, root reconciliation, version guard, Python, telemetry | After C1/C2/C6 |
-| 4 — CI | E1 | GitHub Actions multi-platform CI | After A-block |
-| 4 — Hygiene | E7 | `FastFHIR.hpp` minimal umbrella per Q2 | After E1 |
-| 5 — Spec | I1 | SPEC.md with alpha caveat per Q13 | After B5 |
-| 6 — WASM | D0–D12 | Local registry first per Q5 | After C-block |
-| 7 — Strategic | F, G, H | Benchmarks, security, packaging | After CI + spec |
+> This section used to hold a seven-phase table ordering the whole backlog. It was
+> **deleted because it had drifted into contradicting the file it lives in**: it listed A2
+> as "Starting now" and sequenced A3 → A4 → A15–A18 behind it, while A4 and A15 are done
+> and A2 has no section left. A flash model reading it would work the wrong queue and, per
+> START HERE rule 2, would stop.
+>
+> **There is one ordering, and it is the [PRIORITY INDEX](#-priority-index) at the top.**
+> Do not reintroduce a second one here: two orderings in one file means one of them is
+> always wrong, and the stale one is indistinguishable from the live one. The dependency
+> facts worth keeping are recorded on the tasks themselves — A8.2 before A8.1, Block C
+> behind REC-10, J4/J5/J6 behind A8 — where they cannot drift out of sight of the work.
 
 ---
 
@@ -5833,22 +6453,129 @@ and the two WILL drift.
 
 ## WO-B — README.md API-example sweep
 
-**Status: open.** `README.md` (61 sections) still shows the pre-FF_* usage
-(`FastFHIR::Builder`, `builder.finalize(...)`, `Compactor::archive(...)`,
-`Ingestor.ingest(...)`). `tests/cpp/test_readme.cpp` — the compiled contract
-for those examples — already migrated to the FF_* surface; the README prose
-must follow so the docs and the test agree.
+**Status: items 1 and 4 done; 2 and 3 open.** The premise below is now historical —
+`README.md`'s C++ blocks are migrated AND the drift that caused this work order is closed
+by a gate. Read item 4 before item 2 or 3: adding a block now means adding one the
+compiler will read.
 
-- [ ] 1. Replace every code block that constructs `Builder`/`Parser`/`Ingestor`
-   directly with the `FF_*` equivalent (mirror `tests/cpp/test_readme.cpp`,
-   which now compiles the exact FF_* spellings).
+- [x] **1.** ✅ **DONE 2026-09-09.** All six C++ example blocks migrated to the
+   `FF_*` surface, mirroring `tests/cpp/test_readme.cpp`. **Every replacement
+   spelling was compile-probed against the real headers before being written
+   into the prose** — and that found three things the old examples had wrong
+   beyond the API rename, none of which had ever compiled:
+   - `builder.mutable_handle(resource)` — **no such function exists anywhere**.
+     The "surgically edit one patient in a bundle" example was fiction. Rewritten
+     to scan with `Entry::concrete_recovery()` (API-1, real and tested) and to
+     amend through `stream->root_handle()`. ⚠ **Editing a nested entry in place
+     still has no public API** — that is CAPI-12, still open; the example no
+     longer pretends otherwise.
+   - `resource.recovery() != RECOVERY_TAG::Patient` — `RECOVERY_TAG` is an
+     UNSCOPED enum, so the spelling is `RECOVER_FF_PATIENT`.
+   - `BundleType::Collection` (should be `FF_BundleType`),
+     `Reflective::ResourceReference` (it is not in `Reflective`), and
+     `std::vector<uint8_t>(view.begin(), view.end())` — `Memory::View` has no
+     `begin()`/`end()`. The concurrency example also transformed
+     `fixture.bundle`, a variable it never declared.
 - [ ] 2. Update the "Memory / Stream / Ingestor" API tables to the FF_* names and
-   point readers at `docs/api.adoc` for the reference.
+   point readers at ⛏ `docs/api.adoc` (WO-A) for the reference.
 - [ ] 3. Add a note that the mutation path (`handle["field"] = value`) is unchanged.
 
+- [x] **5.** ✅ **DONE 2026-09-10 — PARITY. The suite now EXECUTES the README's blocks.**
+   Item 4's compile gate answered "does it still name real API". It could not answer "does
+   it still work", and Ryan's call was that a hand-written parallel test does not guarantee
+   anything: *"A hand written, while easier, doesn't guarantee."* Correct — so the runtime
+   test is now **generated from README.md** (`tests/readme/generate_examples.py` →
+   `ff_test_readme_examples`, 7 ctest entries `cpp_readme_*`). The code that runs is the
+   published text, verbatim.
+
+   **Direction and why.** The vetted artifact is the source, because the compiler and the
+   test runner are the arbiters. Assertions and fixtures cannot live in documentation, so
+   they live in `tests/readme/expect.hpp` as `FF_README_SETUP_<ID>` / `FF_README_EXPECT_<ID>`
+   macros that expand *around* the block inside its own scope — they read its locals
+   without the page mentioning a test. Exactly three things are not verbatim, all reported
+   by `--report`: a `program` block's `main` is renamed, and those two macros. Relative
+   paths (`"patient.ffhr"`) are left alone; the runner `chdir`s into the artifact dir
+   instead, because rewriting a literal is exactly the copy this mechanism exists to
+   prevent.
+
+   **Executing them found four defects the compile gate could not**, in blocks that
+   compiled cleanly:
+
+   | Defect | Block | Truth |
+   |---|---|---|
+   | `Parser(mem).root()` before `finalize()` | Example 1 | no `FF_HEADER` yet → "magic bytes mismatch". `FF_StreamQuery` also fails (no root until `FF_StreamSetRoot`). The pre-seal read is `patient_handle.as_node()` |
+   | `string_view birthdate = root[BIRTH_DATE]` | Step 3 | packed date/time slot → throws "Node is not a string or code". **The same page warns about this under Example 2** — it contradicted itself |
+   | `handle[GENDER] = std::string_view("male")` | Step 3 + 3 more | **throws.** No `amend_code` exists on the Builder → **CAPI-16** |
+   | Example 5 searched for `patient-42` | Example 5 | the example is only meaningful against a bundle that contains it; the fixture now does |
+
+   Note the shape of the first two: in both, `tests/cpp/test_readme.cpp` used the *working*
+   spelling (`patient_handle.as_node()`, and it never assigns `GENDER` at all) while the
+   README used a broken one. The hand-written test could not have caught them — it was
+   quietly doing something different.
+
+   **Red-green verified per block:** changing `1990-03-21` inside Example 3 fails
+   `cpp_readme_example_3_enrich` by name; changing the ingested id in Step 3 fails
+   `cpp_readme_step3_build`; shrinking the entry vector in Example 6 fails
+   `cpp_readme_example_6_concurrent`. The generator has a `--min-runnable` floor so an
+   empty runner cannot pass (P0-2).
+
+   ⚠ **Open decision for Ryan — the remaining duplication.** `tests/cpp/test_readme.cpp`
+   still re-implements Examples 1, 2, 3, 5 and 6, which are now executed from the page
+   itself. Keeping both re-opens the same drift risk in the other direction (someone edits
+   the hand-written copy believing it is the contract). It is **not** pure duplication: it
+   also covers Example 4's socket round-trip (which needs a peer the page does not show),
+   Examples 8–11, and the Synthea bundle. Deleting the overlapping cases is a coverage
+   decision, so it was left alone. Recommended: drop `test_1`/`test_2`/`test_3`/`test_5`/
+   `test_6`, keep the rest, and rename the file to say what it is.
+
+- [x] **4.** ✅ **DONE 2026-09-10 — the README's blocks are now compiled by the suite.**
+   This item did not exist when the work order was written; it is the root cause of it.
+   `ctest -R py_readme_cpp_compiles` (`tests/python/test_readme_compiles.py`, extractor and
+   context stanzas in `tests/readme/`) pulls every ```cpp fence out of `README.md` and
+   compiles it `-fsyntax-only`. **23 of 25 blocks compile; 2 are environment-gated**
+   (`requires=extensions` — `FF_Extensions.hpp` is entirely inside
+   `#ifdef FASTFHIR_ENABLE_EXTENSIONS` and needs WAMR's `<wasm_export.h>`, and the option
+   defaults OFF, so those two are reported `n/a` rather than skipped: they are checked in
+   any build that has the feature). ctest 46 → 47.
+
+   **Turning it on found nine defects beyond the API rename, in blocks that had never
+   compiled:**
+
+   | Defect | Blocks | Truth |
+   |---|---|---|
+   | `FastFHIR::Size` | 4 | `Size` is **global** (`FF_Primitives.hpp:60`) |
+   | `FastFHIR::FF_SOURCE_FHIR_JSON` | 4 | also global (`FF_Primitives.hpp:666`) |
+   | `handle[KEY] = "literal"` | 10 | needs `std::string_view(...)` — `char[N]` has no `TypeTraits`. `tests/cpp/test_readme.cpp:482` already knew this |
+   | `value_node.kind()` | 1 | `Entry::kind` is a data member (`FF_Parser.hpp:264`) |
+   | `ingestor->impl.insert_at_field(...)` | 2 | reaches into a type `FastFHIR.hpp:166` calls **intentionally opaque**; the public call is `FF_IngestInsertAtField` |
+   | `FF_MODULE_REGISTRY::register_module` / `::fetch_and_register` | 2 | `FF_MODULE_REGISTRY` is the wire **block layout** with no methods; the API is `Extensions::FF_WasmExtensionHost::get().register_module(url, bytes, len)` / `.resolve_or_fetch_module(url)` |
+   | `FastFHIR::ResourceReference` | 1 | global (`FF_Primitives.hpp:1702`) |
+   | `std::string json_string = /* read patient.json */;` | 1 | a comment cannot initialise a `std::string` |
+   | `__cpp_lib_execution` guard | 1 | tests for the policy **types**; the parallel **overloads** are `__cpp_lib_parallel_algorithm`. libc++ defines the first and provides no overloads, so the block did not compile on Apple clang at all |
+
+   Two blocks also could not compile as printed for structural reasons and are now
+   copy-pasteable: "Step 1" defined a helper and then ran statements at file scope (wrapped
+   in `main()`), and the concurrency example's `#if` guard was torn from its body by the
+   extractor's first cut — a bug in the gate, fixed by hoisting only `#include` and leaving
+   every other directive in place.
+
+   **Red-green verified:** reintroducing `FastFHIR::FieldKeys::Patient::ID`, a
+   `parser.mutable_handle()` call, and a bare string literal each turn the suite red; the
+   floor (`MIN_BLOCKS_COMPILED`) fails on a README with no blocks, and a missing compiler
+   exits 2 rather than reporting a pass on zero work.
+
 **Rules:** do not commit; do not edit `generated_src/`; verify with
-`cmake --build --preset ninja && ctest --preset ninja` (py_roundtrip is a
-pre-existing failure — see the profile/allowlist note in that test).
+`cmake --build --preset ninja && ctest --preset ninja`.
+**A changed or added README block is now checked automatically** — run
+`ctest --test-dir build -R py_readme_cpp_compiles`, and use
+`python3 tests/python/test_readme_compiles.py --dump <n>` to see the exact TU it built.
+The old manual compile-probe is no longer necessary. Note what the gate does **not** do:
+it does not run the blocks, and it does not compare them against
+`tests/cpp/test_readme.cpp`. Those two files are still independent implementations of the
+same examples by design — the README teaches the zero-copy accessor path
+(`root[Fields::PATIENT::ID]`) where the test uses the eager `PatientData data = root;`
+path, so extracting one from the other would mean rewriting the test and losing coverage.
+Keeping them separate is deliberate; what was missing was never a merge, it was a reader.
 
 ---
 
@@ -6389,6 +7116,81 @@ fix: for CAPI-1 a field-by-field-assembled `Observation.category` that reads bac
 CAPI-2 the CAPI-1 stream rejected by `validate_FFHR_stream()`; for CAPI-3 a
 `valueQuantity` hydrated from arena A, stored into arena B, and read back equal.
 
+---
+
+## CAPI-16 — A `code` field cannot be assigned through a mutable handle (P1)
+
+**Found 2026-09-10 by the README example runner, on its first execution.** The
+compile gate passed this; only running it surfaced the throw.
+
+```cpp
+patient_handle[FastFHIR::Fields::PATIENT::GENDER] = std::string_view("male");
+// terminate: FastFHIR Schema Violation: MutableEntry attempted to assign an
+// incompatible ObjectHandle type. Assigned types must match current types
+```
+
+**Mechanism.** `MutableEntry::operator=(const T_Data&)`
+(`include/FF_Builder.hpp:605`) carries exactly one slot-kind special case — the
+one DT-2 added:
+
+```cpp
+if constexpr (std::is_same_v<T_Data, std::string_view>)
+    if (m_kind == FF_FIELD_DATETIME) { m_builder->amend_datetime(...); return offset(); }
+```
+
+`FF_FIELD_CODE` has no equivalent, so a code slot falls through to the generic
+path: `validate_assignment(TypeTraits<std::string_view>::recovery)` compares
+`RECOVER_FF_STRING` against the slot's `RECOVER_FF_CODE` and throws
+(`src/FF_Builder.cpp:521`). **There is no `amend_code` on the Builder** — the
+`amend_*` family is `pointer`, `resource`, `variant`, `scalar`, `datetime`.
+
+**This is DT-2's exact shape, one slot later.** The date/time slot got its
+encode-into-the-slot path because storing an `FF_STRING` child and patching a
+pointer would leave an offset word the reader unpacks as datetime bits. A code
+slot has the same property: it is a 4-byte value that is *either* a permanent
+dictionary ID *or* a block-relative offset with `FF_CODEABLE_CONCEPT_FLAG` set
+(CLAUDE.md, "THREE POLYMORPHIC SLOTS"), so it cannot be pointer-patched either.
+
+- [ ] CAPI-16.1 Add `Builder::amend_code(object_offset, field_vtable_offset,
+      std::string_view)` mirroring `amend_datetime`, and dispatch to it from
+      `MutableEntry::operator=` on `m_kind == FF_FIELD_CODE`. It must reproduce
+      the ingest path's encoding order exactly: `FF_GetDictionaryCode` first,
+      then an `FF_CODEABLE_CONCEPT` block with the flag set and the offset
+      measured **relative to the containing block**, then `FF_CODE_NULL` for an
+      empty string. Reuse the ingest encoder rather than writing a second one —
+      two encoders for one slot is how SIZE and STORE drifted apart (A8.2).
+- [ ] CAPI-16.2 **Sequencing: read A8.2 first.** `SIZE_FF_CODE` and
+      `ENCODE_FF_CODE` agree today only by numeric coincidence on the single
+      reachable branch, and this task adds a second writer of that slot. Landing
+      CAPI-16 on top of a SIZE/STORE disagreement arms it from a new direction.
+- [ ] CAPI-16.3 Restore the README. Three blocks under "Code Assignment
+      Semantics" and one line in "Step 3" documented this working; they now
+      carry an explicit "not supported, tracked as CAPI-16" caveat. Remove the
+      caveat and re-tag the three blocks `run=` so the runner executes them.
+- Acceptance: the four README blocks execute; `gender` round-trips as a
+  dictionary ID and an unknown code round-trips through the concept fallback.
+- Verify: `ctest --test-dir build -R 'cpp_readme_|cpp_ff_test_cc' --output-on-failure`
+
+---
+
+## COV-3 — `cpp_ff_test_recovery` flaked once and is not seeded (P2)
+
+**Observed 2026-09-10, once, in a full `ctest` run; not reproduced since** — 8/8
+clean standalone and two clean full runs afterwards. Recording it rather than
+diagnosing it, because a one-in-N failure that nobody wrote down is the one that
+gets waved through next time.
+
+CLAUDE.md's rule is that a randomised suite pins its seed, prints it, and takes
+`--seed <n>` — `ff_test_datetime` is the model. `tests/cpp/test_recovery.cpp`
+names specific seeds in comments ("seed 19 flipped the slot copy") but takes no
+seed argument, so a failing run cannot be replayed.
+
+- [ ] COV-3.1 Give `ff_test_recovery` the `ff_test_datetime` treatment: a fixed
+      default seed, printed on every run, overridable with `--seed <n>`. Then a
+      flake reproduces instead of evaporating.
+- [ ] COV-3.2 Only after that: run it in a loop (200×) and record whether the
+      flake is real. Do not chase it before it can be replayed.
+- Verify: `for i in $(seq 1 200); do ./build/ff_test_recovery >/dev/null || echo FAIL; done`
 
 ---
 
@@ -6681,6 +7483,12 @@ This list exists so finished work is not re-litigated, **not** as a progress log
 
 | Date | Item | Outcome |
 |---|---|---|
+| 2026-09-10 | **Block A reconciliation** | Every Block A row re-measured against the built tree, not re-read. Nine of thirteen Priority-Index rows described defects that no longer reproduce; the sections below were rewritten to state the residual only. The rows immediately following are what that pass closed. No code changed. |
+| 2026-09-10 | **A12** | `Reference.reference` truncation. Round-trips exactly; the simdjson buffer-reuse hypothesis (A12.1) was confirmed and fixed, and A12.2's whole-strategy audit is now gated **by type** rather than by spelling in `tests/generator/test_no_dangling_views.py`. Verify: the `urn:uuid:` repro under A12 exports byte-identical. |
+| 2026-09-10 | **A24** | Absent `code` enums fabricated real clinical values (63 POD members, 72 enums). Closed by the pinned `FF_UNSET = 255` sentinel. A24.5's three unmasked fields — `identifier.use`, `priority`, `reaction.severity` — all round-trip. Verify: `./build/ff_roundtrip /tmp/bare.json` returns exactly `{"resourceType":"Patient","id":"only-an-id"}`. |
+| 2026-09-10 | **A25.1 / A25.2** | `Quantity.value` read back as `FF_NULL_OFFSET`-as-double. Stored and read correctly; an absent value emits no key. **A25.3's reader guard is still open** and stays in the file. |
+| 2026-09-10 | **A26** | Bundle entries dropped (250 in / 209 out) and `fullUrl` / `request` never parsed. Fixed by delegating the non-resource entry fields to `Bundle_entry_from_json` instead of growing the hardcoded patcher. Verify: 857→857, 820→820, 847→847, 250→250 with all three keys present. |
+| 2026-09-10 | **A28** | Standalone generator run did not reproduce `python/fields/` (85 of 228 files differed) because `emit_python_fields` and `emit_python_ast` wrote the same filename. Closed by the keyword-only `truncated_by` contract — first touch in a run truncates, later touches append — which also fixed a worse latent bug the task never named: 144 modules had no truncating writer at all, so a blind append restacked the class on every configure (36 copies of `BUNDLE_ENTRY_PATH` in a long-lived tree). `test_determinism.py`'s `filecmp.dircmp` walk is recursive, so it covers `python/`. |
 | 2026-08-27 | **REC-18** | Gap analysis. `classify_block()` now sizes every tag (generated blocks from `reflected_fields_view`, plus `FF_CODEABLE_CONCEPT` / `FF_URL_DIRECTORY` / `FF_CHECKSUM`), so the arena tiles; `find_gaps()` reports each run of bytes no entry claims as a `Hole` — the one damage class (both witnesses destroyed) scan + reachability cannot represent. Compact streams are refused. `1c98659`, `6a56c2b`. |
 | 2026-08-26 | **P0-1 / CAPI-13** | `deserialize` emitted no code for singular block fields *and* `FF_FIELD_URL`. 736 dropped fields across 37 files → 0. Fail-loud `else` added. `tests/cpp/test_poco_parity.cpp` pins it. |
 | 2026-08-26 | **CAPI-15** | `Parser(const void*, size_t)` SEGV'd on a corrupted `CHECKSUM_OFFSET`; now bounds-checked before dereference. `FastFHIR::Recovery` shipped alongside. |

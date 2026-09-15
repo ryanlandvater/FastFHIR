@@ -75,6 +75,9 @@ FastFHIR provides **strongly validated, type-safe FHIR encoding** with guarantee
 * **Native FHIR Polymorphic Type Support:** FastFHIR understands FHIR's polymorphic fields exactly as the spec defines them, including both choice elements such as `valueQuantity`, `valueString`, `valueCodeableConcept`, and other `[x]` fields, and polymorphic resource-bearing slots such as `Bundle.entry.resource`. Concrete payload types retain strict runtime identity and can be ingested, traversed, materialized, mutated, and re-exported without lossy adapter layers or non-compliant generic protobuf JSON conventions.
 * **Structured Codes & Extensions:** Extensions are intelligently routed at ingest time — registered extensions are decoded into typed binary fields (WASM-based codecs); unknown extensions are preserved with URL tracking. Codes are strongly enumerated from official FHIR CodeSystems.
 * **Primitive Extensions Preserved Correctly:** FastFHIR supports FHIR's underscore-prefixed primitive extension model, allowing extensions on scalar primitives to survive ingest, validation, traversal, and re-export. This is a critical compatibility requirement that standard Protobuf JSON serializers do not implement.
+* **Conformance Checking Is Opt-In, and Separate:** The validation above is *structural* — a block sits at its own offset, carries its tag, and fits in the arena — and it always runs. *Conformance* checking is a separate, attachable layer generated from the HL7 StructureDefinitions: required elements such as `Observation.status`, cardinality, and a queryable record of every FHIRPath invariant it does **not** evaluate. Build it with `-DFASTFHIR_BUILD_CONFORMANCE=ON`, attach it with `Builder::attach_layer`, and a stream written with it attached is byte-identical to one written without it. Detached, it costs one null check. Modelled on Vulkan validation layers: a development-time aid, not a production dependency. See `examples/conformance_layer.cpp`.
+
+> **Scope.** FastFHIR is a serialization library, not a FHIR server. There is no REST API, no SMART on FHIR, and no OAuth. The conformance layer checks *resources*, not *interactions* — it will tell you that an `Observation` is missing its required `status`, and it will not tell you anything about a `$validate` operation, a search parameter, or a capability statement.
 
 ### 3. Memory Safety & Integrity
 **Memory safety is a first-class feature**. FastFHIR gives deterministic memory management and structural integrity at the OS level.
@@ -226,10 +229,35 @@ See [Generator Architecture](#generator-architecture) for details on profiles an
 
 # Getting Started
 
-These three basic steps walk you from basic FHIR to a fully-functioning binrary FastFHIR workflow.
-Start at whichever step matches your use-case — you do not have to use all three together.
+These three basic steps walk you from basic FHIR to a fully-functioning binary FastFHIR
+workflow. Start at whichever step matches your use-case — you do not have to use all three
+together.
 
-All example code below is validated in [tests/cpp/test_readme.cpp](tests/cpp/test_readme.cpp) for reference.
+**Every `cpp` block on this page is checked by the test suite, as published — not a copy
+of it.** Two gates, because "it compiles" and "it works" are different claims:
+
+| Gate | What it does | Covers |
+|---|---|---|
+| `ctest -R py_readme_cpp_compiles` | Extracts each block and builds it `-fsyntax-only` | all 23 buildable blocks |
+| `ctest -R cpp_readme_` | **Extracts and RUNS** the block, then asserts on the result | the 7 end-to-end examples |
+
+The second one is the important one. The runner is *generated from this file* — the code it
+executes is the text above, verbatim, not a re-implementation. Change a value in an example
+and the suite goes red naming that block.
+
+This exists because for a long time only a hand-written parallel copy existed
+([tests/cpp/test_readme.cpp](tests/cpp/test_readme.cpp)). It proved the examples worked and
+could say nothing about this page, so the two drifted: every C++ block here called an API
+that no longer existed while `ctest` stayed green. Running the published bytes is the only
+thing that closes that, and doing it found four more defects the compile gate could not see
+— including examples that parsed a stream before it was sealed and assigned a field in a way
+that throws.
+
+> **Editing a block?** The HTML comment above each fence configures the gates
+> (`program`, `fragment`, `expressions`, `needs=`, `requires=`, `run=`) and is invisible
+> when rendered. Adding `run=<id>` makes a block *execute*; its fixtures and assertions go
+> in `tests/readme/expect.hpp`, never in this page. `--dump <n>` on
+> `tests/python/test_readme_compiles.py` prints exactly what was compiled.
 
 ---
 
@@ -239,6 +267,7 @@ All example code below is validated in [tests/cpp/test_readme.cpp](tests/cpp/tes
 existing `.ffhr` archive in read-only mode, loads it into memory, and prints fields only
 when they are present.
 
+<!-- ff-compile: program run=step1_parse -->
 ```cpp
 #include <FastFHIR.hpp>
 #include <cstdio>
@@ -273,6 +302,7 @@ static std::vector<uint8_t> open_read_only_file(const char* path) {
     return raw_bytes;
 }
 
+int main() {
 auto raw_bytes = open_read_only_file("patient.ffhr");
 // Bind the parser — validates the header immediately, zero heap allocations.
 FastFHIR::Parser parser(raw_bytes.data(), raw_bytes.size());
@@ -299,6 +329,8 @@ if (auto name_array = root[FastFHIR::Fields::PATIENT::NAME]) {
         }
     }
 }
+return 0;
+}
 ```
 
 That is the complete read path.
@@ -312,6 +344,7 @@ streaming ingestion path. There are three flavours:
 
 ### Anonymous RAM arena (in-process only)
 
+<!-- ff-compile: fragment -->
 ```cpp
 #include <FastFHIR.hpp>
 
@@ -322,6 +355,7 @@ auto mem = FastFHIR::Memory::create();
 
 ### File-backed arena (persistent storage)
 
+<!-- ff-compile: fragment -->
 ```cpp
 #include <FastFHIR.hpp>
 
@@ -335,6 +369,7 @@ auto mem = FastFHIR::Memory::createFromFile("patient.ffhr");
 
 Once a `Memory` object is created, it can be used to parse or parse, build, or ingest FHIR resources.
 
+<!-- ff-compile: fragment needs=arena -->
 ```cpp
 // Parse memory like Step 1 above, but in a much easier path
 FastFHIR::Parser parser(mem);
@@ -348,10 +383,11 @@ auto root = parser.root();
 
 ## Step 3 — Build a FastFHIR record from FHIR JSON
 
-`Builder` writes binary data into the `Memory` arena; `Ingest::Ingestor` converts FHIR JSON into
+`FF_Stream` writes binary data into the `Memory` arena; `FF_Ingestor` converts FHIR JSON into
 the binary layout for you. Together they replace the traditional parse → validate →
 serialize pipeline with a single in-place ingestion pass.
 
+<!-- ff-compile: fragment run=step3_build -->
 ```cpp
 #include <FastFHIR.hpp>
 #include <FF_FieldKeys.hpp>
@@ -360,8 +396,15 @@ serialize pipeline with a single in-place ingestion pass.
 // Use an anonymous arena for this example — swap in createFromFile() to persist to disk.
 auto mem = FastFHIR::Memory::create(/*Optionally provide arena upper bounds (something like 4 GB)*/);
 
-FastFHIR::Builder          builder(mem, FHIR_VERSION_R5);
-FastFHIR::Ingest::Ingestor ingestor;
+FastFHIR::FF_StreamCreateInfo stream_info;
+stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+stream_info.version = FHIR_VERSION_R5;
+FastFHIR::FF_Stream stream;
+FastFHIR::FF_CreateStream(stream_info, stream);
+
+FastFHIR::FF_IngestorCreateInfo ingestor_info;
+FastFHIR::FF_Ingestor ingestor;
+FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
 
 // Any valid FHIR R4/R5 Patient JSON string.
 std::string json = R"({
@@ -373,21 +416,29 @@ std::string json = R"({
 
 // Ingest: converts JSON → binary in a single pass, writes into the arena.
 FastFHIR::Reflective::ObjectHandle patient_handle;
-size_t parsed_count = 0;
-ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, json},
-                patient_handle, parsed_count);
+Size parsed_count = 0;
+FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
+    .ingestor    = ingestor,
+    .stream      = stream,
+    .source_type = FF_SOURCE_FHIR_JSON,
+    .payload     = json,
+}, patient_handle, parsed_count);
 
 // Enrich fields using typed resource keys.
 patient_handle[FastFHIR::Fields::PATIENT::ACTIVE] = true;
-patient_handle[FastFHIR::Fields::PATIENT::BIRTH_DATE] = "1990-03-21";
+patient_handle[FastFHIR::Fields::PATIENT::BIRTH_DATE] = std::string_view("1990-03-21");
 
-// Code assignment example.
-// Known values resolve through the dictionary path (fast integer code ID).
-patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "male";
+// `gender` is already set — the ingest pass above encoded it from the JSON.
+// NOTE: assigning a `code` field through a handle is NOT yet supported and
+// throws (CAPI-16). Set code fields at ingest, as this example does.
 
 // Seal the stream (no checksum for brevity; see API Examples for SHA-256).
-builder.set_root(patient_handle);
-auto view = builder.finalize();      // returns a lifetime-safe Memory::View
+FastFHIR::FF_StreamSetRoot(FastFHIR::FF_StreamSetRootInfo{
+    .stream = stream,
+    .root   = patient_handle,
+});
+FastFHIR::Memory::View view;          // a lifetime-safe window over the sealed bytes
+FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{.stream = stream}, view);
 
 // Read it back immediately — zero copies, same arena pages.
 FastFHIR::Parser parser(view.data(), view.size());
@@ -395,9 +446,12 @@ auto root              = parser.root();
 std::string_view id       = root[FastFHIR::Fields::PATIENT::ID];         // "patient-1"
 bool             active   = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>();  // true
 std::string_view gender   = root[FastFHIR::Fields::PATIENT::GENDER];     // "male"
-std::string_view birthdate = root[FastFHIR::Fields::PATIENT::BIRTH_DATE]; // "1990-03-21"
+// birthDate is a PACKED date/time slot — reading it as a string_view throws
+// ("Node is not a string or code"). Test presence, and use print_json when the
+// text itself is needed. See "Open and read a .ffhr file" below, and CAPI-4.
+bool has_birthdate = static_cast<bool>(root[FastFHIR::Fields::PATIENT::BIRTH_DATE]);
 std::cout << "id=" << id << "  active=" << active
-          << "  gender=" << gender << "  birthdate=" << birthdate << "\n";
+          << "  gender=" << gender << "  birthDate set=" << has_birthdate << "\n";
 ```
 
 That is the complete write + read cycle. The advanced examples below show checksums,
@@ -414,6 +468,7 @@ writes goes straight to the OS page cache — no intermediate buffer, no `write(
 and no copy at `finalize()`. When `finalize()` returns, `patient.ffhr` is a complete,
 sealed FastFHIR archive on disk.
 
+<!-- ff-compile: fragment needs=readfile run=example_1_ingest -->
 ```cpp
 #include <FastFHIR.hpp>
 #include <FF_FieldKeys.hpp>
@@ -422,18 +477,34 @@ sealed FastFHIR archive on disk.
 // Map the arena straight to a file — every write goes directly to disk
 auto mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
 
-FastFHIR::Builder          builder(mem, FHIR_VERSION_R5);
-FastFHIR::Ingest::Ingestor ingestor;
+FastFHIR::FF_StreamCreateInfo stream_info;
+stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+stream_info.version = FHIR_VERSION_R5;
+FastFHIR::FF_Stream stream;
+FastFHIR::FF_CreateStream(stream_info, stream);
 
-std::string json_string = /* read patient.json */;
+FastFHIR::FF_IngestorCreateInfo ingestor_info;
+FastFHIR::FF_Ingestor ingestor;
+FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
+
+std::vector<uint8_t> raw = open_read_only_file("patient.json");
+std::string json_string(reinterpret_cast<const char*>(raw.data()), raw.size());
 
 FastFHIR::Reflective::ObjectHandle patient_handle;
-size_t parsed_count = 0;
-ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, json_string},
-                patient_handle, parsed_count);
+Size parsed_count = 0;
+FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
+    .ingestor    = ingestor,
+    .stream      = stream,
+    .source_type = FF_SOURCE_FHIR_JSON,
+    .payload     = json_string,
+}, patient_handle, parsed_count);
 
-// Inspect while the stream is still open — zero heap allocations
-auto root = FastFHIR::Parser(mem).root();
+// Inspect while the stream is still open — zero heap allocations.
+// Read through the handle the ingest returned, NOT through a Parser: until
+// FF_StreamSetRoot and FF_StreamFinalize have run there is no FF_HEADER and no
+// root pointer in the arena, so `Parser(mem)` fails header validation and
+// FF_StreamQuery has no root to hand back.
+auto root = patient_handle.as_node();
 std::string_view id     = root[FastFHIR::Fields::PATIENT::ID];    // "patient-1"
 std::string_view gender = root[FastFHIR::Fields::PATIENT::GENDER]; // "male"
 bool             active = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>(); // true
@@ -447,12 +518,20 @@ for (auto& name_entry : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
 }
 
 // Seal with a SHA-256 footer — writes header + hash directly into the mapped pages
-builder.set_root(patient_handle);
-builder.finalize(FF_CHECKSUM_SHA256, [](const unsigned char* data, size_t len) {
-    std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
-    SHA256(data, len, hash.data());
-    return hash;
+FastFHIR::FF_StreamSetRoot(FastFHIR::FF_StreamSetRootInfo{
+    .stream = stream,
+    .root   = patient_handle,
 });
+FastFHIR::Memory::View view;
+FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
+    .stream    = stream,
+    .algorithm = FF_CHECKSUM_SHA256,
+    .hasher    = [](const unsigned char* data, size_t len) {
+        std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
+        SHA256(data, len, hash.data());
+        return hash;
+    },
+}, view);
 // patient.ffhr is now a valid, portable FastFHIR archive
 ```
 
@@ -462,6 +541,7 @@ builder.finalize(FF_CHECKSUM_SHA256, [](const unsigned char* data, size_t len) {
 
 Mount an existing archive and traverse directly via `Parser::root()`.
 
+<!-- ff-compile: fragment run=example_2_read -->
 ```cpp
 #include <FastFHIR.hpp>
 #include <FF_FieldKeys.hpp>
@@ -485,7 +565,7 @@ bool             active = root[FastFHIR::Fields::PATIENT::ACTIVE].as<bool>(); //
 // code"). Check presence via the slot's truthiness; use print_json when the
 // text is actually required. Zero-copy date reading is tracked upstream as
 // CAPI-4.
-bool has_birth_date = root[FastFHIR::Fields::PATIENT::BIRTH_DATE];     // presence
+bool has_birth_date = static_cast<bool>(root[FastFHIR::Fields::PATIENT::BIRTH_DATE]); // presence
 
 // Walk structured arrays
 for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
@@ -558,6 +638,7 @@ to the tail and amends only the field pointers in the header — the original re
 are never touched. The OS page cache flushes only the dirty pages (new tail + updated
 pointers). The file grows solely by the delta; no copy of existing data is ever made.
 
+<!-- ff-compile: fragment run=example_3_enrich -->
 ```cpp
 #include <FastFHIR.hpp>
 #include <FF_FieldKeys.hpp>
@@ -565,26 +646,42 @@ pointers). The file grows solely by the delta; no copy of existing data is ever 
 
 auto mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
 
-FastFHIR::Builder          builder(mem, FHIR_VERSION_R5);
-FastFHIR::Ingest::Ingestor ingestor;
+FastFHIR::FF_StreamCreateInfo stream_info;
+stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+stream_info.version = FHIR_VERSION_R5;
+FastFHIR::FF_Stream stream;
+FastFHIR::FF_CreateStream(stream_info, stream);
+
+FastFHIR::FF_IngestorCreateInfo ingestor_info;
+FastFHIR::FF_Ingestor ingestor;
+FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
 
 // Obtain a mutable handle to the existing root
-auto patient = builder.snapshot().root_handle();
+auto patient = stream->root_handle();
 
 // Append or overwrite scalar fields (new bytes appended; field pointer amended)
-patient[FastFHIR::Fields::PATIENT::BIRTH_DATE] = "1990-03-21";
+patient[FastFHIR::Fields::PATIENT::BIRTH_DATE] = std::string_view("1990-03-21");
 patient[FastFHIR::Fields::PATIENT::ACTIVE]     = true;
 
 // Append a structured sub-object via the ingestor
-ingestor.insert_at_field(patient, FastFHIR::Fields::PATIENT::TELECOM,
-    R"({"system":"phone","value":"555-0199","use":"mobile"})");
+FastFHIR::FF_IngestInsertAtField(FastFHIR::FF_IngestInsertInfo{
+    .ingestor = ingestor,
+    .parent   = patient,
+    .key      = FastFHIR::Fields::PATIENT::TELECOM,
+    .payload  = R"({"system":"phone","value":"555-0199","use":"mobile"})",
+});
 
 // Re-seal with an updated checksum — original data untouched, new tail written
-builder.finalize(FF_CHECKSUM_SHA256, [](const unsigned char* data, size_t len) {
-    std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
-    SHA256(data, len, hash.data());
-    return hash;
-});
+FastFHIR::Memory::View view;
+FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
+    .stream    = stream,
+    .algorithm = FF_CHECKSUM_SHA256,
+    .hasher    = [](const unsigned char* data, size_t len) {
+        std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
+        SHA256(data, len, hash.data());
+        return hash;
+    },
+}, view);
 // patient.ffhr now contains the enriched record
 ```
 
@@ -602,6 +699,7 @@ reads straight from the same arena pages — zero copies on egress.
 `tests/cpp/test_readme.cpp` validates this path end-to-end with an in-process
 loopback TCP transport.
 
+<!-- ff-compile: fragment -->
 ```cpp
 #include <FastFHIR.hpp>
 #include <FF_FieldKeys.hpp>
@@ -609,7 +707,9 @@ loopback TCP transport.
 
 auto mem = FastFHIR::Memory::create(256 * 1024 * 1024);   // 256 MB anonymous arena
 
-FastFHIR::Ingest::Ingestor ingestor;
+FastFHIR::FF_IngestorCreateInfo ingestor_info;
+FastFHIR::FF_Ingestor ingestor;
+FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
 
 asio::io_context io;
 asio::ip::tcp::socket conn(io);
@@ -629,19 +729,40 @@ std::string raw_json;
 
 // ── Step 2: ingest and enrich ──
 auto mem2 = FastFHIR::Memory::create(256 * 1024 * 1024);
-FastFHIR::Builder builder(mem2, FHIR_VERSION_R5);
+FastFHIR::FF_StreamCreateInfo stream_info;
+stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem2);
+stream_info.version = FHIR_VERSION_R5;
+FastFHIR::FF_Stream stream;
+FastFHIR::FF_CreateStream(stream_info, stream);
+
 FastFHIR::Reflective::ObjectHandle patient_handle;
-size_t count = 0;
-ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, raw_json},
-                patient_handle, count);
+Size count = 0;
+FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
+    .ingestor    = ingestor,
+    .stream      = stream,
+    .source_type = FF_SOURCE_FHIR_JSON,
+    .payload     = raw_json,
+}, patient_handle, count);
 
 patient_handle[FastFHIR::Fields::PATIENT::ACTIVE]  = true;
-ingestor.insert_at_field(patient_handle, FastFHIR::Fields::PATIENT::TELECOM,
-    R"({"system":"phone","value":"555-0199","use":"mobile"})");
+// Patch a parsed sub-object into one field of an object already in the arena.
+FastFHIR::FF_IngestInsertAtField(FastFHIR::FF_IngestInsertInfo{
+    .ingestor = ingestor,
+    .parent   = patient_handle,
+    .key      = FastFHIR::Fields::PATIENT::TELECOM,
+    .payload  = R"({"system":"phone","value":"555-0199","use":"mobile"})",
+});
 
 // ── Step 3: seal and send back — view reads straight from the arena ──
-builder.set_root(patient_handle);
-auto view = builder.finalize(FF_CHECKSUM_CRC32);
+FastFHIR::FF_StreamSetRoot(FastFHIR::FF_StreamSetRootInfo{
+    .stream = stream,
+    .root   = patient_handle,
+});
+FastFHIR::Memory::View view;
+FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
+    .stream    = stream,
+    .algorithm = FF_CHECKSUM_CRC32,
+}, view);
 
 asio::write(conn, asio::buffer(view.data(), view.size())); // zero-copy egress
 ```
@@ -655,6 +776,7 @@ Finding one patient, appending a lab result, and resealing never loads the other
 5 GB into RAM. Only the dirty pages (new Observation tail + updated pointers)
 are ever written back to disk.
 
+<!-- ff-compile: fragment run=example_5_surgical -->
 ```cpp
 #include <FastFHIR.hpp>
 #include <FF_FieldKeys.hpp>
@@ -663,47 +785,63 @@ are ever written back to disk.
 // Map the entire bundle — address space reserved, pages not loaded until accessed
 auto mem = FastFHIR::Memory::createFromFile("bundle.ffhr", 8ULL * 1024 * 1024 * 1024);
 
-FastFHIR::Builder          builder(mem, FHIR_VERSION_R5);
-FastFHIR::Ingest::Ingestor ingestor;
+FastFHIR::FF_StreamCreateInfo stream_info;
+stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+stream_info.version = FHIR_VERSION_R5;
+FastFHIR::FF_Stream stream;
+FastFHIR::FF_CreateStream(stream_info, stream);
+
+FastFHIR::FF_IngestorCreateInfo ingestor_info;
+FastFHIR::FF_Ingestor ingestor;
+FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
 
 auto parser = FastFHIR::Parser(mem);
 auto bundle = parser.root();
 
-// Walk bundle.entry; the OS faults in only the pages we read
-FastFHIR::Reflective::ObjectHandle target_patient;
+// Walk bundle.entry; the OS faults in only the pages we read.
+// concrete_recovery() reads the type recorded BESIDE the offset, so the scan
+// filters by resource type without dereferencing every entry.
+bool found = false;
 for (auto& entry_node : bundle[FastFHIR::Fields::BUNDLE::ENTRY].entries()) {
     auto resource = entry_node[FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE];
     if (!resource) continue;
-    if (resource.recovery() != RECOVERY_TAG::Patient) continue;
-    if (resource[FastFHIR::Fields::PATIENT::ID] == "patient-42") {
-        target_patient = builder.mutable_handle(resource);
-        break;
-    }
+    if (resource.concrete_recovery() != RECOVER_FF_PATIENT) continue;
+    std::string_view id = resource.as_node()[FastFHIR::Fields::PATIENT::ID];
+    if (id == "patient-42") { found = true; break; }
 }
-
-if (!target_patient) throw std::runtime_error("patient-42 not found");
+if (!found) throw std::runtime_error("patient-42 not found");
 
 // Append a new Observation — every other entry in the bundle is untouched
 FastFHIR::Reflective::ObjectHandle obs_handle;
-size_t count = 0;
-ingestor.ingest({builder, FastFHIR::Ingest::SourceType::FHIR_JSON, R"({
-    "resourceType": "Observation",
-    "status": "final",
-    "code": {"coding": [{"system": "http://loinc.org", "code": "2345-7", "display": "Glucose"}]},
-    "subject": {"reference": "Patient/patient-42"},
-    "valueQuantity": {"value": 94.0, "unit": "mg/dL", "system": "http://unitsofmeasure.org"}
-})"}, obs_handle, count);
+Size count = 0;
+FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
+    .ingestor    = ingestor,
+    .stream      = stream,
+    .source_type = FF_SOURCE_FHIR_JSON,
+    .payload     = R"({
+        "resourceType": "Observation",
+        "status": "final",
+        "code": {"coding": [{"system": "http://loinc.org", "code": "2345-7", "display": "Glucose"}]},
+        "subject": {"reference": "Patient/patient-42"},
+        "valueQuantity": {"value": 94.0, "unit": "mg/dL", "system": "http://unitsofmeasure.org"}
+    })",
+}, obs_handle, count);
 
-// Amend the patient record — only this entry's pages are dirtied
-target_patient[FastFHIR::Fields::PATIENT::TELECOM] = /* ... */;
+// Amend the ROOT record — the handle the stream already owns
+auto root_handle = stream->root_handle();
+root_handle[FastFHIR::Fields::BUNDLE::TIMESTAMP] = std::string_view("2026-09-09T00:00:00Z");
 
 // Reseal — rewrites only the header + checksum pages, nothing else
-builder.set_root(builder.mutable_handle(bundle));
-builder.finalize(FF_CHECKSUM_SHA256, [](const unsigned char* data, size_t len) {
-    std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
-    SHA256(data, len, hash.data());
-    return hash;
-});
+FastFHIR::Memory::View view;
+FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
+    .stream    = stream,
+    .algorithm = FF_CHECKSUM_SHA256,
+    .hasher    = [](const unsigned char* data, size_t len) {
+        std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
+        SHA256(data, len, hash.data());
+        return hash;
+    },
+}, view);
 // bundle.ffhr updated; 5 GB of untouched entries were never copied
 ```
 
@@ -716,6 +854,7 @@ In this pattern, each worker appends one `Observation` into the same shared lock
 arena, producing a `Bundle.entry` list in parallel. The root `Bundle` is then assembled
 once on the caller thread and sealed with a checksum.
 
+<!-- ff-compile: program run=example_6_concurrent -->
 ```cpp
 #include <FastFHIR.hpp>
 #include <FF_Bundle.hpp>
@@ -726,37 +865,53 @@ once on the caller thread and sealed with a checksum.
 
 std::vector<uint8_t> serialize_bundle_parallel(const std::vector<ObservationData>& raw_observations) {
     auto mem = FastFHIR::Memory::create(256 * 1024 * 1024); // Allocate 256 MB VMA arena
-    FastFHIR::Builder builder(mem, FHIR_VERSION_R5);
+    FastFHIR::FF_StreamCreateInfo stream_info;
+    stream_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+    stream_info.version = FHIR_VERSION_R5;
+    FastFHIR::FF_Stream stream;
+    FastFHIR::FF_CreateStream(stream_info, stream);
 
     // 1) Concurrently append Observation resources into one shared lock-free stream.
     std::vector<BundleentryData> entries(raw_observations.size());
-      std::transform(
-    #if defined(__cpp_lib_execution) && (__cpp_lib_execution >= 201603L)
-      std::execution::par_unseq,
-    #else
-      std::execution::par,
-    #endif
-      fixture.bundle.begin(),
-      fixture.bundle.end(),
-      entries.begin(),
-      [&builder](const ObservationData& obs) -> BundleentryData {
-            BundleentryData entry{};
-            entry.resource = static_cast<FastFHIR::Reflective::ResourceReference>(
-                builder.append_obj(obs)
-            );
-            return entry;
-        }
-    );
+    auto to_entry = [&stream](const ObservationData& obs) -> BundleentryData {
+        BundleentryData entry{};
+        entry.resource = static_cast<ResourceReference>(
+            FastFHIR::FF_StreamAppendObject(stream, obs)
+        );
+        return entry;
+    };
+    // __cpp_lib_parallel_algorithm is the feature-test macro for the parallel
+    // OVERLOADS. __cpp_lib_execution only promises the policy TYPES exist --
+    // libc++ defines that one and provides no parallel overloads, so testing it
+    // picks an overload that is not there.
+#if defined(__cpp_lib_parallel_algorithm)
+    std::transform(std::execution::par_unseq,
+                   raw_observations.begin(), raw_observations.end(),
+                   entries.begin(), to_entry);
+#else
+    // No parallel backend in this standard library (libc++ today). The appends
+    // are lock-free either way; this loses the concurrency, not the result.
+    std::transform(raw_observations.begin(), raw_observations.end(),
+                   entries.begin(), to_entry);
+#endif
 
     // 2) Assemble the Bundle root once after all parallel appends complete.
     BundleData bundle{};
-    bundle.type = BundleType::Collection;
+    bundle.type = FF_BundleType::Collection;
     bundle.entry = std::move(entries);
 
-    builder.set_root(builder.append_obj(bundle));
-    auto view = builder.finalize(FF_CHECKSUM_SHA256);
+    FastFHIR::FF_StreamSetRoot(FastFHIR::FF_StreamSetRootInfo{
+        .stream = stream,
+        .root   = FastFHIR::FF_StreamAppendObject(stream, bundle),
+    });
+    FastFHIR::Memory::View view;
+    FastFHIR::FF_StreamFinalize(FastFHIR::FF_StreamFinalizeInfo{
+        .stream    = stream,
+        .algorithm = FF_CHECKSUM_SHA256,
+    }, view);
 
-    return std::vector<uint8_t>(view.begin(), view.end());
+    const auto* first = reinterpret_cast<const uint8_t*>(view.data());
+    return std::vector<uint8_t>(first, first + view.size());
 }
 ```
 
@@ -818,6 +973,7 @@ left unset) and smaller for dense records where most fields are populated.
 
 ### Usage
 
+<!-- ff-compile: fragment -->
 ```cpp
 #include <FastFHIR.hpp>
 #include <FF_FieldKeys.hpp>
@@ -965,6 +1121,7 @@ cat bundle.json | ./ff_ingest | ./ff_compact | ./ff_export > bundle.json
 
 For C++ code, prefer typed resource keys. They carry owner recovery, field kind, and byte offset metadata for safer mutation and traversal.
 
+<!-- ff-compile: expressions -->
 ```cpp
 FastFHIR::Fields::PATIENT::ID          // "id"          (scalar)
 FastFHIR::Fields::PATIENT::ACTIVE      // "active"      (bool)
@@ -983,20 +1140,30 @@ FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE // "resource"  (polymorphic resource)
 
 ### Code Assignment Semantics
 
-When you assign a string to a coded field (for example `Patient.gender`,
-`Observation.status`, or `Coding.code`), FastFHIR stores it using this order:
+When a string is stored into a coded field (for example `Patient.gender`,
+`Observation.status`, or `Coding.code`), FastFHIR encodes it using this order:
 
 1. Dictionary lookup (`FF_GetDictionaryCode`)
 2. Custom string fallback (`FF_STRING` + relative pointer)
 3. Null sentinel (`FF_CODE_NULL`) for empty input
+
+> ⚠ **This happens on the INGEST path today, not through a mutable handle.**
+> `handle[Fields::PATIENT::GENDER] = std::string_view("male")` **throws**
+> — `MutableEntry::operator=` has a special case for `FF_FIELD_DATETIME` and none
+> for `FF_FIELD_CODE`, so the code slot falls through to the generic
+> pointer-patch path and fails its schema check. There is no `amend_code` on the
+> builder. Tracked as **CAPI-16**; the three blocks below describe the encoding
+> the ingestor performs and the API that assignment should acquire, so they are
+> compiled but not executed.
 
 #### 1) Dictionary lookup
 
 FastFHIR first attempts to map the incoming code string using
 `FF_GetDictionaryCode`. If found, the field stores that dictionary ID directly.
 
+<!-- ff-compile: fragment needs=handles -->
 ```cpp
-patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "male";
+patient_handle[FastFHIR::Fields::PATIENT::GENDER] = std::string_view("male");
 // "male" is typically dictionary-resolved and stored as a dict_code
 ```
 
@@ -1008,8 +1175,9 @@ and stores that offset with `FF_CODEABLE_CONCEPT_FLAG` (`0x80000000`) set in the
 
 This marks the value as a custom-string reference instead of a dictionary ID.
 
+<!-- ff-compile: fragment needs=handles -->
 ```cpp
-patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "org-local-code-91827";
+patient_handle[FastFHIR::Fields::PATIENT::GENDER] = std::string_view("org-local-code-91827");
 // Not in dictionary -> stored as CodeableConcept block with FF_CODEABLE_CONCEPT_FLAG
 ```
 
@@ -1017,8 +1185,9 @@ patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "org-local-code-91827";
 
 If the assigned string is empty, FastFHIR stores `FF_CODE_NULL`.
 
+<!-- ff-compile: fragment needs=handles -->
 ```cpp
-patient_handle[FastFHIR::Fields::PATIENT::GENDER] = "";
+patient_handle[FastFHIR::Fields::PATIENT::GENDER] = std::string_view("");
 // Stored as FF_CODE_NULL
 ```
 
@@ -1067,9 +1236,10 @@ and a leap second (`:60`) is legal and must survive. Comparison for equality
 becomes an integer compare instead of a string compare, and a value costs 8
 bytes instead of an 8-byte pointer plus a 14-byte block header plus the text.
 
+<!-- ff-compile: fragment needs=handles -->
 ```cpp
-patient_handle[FastFHIR::Fields::PATIENT::BIRTH_DATE] = "1969-07-20";
-obs_handle[FastFHIR::Fields::OBSERVATION::ISSUED]     = "2024-01-15T13:45:30Z";
+patient_handle[FastFHIR::Fields::PATIENT::BIRTH_DATE] = std::string_view("1969-07-20");
+obs_handle[FastFHIR::Fields::OBSERVATION::ISSUED]     = std::string_view("2024-01-15T13:45:30Z");
 // Packed inline: no child block, no pointer chase.
 ```
 
@@ -1084,8 +1254,9 @@ is not legal for that FHIR type — FastFHIR writes the **original string** into
 the arena as an `FF_STRING`, and stores the relative offset with
 `FF_DATETIME_FALLBACK_FLAG` (bit 63) set, exactly as an unknown code is stored.
 
+<!-- ff-compile: fragment needs=handles -->
 ```cpp
-obs_handle[FastFHIR::Fields::OBSERVATION::ISSUED] = "2024-01-15T13:45:30.123456Z";
+obs_handle[FastFHIR::Fields::OBSERVATION::ISSUED] = std::string_view("2024-01-15T13:45:30.123456Z");
 // 6 fractional digits -> FF_STRING fallback; the text is preserved byte-for-byte.
 ```
 
@@ -1143,12 +1314,13 @@ When ingesting/building a choice field, FastFHIR follows this sequence:
 
 Concrete examples:
 
+<!-- ff-compile: fragment needs=handles -->
 ```cpp
 // Scalar choice assignment (Observation.valueBoolean)
 observation_handle[FastFHIR::Fields::OBSERVATION::VALUE] = true;
 
 // Complex choice assignment (Observation.valueString)
-observation_handle[FastFHIR::Fields::OBSERVATION::VALUE] = "normal";
+observation_handle[FastFHIR::Fields::OBSERVATION::VALUE] = std::string_view("normal");
 
 // Complex object choice assignment (Observation.valueQuantity)
 QuantityData q{};
@@ -1178,10 +1350,11 @@ Choice reads are a two-stage process:
 
 Example:
 
+<!-- ff-compile: fragment needs=obsroot -->
 ```cpp
 auto value_node = observation_root[FastFHIR::Fields::OBSERVATION::VALUE];
 
-switch (value_node.kind()) {
+switch (value_node.kind) {
     case FF_FIELD_BOOL: {
         bool v = value_node.as<bool>();
         (void)v;
@@ -1221,6 +1394,7 @@ The `FF_HEADER` checksum offset points to an `FF_CHECKSUM` block containing the 
 
 ### FHIR Versions
 
+<!-- ff-compile: expressions -->
 ```cpp
 FHIR_VERSION_R4   // HL7 FHIR R4
 FHIR_VERSION_R5   // HL7 FHIR R5 (default)
@@ -1256,6 +1430,7 @@ Bits 30–0       index payload
 
 Helper predicates in `FF_Primitives.hpp`:
 
+<!-- ff-compile: expressions needs=extref -->
 ```cpp
 ff_ext_ref_is_module(ref)   // true  → WASM path (MSB = 1)
 ff_ext_ref_is_url(ref)      // true  → passive URL path (MSB = 0, not null)
@@ -1309,21 +1484,33 @@ Codec modules are registered against their extension URL before ingestion begins
 `FF_PredigestExtensionURLs()` will route all matching URLs to that module, writing a
 `MODULE_IDX`-tagged `EXT_REF` into every matching extension block.
 
+<!-- ff-compile: fragment needs=readfile requires=extensions -->
 ```cpp
-FF_MODULE_REGISTRY::register_module(
+#include <FF_Extensions.hpp>   // FF_WasmExtensionHost — not pulled in by FastFHIR.hpp
+
+// The bytes are AOT-compiled and copied, so the buffer need not outlive the call.
+std::vector<uint8_t> wasm = open_read_only_file("codecs/us_core_race.wasm");
+FastFHIR::Extensions::FF_WasmExtensionHost::get().register_module(
     "http://hl7.org/fhir/us/core/StructureDefinition/us-core-race",
-    load_wasm_module("codecs/us_core_race.wasm")
+    wasm.data(),
+    static_cast<uint32_t>(wasm.size())
 );
 ```
 
 Modules can also be pulled directly from a registry at runtime. The registry base URL is
 configurable through `FF_ExtensionRegistry`; the example below uses the default public registry:
 
+<!-- ff-compile: fragment requires=extensions -->
 ```cpp
-FF_MODULE_REGISTRY::fetch_and_register(
-    "http://hl7.org/fhir/us/core/StructureDefinition/us-core-race",
-    /* base URL from FF_ExtensionRegistry, defaults to https://registry.fastfhir.org */
-);
+#include <FF_Extensions.hpp>   // FF_WasmExtensionHost — not pulled in by FastFHIR.hpp
+
+// Resolves in order: in-memory cache, then the on-disk cache under
+// ~/.cache/fastfhir/modules/, then the remote registry. Returns false and logs
+// a warning when offline or invalid — the caller then stores the raw
+// FF_EXTENSION block instead.
+bool loaded = FastFHIR::Extensions::FF_WasmExtensionHost::get()
+    .resolve_or_fetch_module(
+        "http://hl7.org/fhir/us/core/StructureDefinition/us-core-race");
 ```
 
 ---
@@ -1349,6 +1536,7 @@ Entry 2: prior = 0     seg = "ethnicity" → full URL: "http://…/StructureDefi
 
 Reconstruct any URL at read time:
 
+<!-- ff-compile: fragment needs=arena -->
 ```cpp
 Parser parser(mem);
 if (parser.has_url_directory()) {

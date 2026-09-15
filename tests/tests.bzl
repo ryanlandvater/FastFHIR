@@ -15,6 +15,16 @@ def fastfhir_tests(copts = []):
     (CTest splits the README suite into per-example tests via --filter; Bazel
     runs the binary as one test)."""
 
+    # The conformance layer test needs the opt-in layer target. Bazel has no
+    # equivalent of the CMake option, so it is always built here -- the split
+    # that matters is that :fastfhir does not depend on it.
+    cc_test(
+        name = "test_conformance",
+        srcs = ["//:tests/cpp/test_conformance.cpp"],
+        copts = copts,
+        deps = ["//:fastfhir", "//:fastfhir_conformance"],
+    )
+
     # ── Core-only suites ─────────────────────────────────────────────────
     for name, src in [
         ("test_primitives", "test_primitives.cpp"),

@@ -330,6 +330,28 @@ struct Entry {
     bool   is_string() const;
     bool   is_scalar() const;
     size_t size()      const;
+
+
+    /**
+     * @brief The concrete RECOVERY_TAG recorded BESIDE the offset in a 10-byte
+     *        {offset, tag} tuple (FF_FIELD_RESOURCE / FF_FIELD_CHOICE).
+     *
+     * Reads the SLOT only — it does not follow the offset, so it answers
+     * "what is this?" without touching the target block. `target_recovery`
+     * cannot: for a resource slot it carries the static `child_recovery`
+     * (RECOVER_FF_RESOURCE, the polymorphic base), and only a choice slot
+     * resolves the runtime tag during lookup.
+     *
+     * The type is on the wire twice — here and in the target's header — which
+     * is the redundancy the recovery adjudicator settles when they disagree.
+     * A consumer needing certainty still calls as_node(); a consumer filtering
+     * a scan by type does not, and should not pay a dereference per record for
+     * a value already sitting in the slot it just read.
+     *
+     * @return the tag, or FF_RECOVER_UNDEFINED for slot kinds that are not
+     *         tuples or when the slot is out of bounds.
+     */
+    RECOVERY_TAG concrete_recovery() const;
 };
 /**
  * @class Node
@@ -615,6 +637,7 @@ public:
      */
     void to_debug_json(std::ostream& out, int indent = 0) const;
 #endif // NDEBUG
+
 };
 
 // ── Entry methods requiring the complete Node definition ─────────────────────

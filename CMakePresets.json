@@ -10,7 +10,8 @@
         "FASTFHIR_BUILD_TESTS": "ON",
         "FASTFHIR_BUILD_INGESTOR": "ON",
         "FASTFHIR_RUN_GENERATOR": "ON",
-        "FASTFHIR_PRODUCTION_PROFILE": "us-core,billing,medication-admin,supply"
+        "FASTFHIR_PRODUCTION_PROFILE": "us-core,billing,medication-admin,supply",
+        "FASTFHIR_BUILD_CONFORMANCE": "ON"
       }
     },
 
