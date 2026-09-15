@@ -185,7 +185,12 @@ if(FASTFHIR_BUILD_TESTS)
     # because add_ff_cpp_test() only creates the target.
     if(FASTFHIR_BUILD_CONFORMANCE)
         add_ff_cpp_test(ff_test_conformance tests/cpp/test_conformance.cpp)
-        target_link_libraries(ff_test_conformance PRIVATE fastfhir_conformance)
+        # The ingest byte-identity case (COV-1) drives FF_Ingest over real
+        # Synthea bundles, so it needs the ingestor and the corpus path too.
+        target_link_libraries(ff_test_conformance
+            PRIVATE fastfhir_conformance fastfhir_ingestor simdjson::simdjson)
+        target_compile_definitions(ff_test_conformance PRIVATE
+            $<$<BOOL:${FASTFHIR_DOWNLOAD_SYNTHEA}>:FASTFHIR_SYNTHEA_DIR="${_SYNTHEA_DIR}">)
         # The worked example is registered as a test so it cannot rot: an
         # example that stops compiling is documentation that lies.
         add_ff_cpp_test(ff_example_conformance examples/conformance_layer.cpp)

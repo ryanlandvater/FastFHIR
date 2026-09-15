@@ -112,7 +112,7 @@ proves it. Those are the ones to take if you are picking without other context.
 | **P2** | Block B | Test coverage: builder, parser, pipeline, byte fixtures. **B7 is the "assert against bytes" one** | `^## Block B` |
 | **P2–P3** | Blocks D, E, F, G, H, I | WASM, hygiene (35 items, mostly small), benchmarks, security, packaging, spec | `^## Block ` |
 | **planned** | Block J | External code systems. **J4/J5/J6 gated on A8.** J1's layer boundary is now Block K's `ValidationHooks`, so J needs a LOADER, not a mechanism — see J1's "Reconciliation OUTCOME". J3/J7/J8 need neither | `^## Block J` |
-| ✅ done | Block K | Conformance validation layer — **implemented 2026-09-09**, ctest 46/46. Two decisions still open for Ryan: the `ConcurrentLogger` sink (K1.2) and whether J4.1 attaches here (J1) | `^## Block K` |
+| ✅ done | Block K | Conformance validation layer — **implemented 2026-09-09**, ctest 46/46 (54/54 on 2026-09-15 with the README gates; real-pipeline + TSan coverage added that day). Two decisions still open for Ryan: the `ConcurrentLogger` sink (K1.2) and whether J4.1 attaches here (J1) | `^## Block K` |
 
 **Standing policy, applies to every item above:** a gate that returns zero results must not
 pass (P0-2). Assert a non-zero floor before asserting any equality.
@@ -919,6 +919,7 @@ public API hard. Full detail for each is in the work order further down
 | **CAPI-11** | Hydrated `ChoiceEntry` exposes the raw packed datetime slot | P2 | Consumers emit a 63-bit integer where a date belongs |
 | **CAPI-5** | `TypeTraits<std::string>` undefined while POCO fields are `std::string` | P2 | Assigning a POCO field back does not compile |
 | **CAPI-6** | Stale `SourceType::FHIR_JSON` in `FF_Ingestor.hpp:69` | P3 | Wrong name in the first example a consumer copies |
+| **CAPI-17** | The conformance layer cannot be attached from Python (filed 2026-09-15) | P2 | Python ingest gets no conformance checking at all |
 
 **Two claims-alignment items** are filed against README.md as **I3.6** (the `orjson` ratio
 cites a benchmark result that does not exist — no orjson arm has ever existed, and the
@@ -5954,7 +5955,8 @@ sequenceDiagram
   `FF_Builder.hpp` includes `FF_Conformance.hpp`; nothing in the core library references
   the generated layer, so the core links unchanged with the option OFF. Python bindings:
   `attach_layer` is **not** exposed in K (pybind11 cannot hand over a borrowed C++
-  pointer safely); record as a follow-up under CAPI.
+  pointer safely); record as a follow-up under CAPI. → recorded as **CAPI-17**
+  (2026-09-15).
   *Verify:* `ctest --preset ninja` — same pass count as before the change (44/44 on
   2026-09-09). Detached-cost measurement per K2.2 is a **Release** measurement (CLAUDE.md
   "Performance measurements: Release only"): run FastFHIR-benchmark Test 1 against
@@ -6033,6 +6035,24 @@ sequenceDiagram
   *Verify:* configure with the option OFF → `ninja -C build -t targets all | grep -c
   conformance` = 0 and ctest count unchanged; ON → the library builds and links.
 - [x] **K-WO-6. Tests (K5.1–K5.5) — `tests/cpp/test_conformance.cpp` + `tests/generator/test_conformance.py`.** ✅ Done. 11 C++ cases / 45 checks and 6 generator gates. **ctest 44 → 46** (the example is registered too), `pytest tests/generator` 48 → 54.
+  **Item 4's real-pipeline half landed 2026-09-15** as case 12 (`ingest_identity`,
+  12 cases / 72 checks), and it corrected the item as written: **byte identity of an
+  ingested arena is only a meaningful claim with ONE worker.** Under the default pool,
+  two DETACHED ingests of the same Synthea bundle differ in ~70% of their bytes (same
+  size, different block placement — worker scheduling decides it), so the planned
+  `memcmp` would have failed on every run for a reason unrelated to the layer. The case
+  therefore checks two things: single-worker ingest is byte-identical attached vs
+  detached, behind a detached-vs-detached control that fails with its own message if
+  that determinism is ever lost; and full-pool ingest exports an identical
+  `print_json` document. A tracing layer chained in front proves the workers consulted
+  the chain, and the Report-policy failure count (235 across the first three bundles)
+  proves conformance fired on real data (P0-2). SKIPs without the Synthea corpus.
+  **Item 6 done the same day, under ThreadSanitizer rather than ASan** (the
+  `xcode-asan` preset needs Xcode; a `-fsanitize=thread` ninja build of
+  `ff_test_conformance` was used instead, and TSan is the sanitizer that answers D4's
+  question). Case 12's pooled ingest ran with the `ConcurrentLogger` sink and the
+  `failures` counter shared across workers: 72 checks, 0 failures, **no race
+  reported**.
   *Original:*
   *Locate:* `grep -n "function(add_ff_cpp_test" tests/tests.cmake` → `19`;
   `grep -n "_BUILD_ALL\|FOLDER \"Tests\"\|XCODE_GENERATE_SCHEME ON" CMakeLists.txt`
@@ -7170,6 +7190,28 @@ dictionary ID *or* a block-relative offset with `FF_CODEABLE_CONCEPT_FLAG` set
 - Acceptance: the four README blocks execute; `gender` round-trips as a
   dictionary ID and an unknown code round-trips through the concept fallback.
 - Verify: `ctest --test-dir build -R 'cpp_readme_|cpp_ff_test_cc' --output-on-failure`
+
+---
+
+## CAPI-17 — The conformance layer cannot be attached from Python (P2)
+
+**Filed 2026-09-15**, recording the follow-up K-WO-2 deferred. `Builder::attach_layer`
+(`include/FF_Builder.hpp`) takes a **borrowed** `const ValidationHooks*` that must
+outlive the Builder, and the struct's `diagnostic` / `failures` members are borrowed
+too. pybind11 has no safe way to hand a C++ caller a pointer whose lifetime Python
+controls, so `python/FF_PythonBindings.cpp` exposes nothing from Block K
+(`grep -n attach_layer python/` → empty).
+
+- [ ] CAPI-17.1 Bind an owning wrapper instead of the raw pointer: a Python object
+      that holds the `ValidationHooks` copy, its `ConcurrentLogger` and its
+      `std::atomic<uint64_t>`, and that the stream object keeps alive
+      (`py::keep_alive`) for as long as it is attached. Expose `policy`,
+      `failures` and the logged diagnostics as read-only properties.
+- [ ] CAPI-17.2 Link `fastfhir_conformance` into `_core` only when
+      `FASTFHIR_BUILD_CONFORMANCE` is ON, and make the Python symbol absent (not
+      a stub that raises) when it is OFF — the layer is opt-in in Python too.
+- Acceptance: a Python test ingests one Synthea bundle with the layer attached under
+  `Report` and asserts a non-zero failure count and an unchanged `print_json`.
 
 ---
 

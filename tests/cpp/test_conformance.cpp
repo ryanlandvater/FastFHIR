@@ -18,6 +18,7 @@
 // real ones.
 
 #include <FastFHIR.hpp>
+#include <FF_Ingestor.hpp>
 #include "FF_AllTypes.hpp"
 #include "FF_Conformance_Layer.hpp"
 #include "FF_ConformanceEngine.hpp"
@@ -25,10 +26,12 @@
 
 #include <atomic>
 #include <cstring>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "FFHR_tests.hpp"
+#include "FFHR_test_corpus.hpp"
 
 using namespace FastFHIR;
 using namespace FastFHIR::Conformance;
@@ -423,6 +426,137 @@ void a_rule_only_applies_to_the_revision_that_states_it()
     }
 }
 
+// ── 12. The layer through the real pipeline (COV-1) ───────────────────────
+// Case 5 proves identity for a hand-built POCO on the calling thread. The
+// layer's real deployment is the ingest, where every nested and contained
+// resource reaches it through a worker's append<T_Data>. So ingest real Synthea
+// bundles with and without the layer, twice over:
+//
+//   ONE worker   -- the sealed arenas must be byte-identical. Only here is that
+//                   a meaningful claim: with a pool, block placement follows
+//                   worker scheduling, and two DETACHED ingests of one bundle
+//                   already differ in ~70% of their bytes (measured
+//                   2026-09-15). A detached-vs-detached control runs first, so
+//                   if single-worker ingest ever stops being deterministic the
+//                   failure names that instead of blaming the layer.
+//   FULL pool    -- the layer runs concurrently on the workers, and the
+//                   exported documents must be identical.
+//
+// A tracing layer sits in FRONT of the conformance layer (it always passes, so
+// the chain always reaches conformance). Its call count and the failure count
+// prove the layer actually ran -- identical output from a layer that never ran
+// would be vacuous (P0-2).
+
+/// Ingest one payload into a fresh stream, optionally under @p hooks, and
+/// return the sealed bytes. Empty on any failure.
+std::vector<BYTE> ingest_bundle(const std::string& json, const ValidationHooks* hooks,
+                                uint32_t concurrency)
+{
+    FF_StreamCreateInfo stream_info;
+    stream_info.arena   = std::make_shared<Memory>(Memory::create(2ull * 1024 * 1024 * 1024));
+    stream_info.version = FHIR_VERSION_R5;
+    FF_Stream stream;
+    if (!FF_CreateStream(stream_info, stream))
+        return {};
+    if (hooks != nullptr)
+        stream->attach_layer(hooks);
+
+    FF_IngestorCreateInfo ingestor_info;
+    ingestor_info.concurrency = concurrency;
+    FF_Ingestor ingestor;
+    if (!FF_CreateIngestor(ingestor_info, ingestor))
+        return {};
+
+    Reflective::ObjectHandle root;
+    Size                     resource_count = 0;
+    const FF_Result ingest = FF_Ingest(FF_IngestInfo{
+        .ingestor         = ingestor,
+        .stream           = stream,
+        .source_type      = FF_SOURCE_FHIR_JSON,
+        .extension_filter = FF_ExtensionFilterMode::FILTER_NONE,
+        .payload          = json,
+    }, root, resource_count);
+    if (ingest.failed())
+    {
+        printf("    ingest failed: %s\n", ingest.message.c_str());
+        return {};
+    }
+    if (!FF_StreamSetRoot(FF_StreamSetRootInfo{.stream = stream, .root = root}))
+        return {};
+
+    Memory::View view;
+    if (!FF_StreamFinalize(FF_StreamFinalizeInfo{.stream = stream}, view))
+        return {};
+    return std::vector<BYTE>(view.data(), view.data() + view.size());
+}
+
+/// The document a sealed stream exports.
+std::string exported_json(const std::vector<BYTE>& bytes)
+{
+    std::ostringstream out;
+    Parser(bytes.data(), bytes.size()).print_json(out);
+    return out.str();
+}
+
+void the_layer_never_changes_ingested_output()
+{
+    TEST_GROUP("ingest identity");
+    const std::vector<ff_test::fs::path> bundles = ff_test::find_bundles(3);
+    if (bundles.empty())
+    {
+        printf("  SKIP: Synthea corpus not configured (FASTFHIR_DOWNLOAD_SYNTHEA)\n");
+        return;
+    }
+
+    static const Entry TRACE_ENTRIES[] = {
+        {TypeTraits<ObservationData>::recovery, &tracing_check},
+    };
+    ConcurrentLogger      logger;
+    std::atomic<uint64_t> failures{0};
+    ValidationHooks       conformance = conformance_layer();
+    conformance.policy     = LayerPolicy::Report;
+    conformance.diagnostic = &logger;
+    conformance.failures   = &failures;
+
+    ValidationHooks tracing{};
+    tracing.entries = TRACE_ENTRIES;
+    tracing.count   = 1;
+    tracing.policy  = LayerPolicy::Report;
+    tracing.next    = &conformance;
+
+    for (const ff_test::fs::path& path : bundles)
+    {
+        const std::string name = path.filename().string();
+        const std::string json = ff_test::read_file(path);
+        REQUIRE(!json.empty(), "read " << name);
+
+        // One worker: exact bytes.
+        const std::vector<BYTE> control  = ingest_bundle(json, nullptr, 1);
+        const std::vector<BYTE> detached = ingest_bundle(json, nullptr, 1);
+        REQUIRE(!detached.empty(), "single-worker detached ingest sealed: " << name);
+        REQUIRE(control == detached,
+                "single-worker ingest is deterministic (precondition for the byte "
+                "comparison, not a layer defect): " << name);
+
+        g_trace_calls = 0;
+        failures      = 0;
+        const std::vector<BYTE> attached = ingest_bundle(json, &tracing, 1);
+        CHECK(attached == detached,
+              "single-worker ingest is byte-identical with the layer attached: " << name);
+        CHECK(g_trace_calls.load() > 0, "the layer chain was consulted: " << name);
+        CHECK(failures.load() > 0, "the conformance layer fired on real data: " << name);
+
+        // Full pool: the layer runs on the workers; the document must not change.
+        g_trace_calls = 0;
+        const std::vector<BYTE> pool_detached = ingest_bundle(json, nullptr, 0);
+        const std::vector<BYTE> pool_attached = ingest_bundle(json, &tracing, 0);
+        REQUIRE(!pool_detached.empty() && !pool_attached.empty(), "pooled ingest sealed: " << name);
+        CHECK(g_trace_calls.load() > 0, "the pooled workers consulted the layer chain: " << name);
+        CHECK(exported_json(pool_attached) == exported_json(pool_detached),
+              "pooled ingest exports an identical document with the layer attached: " << name);
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -439,5 +573,6 @@ int main(int argc, char** argv)
     ff_test::run("max_cardinality", a_numeric_max_is_enforced);
     ff_test::run("abi", an_abi_mismatch_is_refused);
     ff_test::run("versions", a_rule_only_applies_to_the_revision_that_states_it);
+    ff_test::run("ingest_identity", the_layer_never_changes_ingested_output);
     return ff_test::report("conformance layer");
 }

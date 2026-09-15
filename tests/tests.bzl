@@ -22,7 +22,13 @@ def fastfhir_tests(copts = []):
         name = "test_conformance",
         srcs = ["//:tests/cpp/test_conformance.cpp"],
         copts = copts,
-        deps = ["//:fastfhir", "//:fastfhir_conformance"],
+        # The ingest byte-identity case drives FF_Ingest; with no corpus
+        # configured it SKIPs, as the other corpus suites do under Bazel.
+        deps = [
+            "//:fastfhir_conformance",
+            "//:fastfhir_ingestor",
+            "@simdjson//:simdjson",
+        ],
     )
 
     # ── Core-only suites ─────────────────────────────────────────────────
