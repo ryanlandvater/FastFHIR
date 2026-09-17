@@ -773,12 +773,19 @@ asio::write(conn, asio::buffer(view.data(), view.size())); // zero-copy egress
 
 The bundle is memory-mapped — the OS pages only the entries you actually touch.
 Finding one patient, appending a lab result, and resealing never loads the other
-5 GB into RAM. Only the dirty pages (new Observation tail + updated pointers)
-are ever written back to disk.
+5 GB into RAM. The resources already in the bundle are never rewritten:
+`FF_BundleAppendEntries` writes the new Observation, then writes the
+`Bundle.entry` array (one 84-byte entry per resource) after it.
+- **Array at the end of the stream** (built collect-then-serialize, Example 6a):
+  the array is rewritten in place, and the stream grows by exactly the
+  Observation plus one entry.
+- **Array at the front** (built backfill, Example 6b): the array is moved to
+  the end once.
 
 <!-- ff-compile: fragment run=example_5_surgical -->
 ```cpp
 #include <FastFHIR.hpp>
+#include <FF_BundleAppend.hpp>
 #include <FF_FieldKeys.hpp>
 #include <openssl/sha.h>
 
@@ -811,27 +818,35 @@ for (auto& entry_node : bundle[FastFHIR::Fields::BUNDLE::ENTRY].entries()) {
 }
 if (!found) throw std::runtime_error("patient-42 not found");
 
-// Append a new Observation — every other entry in the bundle is untouched
-FastFHIR::Reflective::ObjectHandle obs_handle;
-Size count = 0;
-FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
-    .ingestor    = ingestor,
-    .builder     = builder,
-    .source_type = FF_SOURCE_FHIR_JSON,
-    .payload     = R"({
-        "resourceType": "Observation",
-        "status": "final",
-        "code": {"coding": [{"system": "http://loinc.org", "code": "2345-7", "display": "Glucose"}]},
-        "subject": {"reference": "Patient/patient-42"},
-        "valueQuantity": {"value": 94.0, "unit": "mg/dL", "system": "http://unitsofmeasure.org"}
-    })",
-}, obs_handle, count);
+// Append a new Observation to Bundle.entry. The callback writes the resource
+// and hands back its entry; the existing entries keep their order.
+FastFHIR::FF_BundleAppendResult appended;
+FastFHIR::FF_BundleAppendEntries(FastFHIR::FF_BundleAppendInfo{
+    .builder = builder,
+    .append  = [&](FastFHIR::Builder&, std::vector<BundleentryData>& new_entries) {
+        FastFHIR::Reflective::ObjectHandle obs_handle;
+        Size count = 0;
+        FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
+            .ingestor    = ingestor,
+            .builder     = builder,
+            .source_type = FF_SOURCE_FHIR_JSON,
+            .payload     = R"({
+                "resourceType": "Observation",
+                "status": "final",
+                "code": {"coding": [{"system": "http://loinc.org", "code": "2345-7", "display": "Glucose"}]},
+                "subject": {"reference": "Patient/patient-42"},
+                "valueQuantity": {"value": 94.0, "unit": "mg/dL", "system": "http://unitsofmeasure.org"}
+            })",
+        }, obs_handle, count);
+        new_entries.push_back(BundleentryData{.resource = static_cast<ResourceReference>(obs_handle)});
+    },
+}, appended);
 
 // Amend the ROOT record — the handle the stream already owns
 auto root_handle = builder->root_handle();
 root_handle[FastFHIR::Fields::BUNDLE::TIMESTAMP] = std::string_view("2026-09-09T00:00:00Z");
 
-// Reseal — rewrites only the header + checksum pages, nothing else
+// Reseal — restamps the header and writes a new checksum
 FastFHIR::Memory::View view;
 FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
     .builder   = builder,
@@ -849,10 +864,27 @@ FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
 
 ## 6 — Lock-Free Concurrent Generation
 
-For high-throughput bundle assembly, use a parallel STL backend powered by oneTBB.
-In this pattern, each worker appends one `Observation` into the same shared lock-free
-arena, producing a `Bundle.entry` list in parallel. The root `Bundle` is then assembled
-once on the caller thread and sealed with a checksum.
+FastFHIR supports **two ways to fill an array**, and both are first-class. They produce
+the same logical `Bundle`, and readers cannot tell them apart. The difference is who
+tracks the array while it is being filled, and where it lands in the stream.
+
+| | **6a — Collect, then serialize** | **6b — Allocate, then backfill** |
+|---|---|---|
+| While filling | You track a plain `std::vector<BundleentryData>` in memory | The array already exists in the arena; each worker assigns its own slot |
+| Serialized | Once, after every element is known | Up front, as N empty elements |
+| Stream layout | `[resources … \| Bundle \| entry[N]]`: the array is at the **tail** | `[Bundle \| entry[N] \| resources …]`: the array is at the **front** |
+| Best for | Any producer that already holds its elements as `*Data` values | Native multithreaded writes: workers never hand results back, they write them into the stream |
+
+In a Bundle, each element is a fixed 84-byte `Bundle.entry` block that carries the
+resource's `(offset, type)`. Either way, the resources themselves are appended
+concurrently into one shared lock-free arena.
+
+### 6a — Collect, then serialize
+
+Each worker appends one `Observation` and returns its reference. The caller keeps those
+references in a `std::vector<BundleentryData>`, then serializes the whole array, and the
+root `Bundle` with it, in one shot at the end, before sealing with a checksum. The
+parallel STL backend is typically oneTBB.
 
 <!-- ff-compile: program run=example_6_concurrent -->
 ```cpp
@@ -928,6 +960,67 @@ target_link_libraries(your_target
     TBB::tbb
     Threads::Threads
 )
+```
+
+### 6b — Allocate, then backfill
+
+Append the `Bundle` first with N empty entries: the array is written as one contiguous
+block. Workers then append resources and assign each one straight into its own slot,
+`entries[i][RESOURCE]`. No two workers touch the same slot, so nothing is collected or
+merged afterwards, and the only shared state is the arena's lock-free write head. This
+is the layout FastFHIR's own concurrent JSON ingestor uses.
+
+<!-- ff-compile: program run=example_6_backfill -->
+```cpp
+#include <FastFHIR.hpp>
+#include <FF_Bundle.hpp>
+#include <FF_Observation.hpp>
+#include <thread>
+#include <vector>
+
+std::vector<uint8_t> serialize_bundle_backfill(const std::vector<ObservationData>& raw_observations,
+                                               unsigned workers) {
+    auto mem = FastFHIR::Memory::create(256 * 1024 * 1024);
+    FastFHIR::FF_BuilderCreateInfo builder_info;
+    builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+    builder_info.version = FHIR_VERSION_R5;
+    FastFHIR::FF_Builder builder;
+    FastFHIR::FF_CreateBuilder(builder_info, builder);
+
+    // 1) Allocate: the Bundle and N empty entries, written as one contiguous array.
+    BundleData bundle{};
+    bundle.type  = FF_BundleType::Collection;
+    bundle.entry = std::vector<BundleentryData>(raw_observations.size());
+    FastFHIR::Reflective::ObjectHandle root = FastFHIR::FF_BuilderAppendObject(builder, bundle);
+    FastFHIR::Reflective::ObjectHandle entries = root[FastFHIR::Fields::BUNDLE::ENTRY];
+
+    // 2) Backfill: each worker appends its resources and writes each into its own slot.
+    const size_t n = raw_observations.size();
+    std::vector<std::thread> pool;
+    for (unsigned w = 0; w < workers; ++w) {
+        pool.emplace_back([&, w] {
+            for (size_t i = n * w / workers; i < n * (w + 1) / workers; ++i) {
+                entries[i][FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE] =
+                    FastFHIR::FF_BuilderAppendObject(builder, raw_observations[i]);
+            }
+        });
+    }
+    for (auto& t : pool) t.join();
+
+    // 3) The Bundle was appended first, so it is already the root: set it and seal.
+    FastFHIR::FF_BuilderSetRoot(FastFHIR::FF_BuilderSetRootInfo{
+        .builder = builder,
+        .root    = root,
+    });
+    FastFHIR::Memory::View view;
+    FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
+        .builder   = builder,
+        .algorithm = FF_CHECKSUM_SHA256,
+    }, view);
+
+    const auto* first = reinterpret_cast<const uint8_t*>(view.data());
+    return std::vector<uint8_t>(first, first + view.size());
+}
 ```
 
 ---

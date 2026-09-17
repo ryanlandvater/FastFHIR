@@ -169,8 +169,8 @@ duplicate one. Per-check `PASS` lines are now off by default and restored with
 
 | Gate | Mechanism |
 |---|---|
-| `py_readme_cpp_compiles` | every ```cpp block extracted and built `-fsyntax-only` (23 blocks) |
-| `cpp_readme_*` | 7 blocks extracted and **executed**; `tests/readme/generate_examples.py` emits the test at build time |
+| `py_readme_cpp_compiles` | every ```cpp block extracted and built `-fsyntax-only` (24 blocks) |
+| `cpp_readme_*` | 8 blocks extracted and **executed**; `tests/readme/generate_examples.py` emits the test at build time. A new `run=` id also needs adding to the `foreach` list in `tests/tests.cmake`, or it runs inside the binary but has no ctest entry of its own |
 
 **Do not add a hand-written test for a README example.** That is what existed before, and
 it is why the docs rotted: `tests/cpp/test_readme.cpp` re-implements the numbered examples,

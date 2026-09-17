@@ -335,6 +335,12 @@ inline std::string exported_json(const fs::path& path)
                 "Example 5: patient-1 was lost — the edit was not surgical");    \
         REQUIRE(json.find("patient-42") != std::string::npos,                   \
                 "Example 5: patient-42 missing after the surgical edit");        \
+        /* The appended Observation must be REACHABLE: exported through   */   \
+        /* Bundle.entry, not merely present somewhere in the arena.       */   \
+        REQUIRE(json.find("2345-7") != std::string::npos,                       \
+                "Example 5: the appended Observation is not in Bundle.entry");   \
+        REQUIRE(appended.entry_array != FF_NULL_OFFSET,                         \
+                "Example 5: FF_BundleAppendEntries reported no entry array");    \
     }
 
 // ── Example 6 — Lock-free concurrent generation ─────────────────────────────
@@ -366,6 +372,43 @@ inline std::string exported_json(const fs::path& path)
         REQUIRE(seen == raw.size(),                                             \
                 "Example 6: bundle held " << seen << " observations, expected "  \
                                           << raw.size());                        \
+    }
+
+// Example 6b: the backfill path. Distinct ids prove each worker wrote ITS slot
+// -- a count alone would pass if two workers swapped or duplicated entries.
+#define FF_README_SETUP_EXAMPLE_6_BACKFILL
+
+#define FF_README_EXPECT_EXAMPLE_6_BACKFILL                                     \
+    {                                                                          \
+        std::vector<std::string> ids(64);                                       \
+        std::vector<ObservationData> raw(ids.size());                           \
+        for (size_t i = 0; i < raw.size(); ++i)                                  \
+        {                                                                       \
+            ids[i] = "obs-" + std::to_string(i);                                \
+            raw[i].id = ids[i];                                                 \
+            raw[i].status = FF_ObservationStatus::Preliminary;                   \
+        }                                                                       \
+        const std::vector<uint8_t> sealed = serialize_bundle_backfill(raw, 4);   \
+        REQUIRE(!sealed.empty(),                                                \
+                "Example 6b: backfill bundle serialization produced no bytes");  \
+        FastFHIR::Parser parser(sealed.data(), sealed.size());                   \
+        auto root = parser.root();                                              \
+        REQUIRE(root, "Example 6b: sealed backfill bundle has a null root");     \
+        std::size_t slot = 0;                                                    \
+        for (auto& entry : root[FastFHIR::Fields::BUNDLE::ENTRY].entries())      \
+        {                                                                       \
+            auto node = entry[FastFHIR::Fields::BUNDLE_ENTRY::RESOURCE].as_node(); \
+            REQUIRE(node && node.is<FastFHIR::RESOURCETYPE::OBSERVATION>(),      \
+                    "Example 6b: slot " << slot << " holds no Observation");    \
+            std::string_view id = node[FastFHIR::Fields::OBSERVATION::ID];       \
+            REQUIRE(id == ids[slot],                                            \
+                    "Example 6b: slot " << slot << " holds '" << id              \
+                                        << "', expected '" << ids[slot] << "'"); \
+            ++slot;                                                             \
+        }                                                                       \
+        REQUIRE(slot == raw.size(),                                             \
+                "Example 6b: bundle held " << slot << " entries, expected "      \
+                                           << raw.size());                       \
     }
 
 #endif // FF_README_EXPECT_HPP

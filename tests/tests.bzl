@@ -47,6 +47,8 @@ def fastfhir_tests(copts = []):
         ("test_queue", "ff_test_queue.cpp"),
         # LOG-1: ConcurrentLogger claim/refusal/contention. Header-only.
         ("test_logger", "test_logger.cpp"),
+        # APPEND-1: tail-rewrite append, checked against the StreamMap.
+        ("test_bundle_append", "test_bundle_append.cpp"),
     ]:
         cc_test(
             name = name,

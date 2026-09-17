@@ -138,6 +138,8 @@ if(FASTFHIR_BUILD_TESTS)
     add_ff_cpp_test(ff_test_amend      tests/cpp/test_amend.cpp)
     add_ff_cpp_test(ff_test_cc         tests/cpp/test_codeable_concept.cpp)
     add_ff_cpp_test(ff_test_bundle     tests/cpp/test_bundle_ingest.cpp)
+    # APPEND-1: tail-rewrite append; its map checks use FF_Recovery (core).
+    add_ff_cpp_test(ff_test_bundle_append tests/cpp/test_bundle_append.cpp)
     # Unlike the other standalone suites this one drives the JSON ingestor.
     target_link_libraries(ff_test_bundle PRIVATE fastfhir_ingestor simdjson::simdjson)
     add_ff_cpp_test(ff_test_simd       tests/cpp/test_simd.cpp)
@@ -212,7 +214,7 @@ if(FASTFHIR_BUILD_TESTS)
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger ff_test_abstraction_parity ff_test_recovery ff_test_views)
+    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append)
     if(FASTFHIR_BUILD_CONFORMANCE)
         list(APPEND _FF_STANDALONE_TESTS ff_test_conformance ff_example_conformance)
     endif()
@@ -233,7 +235,8 @@ if(FASTFHIR_BUILD_TESTS)
     # block's own `run=` ids from README.md, so a failure names the block a
     # reader would have copied.
     foreach(_ex step1_parse step3_build example_1_ingest example_2_read
-                example_3_enrich example_5_surgical example_6_concurrent)
+                example_3_enrich example_5_surgical example_6_concurrent
+                example_6_backfill)
         add_test(NAME "cpp_readme_${_ex}"
             COMMAND ff_test_readme_examples --filter "${_ex}")
     endforeach()

@@ -40,6 +40,11 @@ namespace FastFHIR
     FF_Result FF_BuilderSetRoot(const FF_BuilderSetRootInfo&) noexcept;
     FF_Result FF_BuilderFinalize(const FF_BuilderFinalizeInfo&, Memory::View&) noexcept;
     FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo&, Parser&) noexcept;
+    // Tail-rewrite append (FF_BundleAppend.hpp, APPEND-1): the only caller
+    // allowed to roll the write head back over live-looking bytes.
+    struct FF_BundleAppendInfo;
+    struct FF_BundleAppendResult;
+    FF_Result FF_BundleAppendEntries(const FF_BundleAppendInfo&, FF_BundleAppendResult&) noexcept;
 
     // =====================================================================
     // BUILDER
@@ -58,6 +63,7 @@ namespace FastFHIR
         friend FF_Result FF_BuilderSetRoot(const FF_BuilderSetRootInfo&) noexcept;
         friend FF_Result FF_BuilderFinalize(const FF_BuilderFinalizeInfo&, Memory::View&) noexcept;
         friend FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo&, Parser&) noexcept;
+        friend FF_Result FF_BundleAppendEntries(const FF_BundleAppendInfo&, FF_BundleAppendResult&) noexcept;
 
         Memory m_memory;
         BYTE *const m_base;

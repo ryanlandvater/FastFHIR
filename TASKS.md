@@ -961,6 +961,178 @@ working path re-serializes the whole bundle root (delta O(entry-array), ~1.2 MB
 median at the 1024 MB target). With abstraction-typed append, the entry array
 gains one element and the claim becomes demonstrable.
 
+### APPEND-1 — Design (Ryan, 2026-09-16): tail-rewrite append for `Bundle.entry`
+
+> **Implemented 2026-09-17, uncommitted, awaiting Ryan's commit.**
+> - Files: `include/FF_BundleAppend.hpp` and `src/FF_BundleAppend.cpp`
+>   (`serialize_bundle_array`, and `FF_BundleAppendEntries` with
+>   `FF_BundleAppendInfo` / `FF_BundleAppendResult`), plus a friend declaration in
+>   `include/FF_Builder.hpp`.
+> - Test: `tests/cpp/test_bundle_append.cpp` (6 cases, 90 checks), registered in
+>   `tests.cmake`, all four `CMakeLists.txt` sites, and `tests.bzl`.
+>   - Growth checks: the stream grows by exactly the resources plus 84 B each.
+>   - Byte checks: every byte below the rollback point is unchanged, except the
+>     re-pointed `Bundle.entry` slot.
+>   - Map checks: the `StreamMap` byte scan minus the root walk adds no dead
+>     blocks, except the one array a relocation leaves behind.
+>   - Scenario checks: children are preserved, a backfilled stream relocates
+>     once and then rewrites in place, a trailing `signature` forces relocation,
+>     and a throwing callback restores the original entries.
+> - README Example 5 now attaches its Observation through
+>   `FF_BundleAppendEntries`, and its expect macro requires the Observation to be
+>   exported through `Bundle.entry`.
+> - Verified with ctest: all 10 README tests pass. Not verified under Bazel
+>   (see E16).
+> - Benchmark (↗ PA-10c), at 256 MB: stream growth per enrich is **4,619 B** at
+>   every size (was 2.13 MB), and enrich time fell from 0.90 to 0.67 ms.
+> - The callback receives **new** entries only. `BundleentryData` is move-only,
+>   and keeping the existing entries apart is what lets a throwing callback be
+>   rolled back.
+
+Supersedes the "extend the array block at the write head" sketch above for Bundles.
+Filed from ↗ FastFHIR-benchmark (PA-10). There, one appended Observation cost
+**2.34 MB** at a 256 MB bundle, because the only public path re-serializes the Bundle
+and a new N+1 entry array and leaves the old array behind.
+
+**Principle.** Mutable, growing structures live at the **end** of the stream, as in
+Iris-File-Extension and FlatBuffers, so they can be overwritten rather than orphaned.
+Resources are written first. `Bundle.entry` is written last.
+
+**The rollback primitive already exists.** `Builder`'s constructor, on a sealed
+stream (`src/FF_Builder.cpp`, grep `Re-open for append`), calls
+`m_memory.reset(checksum.__offset)` so that new writes overwrite the old checksum
+block. The benchmark measured exactly that: the enrich changes only the 54 B header and
+the old 44 B checksum block (↗ `bench/arm_fastfhir.cpp`, `BENCH_VALIDATE`). APPEND-1 moves
+the rewind target from the checksum block back to the start of the entry array, under
+the preconditions below.
+
+**Current state.** `src/FF_Ingestor.cpp` (grep `PREPARE THE PREALLOCATED ARRAY`)
+writes the Bundle top-down: `[Bundle | entry[N] | resource_1 … resource_N]`. Workers
+then backfill each 84-byte `FF_BUNDLE_ENTRY` (`generated_src/FF_Bundle_internal.hpp`,
+`struct FF_BUNDLE_ENTRY`). The benchmark's Test 1 copies this.
+`Memory::claim_space` only moves forward, and sealing claims the checksum slot at the
+write head. No API can reopen a sealed tail.
+
+**The two build paths — both first-class, both advertised (decided by Ryan, 2026-09-16).**
+Neither one is a fallback. They are documented side by side in README Example 6 (6a
+collect-then-serialize, 6b allocate-then-backfill). The README gate executes both:
+`cpp_readme_example_6_concurrent` and `cpp_readme_example_6_backfill`, the latter
+asserting that every slot holds its own resource, in order.
+- *Backfill* is the native way to write an array from many threads: each worker assigns
+  its result straight into its own slot, and nothing is handed back.
+- *Collect-then-serialize* asks the consumer to track the `std::vector<*Data>` it mutates,
+  and to serialize it after the fact. In return the array lands at the tail, which is
+  what APPEND-1 needs.
+
+**Growth is minimal, not zero — say so plainly.** Appending an entry must grow the stream
+by the entry (84 B) plus the new resource. That is unavoidable, and it is far less than a
+format that must rewrite the whole document. JSON and Google FHIR rewrote 100% of a
+16 MB stream in the benchmark, while FastFHIR overwrote 98 B.
+1. **Preallocate and backfill** (today). This is the concurrent path: the array sits at
+   the front and workers patch slots in place.
+2. ⛏ **`serialize_bundle_array(const std::vector<BundleentryData>&) -> Offset`** (name
+   per Ryan).
+   - Workers append resources and record each `(offset, type)` into
+     `BundleentryData::resource` **in memory**. (The benchmark's Test 1 now builds
+     this way, as ↗ PA-10a: at 16/64 MB the timing is indistinguishable from the
+     backfill layout.) The abstraction is `BundleData::entry`
+     (`generated_src/FF_Bundle.hpp`); no `bundle_array` alias exists yet.
+   - The whole array is then serialized in one shot, at the end, and `Bundle.entry`
+     points at it.
+
+**Enrich (append one resource) — the sequence.**
+1. Read the root Bundle and take `A = Bundle.entry`. Deserialize the **light**
+   `std::vector<BundleentryData>`: only the entry blocks and their resource tuples,
+   never the resources.
+2. Roll the write head back to `A`. This discards the array, its child data and the
+   checksum slot.
+3. Append the new resource at `A`. The head is now `A + size(resource)`.
+4. `entries.push_back({.resource = new_resource})`, then
+   `A' = serialize_bundle_array(entries)`, now N+1 long.
+5. Re-point `Bundle.entry` from `A` to `A'`.
+6. Reseal. The checksum is recomputed regardless.
+
+The stream grows by exactly `size(resource) + 84 B`. N × 84 B are rewritten in place,
+and nothing is orphaned.
+
+**Preconditions and hazards — the API must enforce these, not document them.**
+- **Nothing still live may sit at or after `A`** other than the array's own children:
+  the resources, the Bundle block, and the URL/module directories
+  (`m_url_dir_offset`, `m_module_reg_offset`) must all lie below `A`. Otherwise refuse.
+  - A stream built by path 1 has its array at the **front**. Its first enrich must
+    relocate the array to the tail (one O(N) orphan); every later enrich is a tail
+    rewrite.
+- **Entry child data lives inside the rolled-back region.** `fullUrl`, `request`,
+  `response`, `search` and `link` are STOREd after the entry blocks, in the same
+  allocation. The light vector's `string_view`s point into bytes that step 3
+  overwrites, so step 1 must copy those children into owning storage before step 2.
+  (The benchmark's entries carry only `resource`, so the benchmark would not catch
+  this. Synthea transaction bundles carry `fullUrl` and `request` on every entry.)
+- **Step 5 re-points an assigned slot.** `Builder::_amend_prepare` refuses that today
+  ("risks orphaning"). Here it is safe, because the old target was deliberately
+  overwritten, so this operation needs its own sanctioned amend rather than a lifted
+  guard.
+  - Alternative: put the **Bundle block** in the tail as well, roll back to the Bundle's
+    start, rewrite Bundle + array, and `set_root`. No assigned-slot amend is needed,
+    for the cost of one Bundle header.
+- **Not crash-atomic.** Between steps 2 and 6 the index is torn while the header still
+  names the old root.
+  - The resources themselves stay intact below `A`, so a torn tail is recoverable by a
+    resource scan (P0-3 / REC-*). Say so, and test it.
+  - The operation needs exclusive access. No reader may hold a mapped view of the tail.
+- **Concurrency.** Steps 1–6 hold the builder's mutation guard for their whole duration,
+  as `finalize()` does.
+
+**README follow-ups found while documenting this (2026-09-16).**
+- [x] **Example 5 never attaches its Observation.** *Fixed 2026-09-17 with APPEND-1 (uncommitted).* It ingests the Observation and amends
+      `Bundle.timestamp`, but never adds the Observation to `Bundle.entry`, so the
+      "appended" result is unreachable from the root. `cpp_readme_example_5_surgical`
+      passes because it does not check that. Fix the example together with APPEND-1, and
+      make the expect macro find the new Observation through `Bundle.entry`.
+- [ ] **§4 "In-Stream Lazy Enrichment" overstates it.** It says "without touching any
+      other byte". The benchmark measured an enrich that rewrites the 54 B header and the
+      old 44 B checksum block, and that until APPEND-1 appends a whole new (N+1) × 84 B
+      entry array. Per the claims policy, restate it with the measured numbers and cite ↗
+      FastFHIR-benchmark (fig4 / PA-10b).
+
+**Acceptance.**
+- A test appends K resources to a sealed Bundle stream. After each append, the stream
+  size grows by exactly `size(resource) + 84`, and the entries read back in order.
+- Entries carrying `fullUrl`/`request` survive the rewrite byte-for-byte.
+- A rollback with a live block past `A` is refused.
+
+### APPEND-2 — Map-guided move instead of relocation (filed 2026-09-17)
+
+APPEND-1's fast path answers one question in O(N): are the entry array and its children
+exactly the last bytes before the write head? When they are not, it **relocates**: it
+appends a fresh array and leaves the old one as dead space. That is the one remaining
+way an append leaves garbage behind, and it is conservative. A trailing
+`Bundle.signature`, or an amendment's children written after the array, forces a full
+N × 84 B relocation, although only a few small live blocks are actually in the way.
+
+**Use the stream map to move only what is live**, following the pattern Iris documents
+for `generate_file_map` (↗ `../Iris-File-Extension/include/IrisFileExtension.hpp`:
+"perform `FileMap::upper_bound(write_offset)` … read them into memory and rewrite them").
+1. Map the region `[A, head)` with `Recovery::scan()` restricted to that range. The cost
+   is proportional to what is rewritten anyway.
+2. Decide which of those blocks are live, and which slot below `A` references each one.
+   This needs the reachability walk (`reachable_blocks_map()`) or a reverse-edge index.
+   It is O(stream) (on the order of `validate_FFHR_stream()`, ~10 ms at 50 MB at `-O3`),
+   so it belongs only on the slow path, where it replaces a relocation.
+3. Read the live non-array blocks into memory, roll back to `A`, write the new
+   resources, the N+1 array and the moved blocks, then re-point each moved block's
+   parent. The dead blocks in the zone are simply overwritten.
+
+The result: every append grows the stream by the minimum, with no dead space from
+relocation.
+
+**Later:** a small **tail map** written at seal (like Iris's file map) would make step 2
+O(k) in the blocks after `A`.
+
+**Acceptance:** extend `tests/cpp/test_bundle_append.cpp`. The `signature` case must
+become a tail rewrite that moves the signature, with `dead_blocks()` unchanged and the
+signature still reachable and byte-identical.
+
 ---
 
 # ▶ OPEN TOPIC — READ-PATH TRAVERSAL THROUGHPUT
@@ -2825,6 +2997,41 @@ cached binary (`<binary_hash_hex>.wasm`). Never use one where the other is expec
   Wording pass only; no code change. Confirm the reconciliation is true before rewording
   (i.e. that every one of those payloads really does go through `STORE_U*`), and if any does
   not, that is a Block A bug, not a comment fix.
+
+- [ ] E15. **`cpp_test_7` / `cpp_test_8` fail intermittently under `ctest -j8`** (found
+  2026-09-17 while verifying APPEND-1).
+  - An unmodified `HEAD` export failed 4 of 6 parallel runs of
+    `ctest -R '^cpp_(test_|getting)'`. Serially they pass, and `ff_test_readme` run
+    as one binary passes 13/13.
+  - Both examples read `patient.ffhr` / `patient.compact.ffhr` from
+    `build/tests/cpp`, which the other `cpp_test_*` examples produce.
+  - Suspect: `DEPENDS` alone does not serialize them against the examples that
+    rewrite those files, or the compact example races with a writer outside
+    `ff_cpp_patient_ffhr`. Find the writer and put it under the lock.
+  - **Verify:** 20 consecutive `ctest -j8 -R '^cpp_(test_|getting)'` runs with no
+    failures.
+- [ ] E16. **FastFHIR's own Bazel build fails under Xcode 27** (found 2026-09-17).
+  - Every target fails with "absolute path inclusion … MacOSX.sdk/SDKSettings.json"
+    (e.g. `bazel test -c opt //:test_amend`). The generic `local_config_cc`
+    toolchain wins resolution.
+  - ↗ FastFHIR-benchmark fixed the same failure by declaring `apple_support`
+    (now 2.8.3) **first** in its `MODULE.bazel`, so that its Apple toolchain is
+    registered ahead of rules_cc's.
+  - Do the same here, then run `//:test_bundle_append` under Bazel. APPEND-1 is
+    verified with CMake only.
+- [ ] E14. **Two `-Wall` warnings in `src/FF_Recovery.cpp`** (filed from ↗ FastFHIR-benchmark,
+  2026-09-16; seen in its clean `-c opt` Bazel build under Xcode 27 / clang 21). Both are
+  small, and they are the only FastFHIR warnings in that build, so they are cheap to keep at
+  zero.
+  - `IsTypedOffsetKind` is defined and never called: `-Wunused-function`, near line 81. Delete
+    it, or use it if a caller was intended.
+  - A worker lambda captures `this` but does not use it: `-Wunused-lambda-capture`, near line
+    1466, in `threads.emplace_back([this, &emit_candidates, ...`. Drop `this` from the capture
+    list.
+  - **Locate:** `grep -n 'IsTypedOffsetKind\|emplace_back(\[this, &emit_candidates' src/FF_Recovery.cpp`
+  - **Verify:** the benchmark's build log no longer lists `FF_Recovery.cpp`:
+    `bazel build -c opt //:fastfhir 2>&1 | grep -c 'FF_Recovery.cpp.*warning'` prints `0`
+    (`bazel clean` first, or the cached action hides it).
 
 ---
 
