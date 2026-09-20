@@ -28,7 +28,7 @@ FHIR_PACKAGES = {
     # Without them, codes that are perfectly valid in R5 -- everything under
     # http://terminology.hl7.org/CodeSystem/, which is what R5 ValueSets such as
     # ValueSet-surface actually point at -- are absent from the dictionary and
-    # every use falls back to an FF_CODEABLE_CONCEPT block.
+    # every use falls back to an FF_CODED_VALUE block.
     #
     # THO is revision-aligned but revision-SHARED: the r4 and r5 flavours are
     # the same terminology packaged for each release, so pipeline.py feeds each

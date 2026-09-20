@@ -65,8 +65,10 @@ namespace Conformance
 [[nodiscard]] inline bool is_absent(std::string_view v) noexcept { return v.empty(); }
 [[nodiscard]] inline bool is_absent(const std::string& v) noexcept { return v.empty(); }
 
+/// A 0..1 child block. FF_Optional, not std::unique_ptr: the POCO member type
+/// changed when the structs became values, and this overload follows it.
 template <typename T>
-[[nodiscard]] inline bool is_absent(const std::unique_ptr<T>& v) noexcept
+[[nodiscard]] inline bool is_absent(const FF_Optional<T>& v) noexcept
 {
     return v == nullptr;
 }
@@ -160,7 +162,7 @@ template <typename T>
 }
 
 template <typename T>
-[[nodiscard]] inline Status descend(const std::unique_ptr<T>& child, uint32_t fhir_version,
+[[nodiscard]] inline Status descend(const FF_Optional<T>& child, uint32_t fhir_version,
                                     const ValidationHooks* self) noexcept
 {
     return child == nullptr ? Status{} : descend(*child, fhir_version, self);

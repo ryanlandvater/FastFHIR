@@ -42,7 +42,7 @@ def generate_size_fields(layout, block_struct_name, data_name):
             # separated only by the tag: plain strings, date/time, and code.
             # Each reserves a different amount of child space -- a date/time
             # that packs into 63 bits needs none, a code in the dictionary needs
-            # none, and both need an FF_STRING / FF_CODEABLE_CONCEPT when they
+            # none, and both need an FF_STRING / FF_CODED_VALUE when they
             # do not fit. This must mirror the STORE branch below exactly or the
             # claim and the write disagree.
             _cv = f"{data_name}.{f['cpp_name']}"

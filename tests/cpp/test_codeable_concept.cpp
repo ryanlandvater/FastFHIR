@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// Round-trip guards for ENCODE_FF_CODE / FF_DECODE_CODEABLE_CONCEPT.
+// Round-trip guards for ENCODE_FF_CODE / FF_DECODE_CODED_VALUE.
 //
 // The two functions lay out the same block independently -- one switch per
 // system on each side, ten systems, no shared layout descriptor. Nothing else
@@ -73,25 +73,25 @@ int main()
         const std::string tag = std::string(c.code);
 
         // The slot must carry the CodeableConcept flag, not a dictionary id.
-        CHECK((packed & FF_CODEABLE_CONCEPT_FLAG) != 0, tag + ": slot flagged as CodeableConcept");
+        CHECK((packed & FF_CODED_VALUE_FLAG) != 0, tag + ": slot flagged as CodeableConcept");
 
         // write_cc_header_ must advance the cursor by header + payload, exactly.
         const Offset consumed = child_off - before;
-        const Offset expect = FF_CODEABLE_CONCEPT::HEADER_SIZE + c.expect_payload;
+        const Offset expect = FF_CODED_VALUE::HEADER_SIZE + c.expect_payload;
         CHECK(consumed == expect,
               tag + ": child_off advanced " + std::to_string(consumed) + " (expect " +
                   std::to_string(expect) + ")");
 
         // Header bytes.
-        CHECK(base[before + FF_CODEABLE_CONCEPT::SYSTEM] == static_cast<uint8_t>(c.system),
+        CHECK(base[before + FF_CODED_VALUE::SYSTEM] == static_cast<uint8_t>(c.system),
               tag + ": SYSTEM byte");
-        CHECK(base[before + FF_CODEABLE_CONCEPT::LENGTH] == c.expect_payload,
+        CHECK(base[before + FF_CODED_VALUE::LENGTH] == c.expect_payload,
               tag + ": LENGTH byte");
-        CHECK(FF_GET_RECOVERY_TAG(base, before) == RECOVER_FF_CODEABLE_CONCEPT,
+        CHECK(FF_GET_RECOVERY_TAG(base, before) == RECOVER_FF_CODED_VALUE,
               tag + ": RECOVERY tag");
 
         // And it must decode back to the code we put in.
-        auto decoded = FF_DECODE_CODEABLE_CONCEPT(base, before, FHIR_VERSION_R5, arena.size());
+        auto decoded = FF_DECODE_CODED_VALUE(base, before, FHIR_VERSION_R5, arena.size());
         CHECK(decoded.system == c.system, tag + ": decoded system matches");
         CHECK(decoded.label == c.code,
               tag + ": round-trips (got '" + std::string(decoded.label) + "')");
@@ -157,7 +157,7 @@ int main()
             // Any replacement must be re-checked whenever the ledger grows --
             // it is append-only, so a code that is free today can be taken.
             ENCODE_FF_CODE(base, 512, child_off, std::string("39"), FHIR_VERSION_R5, sys);
-            const auto d = FF_DECODE_CODEABLE_CONCEPT(base, 16384, FHIR_VERSION_R5, arena.size());
+            const auto d = FF_DECODE_CODED_VALUE(base, 16384, FHIR_VERSION_R5, arena.size());
             CHECK(d.system == sys && !d.label.empty(),
                   "system " + std::to_string(static_cast<int>(sys)) +
                       " has a codec row (encode+decode agree)");

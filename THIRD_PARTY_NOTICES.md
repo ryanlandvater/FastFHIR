@@ -14,7 +14,7 @@ FastFHIR's contribution is the **numbering** — the permanent, reproducible ass
 | UCUM unit codes | **Yes** — `dictionaries/` |
 | SNOMED CT, LOINC, RxNorm, ICD-9/10, CPT, NDC, EDQM, MED-RT, UNII, and every other external terminology | **No** |
 
-Codes from terminologies FastFHIR does not redistribute are still fully supported at runtime. They travel as `FF_CODEABLE_CONCEPT` blocks carrying the literal code **you** supplied, under **your** license with that terminology's publisher. FastFHIR encodes them; it does not distribute them. The per-system encodings are listed in `dictionaries/README.md`.
+Codes from terminologies FastFHIR does not redistribute are still fully supported at runtime. They travel as `FF_CODED_VALUE` blocks carrying the literal code **you** supplied, under **your** license with that terminology's publisher. FastFHIR encodes them; it does not distribute them. The per-system encodings are listed in `dictionaries/README.md`.
 
 This boundary is enforced by `_assert_redistributable()` in `generator/emit/code_ids.py`: a code arriving from a system outside the allowlist stops the build. Tests `test_generator_refuses_non_redistributable_sources` and `test_committed_codes_carry_no_foreign_terminology` keep it that way.
 

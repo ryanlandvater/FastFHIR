@@ -94,7 +94,9 @@ FF_Result FF_CreateBuilder(const FF_BuilderCreateInfo& info, FF_Builder& out_bui
         if (info.arena)
             arena = *info.arena;
         else if (info.filepath)
-            arena = Memory::createFromFile(info.filepath, info.capacity);
+            // The shortcut: the library opens the file, so it also owes the
+            // caller a refusal that does not touch a file it will not append to.
+            arena = Builder::mount_for_append(info.filepath, info.capacity);
         else if (info.shm_name)
             arena = Memory::create(info.capacity, info.shm_name);
         else
@@ -134,6 +136,10 @@ FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo& info, Parser& out_parser) n
 FF_Result FF_Parse(const FF_ParseInfo& info, Parser& out_parser) noexcept
 {
     out_parser = Parser();
+    if (info.memory && info.buffer)
+        return FF_Invalid("FF_Parse", "buffer and memory are mutually exclusive");
+    if (info.memory)
+        return FF_Guard("FF_Parse", [&] { out_parser = Parser(*info.memory); });
     if (!info.buffer && info.size != 0)
         return FF_Invalid("FF_Parse", "null buffer");
     return FF_Guard("FF_Parse", [&] { out_parser = Parser(info.buffer, info.size); });

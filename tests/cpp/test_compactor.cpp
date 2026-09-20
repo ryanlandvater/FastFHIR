@@ -151,7 +151,7 @@ int main() {
 
     // ── Assertion 4: deferred CODE slots resolve ────────────────────────────
     // A code outside the permanent dictionary is stored as an FF_CODEABLE_
-    // CONCEPT block with FF_CODEABLE_CONCEPT_FLAG set, which is the ONLY case
+    // CONCEPT block with FF_CODED_VALUE_FLAG set, which is the ONLY case
     // that makes the compactor defer a 4-byte code slot (Code32). That path
     // had no coverage at all: the whole suite never once reached it, so the
     // block-copy in write_compact_code_slot and the FF_PENDING_CODE guard that
@@ -210,7 +210,7 @@ int main() {
                 .entries()[0][FastFHIR::Fields::CODING::CODE];
         CHECK((bool)src_code, "source code slot is present");
         const uint32_t src_slot = LOAD_U32(csource.data() + src_code.absolute_offset());
-        CHECK((src_slot & FF_CODEABLE_CONCEPT_FLAG) != 0,
+        CHECK((src_slot & FF_CODED_VALUE_FLAG) != 0,
               "source code slot is CodeableConcept-flagged (deferred path reached)");
 
         Memory::View compact_cview;

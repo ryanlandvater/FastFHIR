@@ -17,6 +17,9 @@
 #include <thread>
 #include <string>
 #include <iostream>
+#include <algorithm>
+#include <filesystem>
+#include <system_error>
 
 // OS-Specific Virtual Memory Headers
 #ifdef _WIN32
@@ -44,49 +47,9 @@ m_active_mutators(0)
     if (!m_memory) {
         throw std::invalid_argument("FastFHIR: Cannot initialize Builder with a null FF_Memory handle.");
     }
-
-    // If the provided memory already contains a valid finalized FastFHIR archive,
-    // hydrate root metadata from the stream header so callers can immediately
-    // access stream.root without an explicit set_root() call.
-    // Parser throws on fresh/provisional memory (header validation fails) —
-    // treat that as a new writable stream.
-    bool parsed_existing_stream = false;
-    FF_StreamCompaction existing_layout = FF_STREAM_COMPACTION_NONE;
-    try {
-        Parser p(m_memory);
-        parsed_existing_stream = true;
-        existing_layout = p.stream_layout();
-        if (p.m_root_offset   != FF_NULL_OFFSET &&
-            p.m_root_recovery != FF_RECOVER_UNDEFINED) {
-            m_root_offset   = p.m_root_offset;
-            m_root_recovery = p.m_root_recovery;
-            m_fhir_rev      = static_cast<FHIR_VERSION>(p.m_version);
-        }
-
-        // Re-open for append: reclaim the old checksum footer so new writes
-        // extend from the payload tail rather than accumulating stale checksum
-        // blocks in the middle of the stream.
-        const Size sealed_size = p.size_bytes();
-        FF_HEADER header(sealed_size);
-        FF_CHECKSUM checksum = header.get_checksum(m_base);
-        if (checksum &&
-            checksum.__offset >= FF_HEADER::HEADER_SIZE &&
-            checksum.__offset <= sealed_size) {
-            // Rewind write head to the start of the existing checksum block.
-            m_memory.reset(checksum.__offset);
-            // Mark checksum as absent until finalize() appends a new one.
-            STORE_U64(const_cast<BYTE*>(m_base) + FF_HEADER::CHECKSUM_OFFSET, FF_NULL_OFFSET);
-        }
-        
-    } catch (const std::exception&) {
-        // No valid FastFHIR stream detected — this is a new stream, leave root unset.
-    }
-
-    if (parsed_existing_stream && existing_layout == FF_STREAM_COMPACTED) {
-        throw std::runtime_error(
-            "FastFHIR: Cannot open Builder on a compact archive. "
-            "Decompact to a standard stream before append/mutation."
-        );
+    if (m_memory.read_only()) {
+        throw std::invalid_argument("FastFHIR: Cannot build into a read-only arena (Memory::openReadOnly): " +
+                                    m_memory.name());
     }
 
     // Fresh writable streams start with committed size 0. Reserve exactly
@@ -97,10 +60,103 @@ m_active_mutators(0)
     // FF_PredigestExtensionURLs / WASM subsystem before finalize() is called.
     if (m_memory.size() == 0) {
         m_memory.claim_space(FF_HEADER::HEADER_SIZE);
+        return;
+    }
+
+    // An arena that holds bytes is one of two things, and they are told apart by
+    // the magic word, not by whether a Parser succeeds:
+    //
+    //   FINALIZED   — a sealed stream being amended. It must parse; a failure
+    //                 means damage, and appending to damage compounds it.
+    //   IN PROGRESS — an arena someone is still writing, which is the normal
+    //                 state of a shared segment another process is producing
+    //                 into (architecture.md 1.3: SHM arenas are addressable
+    //                 from sibling processes). There is no header to parse yet.
+    //                 Attach to it: no header claim, no root, just append.
+    if (FF_HEADER(m_memory.capacity()).get_magic(m_base) != FF_MAGIC_BYTES) {
+        // The write head is the one thing an in-progress arena must have right;
+        // a value past the end means these bytes are not a FastFHIR arena.
+        if (m_memory.size() < FF_HEADER::HEADER_SIZE || m_memory.size() > m_memory.capacity())
+            throw std::runtime_error("FastFHIR: the arena's write head is " +
+                                     std::to_string(m_memory.size()) + " over a capacity of " +
+                                     std::to_string(m_memory.capacity()) +
+                                     "; these bytes are not a FastFHIR arena");
+        return;
+    }
+
+    const Parser p = [&] {
+        try {
+            return Parser(m_memory);
+        } catch (const std::runtime_error& e) {
+            throw std::runtime_error("FastFHIR: the arena holds " + std::to_string(m_memory.size()) +
+                                     " bytes whose header does not validate; refusing to append (" +
+                                     e.what() + ")");
+        }
+    }();
+    if (p.stream_layout() == FF_STREAM_COMPACTED) {
+        throw std::runtime_error(
+            "FastFHIR: Cannot open Builder on a compact archive. "
+            "Decompact to a standard stream before append/mutation."
+        );
+    }
+
+    // Everything the header records, the next finalize() must write back.
+    // The URL directory and module registry were once left behind here, so a
+    // re-opened stream sealed with both nulled and every Extension.url
+    // exported as null.
+    if (p.m_root_offset   != FF_NULL_OFFSET &&
+        p.m_root_recovery != FF_RECOVER_UNDEFINED) {
+        m_root_offset   = p.m_root_offset;
+        m_root_recovery = p.m_root_recovery;
+        m_fhir_rev      = static_cast<FHIR_VERSION>(p.m_version);
+    }
+    m_url_dir_offset    = p.m_url_dir_offset;
+    m_module_reg_offset = p.m_module_reg_offset;
+
+    // Re-open for append: reclaim the old checksum footer so new writes
+    // extend from the payload tail rather than accumulating stale checksum
+    // blocks in the middle of the stream.
+    const Size sealed_size = p.size_bytes();
+    FF_HEADER header(sealed_size);
+    FF_CHECKSUM checksum = header.get_checksum(m_base);
+    if (checksum &&
+        checksum.__offset >= FF_HEADER::HEADER_SIZE &&
+        checksum.__offset <= sealed_size) {
+        // Rewind write head to the start of the existing checksum block.
+        m_memory.reset(checksum.__offset);
+        // Mark checksum as absent until finalize() appends a new one.
+        STORE_U64(const_cast<BYTE*>(m_base) + FF_HEADER::CHECKSUM_OFFSET, FF_NULL_OFFSET);
     }
 }
 
 Builder::~Builder() = default; // m_memory handles its own OS cleanup
+
+Memory Builder::mount_for_append(const std::filesystem::path& filepath, Size capacity)
+{
+    // Memory maps bytes and knows nothing about streams, by design. The policy
+    // lives here, where the wire format is already understood -- and it runs
+    // BEFORE the writable mount, because that mount reserves `capacity` on disk
+    // and cannot be undone by refusing afterwards.
+    std::error_code ec;
+    const auto on_disk = std::filesystem::file_size(filepath, ec);
+    if (!ec && on_disk >= FF_HEADER::HEADER_SIZE) {
+        const Memory peek = Memory::openReadOnly(filepath);
+        const BYTE* const bytes = peek.base();
+        // An all-zero header region is an arena that was reserved and never
+        // written: there is nothing there to lose.
+        const bool never_written = std::all_of(bytes, bytes + FF_HEADER::HEADER_SIZE,
+                                               [](BYTE b) { return b == 0; });
+        if (!never_written) {
+            const FF_Result header = FF_HEADER(static_cast<Size>(on_disk)).validate_full(bytes);
+            if (header != FF_SUCCESS)
+                throw std::runtime_error(
+                    "FastFHIR: " + filepath.string() + " is not a finalized FastFHIR stream (" +
+                    header.message + "); refusing to append to it. Repair it with FastFHIR::Recovery, "
+                    "or remove the file to start a new stream.");
+        }
+    }
+    return Memory::createFromFile(filepath, capacity);
+}
 
 // =====================================================================
 // Conformance Layer

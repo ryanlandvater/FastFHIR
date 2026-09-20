@@ -623,7 +623,7 @@ not repeated here:
 - **§6.2** — the 10-byte `{offset, tag}` tuple: `FF_FIELD_RESOURCE` and
   `FF_FIELD_CHOICE`.
 - **§6.3** — the MSB-discriminated scalars: `FF_FIELD_CODE` (bit 31,
-  `FF_CODEABLE_CONCEPT_FLAG`) and `FF_FIELD_DATETIME` (bit 63,
+  `FF_CODED_VALUE_FLAG`) and `FF_FIELD_DATETIME` (bit 63,
   `FF_DATETIME_FALLBACK_FLAG`). Both fallback arms are offsets **relative to the
   containing block**, which is why they must be resolved while the parent is
   still in hand.
@@ -1164,7 +1164,7 @@ recovery**. The value bytes are interpreted by the recovery tag:
 - For scalar variants (`RECOVER_FF_BOOL`, `_INT32`, …, `_FLOAT64`), the raw
   bits *are* the value, padded to 8 bytes.
 - For `RECOVER_FF_CODE`, the slot's low 4 bytes are a dictionary ID, or a
-  bit-31-flagged **signed relative offset** to an `FF_CODEABLE_CONCEPT`
+  bit-31-flagged **signed relative offset** to an `FF_CODED_VALUE`
   fallback block — relative to the *containing* block and resolved at decode;
   either way the POCO carries the decoded code text.
 - For date/time tags, the 8 bytes are a packed civil value (self-contained;
@@ -1195,9 +1195,9 @@ constants sit adjacent in `FF_Primitives.hpp` rather than in separate blocks.
 
 |  | `FF_CODE` (4 bytes) | `FF_DATETIME` (8 bytes) |
 |---|---|---|
-| Discriminator | bit 31 (`FF_CODEABLE_CONCEPT_FLAG`) | bit 63 (`FF_DATETIME_FALLBACK_FLAG`) |
+| Discriminator | bit 31 (`FF_CODED_VALUE_FLAG`) | bit 63 (`FF_DATETIME_FALLBACK_FLAG`) |
 | Flag **clear** | 31-bit dictionary ID | 63-bit packed civil date/time |
-| Flag **set** | 31-bit **signed relative** offset to an `FF_CODEABLE_CONCEPT` | 63-bit **signed relative** offset to an `FF_STRING` |
+| Flag **set** | 31-bit **signed relative** offset to an `FF_CODED_VALUE` | 63-bit **signed relative** offset to an `FF_STRING` |
 | Offset is relative to | the containing block | the containing block (identical rule) |
 | Sign-extension helper | `FF_ResolveCodeableConceptOffset` | `FF_ResolveDateTimeOffset` |
 | Null sentinel | `FF_CODE_NULL` = `0xFFFF'FFFF` | `FF_DATETIME_NULL` = `0xFFFF'FFFF'FFFF'FFFF` |
@@ -1209,7 +1209,7 @@ offsets are relative to the block, so the arithmetic has two operands — and a
 that defers the resolution past node construction has therefore already lost an
 operand and can only guess. `ParserOps::code_node()` is the single place the
 code slot's arithmetic happens; every producer of a code node calls it, and the
-node it returns already points at the `FF_CODEABLE_CONCEPT`. The alternative was
+node it returns already points at the `FF_CODED_VALUE`. The alternative was
 tried and was wrong: `Node::as<string_view>()` used to resolve against the
 node's own offset, which for a choice (`[x]`) variant is the *slot*, so it
 decoded one V-Table width away from the block and returned an empty label —
@@ -1234,7 +1234,7 @@ flowchart TD
     N -- yes --> NUL["FF_CODE_NULL / FF_DATETIME_NULL<br/>(all ones)"]
     N -- no --> F{"fits the inline form?"}
     F -- "code: in the dictionary<br/>date: parses and fits 63 bits" --> INL["store inline<br/>MSB = 0"]
-    F -- "no" --> BLK["write child block<br/>FF_CODEABLE_CONCEPT / FF_STRING"]
+    F -- "no" --> BLK["write child block<br/>FF_CODED_VALUE / FF_STRING"]
     BLK --> REL["store signed relative offset<br/>MSB = 1"]
 
     INL --> RD{"read: slot value"}
@@ -1249,7 +1249,7 @@ flowchart TD
 `validate_FFHR_stream()` skips inline scalars because they cannot aim the reader
 at memory it does not own — but when the MSB is set the slot is not inline data,
 and it is walked like any other offset. Both halves are wired: `FF_FIELD_CODE`
-against `RECOVER_FF_CODEABLE_CONCEPT`, and `FF_FIELD_DATETIME` against
+against `RECOVER_FF_CODED_VALUE`, and `FF_FIELD_DATETIME` against
 `RECOVER_FF_STRING`. A slot kind that can point somewhere and is absent from
 `slot_carries_offset` is a hole in the validator.
 
@@ -1271,7 +1271,7 @@ block's subtree is structurally sound", which is a property of the *block*;
 until DT-1.5 the memo short-circuited ahead of the tag check, so only the first
 edge to a block was type-checked and every later one was waved through — a
 crafted stream could aim a code slot at any already-visited block and have the
-reader decode an `Identifier` as an `FF_CODEABLE_CONCEPT`. Bounds were never at
+reader decode an `Identifier` as an `FF_CODED_VALUE`. Bounds were never at
 risk; the type was. Checking the tag before consulting the memo costs nothing
 measurable: A/B on the 50.8 MiB Synthea fixture at `-O3`, min of 7, gave
 10.30 ms before and 10.24–10.51 ms across five runs after — the before figure
@@ -1732,8 +1732,8 @@ a value needs both operands, so it must happen while the `Entry` still exists.
 
 `ParserOps::code_node()` is where it happens, and every producer of a code node
 routes through it: both `entry_as_node` implementations and `resolve_choice`.
-The node it hands back already points at the `FF_CODEABLE_CONCEPT`, tagged
-`RECOVER_FF_CODEABLE_CONCEPT` with kind `FF_FIELD_CODE`, so the read path still
+The node it hands back already points at the `FF_CODED_VALUE`, tagged
+`RECOVER_FF_CODED_VALUE` with kind `FF_FIELD_CODE`, so the read path still
 treats it as a coded leaf and `Node::as<std::string_view>()` has no arithmetic
 left to do.
 

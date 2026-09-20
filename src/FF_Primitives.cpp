@@ -415,14 +415,14 @@ static uint32_t _pack_codeable_concept_offset(Offset cc_offset, Offset block_off
     }
     // rel == -1 encodes to all-ones, which IS FF_CODE_NULL. It cannot occur
     // -- the smallest block is DATA_BLOCK::HEADER_SIZE bytes, so a preceding
-    // FF_CODEABLE_CONCEPT is at least that far back -- but the sentinel's whole
+    // FF_CODED_VALUE is at least that far back -- but the sentinel's whole
     // claim to that bit pattern is that no real offset produces it, and a claim
     // worth making is worth checking. FF_DATETIME has the identical case at 63 bits.
     if (rel == -1) {
         throw std::runtime_error(
             "FastFHIR: CodeableConcept fallback offset of -1 collides with FF_CODE_NULL.");
     }
-    return (static_cast<uint32_t>(static_cast<int32_t>(rel)) & FF_CODE_PAYLOAD_MASK) | FF_CODEABLE_CONCEPT_FLAG;
+    return (static_cast<uint32_t>(static_cast<int32_t>(rel)) & FF_CODE_PAYLOAD_MASK) | FF_CODED_VALUE_FLAG;
 }
 
 // =====================================================================
@@ -523,17 +523,17 @@ static uint64_t parse_fixed_width_code_(const std::string& code_str, unsigned pa
     return value;
 }
 
-// Write the FF_CODEABLE_CONCEPT header and advance the child-offset cursor.
+// Write the FF_CODED_VALUE header and advance the child-offset cursor.
 // Every system branch in ENCODE_FF_CODE shares this — previously copy-pasted
 // 7 times. If the CC layout changes, this is the ONE place to update.
 static void write_cc_header_(BYTE* ptr, Offset cc_offset, Offset& child_off,
                              FF_CodeableConceptSystem system, uint8_t payload_len)
 {
-    child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE + payload_len;
-    STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
-    STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,   RECOVER_FF_CODEABLE_CONCEPT);
-    ptr[FF_CODEABLE_CONCEPT::SYSTEM] = static_cast<uint8_t>(system);
-    ptr[FF_CODEABLE_CONCEPT::LENGTH] = payload_len;
+    child_off += FF_CODED_VALUE::HEADER_SIZE + payload_len;
+    STORE_U64(ptr + FF_CODED_VALUE::VALIDATION, cc_offset);
+    STORE_U16(ptr + FF_CODED_VALUE::RECOVERY,   RECOVER_FF_CODED_VALUE);
+    ptr[FF_CODED_VALUE::SYSTEM] = static_cast<uint8_t>(system);
+    ptr[FF_CODED_VALUE::LENGTH] = payload_len;
 }
 
 uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_off, const std::string& code_str, uint32_t version, FF_CodeableConceptSystem system) {
@@ -559,7 +559,7 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
         const uint64_t value =
             parse_fixed_width_code_(code_str, codec->payload_bytes, codec->name, codec->parse_base);
         write_cc_header_(ptr, cc_offset, child_off, codec->system, codec->payload_bytes);
-        ff_cc_store(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, value, codec->payload_bytes);
+        ff_cc_store(ptr + FF_CODED_VALUE::PAYLOAD, value, codec->payload_bytes);
         return _pack_codeable_concept_offset(cc_offset, block_offset);
     }
 
@@ -574,8 +574,8 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
         }
         const uint8_t payload_len = static_cast<uint8_t>(URL_IDX_BYTES + code_str.size());
         write_cc_header_(ptr, cc_offset, child_off, codec->system, payload_len);
-        STORE_U16(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, uint16_t{0});  // 0 = not yet registered
-        std::memcpy(ptr + FF_CODEABLE_CONCEPT::PAYLOAD + URL_IDX_BYTES,
+        STORE_U16(ptr + FF_CODED_VALUE::PAYLOAD, uint16_t{0});  // 0 = not yet registered
+        std::memcpy(ptr + FF_CODED_VALUE::PAYLOAD + URL_IDX_BYTES,
                     code_str.data(), code_str.size());
         return _pack_codeable_concept_offset(cc_offset, block_offset);
     }
@@ -588,7 +588,7 @@ uint32_t ENCODE_FF_CODE(BYTE* const __base, Offset block_offset, Offset& child_o
     }
     const uint8_t payload_len = static_cast<uint8_t>(code_str.size());
     write_cc_header_(ptr, cc_offset, child_off, codec->system, payload_len);
-    std::memcpy(ptr + FF_CODEABLE_CONCEPT::PAYLOAD, code_str.data(), code_str.size());
+    std::memcpy(ptr + FF_CODED_VALUE::PAYLOAD, code_str.data(), code_str.size());
     return _pack_codeable_concept_offset(cc_offset, block_offset);
 }
 
@@ -851,22 +851,22 @@ uint64_t ENCODE_FF_DATETIME(BYTE* const __base, Offset block_offset, Offset& chi
 }
 
 // =====================================================================
-// FF_DECODE_CODEABLE_CONCEPT — unified dynamic fallback block decoder
+// FF_DECODE_CODED_VALUE — unified dynamic fallback block decoder
 // =====================================================================
 // Reads the SYSTEM discriminator byte and variable-length PAYLOAD from
-// the unified FF_CODEABLE_CONCEPT.  Returns the code as a human-readable
+// the unified FF_CODED_VALUE.  Returns the code as a human-readable
 // string_view (thread-local buffer for fixed-width types).
-FF_CodeableConceptResult FF_DECODE_CODEABLE_CONCEPT(
+FF_CodedValueResult FF_DECODE_CODED_VALUE(
     const BYTE* base, Offset offset, uint32_t version, Size stream_size)
 {
     // Same gate as every other block hop; a CodeableConcept is a block.
-    if (!FF_BLOCK_IN_BOUNDS(offset, stream_size, FF_CODEABLE_CONCEPT::HEADER_SIZE))
+    if (!FF_BLOCK_IN_BOUNDS(offset, stream_size, FF_CODED_VALUE::HEADER_SIZE))
         return {};
 
     using S = FF_CodeableConceptSystem;
-    const S sys = static_cast<S>(base[offset + FF_CODEABLE_CONCEPT::SYSTEM]);
-    const uint8_t len = base[offset + FF_CODEABLE_CONCEPT::LENGTH];
-    const BYTE *payload = base + offset + FF_CODEABLE_CONCEPT::PAYLOAD;
+    const S sys = static_cast<S>(base[offset + FF_CODED_VALUE::SYSTEM]);
+    const uint8_t len = base[offset + FF_CODED_VALUE::LENGTH];
+    const BYTE *payload = base + offset + FF_CODED_VALUE::PAYLOAD;
 
     // Same table the encoder uses -- no second per-system switch.
     const FF_CC_Codec *codec = ff_cc_codec(sys);

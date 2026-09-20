@@ -184,7 +184,10 @@ using FF_HashCallback = std::function<std::vector<BYTE>(const unsigned char* byt
 struct FF_MemoryCreateInfo {
     Size        capacity = 4ULL * 1024 * 1024 * 1024; ///< Sparse virtual reservation.
     const char* shm_name = nullptr;  ///< Cross-process SHM segment name; null = anonymous RAM.
-    const char* filepath = nullptr;  ///< File-backed arena; exclusive with shm_name.
+    /// File-backed arena, writable (Memory::createFromFile). To read a file
+    /// without being able to change it, use Memory::openReadOnly() and hand the
+    /// arena to FF_Parse. Exclusive with shm_name.
+    const char* filepath = nullptr;
 };
 
 /** @brief Creates a memory arena. @p out_memory is null on failure. */
@@ -204,11 +207,11 @@ FF_EXPORT Size FF_MemoryCapacity(const FF_Memory& memory) noexcept;
 // =====================================================================
 /** @brief Parameters for creating a builder (and the arena it writes into). */
 struct FF_BuilderCreateInfo {
-    Size        capacity = 4ULL * 1024 * 1024 * 1024; ///< Sparse virtual reservation.
-    FHIR_VERSION version  = FHIR_VERSION_R5;          ///< FHIR schema revision for the stream.
-    FF_Memory   arena    = nullptr;                   ///< Existing arena to build into; exclusive with filepath/shm_name.
-    const char* filepath = nullptr;                   ///< File-backed arena; exclusive with arena/shm_name.
-    const char* shm_name = nullptr;                   ///< Cross-process SHM arena; exclusive with arena/filepath.
+    Size        capacity  = 4ULL * 1024 * 1024 * 1024; ///< Sparse virtual reservation.
+    FHIR_VERSION version   = FHIR_VERSION_R5;          ///< FHIR schema revision for the stream.
+    FF_Memory   arena     = nullptr;                   ///< Existing arena to build into; exclusive with filepath/shm_name.
+    const char* filepath  = nullptr;                   ///< File-backed arena; exclusive with arena/shm_name.
+    const char* shm_name  = nullptr;                   ///< Cross-process SHM arena; exclusive with arena/filepath.
 };
 
 /** @brief Creates a stream. @p out_stream is null on failure. */
@@ -265,8 +268,12 @@ FF_EXPORT FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo& info, Parser& out
 // =====================================================================
 /** @brief Parameters for parsing a sealed FastFHIR byte stream. */
 struct FF_ParseInfo {
-    const void* buffer = nullptr;  ///< First byte of a sealed FastFHIR stream.
+    const void* buffer = nullptr;  ///< First byte of a sealed FastFHIR stream (e.g. read from a FILE* or a socket).
     Size        size   = 0;        ///< Total bytes available at @p buffer.
+    /// An arena holding a sealed stream — from Memory::openReadOnly() for a file
+    /// on disk, or the one a Builder just wrote. The Parser keeps the handle, so
+    /// the mapping lives as long as it does. Exclusive with @p buffer.
+    FF_Memory   memory = nullptr;
 };
 
 /** @brief Parses and validates a stream header. @p out_parser is invalid (bool false) on failure. */

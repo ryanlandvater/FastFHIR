@@ -371,6 +371,7 @@ if(FASTFHIR_BUILD_CONFORMANCE)
         $<BUILD_INTERFACE:${FASTFHIR_INCLUDE_DIR}>
         $<BUILD_INTERFACE:${FASTFHIR_GENERATED_DIR}>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/conformance>
+        $<INSTALL_INTERFACE:include>
     )
     target_compile_features(fastfhir_conformance PUBLIC cxx_std_20)
     _ff_enable_switch_warnings(fastfhir_conformance)
@@ -441,30 +442,64 @@ install(TARGETS fastfhir ff_export EXPORT FastFHIRTargets
     LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin
     INCLUDES DESTINATION include
 )
-install(FILES
+# The one list of what a consumer may include. It used to be a hand list that
+# drifted from the headers it named: FF_Builder.hpp gained FF_Conformance.hpp
+# and the installed FastFHIR.hpp stopped compiling, and no build step noticed.
+#
+# The generated half is globbed here, after the generator has run: every
+# FF_*.hpp except the *_internal.hpp wire/view headers and the headers that
+# exist only for the ingestor or the internal umbrella. So the installed POCO
+# set is exactly the build profile's. FF_Ops.hpp (arena byte arithmetic) is
+# internal by design -- CLAUDE.md invariant 9 -- and install_smoke asserts it
+# never lands in the prefix.
+set(FASTFHIR_PUBLIC_HEADERS
     ${FASTFHIR_INCLUDE_DIR}/FastFHIR.hpp
-    ${FASTFHIR_INCLUDE_DIR}/FF_Parser.hpp
-    ${FASTFHIR_INCLUDE_DIR}/FF_Builder.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Version.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_TypeTraits.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Utilities.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Dictionary.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Memory.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Parser.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Builder.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Conformance.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Logger.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Recovery.hpp
-    ${FASTFHIR_INCLUDE_DIR}/FF_Version.hpp
-    ${FASTFHIR_GENERATED_DIR}/FF_FieldKeys.hpp
-    ${FASTFHIR_GENERATED_DIR}/FF_RecoveryTags.hpp
-    ${FASTFHIR_GENERATED_DIR}/FF_ResourceTypes.hpp
-    ${FASTFHIR_GENERATED_DIR}/FF_Reflection.hpp
-    ${FASTFHIR_GENERATED_DIR}/FF_Codes.hpp
-    DESTINATION include
+    ${FASTFHIR_INCLUDE_DIR}/FF_BundleAppend.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Concurrency.hpp
 )
+file(GLOB _FF_GENERATED_PUBLIC_HEADERS "${FASTFHIR_GENERATED_DIR}/FF_*.hpp")
+list(FILTER _FF_GENERATED_PUBLIC_HEADERS EXCLUDE REGEX
+    "(_internal|/FF_AllTypes|/FF_IngestMappings|/FF_KnownExtensions|/FF_Conformance_Layer)\\.hpp$")
+list(APPEND FASTFHIR_PUBLIC_HEADERS ${_FF_GENERATED_PUBLIC_HEADERS})
+install(FILES ${FASTFHIR_PUBLIC_HEADERS} DESTINATION include)
+
 if(FASTFHIR_BUILD_INGESTOR)
     install(TARGETS fastfhir_ingestor ff_ingest
         EXPORT FastFHIRTargets
         LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 endif()
+if(FASTFHIR_BUILD_CONFORMANCE)
+    install(TARGETS fastfhir_conformance EXPORT FastFHIRTargets ARCHIVE DESTINATION lib)
+    install(FILES ${FASTFHIR_GENERATED_DIR}/FF_Conformance_Layer.hpp DESTINATION include)
+endif()
 install(EXPORT FastFHIRTargets
     FILE FastFHIRTargets.cmake NAMESPACE FastFHIR::
+    DESTINATION lib/cmake/FastFHIR)
+
+# find_package(FastFHIR CONFIG) needs a Config file; the Targets file alone is
+# not findable. The ingestor's exported target names simdjson::simdjson, so the
+# Config file finds it first when the ingestor was built.
+include(CMakePackageConfigHelpers)
+set(FASTFHIR_CONFIG_FIND_SIMDJSON ${FASTFHIR_BUILD_INGESTOR})
+configure_package_config_file(cmake/FastFHIRConfig.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/FastFHIRConfig.cmake"
+    INSTALL_DESTINATION lib/cmake/FastFHIR)
+write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/FastFHIRConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion)
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/FastFHIRConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/FastFHIRConfigVersion.cmake"
     DESTINATION lib/cmake/FastFHIR)
 
 # ── Convenience target ─────────────────────────────────────────
@@ -481,7 +516,8 @@ if(FASTFHIR_BUILD_TESTS)
          ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor
          ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary
          ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
-         ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append)
+         ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append
+         ff_test_file_modes ff_test_poco_values)
     if(FASTFHIR_BUILD_CONFORMANCE)
         list(APPEND _BUILD_ALL ff_test_conformance ff_example_conformance)
     endif()
@@ -559,7 +595,9 @@ if(FASTFHIR_BUILD_TESTS)
                ff_test_compactor ff_test_graph_bounds ff_test_datetime
                ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
                ff_test_api ff_test_dictionary ff_test_abstraction_parity
-               ff_test_recovery ff_test_views ff_test_bundle_append)
+               ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes
+           ff_test_poco_values
+               ff_test_poco_values)
         if(TARGET ${_t})
             set_target_properties(${_t} PROPERTIES FOLDER "Tests")
         endif()
@@ -606,7 +644,7 @@ foreach(_t build_all fastfhir fastfhir_ingestor ff_ingest ff_export ff_compact f
            ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds
            ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
            ff_test_datetime ff_test_api ff_test_dictionary ff_test_abstraction_parity
-           ff_test_recovery ff_test_views ff_test_bundle_append
+           ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes
            fastfhir_conformance ff_test_conformance ff_example_conformance)
     if(TARGET ${_t})
         set_target_properties(${_t} PROPERTIES XCODE_GENERATE_SCHEME ON)

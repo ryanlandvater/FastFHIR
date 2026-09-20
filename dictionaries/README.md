@@ -32,7 +32,7 @@ values FastFHIR can redistribute belong in this directory:
 | SNOMED CT, LOINC, RxNorm, ICD, CPT, NDC, EDQM, … | **no** |
 
 External terminologies are still fully supported — they travel as
-`FF_CODEABLE_CONCEPT` blocks carrying the code the *user* supplied, under the
+`FF_CODED_VALUE` blocks carrying the code the *user* supplied, under the
 user's own licence (see the system registry near the bottom of this file).
 FastFHIR encodes them; it does not distribute them.
 
@@ -190,7 +190,7 @@ generator's job.
 | Constant | Value | Meaning |
 |---|---|---|
 | `FF_CODE_NULL` | `0xFFFFFFFF` | No code present. |
-| `FF_CODEABLE_CONCEPT_FLAG` | `0x80000000` | Bit 31 set → the slot is an offset to an `FF_CODEABLE_CONCEPT` block, not a dictionary ID. |
+| `FF_CODED_VALUE_FLAG` | `0x80000000` | Bit 31 set → the slot is an offset to an `FF_CODED_VALUE` block, not a dictionary ID. |
 | ID `0` | — | Reserved null slot; never assigned. |
 
 Usable ID space is `1 .. 0x7FFFFFFF`; `_verify_ledger()` refuses any assignment
@@ -218,13 +218,13 @@ MSB = 1  → 31-bit signed relative offset to CodeableConcept block
 ## CodeableConcept system discriminator
 
 When a code is not in the permanent dictionary (MSB=0), it is stored as a
-CodeableConcept block (MSB=1, `FF_CODEABLE_CONCEPT_FLAG`). The block carries a
+CodeableConcept block (MSB=1, `FF_CODED_VALUE_FLAG`). The block carries a
 1-byte system discriminator at offset 10 telling the decoder how to interpret
 the variable-length payload.
 
 ```
 Offset  0– 7 : VALIDATION  (uint64_t)
-Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT (0x0009)
+Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODED_VALUE (0x0009)
 Offset 10    : SYSTEM      (uint8_t)  — FF_CodeableConceptSystem
 Offset 11    : LENGTH      (uint8_t)  — payload byte count
 Offset 12+   : PAYLOAD     (variable) — LENGTH bytes
@@ -236,7 +236,7 @@ Offset 12+   : PAYLOAD     (variable) — LENGTH bytes
 
 The payload width, numeric base and output format for each system live in
 **one place**: the `FF_CC_CODECS` table in `src/FF_Primitives.cpp`. Both
-`ENCODE_FF_CODE` and `FF_DECODE_CODEABLE_CONCEPT` drive from it, and
+`ENCODE_FF_CODE` and `FF_DECODE_CODED_VALUE` drive from it, and
 `Entry::print_scalar_json` calls the decoder rather than carrying its own
 switch. Adding a system is one row; changing a width is one number.
 

@@ -37,6 +37,8 @@
 #include <variant>
 #include "FF_Version.hpp"
 
+#include <type_traits>
+
 #ifndef FF_EXPORT
 #if defined(_WIN32) || defined(_WIN64)
 #if defined(FF_BUILDING_DLL)
@@ -128,9 +130,9 @@ constexpr uint32_t FF_PENDING_CODE = 0x00000000;
 // Bit 31 (MSB) distinguishes dictionary codes from dynamic fallback blocks.
 //   MSB = 0  → 31-bit dictionary index (FF_ResolveCode)
 //   MSB = 1  → 31-bit signed relative offset to dynamic fallback block
-// FF_CODEABLE_CONCEPT_FLAG (old Bit 30) is REMOVED — bit 30 is reclaimed
+// FF_CODED_VALUE_FLAG (old Bit 30) is REMOVED — bit 30 is reclaimed
 // for data, doubling dictionary capacity and signed offset range.
-constexpr uint32_t FF_CODEABLE_CONCEPT_FLAG    = 0x80000000;  // Bit 31
+constexpr uint32_t FF_CODED_VALUE_FLAG    = 0x80000000;  // Bit 31
 constexpr uint32_t FF_CODE_PAYLOAD_MASK     = 0x7FFFFFFF;  // Lower 31 bits
 
 // Hard cap on permanent dictionary size to prevent overflow into Bit 31.
@@ -142,10 +144,10 @@ constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x7FFFFFFF;
 // block first; everything here is its counterpart, deliberately so:
 //
 //                    FF_CODE (4 bytes)              FF_DATETIME (8 bytes)
-//   Discriminator    bit 31 (CODEABLE_CONCEPT_FLAG) bit 63 (FALLBACK_FLAG)
+//   Discriminator    bit 31 (CODED_VALUE_FLAG)      bit 63 (FALLBACK_FLAG)
 //   Flag clear       31-bit dictionary ID           63-bit packed civil value
 //   Flag set         31-bit signed relative offset  63-bit signed relative offset
-//                    to an FF_CODEABLE_CONCEPT      to an FF_STRING
+//                    to an FF_CODED_VALUE      to an FF_STRING
 //   Offset is rel to the containing block           the containing block (same rule)
 //   Sign-extension   FF_ResolveCodeableConceptOffset FF_ResolveDateTimeOffset
 //   Null sentinel    FF_CODE_NULL (all ones)        FF_DATETIME_NULL (all ones)
@@ -1075,7 +1077,7 @@ static_assert(FF_IsStringLayoutTag(RECOVER_FF_STRING) &&
                   FF_IsStringLayoutTag(RECOVER_FF_OPAQUE_JSON) &&
                   Recovery_to_Kind(RECOVER_FF_OPAQUE_JSON) == FF_FIELD_STRING,
               "every string-layout tag must map to FF_FIELD_STRING");
-static_assert(!FF_IsStringLayoutTag(RECOVER_FF_CODEABLE_CONCEPT) &&
+static_assert(!FF_IsStringLayoutTag(RECOVER_FF_CODED_VALUE) &&
                   !FF_IsStringLayoutTag(RECOVER_FF_RESOURCE),
               "FF_IsStringLayoutTag must not claim blocks that merely contain text");
 
@@ -1713,12 +1715,12 @@ struct ResourceReference
 // UNIFIED CODABLE CONCEPT FALLBACK BLOCK
 // =====================================================================
 // Variable-length block for ALL non-dictionary code values.  Bit 31 of the
-// vtable slot (FF_CODEABLE_CONCEPT_FLAG) signals this path; the remaining 31 bits
+// vtable slot (FF_CODED_VALUE_FLAG) signals this path; the remaining 31 bits
 // are a signed relative offset to this block.
 //
 // Layout (no fixed padding — FF_Ops.hpp handles unaligned ARM access):
 //   Offset  0– 7 : VALIDATION  (uint64_t) — standard DATA_BLOCK
-//   Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT
+//   Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODED_VALUE
 //   Offset 10    : SYSTEM      (uint8_t)  — FF_CodeableConceptSystem discriminator
 //   Offset 11    : LENGTH      (uint8_t)  — payload byte count
 //   Offset 12+   : PAYLOAD     (variable) — LENGTH bytes
@@ -1728,9 +1730,9 @@ struct ResourceReference
 //   UCUM    (0x01): raw ASCII UCUM expression
 //   SNOMED  (0x02): 8-byte big-endian concept ID (uint64_t)
 //   DICOM   (0x05): 4-byte big-endian tag (uint32_t)
-struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
-    static constexpr char type[] = "FF_CODEABLE_CONCEPT";
-    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_CODEABLE_CONCEPT;
+struct FF_EXPORT FF_CODED_VALUE : DATA_BLOCK {
+    static constexpr char type[] = "FF_CODED_VALUE";
+    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_CODED_VALUE;
 
     enum vtable_sizes {
         VALIDATION_S = TYPE_SIZE_UINT64,   // 8
@@ -1747,7 +1749,7 @@ struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
         PAYLOAD    = 12,
     };
 
-    explicit FF_CODEABLE_CONCEPT(Offset off, Size total_size, uint32_t ver)
+    explicit FF_CODED_VALUE(Offset off, Size total_size, uint32_t ver)
         : DATA_BLOCK(off, total_size, ver) {}
 
     FF_CodeableConceptSystem system(const BYTE* base) const noexcept {
@@ -1786,7 +1788,7 @@ struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
 // And the wire is strictly little-endian by definition -- FF_Ops.hpp says so
 // at the top -- so the byte order below IS the format, not a portability
 // hedge. Compilers fold each of these back into a single unaligned load.
-// FF_CODEABLE_CONCEPT::system() and FF_IsFieldEmpty() already read bytes this
+// FF_CODED_VALUE::system() and FF_IsFieldEmpty() already read bytes this
 // way; these follow them.
 
 /// THE bounds test for a wire offset. Every block read goes through this one.
@@ -1879,10 +1881,10 @@ inline std::string_view FF_GET_STRING_VIEW(const BYTE *base, Offset string_offse
                             FF_GET_STRING_LENGTH(base, string_offset));
 }
 
-/// Payload byte count of the FF_CODEABLE_CONCEPT at `concept_offset` (1 byte, at +11).
+/// Payload byte count of the FF_CODED_VALUE at `concept_offset` (1 byte, at +11).
 inline constexpr uint8_t FF_GET_CONCEPT_LENGTH(const BYTE *base, Offset concept_offset) noexcept
 {
-    return base[concept_offset + FF_CODEABLE_CONCEPT::LENGTH];
+    return base[concept_offset + FF_CODED_VALUE::LENGTH];
 }
 
 inline uint32_t FF_STRING::length(const BYTE *const __base) const noexcept
@@ -1891,7 +1893,7 @@ inline uint32_t FF_STRING::length(const BYTE *const __base) const noexcept
 }
 
 // ── CodeableConcept decode result ──────────────────────────────
-struct FF_CodeableConceptResult {
+struct FF_CodedValueResult {
     FF_CodeableConceptSystem system;   // discriminator byte
     uint64_t                 raw_code; // integer value (0 for string systems)
     std::string_view         label;    // human-readable string
@@ -1905,20 +1907,20 @@ struct FF_CodeableConceptResult {
 /// It is a required parameter, not a defaulted one: a caller that cannot say
 /// how big the buffer is has no business dereferencing into it, and a default
 /// would just reintroduce the unchecked path this exists to remove.
-FF_CodeableConceptResult FF_DECODE_CODEABLE_CONCEPT(
+FF_CodedValueResult FF_DECODE_CODED_VALUE(
     const BYTE* base, Offset offset, uint32_t version, Size stream_size);
 
 // Write an unknown-system dynamic block (SYSTEM=0x00) with a 2-byte URL index
 // followed by the raw code string.  Returns packed uint32_t with
-// FF_CODEABLE_CONCEPT_FLAG set.
-uint32_t ENCODE_FF_CODEABLE_CONCEPT_UNKNOWN(BYTE* __base, Offset block_offset,
+// FF_CODED_VALUE_FLAG set.
+uint32_t ENCODE_FF_CODED_VALUE_UNKNOWN(BYTE* __base, Offset block_offset,
                                           Offset& child_off,
                                           const std::string& code_str,
                                           uint16_t url_index,
                                           uint32_t version);
 
 // Write a UCUM dynamic block (SYSTEM=0x01) with raw ASCII expression.
-uint32_t ENCODE_FF_CODEABLE_CONCEPT_UCUM(BYTE* __base, Offset block_offset,
+uint32_t ENCODE_FF_CODED_VALUE_UCUM(BYTE* __base, Offset block_offset,
                                        Offset& child_off,
                                        const std::string& ucum_expr,
                                        uint32_t version);
@@ -1928,6 +1930,84 @@ uint32_t ENCODE_FF_CODEABLE_CONCEPT_UCUM(BYTE* __base, Offset block_offset,
 // generated code: ChoiceEntry holds it by unique_ptr, which needs only an
 // incomplete type so long as the special members below stay out of line.
 struct ChoiceBlock;
+
+/**
+ * @brief A present-or-absent child block in a generated POCO: FHIR's `0..1`.
+ *
+ * What it replaces: the member used to be a bare `std::unique_ptr<T>`, so every
+ * caller wrote `std::make_unique<CodeableConceptData>()` before it could say
+ * anything about a field. That is an implementation detail of PRESENCE --
+ * FHIR's optionality became C++ ownership -- and it showed up in every line of
+ * consumer code. It is here so the natural form works:
+ *
+ *     observation.code = CodeableConceptData{ .coding = { ... } };
+ *
+ * Why the heap indirection stays: generated types refer to themselves
+ * (Extension.extension), so an inline optional cannot be sized. This is
+ * std::optional's shape with std::unique_ptr's storage.
+ *
+ * Value semantics, including COPY: a POCO is a value, and a brace list can only
+ * copy its elements, so `.coding = { CodingData{...} }` needs copyable parts. A
+ * copy costs what it copies; moves stay free.
+ *
+ * Not a wire type. This is the build-and-materialize side; no byte of any
+ * stream changes because of it.
+ */
+template <typename T>
+class FF_Optional
+{
+public:
+    using element_type = T;
+
+    FF_Optional() noexcept = default;
+    ~FF_Optional() = default;
+    FF_Optional(std::nullptr_t) noexcept {}
+
+    /// By value, so both `= SomeData{...}` (moved) and `= existing` (copied) work.
+    FF_Optional(T value) : m_ptr(std::make_unique<T>(std::move(value))) {}
+    /// The emitters build children with make_unique; that keeps working.
+    FF_Optional(std::unique_ptr<T> ptr) noexcept : m_ptr(std::move(ptr)) {}
+
+    FF_Optional(const FF_Optional &other)
+        : m_ptr(other.m_ptr ? std::make_unique<T>(*other.m_ptr) : nullptr) {}
+    FF_Optional(FF_Optional &&) noexcept = default;
+
+    FF_Optional &operator=(const FF_Optional &other)
+    {
+        m_ptr = other.m_ptr ? std::make_unique<T>(*other.m_ptr) : nullptr;
+        return *this;
+    }
+    FF_Optional &operator=(FF_Optional &&) noexcept = default;
+    FF_Optional &operator=(T value)
+    {
+        m_ptr = std::make_unique<T>(std::move(value));
+        return *this;
+    }
+    FF_Optional &operator=(std::unique_ptr<T> ptr) noexcept
+    {
+        m_ptr = std::move(ptr);
+        return *this;
+    }
+    FF_Optional &operator=(std::nullptr_t) noexcept
+    {
+        m_ptr.reset();
+        return *this;
+    }
+
+    T *operator->() noexcept { return m_ptr.get(); }
+    const T *operator->() const noexcept { return m_ptr.get(); }
+    T &operator*() noexcept { return *m_ptr; }
+    const T &operator*() const noexcept { return *m_ptr; }
+    T *get() noexcept { return m_ptr.get(); }
+    const T *get() const noexcept { return m_ptr.get(); }
+
+    explicit operator bool() const noexcept { return m_ptr != nullptr; }
+    bool operator==(std::nullptr_t) const noexcept { return m_ptr == nullptr; }
+    bool operator!=(std::nullptr_t) const noexcept { return m_ptr != nullptr; }
+
+private:
+    std::unique_ptr<T> m_ptr;
+};
 
 struct ChoiceEntry
 {
@@ -1961,23 +2041,38 @@ struct ChoiceEntry
     /// and they nest, and live in vectors.
     std::unique_ptr<ChoiceBlock> block;
 
-    /// MOVE-ONLY, like everything else in this layer.
-    ///
-    /// ChoiceBlock wraps the generated datatype structs, and 36 of those hold
-    /// std::unique_ptr members for their own nested blocks -- so they are
-    /// move-only, and so is any variant over them. Every struct that contains a
-    /// ChoiceEntry already contains such a member too, which means copying one
-    /// was never possible in the contexts that matter; declaring it here only
-    /// makes that explicit instead of failing deep inside a variant.
+    /// A VALUE, copy included. It was move-only while the nested blocks were
+    /// held by std::unique_ptr, which had no copy to give; with FF_Optional they
+    /// are values too, so a ChoiceEntry deep-copies its block like any other
+    /// member. That is what lets a POCO be brace-initialized, since an
+    /// initializer_list can only copy its elements.
     ///
     /// Out of line because the header only forward-declares ChoiceBlock; the
     /// generated TU defines these where it is complete.
     ChoiceEntry();
     ~ChoiceEntry();
-    ChoiceEntry(const ChoiceEntry &) = delete;
-    ChoiceEntry &operator=(const ChoiceEntry &) = delete;
+    ChoiceEntry(const ChoiceEntry &);
+    ChoiceEntry &operator=(const ChoiceEntry &);
     ChoiceEntry(ChoiceEntry &&) noexcept;
     ChoiceEntry &operator=(ChoiceEntry &&) noexcept;
+
+    /// Assign a FHIR datatype straight into the slot: the variant tag comes
+    /// from TypeTraits<T>, so the type is named once instead of three times.
+    ///
+    ///     observation.value = QuantityData{ .value = 94.0, .unit = "mg/dL" };
+    ///
+    /// replaces `tag = RECOVER_FF_QUANTITY;` + `block = FF_MakeChoiceBlock(tag);`
+    /// + `block->value = std::move(quantity);`, where a mismatch between the
+    /// first two spellings was a silent wrong-variant write.
+    ///
+    /// Constrained away from ChoiceEntry itself: for a non-const lvalue this
+    /// template would otherwise be a better match than the copy assignment and
+    /// quietly hijack `a = b`. Defined in the generated header, where
+    /// ChoiceBlock is complete; a type that is not one of its alternatives is a
+    /// compile error there, naming the type.
+    template <typename T>
+        requires(!std::is_same_v<std::decay_t<T>, ChoiceEntry>)
+    ChoiceEntry &operator=(T &&value);
 
     bool is_empty() const { return tag == FF_RECOVER_UNDEFINED; }
 
@@ -2039,7 +2134,7 @@ Size STORE_FF_STRING(BYTE *const __base, Offset start_offset, std::string_view s
 Size STORE_FF_CODE(BYTE *const __base, Offset start_offset, std::string_view code_str, uint32_t version);
 // Pack a code value into a 32-bit vtable slot.  Returns dictionary index
 // (MSB=0) when the code is in the permanent dictionary, or a packed relative
-// offset with FF_CODEABLE_CONCEPT_FLAG set (MSB=1) when the code requires a
+// offset with FF_CODED_VALUE_FLAG set (MSB=1) when the code requires a
 // dynamic fallback block.
 uint32_t ENCODE_FF_CODE(BYTE *const __base, Offset block_offset, Offset &child_off,
                          const std::string &code_str, uint32_t version = FHIR_VERSION_R5,

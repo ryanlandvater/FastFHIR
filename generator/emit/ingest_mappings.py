@@ -251,7 +251,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         # A code variant carries RECOVER_FF_CODE, not
                         # RECOVER_FF_STRING: the tag is what routes the reader
                         # through code_node, which resolves a dictionary ID or a
-                        # flagged FF_CODEABLE_CONCEPT fallback. Tagged as a
+                        # flagged FF_CODED_VALUE fallback. Tagged as a
                         # string it exported as `valueString` and lost the
                         # dictionary encoding entirely. The POD value stays the
                         # raw text; the STORE side runs ENCODE_FF_CODE on it.

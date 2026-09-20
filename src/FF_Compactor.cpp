@@ -145,7 +145,7 @@ static inline void write_pending_slot(ArchiveContext& context, BYTE* base, Offse
 
 // The 4-byte code-slot counterpart. FF_PENDING_CODE (dictionary ID 0) is
 // never a legal resolved value here: this slot is only deferred when the
-// source code carries FF_CODEABLE_CONCEPT_FLAG, and write_compact_code_slot
+// source code carries FF_CODED_VALUE_FLAG, and write_compact_code_slot
 // always resolves it to another bit-31-set value, so 0 is unambiguous.
 static inline void write_pending_code_slot(ArchiveContext& context, BYTE* base, Offset slot) {
     STORE_U32(base + slot, FF_PENDING_CODE);
@@ -212,18 +212,18 @@ static uint32_t compact_code_bits(const Reflective::Entry& entry, Memory& destin
 
     // Dictionary ID (or absent): a PERMANENT global index, identical in every
     // arena, so it copies verbatim. This is the whole reason the flag exists.
-    if (raw_code == FF_CODE_NULL || (raw_code & FF_CODEABLE_CONCEPT_FLAG) == 0)
+    if (raw_code == FF_CODE_NULL || (raw_code & FF_CODED_VALUE_FLAG) == 0)
         return raw_code;
 
     // Flagged: a signed offset RELATIVE to the containing block. Copy the
     // CodeableConcept verbatim -- SYSTEM byte, LENGTH byte and payload, no
     // interior offsets, so a byte copy is exact here and creating an FF_STRING
-    // instead would lose the discriminator FF_DECODE_CODEABLE_CONCEPT reads --
+    // instead would lose the discriminator FF_DECODE_CODED_VALUE reads --
     // then RE-MEASURE the offset against the block's NEW address.
     const int32_t rel_off = static_cast<int32_t>(raw_code << 1) >> 1;
     const Offset src_cc_off = entry.parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
     const uint8_t cc_len = FF_GET_CONCEPT_LENGTH(entry.base, src_cc_off);
-    const Size total_bytes = FF_CODEABLE_CONCEPT::HEADER_SIZE + cc_len;
+    const Size total_bytes = FF_CODED_VALUE::HEADER_SIZE + cc_len;
 
     const Offset dst_cc_off = destination.claim_space(total_bytes);
     std::memcpy(destination.base() + dst_cc_off, entry.base + src_cc_off, total_bytes);
@@ -232,7 +232,7 @@ static uint32_t compact_code_bits(const Reflective::Entry& entry, Memory& destin
     if (relative_off > 0x7FFFFFFF) {
         throw std::runtime_error("FastFHIR Compactor Error: CodeableConcept relative offset exceeds 31-bit signed range.");
     }
-    return static_cast<uint32_t>(relative_off) | FF_CODEABLE_CONCEPT_FLAG;
+    return static_cast<uint32_t>(relative_off) | FF_CODED_VALUE_FLAG;
 }
 
 static void write_compact_code_slot(const Reflective::Entry& entry, Memory& destination,
@@ -254,7 +254,7 @@ static void write_compact_datetime_slot(const Reflective::Entry& entry, Memory& 
     // Flagged fallback: an FF_STRING holding the ORIGINAL text (byte-exact
     // round trip for values that do not pack). Copy the block verbatim and
     // re-encode the relative offset against the compact parent, exactly like
-    // write_compact_code_slot does for FF_CODEABLE_CONCEPT.
+    // write_compact_code_slot does for FF_CODED_VALUE.
     const Offset src_str_off = FF_ResolveDateTimeOffset(raw, entry.parent_offset);
     const BYTE* src = entry.base;
     const uint32_t len = FF_GET_STRING_LENGTH(src, src_str_off);
@@ -490,7 +490,7 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
                 break;
             case FF_FIELD_CODE:
                 if (const uint32_t raw_code = LOAD_U32(entry.base + entry.absolute_offset());
-                    raw_code == FF_CODE_NULL || (raw_code & FF_CODEABLE_CONCEPT_FLAG) == 0) {
+                    raw_code == FF_CODE_NULL || (raw_code & FF_CODED_VALUE_FLAG) == 0) {
                     STORE_U32(base + dense_off, raw_code);
                 } else {
                     // FF_PENDING_CODE, never FF_CODE_NULL: the latter is the

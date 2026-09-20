@@ -7,22 +7,58 @@ FastFHIR
 ![FHIR R4/R5](https://img.shields.io/badge/FHIR-R4%20%7C%20R5-blueviolet)
 ![License](https://img.shields.io/badge/license-MPL--2.0-brightgreen)
 
-### The Time has Come to Divorce Semantics and Syntatactics from a Single Stream within Healthcare Serialization (HL7)
+### We need to Divorce Semantics and Syntatactics from a Single Stream within Healthcare Serialization
+__Perpetuating these unsafe legacy standards is unsafe, irresponsible patching, and limits our growth in the domain of clinical informatics.__
 
-Healthcare interoperability has historically relied on formats that are **inherently unsafe**, **computationally expensive**, and **structurally brittle**. FastFHIR replaces traditional parsing with a mathematically strict, offset-based binary layout that guarantees type safety, data recovery, in-stream HL7 enrichment, and blistering speed. It generates strongly-typed C++ structs and a mathematically strict, zero-copy binary architecture directly from official HL7 FHIR Structure Definitions.
+Healthcare interoperability has historically relied on formats that are **inherently unsafe**, **computationally expensive**, and **structurally brittle**. FastFHIR replaces traditional parsing with a strict, offset-based binary layout that redundantly guarantees type safety, adds data recovery, allows for in-stream HL7 enrichment, and does so while unlocking blistering speed - which directly translates into reduced hardware cost. 
 
-**FastFHIR** is a **wildly fast binary HL7 format** comprising a lock-free binary serializer and C++20 code generation pipeline targeting the HL7 FHIR resources (R4, R5, and beyond).
+**FastFHIR** is a **wildly fast binary HL7 format**. This library generates strongly-typed C++ structs and a strict, zero-copy  architecture directly from the official HL7 FHIR Structure Definitions - We rely on HL7 international to develop the clinical standard, we just **turn that standard into a fast, safe, escape-character-free, and immediately drop-in-deployable** binary library for your entire healthcare stack from the granular lab instruments through your preferred heath information exchange (HIE) by way of your EHR.
 
 
+## FAQ
+### Does FastFHIR replace FHIR?
+__A: **No** it is FHIR just without relying on escape characters, without needing a JSON parser, or requiring 'Connectathon' tests. It is built directly from the FHIR standard and pulls it directly from HL7 International while building the library__
+
+### Can I convert a FastFHIR stream back into standard FHIR JSON document?
+__**A**: **Yes** the library **can directly and rapidly translate the binary langauge** into human readable JSON at any level of granularity (ie you can output the whole bundle, a single resource, or any sub-element of that resource)__
+
+### Why do you say that Connectatons are no-longer needed?
+**A: I (Ryan, who originally wrote FastFHIR) am both an MD and a programmer. I do not like hunting for information -- I like it to be presented to me. As a result I added intellisense type definitions for all supported languages so that you/your programmers will be presented with valid FHIR data elements within the hierarchical / nested ontology as they attempt to access those fields.**
+```json
+// JSON
+FHIR["Patient"]["Name"]["MyFakeMadeUpField"] = ... // This is allowed normally; JSON doesn't know FHIR
+```
+<!-- ff-compile: skip reason="illustrative: mid-typing IDE completion, not a compilable expression" -->
+```cpp
+// C++
+#include <FastFHIR.hpp>
+#include <FF_FieldKeys.hpp>
+FastFHIR[::Fields::Patient::Na...] // Your IDE will present you with ::Fields::Patient::Name as an option
+```
+```py
+#Python
+from fastfhir.fields import Patient
+FastFHIR[Patient.ID] # Your IDE will TELL you any subtype of Patient
+```
+
+**Additionally FastFHIR is a **freely available open-source reference implementation.** This is huge. It provides both an API and ABI - so that your vendors and researches do not need to check that the code they write all wires up. In fact, it saves different compaties from paying programmers to write near identical code and then spend time at connectathons to make sure it is nearly identical.**
+
+### What programming languages are supported?
+**A: Right now I support C/C++ and Python wiht additional languages being added in the future starting with JavaScript via WASM. All will be supported as full first class langugaes. You will get the same performance regardless (for example the python library is compiled).**
+<!-- readme-test: skip — illustrative FAQ snippet; the executed Python examples live in python/README.md -->
 ```py
 import fastfhir as ff
 from fastfhir.fields import Patient
 
-with ff.Builder(ff.Memory.create_from_file("patient.ffhr"), ff.FhirVersion.R5) as builder:
-    print(builder.root[Patient.ID].value())       # "patient-1"  — no parse step
+memory = ff.Memory.create_from_file("patient.ffhr")
+with ff.Builder(memory, ff.FhirVersion.R5) as builder:
+    print(builder.root[Patient.ID].value())  # "patient-1"  — no parse step
 ```
 
-C++ and Python are both first-class; neither is a port of the other.
+### How does this work with FHIR Extensions?
+__A: I am stricter than normal FHIR when it comes to extensions. We are adding an online extension repository that takes JSON extension definitions and compiles them into binary code. This provides two benefits:__
+1. We now can guarantee that the extension is structually correct and peristant forever. It is guaranteed to plug into a FastFHIR stream and be understood or it cannot be released by the repository / hub.
+2. There is official governance and persistance of any extension encoded data. The Z-segment / 'when you've seen one HL7, you've seen just one HL7' stream issue needs to be put to bed.
 
 ---
 
@@ -546,7 +582,8 @@ Mount an existing archive and traverse directly via `Parser::root()`.
 #include <FastFHIR.hpp>
 #include <FF_FieldKeys.hpp>
 
-auto mem    = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
+// openReadOnly maps exactly the bytes on disk — never created, grown or written
+auto mem    = FastFHIR::Memory::openReadOnly("patient.ffhr");
 auto parser = FastFHIR::Parser(mem);
 auto root   = parser.root();
 
@@ -1264,14 +1301,14 @@ patient_handle[FastFHIR::Fields::PATIENT::GENDER] = std::string_view("male");
 
 If lookup fails, FastFHIR writes the raw string into the arena as an `FF_STRING`
 block, computes the relative offset from the current data block to that string,
-and stores that offset with `FF_CODEABLE_CONCEPT_FLAG` (`0x80000000`) set in the MSB.
+and stores that offset with `FF_CODED_VALUE_FLAG` (`0x80000000`) set in the MSB.
 
 This marks the value as a custom-string reference instead of a dictionary ID.
 
 <!-- ff-compile: fragment needs=handles -->
 ```cpp
 patient_handle[FastFHIR::Fields::PATIENT::GENDER] = std::string_view("org-local-code-91827");
-// Not in dictionary -> stored as CodeableConcept block with FF_CODEABLE_CONCEPT_FLAG
+// Not in dictionary -> stored as CodeableConcept block with FF_CODED_VALUE_FLAG
 ```
 
 #### 3) Null handling
@@ -1290,8 +1327,8 @@ On read, converting a code field to `std::string_view` performs the inverse
 resolution order:
 
 1. Try dictionary resolution via `FF_ResolveCode`
-2. If unresolved, check `FF_CODEABLE_CONCEPT_FLAG` and follow the pointer — signed
-   and **relative to the containing block** — to the `FF_CODEABLE_CONCEPT` block
+2. If unresolved, check `FF_CODED_VALUE_FLAG` and follow the pointer — signed
+   and **relative to the containing block** — to the `FF_CODED_VALUE` block
 3. Decode that block per its system discriminator and return the label
 
 The relative pointer is resolved while the containing block is still known: on

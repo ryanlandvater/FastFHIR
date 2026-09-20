@@ -37,7 +37,7 @@ _LEDGER_PATH = os.path.join(
 # uint32 assignment -- not the terminology. Code values from HL7 FHIR and UCUM
 # ship in dictionaries/. Everything else (SNOMED CT, LOINC, RxNorm, ICD, CPT,
 # NDC, EDQM, ...) is licensed by its owner and is NOT shipped: those codes
-# travel as FF_CODEABLE_CONCEPT blocks carrying the literal code the *user*
+# travel as FF_CODED_VALUE blocks carrying the literal code the *user*
 # supplied, under the user's own license.
 #
 # This is enforced, not merely intended -- see _assert_redistributable().
@@ -57,7 +57,7 @@ FHIR_NATIVE_PREFIXES = (
     "http://terminology.hl7.org/CodeSystem/",
 )
 
-# Bit 31 (0x80000000) is FF_CODEABLE_CONCEPT_FLAG -- never assign an ID with it set.
+# Bit 31 (0x80000000) is FF_CODED_VALUE_FLAG -- never assign an ID with it set.
 _FF_CODE_DICTIONARY_MAX = 0x7FFFFFFF
 
 # CodeSystems whose "codes" are not VALUES a resource instance can carry.
@@ -196,7 +196,7 @@ def _assert_redistributable(source_urls: dict[str, str]) -> None:
             f"redistribute:\n{listed}{more}\n\n"
             "FastFHIR ships HL7 FHIR and UCUM code values only. Codes from other "
             "terminologies (SNOMED CT, LOINC, RxNorm, ICD, CPT, NDC, EDQM, ...) are "
-            "licensed by their owners and must travel as FF_CODEABLE_CONCEPT blocks "
+            "licensed by their owners and must travel as FF_CODED_VALUE blocks "
             "carrying the user's own code. See dictionaries/README.md."
         )
 
@@ -248,7 +248,7 @@ def assign_ids(ledger: dict, discovered: dict[str, dict]) -> int:
         if next_id >= _FF_CODE_DICTIONARY_MAX:
             raise RuntimeError(
                 f"Dictionary overflow: next id {next_id} >= {_FF_CODE_DICTIONARY_MAX}. "
-                "Bit 31 is FF_CODEABLE_CONCEPT_FLAG and must stay clear."
+                "Bit 31 is FF_CODED_VALUE_FLAG and must stay clear."
             )
         ids[code] = next_id
         next_id += 1

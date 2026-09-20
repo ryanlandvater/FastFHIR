@@ -140,6 +140,8 @@ if(FASTFHIR_BUILD_TESTS)
     add_ff_cpp_test(ff_test_bundle     tests/cpp/test_bundle_ingest.cpp)
     # APPEND-1: tail-rewrite append; its map checks use FF_Recovery (core).
     add_ff_cpp_test(ff_test_bundle_append tests/cpp/test_bundle_append.cpp)
+    add_ff_cpp_test(ff_test_file_modes tests/cpp/test_file_modes.cpp)
+    add_ff_cpp_test(ff_test_poco_values tests/cpp/test_poco_values.cpp)
     # Unlike the other standalone suites this one drives the JSON ingestor.
     target_link_libraries(ff_test_bundle PRIVATE fastfhir_ingestor simdjson::simdjson)
     add_ff_cpp_test(ff_test_simd       tests/cpp/test_simd.cpp)
@@ -208,13 +210,16 @@ if(FASTFHIR_BUILD_TESTS)
     add_ff_cpp_test(ff_test_recovery tests/cpp/test_recovery.cpp)
     target_link_libraries(ff_test_recovery
         PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
+    # The URL-directory case ingests a Patient with an extension.
+    target_link_libraries(ff_test_file_modes
+        PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
     # WO-1 out-param contract test drives FF_Ingest, so it needs the ingestor.
     target_link_libraries(ff_test_api PRIVATE fastfhir_ingestor simdjson::simdjson)
 
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append)
+    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes ff_test_poco_values)
     if(FASTFHIR_BUILD_CONFORMANCE)
         list(APPEND _FF_STANDALONE_TESTS ff_test_conformance ff_example_conformance)
     endif()
@@ -225,6 +230,18 @@ if(FASTFHIR_BUILD_TESTS)
     # XP-1.3: without the visited set the heavy-sharing case does not fail, it
     # hangs; the timeout is what turns that into a reported failure.
     set_tests_properties(cpp_ff_test_graph_bounds PROPERTIES TIMEOUT 60)
+
+    # The installed package, consumed through find_package from a scratch
+    # prefix under the build dir. See tests/install/install_smoke.cmake.
+    add_test(NAME install_smoke
+        COMMAND ${CMAKE_COMMAND}
+            -DBUILD_DIR=${CMAKE_BINARY_DIR}
+            -DWORK_DIR=${CMAKE_BINARY_DIR}/install_smoke
+            -DCONSUMER_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/install/consumer
+            -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
+            -DCONFIG=$<CONFIG>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/install/install_smoke.cmake)
+    set_tests_properties(install_smoke PROPERTIES TIMEOUT 300)
 
     macro(_add_cpp_test NAME FILTER)
         add_test(NAME "cpp_${NAME}"

@@ -62,15 +62,42 @@ namespace FastFHIR
         static Memory create(size_t capacity = 4ULL * 1024 * 1024 * 1024, std::string shm_name = "");
 
         /**
-         * @brief Factory allocation for a file-backed Virtual Memory Arena.
+         * @brief A WRITABLE file-backed arena: what a Builder appends into.
+         *
+         * An existing finalized stream is mounted for appending (the Builder
+         * rewinds to the checksum block and keeps writing); a missing file is
+         * created. An existing file that is NOT a finalized stream is refused
+         * and left byte-identical -- it may be a damaged archive Recovery can
+         * still repair, and nothing here discards a stream someone sealed.
+         * Starting over is the caller's own std::filesystem::remove().
+         *
          * @param filepath Path to the backing file on disk.
-         * @param capacity Defaults to a 4GB sparse allocation.
-         * @return Initialized memory handle.
+         * @param capacity Sparse reservation; defaults to 4GB.
+         * @throws std::system_error if the file cannot be opened or mapped.
+         * @throws std::runtime_error if the file holds something that is not a
+         *         finalized stream; the file is left untouched.
          */
-        static Memory createFromFile(const std::filesystem::path &filepath, size_t capacity = 4ULL * 1024 * 1024 * 1024);
+        static Memory createFromFile(const std::filesystem::path &filepath,
+                                     size_t capacity = 4ULL * 1024 * 1024 * 1024);
+
+        /**
+         * @brief A READ-ONLY file-backed arena: what a Parser reads.
+         *
+         * Maps exactly the bytes on disk. The file is never created, grown,
+         * truncated or written, so a mistyped path leaves nothing behind and a
+         * damaged submission keeps the bytes Recovery needs. Every write
+         * through the arena throws.
+         *
+         * @throws std::system_error if the file is missing or cannot be mapped.
+         * @throws std::runtime_error if it is too short to hold a header.
+         */
+        static Memory openReadOnly(const std::filesystem::path &filepath);
 
         /** @brief Checks if this handle points to a valid, instantiated memory core. */
         explicit operator bool() const { return m_core != nullptr; }
+
+        /** @brief True for an arena from openReadOnly(); every write through it throws. */
+        bool read_only() const;
 
         // --- Forwarding API ---
 
@@ -297,6 +324,15 @@ namespace FastFHIR
         };
 
     private:
+        /// Which of the two factories above is running. One mapping routine
+        /// serves both; the difference is what it may do to the file.
+        enum class FileAccess
+        {
+            Amend, ///< createFromFile: read-write, reserves `capacity`
+            Read,  ///< openReadOnly: read-only, maps exactly what is there
+        };
+        static Memory mapFile(const std::filesystem::path &filepath, size_t capacity, FileAccess access);
+
         std::shared_ptr<FF_Memory_t> m_core;
     };
 
@@ -323,6 +359,7 @@ namespace FastFHIR
         void release_stream_lock() noexcept;
         void truncate_file(size_t size);
         void close() noexcept;
+        void require_writable(const char *operation) const;
 
         std::string m_name;
         size_t m_capacity = 0;
@@ -331,6 +368,15 @@ namespace FastFHIR
         // file. It is the only extent that does not come from the stream's own
         // bytes -- see Memory::disk_size().
         size_t m_disk_size = 0;
+        // Backed by a file on disk (createFromFile / openReadOnly), as opposed to
+        // an anonymous or shared-memory arena. Only a file has a length that
+        // truncate_file can trim; a shared segment is sized once by whoever
+        // created it.
+        bool m_file_backed = false;
+        // Mapped by openReadOnly(). The pages are PROT_READ, so a write would
+        // fault; every writing entry point checks this first and throws a
+        // named error instead.
+        bool m_read_only = false;
 
         uint8_t *m_base = nullptr;
         uint64_t *m_head_ptr = nullptr;
@@ -351,6 +397,7 @@ namespace FastFHIR
     inline uint8_t *Memory::base() const { return m_core->m_base; }
     inline size_t Memory::capacity() const { return m_core->m_capacity; }
     inline size_t Memory::disk_size() const { return m_core->m_disk_size; }
+    inline bool Memory::read_only() const { return m_core->m_read_only; }
     inline std::string Memory::name() const { return m_core->m_name; }
     inline void Memory::reset(size_t committed_size) const { m_core->reset(committed_size); }
     inline void Memory::truncate_file(size_t size) const { m_core->truncate_file(size); }

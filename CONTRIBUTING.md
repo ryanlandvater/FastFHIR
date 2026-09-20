@@ -8,7 +8,7 @@ Thanks for contributing. FastFHIR is a binary wire format for healthcare data �
    values (`dictionaries/master_tags.json` — `generated_src/FF_RecoveryTags.hpp` is
    its generated projection, not the source), dictionary code IDs
    (`dictionaries/master_codes.json`), vtable offset arithmetic, the `FF_HEADER`
-   layout, `FF_CODEABLE_CONCEPT_FLAG`, `FF_CODE_NULL`, or `FF_NULL_OFFSET`.
+   layout, `FF_CODED_VALUE_FLAG`, `FF_CODE_NULL`, or `FF_NULL_OFFSET`.
    A PR that changes a committed wire value will be rejected regardless of
    its other merits.
 2. **Never hand-edit generated files** (`generated_src/` — including `FF_Codes.hpp`,

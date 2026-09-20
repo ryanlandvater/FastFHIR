@@ -147,7 +147,7 @@ inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_of
 // alongside a flag bit.  These helpers extract, sign-extend, and resolve
 // the offset to an absolute arena address from the parent block.
 
-/// Sign-extend a 31-bit relative offset packed beside FF_CODEABLE_CONCEPT_FLAG.
+/// Sign-extend a 31-bit relative offset packed beside FF_CODED_VALUE_FLAG.
 ///
 /// Callers pass the FULL slot word; the flag is not stripped first -- the
 /// idiom is one idea in two steps: `<< 1` discards the flag from bit 31 and

@@ -90,11 +90,12 @@ def compile_fhir_library(
         '#include "FF_Utilities.hpp"\n'
         '#include "FF_Builder.hpp"\n'
         '#include "FF_CodeSystems.hpp"\n'
-        '#include "FF_Ops.hpp"\n'
+        # TypeTraits for string_view and the inline-scalar arrays. Hand-written
+        # (include/FF_TypeTraits.hpp): nothing about them varies with a FHIR
+        # revision or a profile, so they are C++, not generator data.
+        '#include "FF_TypeTraits.hpp"\n'
         "#include <vector>\n#include <string_view>\n#include <memory>\n\n"
     )
-    traits_preamble = "template<typename T> struct TypeTraits; \n\n" + _DATA_TYPES_TRAITS
-    hpp_head += enclose_namespace("FastFHIR", traits_preamble)
     hpp_head += "using namespace FastFHIR;\n\n"
     hpp_head += "// Forward Declarations\n"
     for dec in sorted(fwd_decls):
@@ -345,8 +346,18 @@ def compile_fhir_library(
 
         # Accumulate this block's field keys, then wrap in its sub-namespace
         block_body = ""
+        # Two FHIR fields whose names differ only in punctuation or case would
+        # collide into one C++ constant, and the second would silently shadow
+        # the first. Fail loudly instead.
+        block_key_names: dict[str, str] = {}
         for f in layout:
             short_name = _st._field_key_short_name(f["orig_name"])
+            if short_name in block_key_names:
+                raise ValueError(
+                    f"field key collision in {path}: '{f['orig_name']}' and "
+                    f"'{block_key_names[short_name]}' both become '{short_name}'"
+                )
+            block_key_names[short_name] = f["orig_name"]
             child_rec = _st._child_recovery_key_expr(f, block_struct_name)
             arr_offsets = _st._array_entries_are_offsets_expr(f)
             owner_rec = (
@@ -507,68 +518,3 @@ def compile_fhir_library(
     generate_ingest_mappings(all_blocks, resources, output_dir)
 
     print("\n[Success] FastFHIR Library generation complete.")
-
-
-# ─── Data from ffc.py compiled-in TypeTraits preamble ─────────────────
-_DATA_TYPES_TRAITS = """template<> struct TypeTraits<std::string_view> {
-    static constexpr auto recovery = RECOVER_FF_STRING;
-    static Size size(std::string_view d, uint32_t = FHIR_VERSION_R5) { return SIZE_FF_STRING(d); }
-    static Offset store(BYTE* const base, Offset off, std::string_view d, uint32_t = FHIR_VERSION_R5) { return off + STORE_FF_STRING(base, off, d); }
-};
-
-template<> struct TypeTraits<std::vector<Offset>> {
-};
-
-template<> struct TypeTraits<std::vector<ResourceReference>> {
-    static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_RESOURCE | RECOVER_ARRAY_BIT);
-    static Size size(const std::vector<ResourceReference>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_RESOURCE); }
-    static Offset store(BYTE* const base, Offset off, const std::vector<ResourceReference>& d, uint32_t = FHIR_VERSION_R5) {
-        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_RESOURCE, static_cast<uint32_t>(d.size()), recovery);
-        for (const auto& ref : d) {
-            STORE_U64(base + off, ref.offset); STORE_U16(base + off + DATA_BLOCK::RECOVERY, ref.recovery); off += TYPE_SIZE_RESOURCE;
-        }
-        return off;
-    }
-};
-
-template<> struct TypeTraits<std::vector<uint8_t>> {
-    static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_BOOL | RECOVER_ARRAY_BIT);
-    static Size size(const std::vector<uint8_t>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_UINT8); }
-    static Offset store(BYTE* const base, Offset off, const std::vector<uint8_t>& d, uint32_t = FHIR_VERSION_R5) {
-        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_UINT8, static_cast<uint32_t>(d.size()), recovery);
-        for (const auto& v : d) { STORE_U8(base + off, v); off += TYPE_SIZE_UINT8; }
-        return off;
-    }
-};
-
-template<> struct TypeTraits<std::vector<uint32_t>> {
-    static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_UINT32 | RECOVER_ARRAY_BIT);
-    static Size size(const std::vector<uint32_t>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_UINT32); }
-    static Offset store(BYTE* const base, Offset off, const std::vector<uint32_t>& d, uint32_t = FHIR_VERSION_R5) {
-        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_UINT32, static_cast<uint32_t>(d.size()), recovery);
-        for (const auto& v : d) { STORE_U32(base + off, v); off += TYPE_SIZE_UINT32; }
-        return off;
-    }
-};
-
-template<> struct TypeTraits<std::vector<double>> {
-    static constexpr auto recovery = static_cast<RECOVERY_TAG>(RECOVER_FF_FLOAT64 | RECOVER_ARRAY_BIT);
-    // A decimal entry is TYPE_SIZE_DECIMAL wide, not TYPE_SIZE_FLOAT64: the 9th
-    // byte is the source digit count. std::vector<double> has nowhere to keep a
-    // per-element count, so every entry writes the sentinel and exports
-    // shortest-round-trip -- but the STRIDE must still match what
-    // generate_store_fields emits for the same array, or the two writers
-    // disagree by one byte per element and the reader walks off the entries.
-    static Size size(const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) { return FF_ARRAY::HEADER_SIZE + (static_cast<uint32_t>(d.size()) * TYPE_SIZE_DECIMAL); }
-    static Offset store(BYTE* const base, Offset off, const std::vector<double>& d, uint32_t = FHIR_VERSION_R5) {
-        STORE_FF_ARRAY_HEADER(base, off, FF_ARRAY::INLINE_BLOCK, TYPE_SIZE_DECIMAL, static_cast<uint32_t>(d.size()), recovery);
-        for (const auto& v : d) {
-            STORE_F64(base + off, v);
-            STORE_U8(base + off + TYPE_SIZE_UINT64, FF_DECIMAL_SIGFIGS_UNSPECIFIED);
-            off += TYPE_SIZE_DECIMAL;
-        }
-        return off;
-    }
-};
-
-"""

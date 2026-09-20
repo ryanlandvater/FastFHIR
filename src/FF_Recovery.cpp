@@ -1831,13 +1831,13 @@ void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                     case FF_FIELD_CODE: {
                         // Code occupies the low 4 bytes of the 8-byte value area;
                         // MSB clear = packed dictionary ID, MSB set = signed
-                        // relative offset to an FF_CODEABLE_CONCEPT fallback block.
+                        // relative offset to an FF_CODED_VALUE fallback block.
                         const uint32_t raw_code = static_cast<uint32_t>(raw);
-                        if (!(raw_code & FF_CODEABLE_CONCEPT_FLAG))
+                        if (!(raw_code & FF_CODED_VALUE_FLAG))
                             continue;
                         out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
                                                FF_ResolveCodeableConceptOffset(raw_code, block_offset),
-                                               RECOVER_FF_CODEABLE_CONCEPT, FF_RECOVER_UNDEFINED});
+                                               RECOVER_FF_CODED_VALUE, FF_RECOVER_UNDEFINED});
                         break;
                     }
                     // Offset-bearing: the raw 8 bytes are an absolute child
@@ -1898,15 +1898,15 @@ void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
             case FF_FIELD_CODE: {
                 // Packed dictionary ID unless the fallback flag is set; the
                 // flagged form is a signed relative offset to an
-                // FF_CODEABLE_CONCEPT fallback block (D5).
+                // FF_CODED_VALUE fallback block (D5).
                 if (slot + 4 > m_size)
                     continue;
                 const uint32_t raw = LOAD_U32(m_base + slot);
-                if (raw == FF_CODE_NULL || !(raw & FF_CODEABLE_CONCEPT_FLAG))
+                if (raw == FF_CODE_NULL || !(raw & FF_CODED_VALUE_FLAG))
                     continue;
                 out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
                                        FF_ResolveCodeableConceptOffset(raw, block_offset),
-                                       RECOVER_FF_CODEABLE_CONCEPT, FF_RECOVER_UNDEFINED});
+                                       RECOVER_FF_CODED_VALUE, FF_RECOVER_UNDEFINED});
                 break;
             }
             default:
@@ -1962,16 +1962,16 @@ StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off) {
     // REC-18.1 — the three hand-written primitive blocks have no GENERATED
     // reflection, so reflected_fields_view() is empty for them and the derived
     // size would collapse to DATA_BLOCK::HEADER_SIZE. Each carries a compiled
-    // HEADER_SIZE instead. Measured on one Synthea bundle: CODEABLE_CONCEPT
+    // HEADER_SIZE instead. Measured on one Synthea bundle: CODED_VALUE
     // x6593, URL_DIRECTORY x1, CHECKSUM x1 -- three tags cover every one.
-    if (tag == RECOVER_FF_CODEABLE_CONCEPT) {
-        if (static_cast<size_t>(off) + FF_CODEABLE_CONCEPT::HEADER_SIZE <= size) {
-            const uint8_t len = FF_CODEABLE_CONCEPT(off, size, 0).length(base);
-            const uint64_t total = FF_CODEABLE_CONCEPT::HEADER_SIZE + static_cast<uint64_t>(len);
+    if (tag == RECOVER_FF_CODED_VALUE) {
+        if (static_cast<size_t>(off) + FF_CODED_VALUE::HEADER_SIZE <= size) {
+            const uint8_t len = FF_CODED_VALUE(off, size, 0).length(base);
+            const uint64_t total = FF_CODED_VALUE::HEADER_SIZE + static_cast<uint64_t>(len);
             if (total <= size - static_cast<size_t>(off))
                 return {StreamMapEntryType::Block, off, static_cast<Size>(total)};
         }
-        return {StreamMapEntryType::Block, off, FF_CODEABLE_CONCEPT::HEADER_SIZE};
+        return {StreamMapEntryType::Block, off, FF_CODED_VALUE::HEADER_SIZE};
     }
     if (tag == RECOVER_FF_URL_DIRECTORY) {
         if (static_cast<size_t>(off) + FF_URL_DIRECTORY::HEADER_SIZE <= size) {

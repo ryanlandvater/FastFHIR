@@ -35,6 +35,7 @@
 #include <vector>
 #include <string>
 #include <filesystem>
+#include <memory>
 #include <stdexcept>
 
 // Cross-platform includes for memory mapping
@@ -59,82 +60,6 @@
 using namespace FastFHIR;
 namespace fs = std::filesystem;
 
-// =====================================================================
-// Cross-Platform Memory Mapper (RAII, read-only)
-// =====================================================================
-class MemoryMappedFile
-{
-    const BYTE *m_data = nullptr;
-    size_t m_size = 0;
-
-#ifdef _WIN32
-    HANDLE hFile = INVALID_HANDLE_VALUE;
-    HANDLE hMap = NULL;
-#else
-    int fd = -1;
-#endif
-
-public:
-    explicit MemoryMappedFile(const std::string &filepath)
-    {
-#ifdef _WIN32
-        hFile = CreateFileA(filepath.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile == INVALID_HANDLE_VALUE)
-            throw std::runtime_error("Failed to open file: " + filepath);
-
-        LARGE_INTEGER size;
-        if (!GetFileSizeEx(hFile, &size))
-            throw std::runtime_error("Failed to get file size: " + filepath);
-        m_size = static_cast<size_t>(size.QuadPart);
-
-        hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-        if (!hMap)
-            throw std::runtime_error("Failed to create file mapping: " + filepath);
-
-        m_data = static_cast<const BYTE *>(MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0));
-        if (!m_data)
-            throw std::runtime_error("Failed to map view of file: " + filepath);
-#else
-        fd = open(filepath.c_str(), O_RDONLY);
-        if (fd == -1)
-            throw std::runtime_error("Failed to open file: " + filepath);
-
-        struct stat sb;
-        if (fstat(fd, &sb) == -1)
-            throw std::runtime_error("Failed to get file size: " + filepath);
-        m_size = static_cast<size_t>(sb.st_size);
-
-        m_data = static_cast<const BYTE *>(mmap(nullptr, m_size, PROT_READ, MAP_PRIVATE, fd, 0));
-        if (m_data == MAP_FAILED)
-            throw std::runtime_error("Failed to mmap file: " + filepath);
-#endif
-    }
-
-    ~MemoryMappedFile()
-    {
-#ifdef _WIN32
-        if (m_data)
-            UnmapViewOfFile(m_data);
-        if (hMap)
-            CloseHandle(hMap);
-        if (hFile != INVALID_HANDLE_VALUE)
-            CloseHandle(hFile);
-#else
-        if (m_data && m_data != reinterpret_cast<const BYTE *>(MAP_FAILED))
-            munmap(const_cast<BYTE *>(m_data), m_size);
-        if (fd != -1)
-            close(fd);
-#endif
-    }
-
-    // Non-copyable
-    MemoryMappedFile(const MemoryMappedFile &) = delete;
-    MemoryMappedFile &operator=(const MemoryMappedFile &) = delete;
-
-    const BYTE *data() const { return m_data; }
-    size_t size() const { return m_size; }
-};
 
 // =====================================================================
 // CLI Utility Functions
@@ -232,7 +157,6 @@ int main(int argc, char *argv[])
         // -----------------------------------------------------------------
         const BYTE *parse_buffer = nullptr;
         size_t parse_size = 0;
-        std::unique_ptr<MemoryMappedFile> mapped_file;
         std::vector<BYTE> stdin_buffer;
 
         if (!reading_stdin)
@@ -248,9 +172,8 @@ int main(int argc, char *argv[])
                 std::cerr << "[ff_compact] Error: not a regular file: " << input_path << "\n";
                 return 1;
             }
-            mapped_file = std::make_unique<MemoryMappedFile>(input_path);
-            parse_buffer = mapped_file->data();
-            parse_size = mapped_file->size();
+            // The library maps it read-only, so this tool no longer carries
+            // its own mmap wrapper.
         }
         else
         {
@@ -274,11 +197,10 @@ int main(int argc, char *argv[])
         // 3. Parse and validate the source stream
         // -----------------------------------------------------------------
         Parser source;
-        FF_Result parse_result = FF_Parse(FF_ParseInfo
-            {
-                .buffer = parse_buffer, 
-                .size = parse_size
-            }, source);
+        FF_Result parse_result = reading_stdin
+            ? FF_Parse(FF_ParseInfo{.buffer = parse_buffer, .size = parse_size}, source)
+            : FF_Parse(FF_ParseInfo{.memory = std::make_shared<Memory>(
+                                        Memory::openReadOnly(input_path))}, source);
         if (!parse_result)
         {
             std::cerr << "[ff_compact] Error: " << parse_result.message << "\n";
@@ -388,12 +310,13 @@ int main(int argc, char *argv[])
             out.write(compact_bytes.data(), static_cast<std::streamsize>(compact_bytes.size()));
             out.close();
 
-            const size_t reduction = (parse_size > 0)
-                                         ? (100u - (compact_bytes.size() * 100u / parse_size))
+            const size_t source_size = source.size_bytes();
+            const size_t reduction = (source_size > 0)
+                                         ? (100u - (compact_bytes.size() * 100u / source_size))
                                          : 0u;
             std::cerr << "[ff_compact] Compact archive written to " << output_path
                       << " (" << compact_bytes.size() << " bytes"
-                      << ", source " << parse_size << " bytes"
+                      << ", source " << source_size << " bytes"
                       << ", " << reduction << "% reduction)\n";
         }
     }

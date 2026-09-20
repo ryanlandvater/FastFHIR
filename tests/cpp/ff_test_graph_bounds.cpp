@@ -390,7 +390,7 @@ int main() {
         // Pack a signed relative offset the way ENCODE_FF_CODE does.
         auto flagged = [](int64_t rel) {
             return (static_cast<uint32_t>(static_cast<int32_t>(rel)) & FF_CODE_PAYLOAD_MASK)
-                   | FF_CODEABLE_CONCEPT_FLAG;
+                   | FF_CODED_VALUE_FLAG;
         };
 
         // (a) flagged offset pointing past the end of the stream.
@@ -475,7 +475,7 @@ int main() {
             STORE_U64(bytes.data() + choice,
                       static_cast<uint64_t>(
                           (static_cast<uint32_t>(static_cast<int32_t>(rel)) & FF_CODE_PAYLOAD_MASK)
-                          | FF_CODEABLE_CONCEPT_FLAG));
+                          | FF_CODED_VALUE_FLAG));
             STORE_U16(bytes.data() + choice + DATA_BLOCK::RECOVERY,
                       static_cast<uint16_t>(RECOVER_FF_CODE));
             FastFHIR::Parser px(bytes.data(), bytes.size());
@@ -542,7 +542,7 @@ int main() {
               "fixture code must NOT be a dictionary entry, or no block is written");
 
         // Grow the buffer and let ENCODE_FF_CODE write a genuine
-        // FF_CODEABLE_CONCEPT into the tail -- the same call the writer makes,
+        // FF_CODED_VALUE into the tail -- the same call the writer makes,
         // so the offset convention under test is the real one, not a guess.
         std::vector<BYTE> bytes(view.data(), view.data() + view.size());
         const Offset cc_at = bytes.size();
@@ -551,7 +551,7 @@ int main() {
         const uint32_t packed = ENCODE_FF_CODE(bytes.data(), obs, child,
                                                std::string(LOCAL_CODE), FHIR_VERSION_R5,
                                                FF_CodeableConceptSystem::UNKNOWN);
-        CHECK((packed & FF_CODEABLE_CONCEPT_FLAG) != 0, "fixture slot is flagged");
+        CHECK((packed & FF_CODED_VALUE_FLAG) != 0, "fixture slot is flagged");
 
         // Put it in the choice slot as an active RECOVER_FF_CODE variant.
         const Offset choice = obs + FF_OBSERVATION::EFFECTIVE;

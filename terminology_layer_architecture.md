@@ -12,7 +12,7 @@
 1. [Problem Statement](#1-problem-statement)
 2. [Current Architecture Survey](#2-current-architecture-survey)
 3. [Revised Bit Layout for `FF_FIELD_CODE`](#3-revised-bit-layout-for-ff_field_code)
-4. [`FF_CODEABLE_CONCEPT` — Block Specification](#4-ff_codeable_concept--block-specification)
+4. [`FF_CODED_VALUE` — Block Specification](#4-ff_codeable_concept--block-specification)
 5. [`FF_ExternalCodeSystem` — Permanent Registry](#5-ff_externalcodesystem--permanent-registry)
 6. [Pre-Configured Validator Dispatch](#6-pre-configured-validator-dispatch)
 7. [Memory Alignment & Arena Safety](#7-memory-alignment--arena-safety)
@@ -133,14 +133,14 @@ about which terminology system it belongs to.
 The 4-byte `FF_FIELD_CODE` slot uses a single flag bit at Bit 31:
 
 ```
-Bit 31 (MSB, 0x80000000) = FF_CODEABLE_CONCEPT_FLAG  → 31-bit signed relative offset
+Bit 31 (MSB, 0x80000000) = FF_CODED_VALUE_FLAG  → 31-bit signed relative offset
 Bits 30–0                  = Dictionary index          → ~2.14B entries
 ```
 
 Single constant in `include/FF_Primitives.hpp`:
 
 ```cpp
-constexpr uint32_t FF_CODEABLE_CONCEPT_FLAG = 0x80000000;  // Bit 31
+constexpr uint32_t FF_CODED_VALUE_FLAG = 0x80000000;  // Bit 31
 constexpr uint32_t FF_CODE_PAYLOAD_MASK     = 0x7FFFFFFF;  // Lower 31 bits
 constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x7FFFFFFF;
 ```
@@ -160,9 +160,9 @@ still stored as `FF_STRING` (TASKS.md **DT-2.4**).
 
 | | `FF_FIELD_CODE` (4 B) | `FF_DATETIME` (8 B) |
 |---|---|---|
-| Discriminator | Bit 31, `FF_CODEABLE_CONCEPT_FLAG` | Bit 63, `FF_DATETIME_FALLBACK_FLAG` |
+| Discriminator | Bit 31, `FF_CODED_VALUE_FLAG` | Bit 63, `FF_DATETIME_FALLBACK_FLAG` |
 | MSB = 0 | 31-bit dictionary index | 63-bit packed civil date/time |
-| MSB = 1 | 31-bit signed relative offset → `FF_CODEABLE_CONCEPT` | 63-bit signed relative offset → `FF_STRING` |
+| MSB = 1 | 31-bit signed relative offset → `FF_CODED_VALUE` | 63-bit signed relative offset → `FF_STRING` |
 | Payload mask | `FF_CODE_PAYLOAD_MASK` (`0x7FFFFFFF`) | `FF_DATETIME_PAYLOAD_MASK` (`0x7FFF'FFFF'FFFF'FFFF`) |
 | Null | `FF_CODE_NULL` (all ones) | `FF_DATETIME_NULL` (all ones) |
 | Sign-extension | `FF_ResolveCodeableConceptOffset` | `FF_ResolveDateTimeOffset` |
@@ -202,10 +202,10 @@ contract* and nothing else. Full rationale is in `architecture.md` §6.3.
 case FF_FIELD_CODE: {
     uint32_t raw = LOAD_U32(base + slot);
     if (raw == FF_CODE_NULL) { /* null */ }
-    if (raw & FF_CODEABLE_CONCEPT_FLAG) {
+    if (raw & FF_CODED_VALUE_FLAG) {
         int32_t rel_off = static_cast<int32_t>(raw << 1) >> 1;  // sign-extend 31-bit
         Offset cc_off = parent_offset + static_cast<Offset>(static_cast<int64_t>(rel_off));
-        return FF_DECODE_CODEABLE_CONCEPT(base, cc_off, version);
+        return FF_DECODE_CODED_VALUE(base, cc_off, version);
     }
     return FF_ResolveCode(raw, version);  // Dictionary (31-bit index)
 }
@@ -222,7 +222,7 @@ does not carry. `Reflective::Entry` still has it (`parent_offset` +
 `vtable_offset`); `Reflective::Node` does not — a node knows only its own
 offset. Every path that turns a code slot into a node therefore resolves through
 `ParserOps::code_node()`, which does the arithmetic at construction and returns
-a node already pointing at the `FF_CODEABLE_CONCEPT`. Code that defers it has
+a node already pointing at the `FF_CODED_VALUE`. Code that defers it has
 already lost the operand: `Node::as<std::string_view>()` used to resolve against
 the node's own offset, which for a choice (`[x]`) variant is the *slot*, and
 returned an empty label instead of the code — silently.
@@ -236,7 +236,7 @@ against the wrong base.
 
 ---
 
-## 4. `FF_CODEABLE_CONCEPT` — Block Specification
+## 4. `FF_CODED_VALUE` — Block Specification
 
 ### 4.1 Layout
 
@@ -245,7 +245,7 @@ ARM and other platforms that fault on unaligned 64-bit loads.
 
 ```
 Offset  0– 7 : VALIDATION  (uint64_t)     — standard DATA_BLOCK
-Offset  8– 9 : RECOVERY    (uint16_t)     — RECOVER_FF_CODEABLE_CONCEPT (0x0009)
+Offset  8– 9 : RECOVERY    (uint16_t)     — RECOVER_FF_CODED_VALUE (0x0009)
 Offset 10    : SYSTEM      (uint8_t)      — FF_ExternalCodeSystem enum value
 Offset 11–17 : CODE        (7 bytes)      — packed code payload, system-specific
 Offset 18–23 : _PADDING    (6 bytes)      — alignment to 24-byte stride
@@ -255,7 +255,7 @@ Offset 18–23 : _PADDING    (6 bytes)      — alignment to 24-byte stride
 Defined in `FF_Primitives.hpp` following the existing pattern:
 
 ```cpp
-## 4. `FF_CODEABLE_CONCEPT` — Block Specification (IMPLEMENTED)
+## 4. `FF_CODED_VALUE` — Block Specification (IMPLEMENTED)
 
 ### 4.1 Layout
 
@@ -263,7 +263,7 @@ Variable-length block. No fixed padding — `FF_Ops.hpp` handles unaligned ARM a
 
 ```
 Offset  0– 7 : VALIDATION  (uint64_t) — standard DATA_BLOCK
-Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODEABLE_CONCEPT (0x0009)
+Offset  8– 9 : RECOVERY    (uint16_t) — RECOVER_FF_CODED_VALUE (0x0009)
 Offset 10    : SYSTEM      (uint8_t)  — FF_CodeableConceptSystem discriminator
 Offset 11    : LENGTH      (uint8_t)  — payload byte count
 Offset 12+   : PAYLOAD     (variable) — LENGTH bytes
@@ -272,9 +272,9 @@ Offset 12+   : PAYLOAD     (variable) — LENGTH bytes
 Defined in `include/FF_Primitives.hpp`:
 
 ```cpp
-struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
-    static constexpr char type[] = "FF_CODEABLE_CONCEPT";
-    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_CODEABLE_CONCEPT;
+struct FF_EXPORT FF_CODED_VALUE : DATA_BLOCK {
+    static constexpr char type[] = "FF_CODED_VALUE";
+    static constexpr enum RECOVERY_TAG recovery = RECOVER_FF_CODED_VALUE;
 
     enum vtable_offsets {
         VALIDATION = 0,
@@ -285,7 +285,7 @@ struct FF_EXPORT FF_CODEABLE_CONCEPT : DATA_BLOCK {
         HEADER_SIZE = 12,  // VALIDATION(8) + RECOVERY(2) + SYSTEM(1) + LENGTH(1)
     };
 
-    explicit FF_CODEABLE_CONCEPT(Offset off, Size total_size, uint32_t ver)
+    explicit FF_CODED_VALUE(Offset off, Size total_size, uint32_t ver)
         : DATA_BLOCK(off, total_size, ver) {}
 
     FF_CodeableConceptSystem system(const BYTE* base) const noexcept {
@@ -321,7 +321,7 @@ size (4 for DICOM, 8 for SNOMED).
 ## 5. `FF_CodeableConceptSystem` — Permanent Registry (IMPLEMENTED)
 
 One-byte discriminator stored in the `SYSTEM` field of each
-`FF_CODEABLE_CONCEPT` block. Defined in `include/FF_Primitives.hpp`:
+`FF_CODED_VALUE` block. Defined in `include/FF_Primitives.hpp`:
 
 ```cpp
 enum class FF_CodeableConceptSystem : uint8_t {
@@ -338,7 +338,7 @@ enum class FF_CodeableConceptSystem : uint8_t {
 
 The old `FF_ExternalCodeSystem` enum and `FF_ExternalCodeSystemEntry` metadata
 table were **deleted**. System URI resolution now happens in the parser via
-`FF_DECODE_CODEABLE_CONCEPT` which dispatches on this single byte.
+`FF_DECODE_CODED_VALUE` which dispatches on this single byte.
     BCP_47         = 0x04,  // urn:ietf:bcp:47
     MIME           = 0x05,  // urn:ietf:bcp:13
     // ── Append only ──
@@ -508,7 +508,7 @@ Three instructions: load, index, call. ~5 cycles on a modern OoO core.
 
 ## 7. Memory Alignment & Arena Safety
 
-### 7.1 FF_CODEABLE_CONCEPT Allocation
+### 7.1 FF_CODED_VALUE Allocation
 
 The block is 18 bytes. It is allocated via `Memory::claim_space(18)` — the
 same atomic claim path used by every other block type (a CAS retry loop, not a
@@ -522,7 +522,7 @@ platforms that require it).
 ### 7.2 No Fragmentation Risk
 
 The arena is **write-once, append-only**. There are no frees, no reallocations,
-no holes. The `FF_CODEABLE_CONCEPT` block is written alongside its parent block's
+no holes. The `FF_CODED_VALUE` block is written alongside its parent block's
 trailing payload — exactly where an `FF_STRING` would have been written in the
 old custom-string path. The 30-bit offset encoding (±512 MB from parent) is
 trivially satisfied because all child blocks are allocated shortly after their
@@ -533,10 +533,10 @@ parent in the same contiguous region.
 | Flag | Bits | Range from Parent Block |
 |---|---|---|
 | `FF_CUSTOM_STRING_FLAG` (bit 31) | 31-bit signed | ±1 GB |
-| `FF_CODEABLE_CONCEPT_FLAG` (bit 30) | 30-bit signed | ±512 MB |
+| `FF_CODED_VALUE_FLAG` (bit 30) | 30-bit signed | ±512 MB |
 | Dictionary index (bits 29–0) | 30-bit unsigned | 0..1B entries |
 
-The 30-bit offset is sufficient because `FF_CODEABLE_CONCEPT` blocks are always
+The 30-bit offset is sufficient because `FF_CODED_VALUE` blocks are always
 allocated within the same `STORE_FF_*` call that writes the parent — the parent
 header and all its children are laid out sequentially in a single pass.
 
@@ -609,31 +609,31 @@ static uint32_t _encode_codeable_concept(BYTE* __base, Offset block_offset,
                                           uint32_t version)
 {
     Offset cc_offset = child_off;
-    child_off += FF_CODEABLE_CONCEPT::HEADER_SIZE;
+    child_off += FF_CODED_VALUE::HEADER_SIZE;
 
     auto* ptr = __base + cc_offset;
-    STORE_U64(ptr + FF_CODEABLE_CONCEPT::VALIDATION, cc_offset);
-    STORE_U16(ptr + FF_CODEABLE_CONCEPT::RECOVERY,
-              FF_CODEABLE_CONCEPT::recovery);
-    STORE_U8(ptr + FF_CODEABLE_CONCEPT::SYSTEM,
+    STORE_U64(ptr + FF_CODED_VALUE::VALIDATION, cc_offset);
+    STORE_U16(ptr + FF_CODED_VALUE::RECOVERY,
+              FF_CODED_VALUE::recovery);
+    STORE_U8(ptr + FF_CODED_VALUE::SYSTEM,
              static_cast<uint8_t>(system));
 
     // Pack the code into 7 bytes (system-specific encoding)
     uint8_t packed[7] = {};
     _pack_code(system, code_str, packed);
-    std::memcpy(ptr + FF_CODEABLE_CONCEPT::CODE, packed, 7);
+    std::memcpy(ptr + FF_CODED_VALUE::CODE, packed, 7);
 
     // Store 30-bit relative offset with flag
     Offset rel = cc_offset - block_offset;
     if (rel > 0x3FFFFFFF)
         throw std::runtime_error("FastFHIR: CodeableConcept offset exceeds 512MB.");
-    return static_cast<uint32_t>(rel) | FF_CODEABLE_CONCEPT_FLAG;
+    return static_cast<uint32_t>(rel) | FF_CODED_VALUE_FLAG;
 }
 ```
 
 ### 8.3 Parser — Read Path
 
-The parser decodes `FF_CODEABLE_CONCEPT` blocks into `std::string_view` via
+The parser decodes `FF_CODED_VALUE` blocks into `std::string_view` via
 a system-specific unpack function stored in a parallel decode table:
 
 ```cpp
@@ -642,9 +642,9 @@ using FF_CodeUnpacker = std::string_view (*)(const uint8_t (&packed)[7],
 
 extern const FF_CodeUnpacker FF_EXTERNAL_UNPACKER_TABLE[];
 
-std::string_view FF_CODEABLE_CONCEPT::decode(const BYTE* base, Offset offset,
+std::string_view FF_CODED_VALUE::decode(const BYTE* base, Offset offset,
                                               uint32_t version) {
-    FF_CODEABLE_CONCEPT cc(offset, 0, version);
+    FF_CODED_VALUE cc(offset, 0, version);
     auto sys = cc.system(base);
     uint8_t packed[7];
     cc.code_bytes(base, packed);
@@ -725,7 +725,7 @@ regenerated.
 **Total when system is NULL_SYSTEM (bounded code):** +2 cycles vs. current (the
 two predictable branches).
 
-### 10.2 Read Path — `FF_CODEABLE_CONCEPT::decode`
+### 10.2 Read Path — `FF_CODED_VALUE::decode`
 
 | Operation | Cycles |
 |---|---|
@@ -739,7 +739,7 @@ two predictable branches).
 
 | Component | Size | Location |
 |---|---|---|
-| `FF_CODEABLE_CONCEPT` block (wire) | 18 bytes per occurrence | Arena |
+| `FF_CODED_VALUE` block (wire) | 18 bytes per occurrence | Arena |
 | `FF_EXTERNAL_CODE_SYSTEM_TABLE[]` | ~5 entries × 40 bytes = 200 B | `.rodata` |
 | `FF_EXTERNAL_VALIDATOR_TABLE[]` | ~5 entries × 8 bytes = 40 B | `.rodata` |
 | `FF_EXTERNAL_UNPACKER_TABLE[]` | ~5 entries × 8 bytes = 40 B | `.rodata` |
@@ -757,8 +757,8 @@ For a `Coding` with `system = "http://snomed.info/sct"` and
 | Path | Wire Bytes |
 |---|---|
 | **Current** (custom string): FF_STRING header (14) + "22298006" (8) + system FF_STRING header (14) + URL (25) = **61 bytes** |
-| **New** (codeable concept): FF_CODEABLE_CONCEPT (18) + system FF_STRING (14 + 25 = 39 — system still stored as sibling for Coding.text readability) = **57 bytes** |
-| **New** (without redundant system): FF_CODEABLE_CONCEPT (18) = **18 bytes** |
+| **New** (codeable concept): FF_CODED_VALUE (18) + system FF_STRING (14 + 25 = 39 — system still stored as sibling for Coding.text readability) = **57 bytes** |
+| **New** (without redundant system): FF_CODED_VALUE (18) = **18 bytes** |
 
 The last row is achievable for `Quantity.code` where the system is implied by
 the `Quantity` type itself. For `Coding`, the system string is still needed for
@@ -801,15 +801,15 @@ opaque to the dispatch mechanism.
 
 ### Phase 1: Wire Format & Primitives (1 day)
 
-1. Add `FF_CODEABLE_CONCEPT_FLAG` and `FF_CODE_PAYLOAD_MASK` to
+1. Add `FF_CODED_VALUE_FLAG` and `FF_CODE_PAYLOAD_MASK` to
    `FF_Primitives.hpp`.
-2. Define `FF_CODEABLE_CONCEPT` block struct in `FF_Primitives.hpp`.
-3. `RECOVER_FF_CODEABLE_CONCEPT = 0x0009` in `dictionaries/master_tags.json`
+2. Define `FF_CODED_VALUE` block struct in `FF_Primitives.hpp`.
+3. `RECOVER_FF_CODED_VALUE = 0x0009` in `dictionaries/master_tags.json`
    (projected into `generated_src/FF_RecoveryTags.hpp`).
 4. Implement `_encode_codeable_concept` and `_pack_code` in
    `FF_Primitives.cpp`.
 5. Update read path in `FF_Parser.cpp` to handle the three-way branch.
-6. **Test:** Roundtrip a manually constructed `FF_CODEABLE_CONCEPT`.
+6. **Test:** Roundtrip a manually constructed `FF_CODED_VALUE`.
 
 ### Phase 2: ExternalCodeSystem Registry (0.5 days)
 
@@ -835,7 +835,7 @@ opaque to the dispatch mechanism.
 
 ### Phase 5: Read-Path Decode (0.5 days)
 
-1. Implement `FF_CODEABLE_CONCEPT::decode` with unpacker dispatch.
+1. Implement `FF_CODED_VALUE::decode` with unpacker dispatch.
 2. Thread through `CODINGView::get_code()` and `QUANTITYView::get_code()`.
 3. Test roundtrip: write with codeable concept → read → identical string.
 
@@ -859,14 +859,14 @@ included by `FF_UCUMValidator.hpp`.  ~300 entries, ~3.6 KB.
 
 ## Appendix B: Interaction with Compactor
 
-No changes. The `FF_CODEABLE_CONCEPT` block is fixed-stride (18 bytes),
+No changes. The `FF_CODED_VALUE` block is fixed-stride (18 bytes),
 identical in treatment to any other DATA_BLOCK. The compactor already handles
 18-byte blocks via the existing compact path.
 
 ## Appendix C: Interaction with WASM Extensions
 
 WASM extension payloads (`RECOVER_FF_WASM_PAYLOAD`) that need terminology
-validation should encode codes as `FF_CODEABLE_CONCEPT` blocks before WASM
-processing. The WASM module can call `FF_CODEABLE_CONCEPT::decode` and
+validation should encode codes as `FF_CODED_VALUE` blocks before WASM
+processing. The WASM module can call `FF_CODED_VALUE::decode` and
 `FF_GetExternalCodeSystemInfo` via the host binding layer — both are plain C
 functions with no virtual dispatch.

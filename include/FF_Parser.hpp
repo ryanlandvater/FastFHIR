@@ -124,7 +124,7 @@ public:
      * Only the subtree walk below a block is memoised.
      *
      * A slot whose MSB flags a fallback offset — `FF_FIELD_CODE` with
-     * `FF_CODEABLE_CONCEPT_FLAG`, `FF_FIELD_DATETIME` with
+     * `FF_CODED_VALUE_FLAG`, `FF_FIELD_DATETIME` with
      * `FF_DATETIME_FALLBACK_FLAG` — is an edge and is walked like any other.
      * Only genuinely inline slots are skipped.
      *
@@ -423,7 +423,7 @@ public:
      * @param value_offset Offset of the value within the parent node.
      * @param schema_kind The schema kind to resolve the choice against.
      * @return Node representing the resolved choice. For a flagged code variant
-     *         this already points at the `FF_CODEABLE_CONCEPT` block.
+     *         this already points at the `FF_CODED_VALUE` block.
      */
     static Node resolve_choice(const BYTE* base, Size size, uint32_t version, 
                        Offset parent_offset, Offset value_offset, FF_FieldKind schema_kind,
@@ -528,7 +528,7 @@ public:
                     return label;
                 }
 
-                if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
+                if (raw_code & FF_CODED_VALUE_FLAG) {
                     // Unreachable: every producer of a code Node resolves the
                     // flagged case eagerly (ParserOps::code_node), because the
                     // offset is relative to the CONTAINING BLOCK and a Node no
@@ -548,8 +548,8 @@ public:
             // A flagged code, already resolved to its block by code_node(). No
             // arithmetic left to do -- that is the entire point of resolving at
             // construction.
-            if (m_recovery == RECOVER_FF_CODEABLE_CONCEPT) {
-                return FF_DECODE_CODEABLE_CONCEPT(m_base, m_node_offset, m_version, m_size).label;
+            if (m_recovery == RECOVER_FF_CODED_VALUE) {
+                return FF_DECODE_CODED_VALUE(m_base, m_node_offset, m_version, m_size).label;
             }
 
             // Opaque JSON shares the FF_STRING layout exactly, so the DECODE is

@@ -179,7 +179,7 @@ static void test_fhir_labels_resolve_to_own_code()
 /// no unit. The lookup must refuse it rather than guess.
 ///
 /// Refusing costs nothing: FF_CODE_NULL sends the writer to an
-/// FF_CODEABLE_CONCEPT block holding the original text, so a non-conformant
+/// FF_CODED_VALUE block holding the original text, so a non-conformant
 /// unit round-trips verbatim instead of being silently rewritten into another.
 /// A case-insensitive fallback previously accepted 640 such spellings.
 static void test_wrong_case_ucum_is_refused()
@@ -205,7 +205,7 @@ static void test_wrong_case_ucum_is_refused()
 
 /// A label absent from every dictionary must report absent, not collide with
 /// something. FF_CODE_NULL is what makes the writer fall back to an
-/// FF_CODEABLE_CONCEPT block instead of asserting a wrong code.
+/// FF_CODED_VALUE block instead of asserting a wrong code.
 static void test_unknown_labels_report_null()
 {
     for (const char *s : {"__no_such_code__", "zzzz-not-a-unit", " "})

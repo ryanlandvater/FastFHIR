@@ -35,8 +35,8 @@ _STRINGS = Path(os.environ.get("FASTFHIR_GENERATED_DIR", _REPO_ROOT / "generated
     "FF_Dictionary_Strings.cpp"
 )
 
-# Bit 31 is FF_CODEABLE_CONCEPT_FLAG; 0xFFFFFFFF is FF_CODE_NULL.
-_CODEABLE_CONCEPT_FLAG = 0x80000000
+# Bit 31 is FF_CODED_VALUE_FLAG; 0xFFFFFFFF is FF_CODE_NULL.
+_CODED_VALUE_FLAG = 0x80000000
 _CODE_NULL = 0xFFFFFFFF
 
 
@@ -77,8 +77,8 @@ def test_no_id_uses_a_reserved_value():
     ids = _ledger()["ids"]
     worst = max(ids.values())
     assert (
-        worst < _CODEABLE_CONCEPT_FLAG
-    ), f"max ID 0x{worst:X} has bit 31 set, which is FF_CODEABLE_CONCEPT_FLAG"
+        worst < _CODED_VALUE_FLAG
+    ), f"max ID 0x{worst:X} has bit 31 set, which is FF_CODED_VALUE_FLAG"
     assert _CODE_NULL not in ids.values(), "0xFFFFFFFF is FF_CODE_NULL and must not be assigned"
     assert 0 not in ids.values(), "ID 0 is the reserved null slot"
 
@@ -224,7 +224,7 @@ def test_generator_refuses_non_redistributable_sources():
 
     Codes from terminologies FastFHIR does not own -- SNOMED CT, LOINC, RxNorm,
     ICD, CPT, NDC, EDQM -- must never enter dictionaries/. They travel as
-    FF_CODEABLE_CONCEPT blocks carrying the user's own code, under the user's
+    FF_CODED_VALUE blocks carrying the user's own code, under the user's
     own license.
 
     This is a test rather than a convention because the convention already

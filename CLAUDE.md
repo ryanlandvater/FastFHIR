@@ -278,8 +278,8 @@ it there (see its README, "the Debug trap").
   `generated_src/FF_RecoveryTags.hpp`) and fields carry an `FF_FieldKind` (physical layout). Choice
   (`[x]`) fields are a 10-byte slot: 8-byte value/offset + 2-byte tag.
 - **Codes** — assignment tries the dictionary (`FF_GetDictionaryCode` → permanent uint32 ID
-  from `master_codes.json`), else writes an `FF_CODEABLE_CONCEPT` block and sets
-  `FF_CODEABLE_CONCEPT_FLAG` (`0x80000000`) in the slot. `FF_CODE_NULL` = `0xFFFFFFFF`.
+  from `master_codes.json`), else writes an `FF_CODED_VALUE` block and sets
+  `FF_CODED_VALUE_FLAG` (`0x80000000`) in the slot. `FF_CODE_NULL` = `0xFFFFFFFF`.
   Named constants are scoped by terminology source then CodeSystem
   (`FF_CODE::FHIR::ADMINISTRATIVE_GENDER::MALE`, `FF_CODE::UCUM::MMHG`); FHIR
   revision is *not* a namespace axis — that lives in the per-revision lookup tables.
@@ -411,8 +411,8 @@ string slot takes its expectation from the compiled schema, which damage cannot 
 skips inline scalars because they cannot aim the reader at memory it does not own — but a
 scalar slot whose MSB flags a *fallback offset* is not inline data, and it is validated
 like any other edge. That is the rule, not an exception to it: `FF_FIELD_CODE` with
-`FF_CODEABLE_CONCEPT_FLAG` set is already sign-extended, resolved relative to the
-containing block, and walked against `RECOVER_FF_CODEABLE_CONCEPT`
+`FF_CODED_VALUE_FLAG` set is already sign-extended, resolved relative to the
+containing block, and walked against `RECOVER_FF_CODED_VALUE`
 (`src/FF_Parser.cpp:573–590`). Every future MSB-discriminated slot owes the same — DT's
 8-byte date/time slot with bit 63 set must be walked as a signed relative offset to an
 `FF_STRING` (TASKS.md DT-1.5). A slot kind that can point somewhere and is not in
@@ -424,7 +424,7 @@ validator can be wrong without any error:
 
 | slot | width | discriminator | arm A | arm B |
 |---|---|---|---|---|
-| `FF_FIELD_CODE` | 4 | bit 31 (`FF_CODEABLE_CONCEPT_FLAG`) | permanent dictionary ID | signed offset **relative to the containing block** → `FF_CODEABLE_CONCEPT` |
+| `FF_FIELD_CODE` | 4 | bit 31 (`FF_CODED_VALUE_FLAG`) | permanent dictionary ID | signed offset **relative to the containing block** → `FF_CODED_VALUE` |
 | `FF_FIELD_DATETIME` | 8 | bit 63 (`FF_DATETIME_FALLBACK_FLAG`) | packed civil date/time | signed offset **relative to the containing block** → `FF_STRING` |
 | `FF_FIELD_RESOURCE` / `FF_FIELD_CHOICE` | 10 | the 2-byte tag beside the value | inline value (choice only) | absolute offset to a block |
 
@@ -449,7 +449,7 @@ Three rules follow, and each has already been paid for:
    because Synthea never produces an unpackable date/time
    (`ff_test_compact_roundtrip` now builds one on purpose).
 3. **`memcpy` is only ever correct over an extent with no interior offsets.**
-   That is true of an `FF_CODEABLE_CONCEPT` (system byte, length byte, payload),
+   That is true of an `FF_CODED_VALUE` (system byte, length byte, payload),
    an `FF_STRING`, and an inline-scalar array — and false of a `DATA_BLOCK`,
    which interleaves inline scalars with offsets in one V-Table. Copying a block
    wholesale is never right; copy the leaves and re-encode arena B's addresses
@@ -461,7 +461,7 @@ two operands — and `Reflective::Node` carries only its own offset, never its p
 `Reflective::Entry` is the type that still has both (`parent_offset` + `vtable_offset`), so
 the arithmetic belongs there or at node construction, never later. `ParserOps::code_node()`
 is that single place for code slots; every producer of a code node calls it, and the node
-it returns already points at the `FF_CODEABLE_CONCEPT`. Deferring it is not a style
+it returns already points at the `FF_CODED_VALUE`. Deferring it is not a style
 preference — `Node::as<std::string_view>()` used to resolve against the node's own offset,
 which for a choice (`[x]`) variant is the *slot*, and so read one V-Table width past the
 block and returned an empty label: a silently dropped code, no crash, no warning. DT-3 owes
@@ -501,7 +501,7 @@ decide whether a version gate is wanted.
    at `_next_id`** — this rule has been broken once, in `118d6ad`, silently invalidating
    every stored archive; see `dictionaries/README.md`), vtable offset arithmetic
    (symbolic sums in headers — never introduce literal offsets), `FF_HEADER` layout,
-   `FF_CODEABLE_CONCEPT_FLAG`, `FF_CODE_NULL`, `FF_NULL_OFFSET`.
+   `FF_CODED_VALUE_FLAG`, `FF_CODE_NULL`, `FF_NULL_OFFSET`.
 2. **Never hand-edit generated files** (`generated_src/` — which now includes `FF_Codes.hpp`
    and the dictionary tables — plus `generated_src/FF_RecoveryTags.hpp` and the generated
    `fastfhir.fields` package).

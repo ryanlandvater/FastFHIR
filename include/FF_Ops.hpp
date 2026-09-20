@@ -178,7 +178,7 @@ namespace FastFHIR::Decode {
     /// both fell through to an empty/raw read; ParserOps::code_node resolves
     /// the same arithmetic eagerly for exactly this reason. `stream_size` and
     /// `version` are required because the flagged fallback decodes to a block
-    /// (FF_CODEABLE_CONCEPT / FF_STRING) that must be bounds-checked and typed.
+    /// (FF_CODED_VALUE / FF_STRING) that must be bounds-checked and typed.
     inline ChoiceEntry choice(const BYTE* base, Offset absolute_offset,
                               Offset parent_offset, Size stream_size,
                               uint32_t version) {
@@ -203,10 +203,10 @@ namespace FastFHIR::Decode {
                     if (raw_code != FF_CODE_NULL) {
                         if (const char* label = FF_ResolveCode(raw_code, version)) {
                             entry.value = label;
-                        } else if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
+                        } else if (raw_code & FF_CODED_VALUE_FLAG) {
                             const Offset abs_off =
                                 FF_ResolveCodeableConceptOffset(raw_code, parent_offset);
-                            entry.value = FF_DECODE_CODEABLE_CONCEPT(base, abs_off, version,
+                            entry.value = FF_DECODE_CODED_VALUE(base, abs_off, version,
                                                                      stream_size).label;
                         }
                     }

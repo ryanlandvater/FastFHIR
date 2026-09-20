@@ -1,0 +1,19 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+# Package entry point for find_package(FastFHIR CONFIG).
+#
+# Targets: FastFHIR::fastfhir (always), FastFHIR::fastfhir_ingestor (when the
+# ingestor was built), FastFHIR::fastfhir_conformance (when the conformance
+# layer was built). The installed POCO headers are the build profile's.
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+if(@FASTFHIR_CONFIG_FIND_SIMDJSON@)
+    find_dependency(simdjson CONFIG)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/FastFHIRTargets.cmake")
+check_required_components(FastFHIR)

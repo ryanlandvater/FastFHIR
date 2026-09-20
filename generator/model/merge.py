@@ -338,7 +338,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
                 )
             elif f["cpp_type"] == "Offset":
                 public_hpp += (
-                    f"    std::unique_ptr<{_st._resolve_data_type_name(f['fhir_type'], f['orig_name'], path, f.get('resolved_path'))}>"
+                    f"    FF_Optional<{_st._resolve_data_type_name(f['fhir_type'], f['orig_name'], path, f.get('resolved_path'))}>"
                     f" {f['cpp_name']};\n"
                 )
             elif f["data_type"] == "bool":

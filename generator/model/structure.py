@@ -134,19 +134,29 @@ def _resolve_data_type_name(
     return fhir_type + "Data"
 
 
+# Split camelCase at word boundaries, keeping acronyms whole: before a capital
+# that follows a lower-case letter or digit, and before the last capital of a
+# run that starts a new word. Splitting before EVERY capital -- which is what
+# this used to do -- turned carrierHRF into CARRIER_H_R_F and sourceURI into
+# SOURCE_U_R_I.
+_WORD_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _upper_snake(raw_name: str) -> str:
+    """camelCase -> UPPER_SNAKE, acronyms intact: 'carrierHRF' -> 'CARRIER_HRF'."""
+    snake = _WORD_BOUNDARY.sub("_", raw_name).upper()
+    snake = re.sub(r"[^A-Z0-9]+", "_", snake)
+    return re.sub(r"_+", "_", snake).strip("_")
+
+
 def _field_key_constant_name(raw_name: str) -> str:
     """Turn a camelCase FHIR field name into a C++ enum constant, e.g. 'FF_ACTIVE'."""
-    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", raw_name).upper()
-    snake = re.sub(r"[^A-Z0-9]+", "_", snake)
-    snake = re.sub(r"_+", "_", snake).strip("_")
-    return f"FF_{snake}"
+    return f"FF_{_upper_snake(raw_name)}"
 
 
 def _field_key_short_name(raw_name: str) -> str:
     """Return the short database-visible name for a field key (snake_case, no prefix)."""
-    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", raw_name).upper()
-    snake = re.sub(r"[^A-Z0-9]+", "_", snake)
-    return re.sub(r"_+", "_", snake).strip("_")
+    return _upper_snake(raw_name)
 
 
 def _block_key_namespace(path: str) -> str:

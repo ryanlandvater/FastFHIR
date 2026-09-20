@@ -2,7 +2,7 @@
   "_format": 1,
   "_rule": "PERMANENT WIRE LEDGER. A tag is written into bytes 8-9 of every DATA_BLOCK and decodes .ffhr streams forever. Never change an existing value. Never reuse a retired one. New tags append at the _next_id of their band. Removing a type from FHIR does NOT free its tag.",
   "_scope": "Covers the WHOLE FHIR spec (R4 union R5), never just the compiled profile. The emitted FF_Recovery.hpp is therefore identical for every FASTFHIR_PRODUCTION_PROFILE -- a permanent wire artifact must not depend on build configuration. Primitive and scalar tags are FastFHIR's own concepts, hand-seeded here, not discovered from StructureDefinitions.",
-  "_provenance": "Seeded 2026-08-14 from the hand-maintained include/FF_Recovery.hpp, preserving all 166 values as they stood after the band re-cut (TASKS.md A27.5c). Every tag after that was appended by discovery. 2026-08-19 pre-alpha re-cut: RECOVER_FF_CODE moved to the scalar band (0x010B) because band membership is the inline-scalar dispatch test, and the primitive band was then COMPACTED to close the hole -- RESOURCE..CODEABLE_CONCEPT each shifted down by one. No archives existed. Append-only resumes from here.",
+  "_provenance": "Seeded 2026-08-14 from the hand-maintained include/FF_Recovery.hpp, preserving all 166 values as they stood after the band re-cut (TASKS.md A27.5c). Every tag after that was appended by discovery. 2026-08-19 pre-alpha re-cut: RECOVER_FF_CODE moved to the scalar band (0x010B) because band membership is the inline-scalar dispatch test, and the primitive band was then COMPACTED to close the hole -- RESOURCE..CODEABLE_CONCEPT each shifted down by one. No archives existed. Append-only resumes from here. 2026-09-19 NAME-ONLY change: 0x0009 renamed RECOVER_FF_CODEABLE_CONCEPT -> RECOVER_FF_CODED_VALUE, and the struct FF_CODEABLE_CONCEPT, the flag FF_CODEABLE_CONCEPT_FLAG and the decoder FF_DECODE_CODEABLE_CONCEPT with it. It sat one underscore from RECOVER_FF_CODEABLECONCEPT (0x0203, the FHIR datatype) and the two name different block LAYOUTS -- a compact leaf versus a V-Table block -- so a hand-written tag could pick the wrong one and still compile. No value changed; no stream is affected.",
   "_bands": {
     "primitive": {
       "first": "0x0000",
@@ -48,7 +48,7 @@
     "RECOVER_FF_CODE": {
       "value": "0x010B",
       "band": "scalar",
-      "note": "4-byte inline scalar: MSB clear = permanent dictionary ID, MSB set = signed relative offset to an FF_CODEABLE_CONCEPT block. Banded with the inline scalars because that band membership IS the dispatch test used by Recovery_to_Kind and FF_IsScalarBlockTag."
+      "note": "4-byte inline scalar: MSB clear = permanent dictionary ID, MSB set = signed relative offset to an FF_CODED_VALUE block. Banded with the inline scalars because that band membership IS the dispatch test used by Recovery_to_Kind and FF_IsScalarBlockTag."
     },
     "RECOVER_FF_RESOURCE": {
       "value": "0x0003",
@@ -78,10 +78,10 @@
       "band": "primitive",
       "note": "Path A WASM-encoded extension payload"
     },
-    "RECOVER_FF_CODEABLE_CONCEPT": {
+    "RECOVER_FF_CODED_VALUE": {
       "value": "0x0009",
       "band": "primitive",
-      "note": "External codeable concept (UCUM, SNOMED CT, ...)"
+      "note": "Compact coded value (UCUM, SNOMED CT, ...): the leaf an FF_FIELD_CODE slot points at when the code is not in the dictionary. Renamed on 2026-09-19 from the former CODEABLE_CONCEPT spelling, which sat one underscore from the FHIR CodeableConcept datatype tag; the VALUE is unchanged. The old identifier is written out in _provenance, not in this note: a note is emitted as a comment into the generated header, and the tag validator reads every tag-shaped token it finds there."
     },
     "RECOVER_FF_SCALAR_BLOCK": {
       "value": "0x0100",

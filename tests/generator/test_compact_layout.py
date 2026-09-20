@@ -83,7 +83,7 @@ def test_json_export_uses_the_shared_codeable_concept_decoder():
     It carried a third per-system switch that had drifted: only UNKNOWN, UCUM,
     SNOMED_CT and DICOM were handled, so CPT, CVX, RxNorm, MDC, MED-RT and IDMP
     had their fixed-width binary payloads printed as if they were ASCII --
-    straight into the exported JSON. FF_DECODE_CODEABLE_CONCEPT handled all 17
+    straight into the exported JSON. FF_DECODE_CODED_VALUE handled all 17
     correctly the whole time.
 
     Nothing behavioural catches a regression here today: A8 keeps every code on
@@ -94,14 +94,14 @@ def test_json_export_uses_the_shared_codeable_concept_decoder():
     assert fn, "print_scalar_json not found"
     body = fn.group(0)
 
-    assert "FF_DECODE_CODEABLE_CONCEPT(" in body, (
-        "print_scalar_json no longer calls FF_DECODE_CODEABLE_CONCEPT -- the JSON "
+    assert "FF_DECODE_CODED_VALUE(" in body, (
+        "print_scalar_json no longer calls FF_DECODE_CODED_VALUE -- the JSON "
         "export path has stopped sharing the decoder."
     )
     assert "FF_CodeableConceptSystem::" not in body, (
         "print_scalar_json switches on FF_CodeableConceptSystem again. That is the "
         "third per-system decoder; it drifted to 4 of 17 systems last time. Call "
-        "FF_DECODE_CODEABLE_CONCEPT instead."
+        "FF_DECODE_CODED_VALUE instead."
     )
 
 

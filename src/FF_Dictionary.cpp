@@ -56,7 +56,7 @@ uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t /*version*/) noex
     // does not fetch, so R4 core contributes 1,062 CodeSystems and R5 core 448.
     // Codes like FDI-surface "M" are perfectly valid R5 codes that simply are
     // not in the package the generator reads. Under R5 they missed here,
-    // returned FF_CODE_NULL, and sent the writer to an FF_CODEABLE_CONCEPT
+    // returned FF_CODE_NULL, and sent the writer to an FF_CODED_VALUE
     // fallback for a code whose permanent ID already existed -- while
     // FF_ResolveCode, which ignores version entirely, resolved them happily.
     // Write was version-gated and read was not; that asymmetry is the defect.
@@ -79,7 +79,7 @@ uint32_t FF_GetDictionaryCode(const std::string& str, uint32_t /*version*/) noex
     // 'v', ...) were unreachable behind lowercased UCUM labels.
     //
     // Nothing is lost by refusing: an unrecognised code returns FF_CODE_NULL,
-    // which sends the writer to an FF_CODEABLE_CONCEPT block holding the
+    // which sends the writer to an FF_CODED_VALUE block holding the
     // ORIGINAL text. A non-conformant unit round-trips verbatim instead of
     // being silently "corrected" into a different one.
     using Map = std::unordered_map<std::string_view, uint32_t>;

@@ -54,17 +54,19 @@ namespace FastFHIR
     namespace
     {
 
-        bool looks_like_fastfhir_header(const uint8_t *base_ptr)
+        // Releases an OS handle on scope exit until ownership passes to the core,
+        // so no early-exit path in createFromFile needs its own close call.
+        template <typename Release>
+        struct ScopeExit
         {
-            return std::memcmp(base_ptr, "FFHR", 4) == 0;
-        }
-
-        void warn_about_faulted_fastfhir_stream(const char *api_name)
-        {
-            std::cerr << "Warning: " << api_name
-                      << " detected an invalid or incomplete FastFHIR stream.\n"
-                      << "Initializing a new stream over the existing memory.\n";
-        }
+            Release release;
+            bool armed = true;
+            ~ScopeExit()
+            {
+                if (armed)
+                    release();
+            }
+        };
 
     }
 
@@ -168,10 +170,25 @@ namespace FastFHIR
             fstat(os_fd, &shm_stat);
             is_new = (shm_stat.st_size == 0);
 
-            if (ftruncate(os_fd, capacity) == -1)
+            // Size the segment ONLY when this call created it. A POSIX shared
+            // segment can be sized once on Darwin, so ftruncate on an existing
+            // one fails with EINVAL -- which made attaching to a live arena
+            // (the cross-process case the SHM backing exists for) impossible.
+            if (is_new)
             {
-                ::close(os_fd);
-                throw std::system_error(errno, std::system_category(), "POSIX ftruncate failed");
+                if (ftruncate(os_fd, capacity) == -1)
+                {
+                    ::close(os_fd);
+                    throw std::system_error(errno, std::system_category(),
+                                            "FastFHIR: cannot size shared segment " + posix_name);
+                }
+            }
+            else
+            {
+                // Adopt what the segment already is: the producer chose it, and
+                // mapping a different length would hand out addresses the other
+                // processes do not share.
+                capacity = static_cast<size_t>(shm_stat.st_size);
             }
 
             base_ptr = static_cast<uint8_t *>(mmap(nullptr, capacity, PROT_READ | PROT_WRITE,
@@ -184,22 +201,15 @@ namespace FastFHIR
         }
 #endif
 
-        // --- Parser Validation & Fault Recovery ---
-        FF_HEADER header(capacity);
-        if (is_new || header.validate_full(base_ptr) != FF_SUCCESS)
-        {
-            // Faulted or brand new: initialize a provisional header region, but do not
-            // emit a valid finalized FastFHIR header. This lets Builder distinguish
-            // fresh writable memory from a completed archive.
-            if (!is_new && looks_like_fastfhir_header(base_ptr))
-            {
-                // TODO: If header magic/version/offsets are plausible, attempt bounded
-                // recovery before zeroing the provisional header region.
-                warn_about_faulted_fastfhir_stream("FF_Memory::create");
-            }
-
-            std::memset(base_ptr, 0, FF_HEADER::HEADER_SIZE);
-        }
+        // ATTACHING MUST NOT DISTURB THE PRODUCER. This used to validate the
+        // header and, on failure, zero FF_HEADER::HEADER_SIZE bytes -- which
+        // spans the live write head at bytes 8-15. An in-progress arena has no
+        // finalized header to validate, so a second process attaching to one
+        // reset its cursor to zero and both then claimed the same space.
+        //
+        // A freshly created segment is already zero-filled by the OS, and an
+        // anonymous mapping likewise, so there is nothing to initialize; an
+        // existing segment belongs to whoever is writing it.
 
         // Create the FF_Memory handle with the initialized core.
         auto allocator = Memory(std::shared_ptr<FF_Memory_t>(new FF_Memory_t(base_ptr, capacity, nullptr, os_handle, os_fd, shm_name)));
@@ -209,115 +219,126 @@ namespace FastFHIR
 
     Memory Memory::createFromFile(const std::filesystem::path &filepath, size_t capacity)
     {
-        bool is_new = false;
+        return mapFile(filepath, capacity, FileAccess::Amend);
+    }
+
+    Memory Memory::openReadOnly(const std::filesystem::path &filepath)
+    {
+        // `capacity` is meaningless here: a read-only arena maps exactly the
+        // file, so mapFile derives it from the file itself.
+        return mapFile(filepath, 0, FileAccess::Read);
+    }
+
+    Memory Memory::mapFile(const std::filesystem::path &filepath, size_t capacity, FileAccess access)
+    {
+        // Preconditions: for FileAccess::Amend, `capacity` is the sparse
+        // reservation and must be at least the existing file's size.
+        const bool read_only = access == FileAccess::Read;
+
+        const std::string path_str = filepath.string();
         uint8_t *base_ptr = nullptr;
         void *file_handle = nullptr;
         void *os_handle = nullptr;
         int os_fd = -1;
+        size_t on_disk = 0;
 
-        // Convert path to string for native OS APIs
-        std::string path_str = filepath.string();
-
+        // --- Open, and learn what is already there -------------------------------
+        // A writable arena opens or creates; a read-only one requires the file
+        // and never creates it, so a mistyped path leaves nothing behind.
 #ifdef _WIN32
-        const uint64_t total_size = static_cast<uint64_t>(capacity);
-        HANDLE hFile = CreateFileA(path_str.c_str(), GENERIC_READ | GENERIC_WRITE,
+        const DWORD disposition = read_only ? OPEN_EXISTING : OPEN_ALWAYS;
+        HANDLE hFile = CreateFileA(path_str.c_str(),
+                                   read_only ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE),
                                    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-                                   OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
+                                   disposition, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile == INVALID_HANDLE_VALUE)
-        {
-            throw std::system_error(GetLastError(), std::system_category(), "Win32 CreateFileA failed");
-        }
-        is_new = (GetLastError() != ERROR_ALREADY_EXISTS);
-        file_handle = static_cast<void *>(hFile);
-
-        DWORD bytesReturned;
-        if (!DeviceIoControl(hFile, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &bytesReturned, NULL))
-        {
-            CloseHandle(hFile);
-            throw std::system_error(GetLastError(), std::system_category(), "Win32 Set Sparse failed");
-        }
-
-        HANDLE hMapFile = CreateFileMappingA(hFile, NULL, PAGE_READWRITE,
-                                             total_size >> 32, total_size & 0xFFFFFFFF, NULL);
-        if (!hMapFile)
-        {
-            CloseHandle(hFile);
-            throw std::system_error(GetLastError(), std::system_category(), "Win32 CreateFileMappingA failed");
-        }
-        os_handle = static_cast<void *>(hMapFile);
-
-        base_ptr = static_cast<uint8_t *>(MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, total_size));
-        if (!base_ptr)
-        {
-            CloseHandle(hMapFile);
-            CloseHandle(hFile);
-            throw std::system_error(GetLastError(), std::system_category(), "Win32 MapViewOfFile failed");
-        }
-
+            throw std::system_error(GetLastError(), std::system_category(), "FastFHIR: cannot open " + path_str);
+        ScopeExit close_file{[&] { CloseHandle(hFile); }};
+        LARGE_INTEGER file_size;
+        if (!GetFileSizeEx(hFile, &file_size))
+            throw std::system_error(GetLastError(), std::system_category(), "FastFHIR: cannot size " + path_str);
+        on_disk = static_cast<size_t>(file_size.QuadPart);
 #else
-        os_fd = open(path_str.c_str(), O_CREAT | O_RDWR, 0666);
+        const int flags = read_only ? O_RDONLY : (O_CREAT | O_RDWR);
+        os_fd = open(path_str.c_str(), flags, 0666);
         if (os_fd == -1)
-            throw std::system_error(errno, std::system_category(), "POSIX open failed");
-
+            throw std::system_error(errno, std::system_category(), "FastFHIR: cannot open " + path_str);
+        ScopeExit close_file{[&] { ::close(os_fd); }};
         struct stat file_stat;
         if (fstat(os_fd, &file_stat) == -1)
-        {
-            ::close(os_fd);
-            throw std::system_error(errno, std::system_category(), "POSIX fstat failed");
-        }
-
-        // Treat as new if it lacks the minimum structural space for the 38-byte header
-        is_new = (file_stat.st_size < FF_HEADER::HEADER_SIZE);
-
-        if (static_cast<size_t>(file_stat.st_size) < capacity)
-        {
-            if (ftruncate(os_fd, capacity) == -1)
-            {
-                ::close(os_fd);
-                throw std::system_error(errno, std::system_category(), "POSIX ftruncate failed");
-            }
-        }
-
-        base_ptr = static_cast<uint8_t *>(mmap(nullptr, capacity, PROT_READ | PROT_WRITE,
-                                               MAP_SHARED, os_fd, 0));
-        if (base_ptr == MAP_FAILED)
-        {
-            ::close(os_fd);
-            throw std::system_error(errno, std::system_category(), "POSIX file mmap failed");
-        }
+            throw std::system_error(errno, std::system_category(), "FastFHIR: cannot size " + path_str);
+        on_disk = static_cast<size_t>(file_stat.st_size);
 #endif
 
-        // --- Parser Validation & Fault Recovery ---
-        FF_HEADER header(capacity);
-        if (is_new || header.validate_full(base_ptr) != FF_SUCCESS)
+        // Whether these bytes are a stream is not this layer's question; whether
+        // there are any bytes to map is.
+        const bool is_new = on_disk == 0;
+        if (read_only)
         {
-            if (!is_new && looks_like_fastfhir_header(base_ptr))
-            {
-                // TODO: If header magic/version/offsets are plausible, attempt bounded
-                // recovery before zeroing the provisional header region.
-                warn_about_faulted_fastfhir_stream("FF_Memory::createFromFile");
-            }
-
-            std::memset(base_ptr, 0, FF_HEADER::HEADER_SIZE);
+            if (is_new)
+                throw std::runtime_error("FastFHIR: " + path_str + " is empty; there is nothing to map");
+            capacity = on_disk;
+        }
+        else if (capacity < on_disk)
+        {
+            // Mapping less than the stream would hide its tail from the Builder.
+            throw std::invalid_argument("FastFHIR: capacity " + std::to_string(capacity) +
+                                        " is smaller than " + path_str + " (" +
+                                        std::to_string(on_disk) + " bytes)");
         }
 
-        // Create the FF_Memory handle with the initialized core.
-        auto allocator = Memory(std::shared_ptr<FF_Memory_t>(
+        // --- Map -----------------------------------------------------------------
+        // A writable arena is a sparse reservation of `capacity` bytes; the file
+        // grows to it and only touched pages commit. A read-only arena maps the
+        // file as it is and grows nothing.
+#ifdef _WIN32
+        DWORD bytes_returned;
+        if (!read_only && !DeviceIoControl(hFile, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &bytes_returned, NULL))
+            throw std::system_error(GetLastError(), std::system_category(), "FastFHIR: cannot make " + path_str + " sparse");
+        const uint64_t total_size = static_cast<uint64_t>(capacity);
+        HANDLE hMapFile = CreateFileMappingA(hFile, NULL, read_only ? PAGE_READONLY : PAGE_READWRITE,
+                                             static_cast<DWORD>(total_size >> 32),
+                                             static_cast<DWORD>(total_size & 0xFFFFFFFF), NULL);
+        if (!hMapFile)
+            throw std::system_error(GetLastError(), std::system_category(), "FastFHIR: cannot map " + path_str);
+        ScopeExit close_mapping{[&] { CloseHandle(hMapFile); }};
+        base_ptr = static_cast<uint8_t *>(MapViewOfFile(hMapFile, read_only ? FILE_MAP_READ : FILE_MAP_ALL_ACCESS,
+                                                        0, 0, total_size));
+        if (!base_ptr)
+            throw std::system_error(GetLastError(), std::system_category(), "FastFHIR: cannot map " + path_str);
+        close_mapping.armed = false;
+        file_handle = static_cast<void *>(hFile);
+        os_handle = static_cast<void *>(hMapFile);
+#else
+        if (!read_only && on_disk < capacity && ftruncate(os_fd, static_cast<off_t>(capacity)) == -1)
+            throw std::system_error(errno, std::system_category(), "FastFHIR: cannot reserve " + path_str);
+        base_ptr = static_cast<uint8_t *>(mmap(nullptr, capacity, read_only ? PROT_READ : (PROT_READ | PROT_WRITE),
+                                               MAP_SHARED, os_fd, 0));
+        if (base_ptr == MAP_FAILED)
+            throw std::system_error(errno, std::system_category(), "FastFHIR: cannot map " + path_str);
+#endif
+        close_file.armed = false;
+
+        // From here the core owns the mapping and the handles, so a refusal below
+        // unmaps and closes through its destructor.
+        Memory memory(std::shared_ptr<FF_Memory_t>(
             new FF_Memory_t(base_ptr, capacity, file_handle, os_handle, os_fd, path_str)));
+        memory.m_core->m_read_only = read_only;
+        memory.m_core->m_file_backed = true;
+        // What the OS says the file is, for an existing one. `capacity` is the
+        // sparse RESERVATION and says nothing about how many bytes exist, so it
+        // cannot bound a reader on its own; a new file has no meaningful size.
+        if (!is_new)
+            memory.m_core->m_disk_size = on_disk;
 
-        // Record what the OS says the file is, for an existing one. `capacity` is
-        // the sparse RESERVATION (4 GiB by default) and says nothing about how
-        // many bytes exist, so it cannot bound a reader on its own. A file this
-        // call just created has no meaningful size yet and keeps 0.
-        if (!is_new) {
-            std::error_code ec;
-            const auto on_disk = std::filesystem::file_size(filepath, ec);
-            if (!ec)
-                allocator.m_core->m_disk_size = static_cast<size_t>(on_disk);
-        }
-
-        return allocator;
+        // Deliberately nothing else. This function maps bytes; it does not know
+        // what a FastFHIR stream is, and it never writes one. It used to
+        // validate the header here and ZERO it when validation failed, which is
+        // how a receiver erased a damaged submission just by opening it. Whether
+        // an arena holds something appendable is the Builder's question, and the
+        // Builder asks it (src/FF_Builder.cpp). A freshly created file is already
+        // zero-filled by the OS, so there is nothing to initialize either.
+        return memory;
     }
 
     // ============================================================================
@@ -383,8 +404,16 @@ namespace FastFHIR
     // Ingestion & Lock Management
     // ============================================================================
 
+    void FF_Memory_t::require_writable(const char *operation) const
+    {
+        if (m_read_only)
+            throw std::runtime_error(std::string("FastFHIR: ") + operation +
+                                     " on a read-only arena (Memory::openReadOnly): " + m_name);
+    }
+
     uint64_t FF_Memory_t::claim_space(size_t bytes)
     {
+        require_writable("claim_space");
         std::atomic_ref<uint64_t> head(*m_head_ptr);
         uint64_t current = head.load(std::memory_order_acquire);
 
@@ -417,6 +446,7 @@ namespace FastFHIR
 
     std::optional<Memory::StreamHead> FF_Memory_t::try_acquire_stream()
     {
+        require_writable("try_acquire_stream");
         std::atomic_ref<uint64_t> head(*m_head_ptr);
         uint64_t current = head.load(std::memory_order_relaxed);
 
@@ -437,6 +467,7 @@ namespace FastFHIR
 
     void FF_Memory_t::reset(size_t committed_size)
     {
+        require_writable("reset");
         if (committed_size > m_capacity)
         {
             throw std::runtime_error("FastFHIR: reset size exceeds VMA capacity");
@@ -463,9 +494,21 @@ namespace FastFHIR
 
     void FF_Memory_t::truncate_file(size_t size)
     {
+        require_writable("truncate_file");
+        // Only a file has a tail to trim. An anonymous arena has no backing at
+        // all, and a shared segment is sized once by the process that created
+        // it -- ftruncate on one fails (EINVAL on Darwin), which is why this
+        // check has to come before the error handling below and not after.
+        if (!m_file_backed)
+            return;
 #ifdef _WIN32
         if (!m_file_handle)
             return;
+        // Result deliberately unchecked here, unlike POSIX: Windows refuses to
+        // shorten a file while a view of it is mapped (ERROR_USER_MAPPED_FILE),
+        // so this fails on every live arena and the file keeps its sparse
+        // reservation. Throwing would fail every finalize on Windows; the real
+        // fix is to unmap first. Tracked in CAP_EXAMPLE_handoff.md T2.
         HANDLE hFile = static_cast<HANDLE>(m_file_handle);
         LARGE_INTEGER li;
         li.QuadPart = static_cast<LONGLONG>(size);
@@ -474,7 +517,9 @@ namespace FastFHIR
 #else
         if (m_os_fd == -1)
             return;
-        ftruncate(m_os_fd, static_cast<off_t>(size));
+        if (ftruncate(m_os_fd, static_cast<off_t>(size)) == -1)
+            throw std::system_error(errno, std::system_category(),
+                                    "FastFHIR: cannot truncate " + m_name + " to " + std::to_string(size) + " bytes");
 #endif
     }
 

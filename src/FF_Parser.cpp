@@ -178,8 +178,8 @@ Entry ParserOps::compact_node_lookup_field(const Node& n, FF_FieldKey key) {
 }
 
 // A code slot holds either an inline dictionary id or, when
-// FF_CODEABLE_CONCEPT_FLAG is set, a signed relative offset to an
-// FF_CODEABLE_CONCEPT block -- relative to the CONTAINING BLOCK, the convention
+// FF_CODED_VALUE_FLAG is set, a signed relative offset to an
+// FF_CODED_VALUE block -- relative to the CONTAINING BLOCK, the convention
 // ENCODE_FF_CODE writes and the compactor and both Entry readers already use.
 //
 // The flagged case is resolved HERE, at the last point where the containing
@@ -192,12 +192,12 @@ Node ParserOps::code_node(const BYTE* base, Size size, uint32_t version,
                           Offset block_offset, Offset slot_offset,
                           const ParserOps* ops, uint32_t engine_ver) {
     const uint32_t raw = LOAD_U32(base + slot_offset);
-    if (raw != FF_CODE_NULL && (raw & FF_CODEABLE_CONCEPT_FLAG)) {
+    if (raw != FF_CODE_NULL && (raw & FF_CODED_VALUE_FLAG)) {
         // Kind stays FF_FIELD_CODE so print_json still treats this as a coded
         // leaf; the RECOVERY tag is what tells as<>() the arithmetic is done.
         return Node(base, size, version,
                     FF_ResolveCodeableConceptOffset(raw, block_offset),
-                    RECOVER_FF_CODEABLE_CONCEPT, FF_FIELD_CODE,
+                    RECOVER_FF_CODED_VALUE, FF_FIELD_CODE,
                     FF_RECOVER_UNDEFINED, false, ops, engine_ver);
     }
     return Node(base, size, version, slot_offset, RECOVER_FF_CODE, FF_FIELD_CODE,
@@ -482,7 +482,7 @@ static inline bool slot_carries_offset(FF_FieldKind k) {
         case FF_FIELD_ARRAY:
         case FF_FIELD_RESOURCE:
         case FF_FIELD_CHOICE:
-        case FF_FIELD_CODE:      // only when FF_CODEABLE_CONCEPT_FLAG is set
+        case FF_FIELD_CODE:      // only when FF_CODED_VALUE_FLAG is set
         case FF_FIELD_DATETIME:  // only when FF_DATETIME_FALLBACK_FLAG is set
             return true;
         default:
@@ -570,7 +570,7 @@ struct DeepValidator {
 bool DeepValidator::check_code_value(Offset block, uint32_t raw, std::size_t depth,
                                      const char* via, FF_Result& out) {
     if (raw == FF_CODE_NULL) return true;
-    if ((raw & FF_CODEABLE_CONCEPT_FLAG) == 0) {
+    if ((raw & FF_CODED_VALUE_FLAG) == 0) {
         // Plain dictionary id: structurally inert, so only _deep() checks that
         // it actually resolves to a code.
         const char* resolved = FF_ResolveCode(raw, version);
@@ -582,7 +582,7 @@ bool DeepValidator::check_code_value(Offset block, uint32_t raw, std::size_t dep
     }
     const int32_t rel = static_cast<int32_t>(raw << 1) >> 1;
     const Offset cc = block + static_cast<Offset>(static_cast<int64_t>(rel));
-    return walk(cc, RECOVER_FF_CODEABLE_CONCEPT, depth + 1, via, out);
+    return walk(cc, RECOVER_FF_CODED_VALUE, depth + 1, via, out);
 }
 
 bool DeepValidator::check_datetime_value(Offset block, uint64_t raw, std::size_t depth,
@@ -813,7 +813,7 @@ bool DeepValidator::walk_fields(Offset off, RECOVERY_TAG tag,
                 break;
             }
             case FF_FIELD_CODE:
-                // MSB set => signed relative offset to an FF_CODEABLE_CONCEPT.
+                // MSB set => signed relative offset to an FF_CODED_VALUE.
                 if (!check_code_value(off, LOAD_U32(base + slot), depth, f.name, out))
                     return false;
                 break;
@@ -1201,8 +1201,8 @@ void Reflective::Node::to_debug_json(std::ostream& out, int indent) const {
         // A code slot is inline unless its flag routes it to a CodeableConcept.
         if (f.kind == FF_FIELD_CODE) {
             const uint32_t raw = LOAD_U32(parent.m_base + slot);
-            out << ",\"_code\":" << (raw & ~FF_CODEABLE_CONCEPT_FLAG)
-                << ",\"_cc_fallback\":" << ((raw & FF_CODEABLE_CONCEPT_FLAG) ? "true" : "false");
+            out << ",\"_code\":" << (raw & ~FF_CODED_VALUE_FLAG)
+                << ",\"_cc_fallback\":" << ((raw & FF_CODED_VALUE_FLAG) ? "true" : "false");
         }
         // A date/time slot is 8 inline bytes unless bit 63 routes it to a string.
         if (f.kind == FF_FIELD_DATETIME) {
@@ -1328,7 +1328,7 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
             break;
         case FF_FIELD_CODE: {
             uint32_t raw = LOAD_U32(base + slot);
-            if (raw == FF_CODE_NULL) { out << "null"; break; }            if (raw & FF_CODEABLE_CONCEPT_FLAG) {
+            if (raw == FF_CODE_NULL) { out << "null"; break; }            if (raw & FF_CODED_VALUE_FLAG) {
                 // One decoder, shared with every other read path.
                 //
                 // This used to be a third copy of the per-system switch, and it
@@ -1338,7 +1338,7 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
                 // it were ASCII -- raw bytes straight into the JSON.
                 const Offset block_off =
                     FF_ResolveCodeableConceptOffset(raw, parent_offset);
-                const auto decoded = FF_DECODE_CODEABLE_CONCEPT(base, block_off, version, m_size);
+                const auto decoded = FF_DECODE_CODED_VALUE(base, block_off, version, m_size);
                 if (decoded.label.empty()) {
                     out << "null";
                 } else {
@@ -1426,7 +1426,7 @@ Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version,
     
     if ((tag & 0xFF00) == RECOVER_FF_SCALAR_BLOCK) {
         // A FLAGGED CODE VARIANT IS NOT INLINE. Its low 4 bytes are a signed
-        // relative offset to an FF_CODEABLE_CONCEPT, and -- like every other
+        // relative offset to an FF_CODED_VALUE, and -- like every other
         // spelling of this offset (ENCODE_FF_CODE, the compactor's
         // write_choice_slot, Entry's two readers) -- it is relative to the
         // CONTAINING BLOCK, not to the slot.
@@ -1922,9 +1922,9 @@ Entry::operator std::string_view() const {
             return label;
         }
 
-        if (raw_code & FF_CODEABLE_CONCEPT_FLAG) {
+        if (raw_code & FF_CODED_VALUE_FLAG) {
             Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, parent_offset);
-            return FF_DECODE_CODEABLE_CONCEPT(base, abs_off, m_version, m_size).label;
+            return FF_DECODE_CODED_VALUE(base, abs_off, m_version, m_size).label;
         }
 
         return "";

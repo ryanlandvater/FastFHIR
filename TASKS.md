@@ -340,7 +340,7 @@ State this in the API docs; do not let the redundancy above be read as a guarant
 - **Inline scalar slots.** A `bool` / `uint32` / `double` / packed date-time slot with bit 63
   clear is bytes with no tag and no self-offset. Nothing cross-checks it, and a flipped bit
   reads back as a plausible value. (CLAUDE.md's "residue that remains genuinely
-  unchecked".) A **flagged** slot — `FF_CODEABLE_CONCEPT_FLAG`, or bit 63 set on a
+  unchecked".) A **flagged** slot — `FF_CODED_VALUE_FLAG`, or bit 63 set on a
   date/time — *is* an offset and *is* covered by everything above.
 - **Both witnesses damaged on the same edge.** Two independent records defeat one
   corruption, not two.
@@ -1808,7 +1808,7 @@ to work and to round-trip.
       construction**. Verified 2026-08-14: they agree *today* only by numeric coincidence,
       and only on the one branch currently reachable. `SIZE_FF_CODE` sizes a dictionary
       miss as `FF_STRING::HEADER_SIZE + len` = **14 + len**; `ENCODE_FF_CODE` writes an
-      `FF_CODEABLE_CONCEPT`, consuming `FF_CODEABLE_CONCEPT::HEADER_SIZE + payload` =
+      `FF_CODED_VALUE`, consuming `FF_CODED_VALUE::HEADER_SIZE + payload` =
       **12 + payload**. On the `UNKNOWN` branch payload is `2 + len`, and `12 + 2 == 14`.
       Two independently-defined constants happening to sum correctly is not an invariant.
       **Sequencing: A8.1 must not land before this is fixed.** `external_system` is emitted
@@ -2635,7 +2635,7 @@ compile smoke test is the nearest existing relative and is complementary, not a 
 - [ ] B7.1 Produce one small sealed `.ffhr` from the current builder: a Patient plus an
   Observation, exercising at least one of each field kind that has a distinct on-wire
   representation — inline scalar, offset block, `FF_STRING`, dictionary code, a
-  `FF_CODEABLE_CONCEPT` block with `FF_CODEABLE_CONCEPT_FLAG` set, a choice slot, an array,
+  `FF_CODED_VALUE` block with `FF_CODED_VALUE_FLAG` set, a choice slot, an array,
   and an extension. Keep it under a few KiB.
 - [ ] B7.2 Commit it as `tests/cpp/fixtures/wire_v1.ffhr` **plus** a sibling
   `wire_v1.expected.json` recording the values a reader must recover. Record in a README
@@ -3168,7 +3168,7 @@ in FastFHIR targets.
   describing the format independently of the C++ — header layout (seed from the comment
   block at `include/FF_Primitives.hpp:540`), DATA_BLOCK anatomy, vtable rules, array
   kinds, FF_STRING, choice slots, code encoding (dictionary ID vs
-  `FF_CODEABLE_CONCEPT_FLAG` block), compact layout, checksum footer, and a
+  `FF_CODED_VALUE_FLAG` block), compact layout, checksum footer, and a
   format-version + compatibility-guarantee statement (Q13 decides the freeze wording).
   Seed heavily from `architecture.md` §4–§6 but write it as a spec (MUST/SHOULD), not a
   tour. This is the bus-factor mitigation: a third party must be able to read a `.ffhr`
@@ -3176,7 +3176,7 @@ in FastFHIR targets.
   - [ ] I1.6 The spec MUST state the numbering ceilings, not just the current assignments:
         recovery-tag families are 256 values each and the read path dispatches on the high
         byte (E9), engine MAJOR is 14 bits and MINOR 16 (`architecture.md:118`), and code
-        IDs exclude bit 31 (`FF_CODEABLE_CONCEPT_FLAG`) and `0xFFFFFFFF`. Every derived
+        IDs exclude bit 31 (`FF_CODED_VALUE_FLAG`) and `0xFFFFFFFF`. Every derived
         numbering has a ceiling; an unstated one gets crossed by someone adding "just one
         more". State the append-only rule and deprecation as the only retirement path in
         the same section.
@@ -4426,7 +4426,7 @@ decides portability but a **flag bit inside the payload**:
 |---|---|---|
 | `FF_FIELD_BLOCK` | child offset | **no** |
 | `FF_FIELD_CODE` | dictionary index (MSB clear) | yes |
-| `FF_FIELD_CODE` | packed `FF_CODEABLE_CONCEPT` offset (MSB set) | **no** |
+| `FF_FIELD_CODE` | packed `FF_CODED_VALUE` offset (MSB set) | **no** |
 | `FF_FIELD_DATETIME` | packed civil value (bit 63 clear) | yes |
 | `FF_FIELD_DATETIME` | fallback offset to an `FF_STRING` (bit 63 set) | **no** |
 
@@ -4764,14 +4764,14 @@ path: `validate_assignment(TypeTraits<std::string_view>::recovery)` compares
 encode-into-the-slot path because storing an `FF_STRING` child and patching a
 pointer would leave an offset word the reader unpacks as datetime bits. A code
 slot has the same property: it is a 4-byte value that is *either* a permanent
-dictionary ID *or* a block-relative offset with `FF_CODEABLE_CONCEPT_FLAG` set
+dictionary ID *or* a block-relative offset with `FF_CODED_VALUE_FLAG` set
 (CLAUDE.md, "THREE POLYMORPHIC SLOTS"), so it cannot be pointer-patched either.
 
 - [ ] CAPI-16.1 Add `Builder::amend_code(object_offset, field_vtable_offset,
       std::string_view)` mirroring `amend_datetime`, and dispatch to it from
       `MutableEntry::operator=` on `m_kind == FF_FIELD_CODE`. It must reproduce
       the ingest path's encoding order exactly: `FF_GetDictionaryCode` first,
-      then an `FF_CODEABLE_CONCEPT` block with the flag set and the offset
+      then an `FF_CODED_VALUE` block with the flag set and the offset
       measured **relative to the containing block**, then `FF_CODE_NULL` for an
       empty string. Reuse the ingest encoder rather than writing a second one —
       two encoders for one slot is how SIZE and STORE drifted apart (A8.2).
@@ -5100,6 +5100,8 @@ This list exists so finished work is not re-litigated, **not** as a progress log
 
 | Date | Item | Outcome |
 |---|---|---|
+| 2026-09-19 | **Coded-value rename (names only)** | `0x0009` renamed from the former CODEABLE_CONCEPT spelling to `RECOVER_FF_CODED_VALUE` (decided by Ryan). It sat one underscore from `RECOVER_FF_CODEABLECONCEPT` (`0x0203`, the FHIR datatype) while naming a different block LAYOUT — a compact coded leaf versus a V-Table block — so a hand-written tag could pick the wrong one and still compile; it did, in a test written the same day. **No value changed and no stream is affected**; the ledger's rule pins values, not spellings. The struct `FF_CODEABLE_CONCEPT`, the flag `FF_CODEABLE_CONCEPT_FLAG` and the decoder `FF_DECODE_CODEABLE_CONCEPT` (with its result type) were renamed to match, so the tag and the type it stamps no longer disagree — 30 files. `NOTICE` is deliberately untouched (CLAUDE.md protects it) and still names the old block; one line, Ryan's call. `FF_CodeableConceptSystem`, the per-system registry enum, keeps its name: it names code systems, not the block. Recorded in `dictionaries/master_tags.json` `_provenance` and in the tag's own note. The wire witness was refreshed with `--force` because its golden is keyed by tag NAME, so a rename reads to it as a deletion — see the follow-up below. |
+| 2026-09-19 | **Wire-witness follow-up** | `tests/generator/wire_witness.py` keys tags by name, so it cannot tell a rename from a removal and demands `--force` for a change that touches no value. Keying tags by VALUE (name as an attribute) would make a rename a reportable diff and keep a renumbering a hard refusal, which is the distinction the ledger actually makes. Not done. |
 | 2026-09-15 | **A22.2** | `tests/python/test_roundtrip_errors.py` (ctest `py_roundtrip_errors`, 10 cases) drives every harness error path with a stand-in harness — missing, non-executable, hung (via the new `timeout=` parameter), and failing — both through `run_roundtrip_test` and through `main()`, where the three-value unpack bug lived, and asserts on the message, not just the failure. A passing control (a harness that echoes its input) proves the gate is not simply failing everything. Found and handled on the way: a non-executable harness raised `PermissionError` out of `main()`. |
 | 2026-09-15 | **COV-2** | `py_roundtrip` no longer passes on an empty corpus. No corpus configured or directory absent → exit 77, registered as `SKIP_RETURN_CODE`, so ctest reports Skipped; a directory that yields zero fixtures → exit 1; a run that compared 0 source values → exit 1. The acceptance line's A23.9 half (adversarial fixtures) stays open under A23. |
 | 2026-09-15 | **COV-3** | `cpp_ff_test_recovery` failed intermittently (29/500 under load). Not an unseeded RNG — the suite has none — but the fixture's ingest layout, which is scheduler order by design. Cause: REC-23's locality demotion assumed a field's targets ascend with parent order, which holds for a single `append<T>` subtree (15,971/16,107 on a real bundle) but not for resource tuples, whose targets the Ingestor appends independently (239/306). It demoted a correct 1-bit repoint of `Observation.contained[0]` to Unrecovered. Fix: `src/FF_Recovery.cpp` skips locality for `FF_FIELD_RESOURCE` (exclusivity still applies). Measured on byte-identical corrupted Synthea streams: +27 correct repoints at 512 flips on each of two bundles, wrong attachments unchanged (16 and 5). Tests: the generational test checks every chain on two fixtures, one built through the Builder with contained resources deliberately out of parent order, plus a one-flip-per-resource-tuple sweep; both fail deterministically with the fix reverted. 0/500 under load after. |
@@ -5125,7 +5127,7 @@ This list exists so finished work is not re-litigated, **not** as a progress log
 | 2026-09-10 | **A25.1 / A25.2** | `Quantity.value` read back as `FF_NULL_OFFSET`-as-double. Stored and read correctly; an absent value emits no key. **A25.3's reader guard is still open** and stays in the file. |
 | 2026-09-10 | **A26** | Bundle entries dropped (250 in / 209 out) and `fullUrl` / `request` never parsed. Fixed by delegating the non-resource entry fields to `Bundle_entry_from_json` instead of growing the hardcoded patcher. Verify: 857→857, 820→820, 847→847, 250→250 with all three keys present. |
 | 2026-09-10 | **A28** | Standalone generator run did not reproduce `python/fields/` (85 of 228 files differed) because `emit_python_fields` and `emit_python_ast` wrote the same filename. Closed by the keyword-only `truncated_by` contract — first touch in a run truncates, later touches append — which also fixed a worse latent bug the task never named: 144 modules had no truncating writer at all, so a blind append restacked the class on every configure (36 copies of `BUNDLE_ENTRY_PATH` in a long-lived tree). `test_determinism.py`'s `filecmp.dircmp` walk is recursive, so it covers `python/`. |
-| 2026-08-27 | **REC-18** | Gap analysis. `classify_block()` now sizes every tag (generated blocks from `reflected_fields_view`, plus `FF_CODEABLE_CONCEPT` / `FF_URL_DIRECTORY` / `FF_CHECKSUM`), so the arena tiles; `find_gaps()` reports each run of bytes no entry claims as a `Hole` — the one damage class (both witnesses destroyed) scan + reachability cannot represent. Compact streams are refused. `1c98659`, `6a56c2b`. |
+| 2026-08-27 | **REC-18** | Gap analysis. `classify_block()` now sizes every tag (generated blocks from `reflected_fields_view`, plus `FF_CODED_VALUE` / `FF_URL_DIRECTORY` / `FF_CHECKSUM`), so the arena tiles; `find_gaps()` reports each run of bytes no entry claims as a `Hole` — the one damage class (both witnesses destroyed) scan + reachability cannot represent. Compact streams are refused. `1c98659`, `6a56c2b`. |
 | 2026-08-26 | **P0-1 / CAPI-13** | `deserialize` emitted no code for singular block fields *and* `FF_FIELD_URL`. 736 dropped fields across 37 files → 0. Fail-loud `else` added. `tests/cpp/test_poco_parity.cpp` pins it. |
 | 2026-08-26 | **CAPI-15** | `Parser(const void*, size_t)` SEGV'd on a corrupted `CHECKSUM_OFFSET`; now bounds-checked before dereference. `FastFHIR::Recovery` shipped alongside. |
 | 2026-08-26 | **REC-1** | `known_resource_tag()` tested a hardcoded 5-tag list; now `FF_IsResourceTag()` over the whole band. |

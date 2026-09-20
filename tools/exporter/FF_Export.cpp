@@ -22,74 +22,7 @@
 #include <memory>
 #include <stdexcept>
 
-// Cross-platform includes for Memory Mapping
-#ifdef _WIN32
-    #include <windows.h>
-#else
-    #include <sys/mman.h>
-    #include <sys/stat.h>
-    #include <fcntl.h>
-    #include <unistd.h>
-#endif
-
 using namespace FastFHIR;
-
-// =====================================================================
-// Cross-Platform Memory Mapper (RAII)
-// =====================================================================
-class MemoryMappedFile {
-    const BYTE* m_data = nullptr;
-    size_t      m_size = 0;
-
-#ifdef _WIN32
-    HANDLE hFile = INVALID_HANDLE_VALUE;
-    HANDLE hMap  = NULL;
-#else
-    int fd = -1;
-#endif
-
-public:
-    MemoryMappedFile(const std::string& filepath) {
-#ifdef _WIN32
-        hFile = CreateFileA(filepath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile == INVALID_HANDLE_VALUE) throw std::runtime_error("Failed to open file.");
-        
-        LARGE_INTEGER size;
-        if (!GetFileSizeEx(hFile, &size)) throw std::runtime_error("Failed to get file size.");
-        m_size = static_cast<size_t>(size.QuadPart);
-
-        hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-        if (!hMap) throw std::runtime_error("Failed to create file mapping.");
-
-        m_data = static_cast<const BYTE*>(MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0));
-        if (!m_data) throw std::runtime_error("Failed to map view of file.");
-#else
-        fd = open(filepath.c_str(), O_RDONLY);
-        if (fd == -1) throw std::runtime_error("Failed to open file.");
-
-        struct stat sb;
-        if (fstat(fd, &sb) == -1) throw std::runtime_error("Failed to get file size.");
-        m_size = static_cast<size_t>(sb.st_size);
-
-        m_data = static_cast<const BYTE*>(mmap(nullptr, m_size, PROT_READ, MAP_PRIVATE, fd, 0));
-        if (m_data == MAP_FAILED) throw std::runtime_error("Failed to mmap file.");
-#endif
-    }
-
-    ~MemoryMappedFile() {
-#ifdef _WIN32
-        if (m_data) UnmapViewOfFile(m_data);
-        if (hMap) CloseHandle(hMap);
-        if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
-#else
-        if (m_data && m_data != MAP_FAILED) munmap(const_cast<BYTE*>(m_data), m_size);
-        if (fd != -1) close(fd);
-#endif
-    }
-
-    const BYTE* data() const { return m_data; }
-    size_t size() const { return m_size; }
-};
 
 // =====================================================================
 // CLI Utility Functions
@@ -138,20 +71,18 @@ int main(int argc, char** argv) {
         const BYTE* parse_buffer = nullptr;
         size_t parse_size = 0;
         
-        std::unique_ptr<MemoryMappedFile> mapped_file;
         std::vector<BYTE> stdin_buffer;
 
         // 2. Resolve Input Strategy
-        if (!input_file.empty()) {
-            mapped_file = std::make_unique<MemoryMappedFile>(input_file);
-            parse_buffer = mapped_file->data();
-            parse_size = mapped_file->size();
-        } else {
+        //    A path is mapped by the library itself, read-only: exactly the
+        //    bytes on disk, never written. This tool used to carry its own
+        //    mmap wrapper, one of two copies of the same 50 lines.
+        if (input_file.empty()) {
             // No input file provided; read from standard input
             std::ios_base::sync_with_stdio(false); // Speed up stdin
             std::cin.tie(NULL);
             stdin_buffer = read_stream_to_buffer(std::cin);
-            
+
             if (stdin_buffer.empty()) {
                 std::cerr << "Error: No input data received from stdin.\n";
                 return 1;
@@ -162,10 +93,15 @@ int main(int argc, char** argv) {
 
         // 3. Mount the Parser
         FastFHIR::Parser parser;
-        FF_Result parse_result = FastFHIR::FF_Parse(FastFHIR::FF_ParseInfo{
-            .buffer = parse_buffer,
-            .size = parse_size,
-        }, parser);
+        FF_Result parse_result = input_file.empty()
+            ? FastFHIR::FF_Parse(FastFHIR::FF_ParseInfo{
+                  .buffer = parse_buffer,
+                  .size = parse_size,
+              }, parser)
+            : FastFHIR::FF_Parse(FastFHIR::FF_ParseInfo{
+                  .memory = std::make_shared<FastFHIR::Memory>(
+                      FastFHIR::Memory::openReadOnly(input_file)),
+              }, parser);
         if (!parse_result)
         {
             std::cerr << "FastFHIR Export Error: " << parse_result.message << "\n";

@@ -11,6 +11,8 @@
 
 #include "FF_Parser.hpp"
 #include "FF_Conformance.hpp"
+
+#include <filesystem>
 #include <atomic>
 #include <functional>
 #include <string>
@@ -211,6 +213,22 @@ namespace FastFHIR
          * Attach before the first append. Attaching concurrently with appends is
          * a data race, exactly as the amend/finalize paths are (TASKS.md Q9).
          */
+        /**
+         * @brief Mount @p filepath as a writable arena for appending, refusing
+         *        a file that is not appendable WITHOUT touching it.
+         *
+         * The convenience path behind FF_BuilderCreateInfo::filepath, where the
+         * library rather than the caller opens the file. A writable mount
+         * reserves `capacity` on disk -- on Windows the mapping's size IS the
+         * file's size -- so the question "can this be appended to?" is asked
+         * through a read-only mount first, and a damaged archive is left exactly
+         * as it was for FastFHIR::Recovery.
+         *
+         * @throws std::runtime_error if the file holds something that is not a
+         *         finalized stream.
+         */
+        static Memory mount_for_append(const std::filesystem::path& filepath, Size capacity);
+
         void attach_layer(const Conformance::ValidationHooks* hooks);
 
         /// The attached layer, or null.
