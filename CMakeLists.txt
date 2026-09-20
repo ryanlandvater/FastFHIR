@@ -455,6 +455,7 @@ install(TARGETS fastfhir ff_export EXPORT FastFHIRTargets
 set(FASTFHIR_PUBLIC_HEADERS
     ${FASTFHIR_INCLUDE_DIR}/FastFHIR.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Version.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_String.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_TypeTraits.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Utilities.hpp
@@ -466,6 +467,7 @@ set(FASTFHIR_PUBLIC_HEADERS
     ${FASTFHIR_INCLUDE_DIR}/FF_Logger.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Recovery.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_BundleAppend.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_BundleIndex.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Concurrency.hpp
 )
 file(GLOB _FF_GENERATED_PUBLIC_HEADERS "${FASTFHIR_GENERATED_DIR}/FF_*.hpp")
@@ -517,7 +519,7 @@ if(FASTFHIR_BUILD_TESTS)
          ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary
          ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
          ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append
-         ff_test_file_modes ff_test_poco_values)
+         ff_test_file_modes ff_test_poco_values ff_test_bundle_index)
     if(FASTFHIR_BUILD_CONFORMANCE)
         list(APPEND _BUILD_ALL ff_test_conformance ff_example_conformance)
     endif()
@@ -596,8 +598,7 @@ if(FASTFHIR_BUILD_TESTS)
                ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
                ff_test_api ff_test_dictionary ff_test_abstraction_parity
                ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes
-           ff_test_poco_values
-               ff_test_poco_values)
+               ff_test_poco_values ff_test_bundle_index)
         if(TARGET ${_t})
             set_target_properties(${_t} PROPERTIES FOLDER "Tests")
         endif()

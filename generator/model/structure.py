@@ -120,11 +120,17 @@ def _resolve_data_type_name(
 ) -> str:
     """Emitted deserialization-data C++ type for a field."""
     fhir_type_l = fhir_type.lower()
-    # All string-like FHIR types (dateTime, uri, markdown, etc.) map to string_view
-    if fhir_type_l == "string" or fhir_type in STRING_TYPES:
-        return "std::string_view"
-    if fhir_type_l == "code":
-        return "std::string"
+    # Every string-like FHIR type (dateTime, uri, markdown, code, ...) is one
+    # member type. FastFHIR::String borrows or owns depending on how the caller
+    # spells the assignment, which is what lets the same struct serve the
+    # zero-copy read path and a producer building strings at runtime.
+    if (
+        fhir_type_l == "string"
+        or fhir_type_l == "code"
+        or fhir_type in STRING_TYPES
+        or fhir_type in DATETIME_TYPES
+    ):
+        return "FastFHIR::String"
     if fhir_type in ("BackboneElement", "Element"):
         if resolved_path:
             return resolved_path.replace(".", "") + "Data"

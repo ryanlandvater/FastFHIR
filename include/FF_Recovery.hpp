@@ -58,7 +58,7 @@
 namespace FastFHIR {
 
 /// The bit-flip budget of the Hamming ranker (TASKS.md REC-12). A candidate
-/// whose repair costs more than this is not a hypothesis, it is a guess.
+/// whose repair costs more than this is not a hypothesis; it is a guess and we're not in that business.
 inline constexpr uint32_t FF_RECOVERY_MAX_FLIPS = 8;
 
 /// Same 64 the compactor's MAX_NODE_DEPTH uses: both bound the same FHIR nesting
@@ -72,8 +72,7 @@ inline constexpr std::size_t FF_RECOVERY_MAX_DEPTH = 64;
 
 enum class StreamMapEntryType : uint8_t {
     Undefined = 0,
-    Header,  // FF_HEADER — found by MAGIC, not by the VALIDATION word (byte 0
-             // is the magic word, so a header can never pass the self-offset test)
+    Header,  // FF_HEADER — found by MAGIC. No VALIDATION word for headers.
     Block,   // DATA_BLOCK-shaped: VALIDATION == own offset
     Array,   // FF_ARRAY-shaped: header + ENTRY_COUNT x stride (size derivable)
     String,  // FF_STRING-shaped: header + stamped LENGTH (size derivable)

@@ -35,6 +35,7 @@
 #include <unordered_map>
 #include <memory>
 #include <variant>
+#include "FF_String.hpp"
 #include "FF_Version.hpp"
 
 #include <type_traits>

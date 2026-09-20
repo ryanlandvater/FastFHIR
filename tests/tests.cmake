@@ -142,6 +142,9 @@ if(FASTFHIR_BUILD_TESTS)
     add_ff_cpp_test(ff_test_bundle_append tests/cpp/test_bundle_append.cpp)
     add_ff_cpp_test(ff_test_file_modes tests/cpp/test_file_modes.cpp)
     add_ff_cpp_test(ff_test_poco_values tests/cpp/test_poco_values.cpp)
+    # T11: the Bundle reference index, checked against the O(N) scan it
+    # replaces. Reads real writer output, so no ingestor and no fixtures.
+    add_ff_cpp_test(ff_test_bundle_index tests/cpp/test_bundle_index.cpp)
     # Unlike the other standalone suites this one drives the JSON ingestor.
     target_link_libraries(ff_test_bundle PRIVATE fastfhir_ingestor simdjson::simdjson)
     add_ff_cpp_test(ff_test_simd       tests/cpp/test_simd.cpp)
@@ -219,7 +222,7 @@ if(FASTFHIR_BUILD_TESTS)
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes ff_test_poco_values)
+    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes ff_test_poco_values ff_test_bundle_index)
     if(FASTFHIR_BUILD_CONFORMANCE)
         list(APPEND _FF_STANDALONE_TESTS ff_test_conformance ff_example_conformance)
     endif()

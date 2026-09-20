@@ -327,7 +327,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
                 # compilers (MSVC, GCC, Clang) accept this.
                 public_hpp += f"    std::vector<{item_type}> {f['cpp_name']};\n"
             elif f["fhir_type"] == "string":
-                public_hpp += f"    std::string_view {f['cpp_name']};\n"
+                public_hpp += f"    FastFHIR::String {f['cpp_name']};\n"
             elif code_enum:
                 # Default to the unset sentinel, never enum value 0 -- value 0 is
                 # a real FHIR code, so defaulting to it made every absent code
@@ -344,7 +344,7 @@ def generate_cxx_for_blocks(master_blocks, versions):
             elif f["data_type"] == "bool":
                 public_hpp += f"    bool {f['cpp_name']} = false;\n"
             elif f["data_type"] == "std::string":
-                public_hpp += f"    std::string {f['cpp_name']};\n"
+                public_hpp += f"    FastFHIR::String {f['cpp_name']};\n"
             elif f["fhir_type"] == "decimal" and not f["is_array"]:
                 # The value stays a plain double so every consumer that only
                 # wants the number gets it without a decode. Its SOURCE scale
@@ -356,6 +356,12 @@ def generate_cxx_for_blocks(master_blocks, versions):
                     f"    uint8_t {f['cpp_name']}{_tm.DECIMAL_SIGFIGS_SUFFIX}"
                     f" = FF_DECIMAL_SIGFIGS_UNSPECIFIED;\n"
                 )
+            elif f["data_type"] in ("std::string_view", "std::string"):
+                # An unbound `code` reaches here through the TYPE_MAP null
+                # branch below. It is text on the POCO side whatever the slot
+                # encodes, so it gets the same member type as every other
+                # string. No "" initializer: String default-constructs empty.
+                public_hpp += f"    FastFHIR::String {f['cpp_name']};\n"
             elif f["fhir_type"] in _tm.TYPE_MAP and "null" in _tm.TYPE_MAP[f["fhir_type"]]:
                 null_val = _tm.TYPE_MAP[f["fhir_type"]]["null"]
                 public_hpp += f"    {f['data_type']} {f['cpp_name']} = {null_val};\n"

@@ -40,6 +40,26 @@ struct TypeTraits<std::string_view>
     static Offset store(BYTE *const base, Offset off, std::string_view d, uint32_t = FHIR_VERSION_R5);
 };
 
+// String is the POCO member type; on the wire it is an FF_STRING like any
+// other, so this forwards rather than duplicating. It is needed because
+// MutableEntry::operator= DEDUCES its argument type, and deduction runs before
+// conversions -- `handle[KEY] = some_string` would otherwise instantiate an
+// undefined TypeTraits<String> instead of converting to string_view.
+template <>
+struct TypeTraits<String>
+{
+    static constexpr auto recovery = TypeTraits<std::string_view>::recovery;
+    static Size size(std::string_view d, uint32_t v = FHIR_VERSION_R5)
+    {
+        return TypeTraits<std::string_view>::size(d, v);
+    }
+    static Offset store(BYTE *const base, Offset off, std::string_view d,
+                        uint32_t v = FHIR_VERSION_R5)
+    {
+        return TypeTraits<std::string_view>::store(base, off, d, v);
+    }
+};
+
 // Offsets are written by the array overload of Builder::append, which builds
 // the header itself; there is nothing for a trait to do.
 template <>

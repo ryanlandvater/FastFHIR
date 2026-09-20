@@ -65,6 +65,12 @@ namespace Conformance
 [[nodiscard]] inline bool is_absent(std::string_view v) noexcept { return v.empty(); }
 [[nodiscard]] inline bool is_absent(const std::string& v) noexcept { return v.empty(); }
 
+/// Every string-like POCO member. Exact, rather than leaning on String's
+/// implicit conversion to string_view: an exact overload cannot be made
+/// ambiguous later by a second conversion, and this header is the coverage
+/// gate -- a member type with no matching overload must fail to compile.
+[[nodiscard]] inline bool is_absent(const FastFHIR::String& v) noexcept { return v.empty(); }
+
 /// A 0..1 child block. FF_Optional, not std::unique_ptr: the POCO member type
 /// changed when the structs became values, and this overload follows it.
 template <typename T>

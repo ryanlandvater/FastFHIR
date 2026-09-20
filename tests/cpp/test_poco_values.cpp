@@ -23,6 +23,8 @@
  *   absence      an unset FF_Optional is falsy and stores nothing
  *   choice       a copied ChoiceEntry does not share its block
  *   assignment   `value = QuantityData{...}` infers the variant tag
+ *   strings      a field built from a runtime string outlives its source
+ *   borrowing    a field assigned a view does not copy
  */
 
 #include <FastFHIR.hpp>
@@ -46,6 +48,26 @@ static_assert(std::is_copy_constructible_v<CodingData>, "a POCO is a value");
 static_assert(std::is_copy_constructible_v<ObservationData>, "a POCO is a value");
 static_assert(std::is_copy_constructible_v<ChoiceEntry>, "a choice slot is a value");
 static_assert(sizeof(FF_Optional<CodingData>) == sizeof(void *), "FF_Optional stays one pointer wide");
+
+// The POCO string member. A literal must reach it without naming a type, and a
+// std::string must be accepted by value -- those two are what let a brace list
+// carry text at all. Being convertible BOTH ways is what makes it usable in the
+// places std::string_view and std::string were used before.
+static_assert(std::is_same_v<decltype(CodingData::system), FastFHIR::String>,
+              "POCO string members are FastFHIR::String");
+static_assert(std::is_convertible_v<FastFHIR::String, std::string_view>,
+              "String converts to a view for the emitters");
+static_assert(std::is_convertible_v<FastFHIR::String, std::string>,
+              "String converts to an owning std::string for C-string callers");
+static_assert(std::is_nothrow_move_constructible_v<FastFHIR::String>,
+              "a move must not throw -- the assignment operators release first");
+// The consteval literal constructor -- `field = runtime_char_pointer` is a
+// compile error -- deliberately has NO static_assert here. is_constructible_v
+// does not evaluate consteval-ness: it reports the constructor as viable, and
+// the error fires only at a call with a non-constant argument. The property is
+// real but not expressible as a trait, so it is pinned by the compile-failure
+// note in FF_String.hpp rather than faked with an assertion that passes for
+// the wrong reason.
 
 /// Seal one resource and hand back what it exports, so the assertions are about
 /// bytes that were written rather than about the struct in hand.
@@ -227,6 +249,68 @@ void assigning_a_datatype_infers_the_variant_tag()
     CHECK(other.block.get() != observation.value.block.get(), "deeply");
 }
 
+/// The case this member type exists for: a producer computes a string, the
+/// source dies at the end of its scope, and the append happens afterwards.
+/// With a bare std::string_view this reads freed stack memory -- it is the
+/// shape the ASan run reproduced before the type changed.
+void a_runtime_string_outlives_the_scope_that_built_it()
+{
+    TEST_GROUP("strings");
+
+    ObservationData observation;
+    observation.id     = "poco-runtime-string";
+    observation.status = FF_ObservationStatus::Final;
+
+    {
+        // Built at runtime so no literal is involved and the compiler cannot
+        // fold it into static storage.
+        std::string lot = std::string("LOT-") + std::to_string(77) + "-Q2-REAGENT";
+        observation.code = CodeableConceptData{.text = lot};
+        CHECK(observation.code->text.owns(), "a std::string source is copied, not borrowed");
+    }
+    // `lot` is gone. The field is not.
+    REQUIRE(observation.code != nullptr, "the concept survived");
+    CHECK(observation.code->text == "LOT-77-Q2-REAGENT", "and so did its text");
+
+    const std::string json = sealed_json(observation);
+    CHECK(json.find("\"text\":\"LOT-77-Q2-REAGENT\"") != std::string::npos,
+          "the runtime string reached the wire intact: " << json);
+}
+
+/// The other half of the contract: a literal and an explicit view are BORROWED.
+/// If either copied, materializing a POCO would allocate per string and the
+/// zero-copy read path would be gone.
+void a_literal_and_a_view_are_borrowed_not_copied()
+{
+    TEST_GROUP("borrowing");
+
+    CodingData coding{.system = "http://unitsofmeasure.org", .code = "mg/dL"};
+    CHECK(!coding.system.owns(), "a literal is borrowed");
+    CHECK(!coding.code.owns(), "including in a brace list");
+
+    // An explicit view is the caller vouching for the lifetime -- this is the
+    // shape the read path and the ingestor's JSON buffer both use.
+    static const std::string arena_bytes = "bytes-that-live-in-the-arena";
+    CodingData borrowed;
+    borrowed.display = std::string_view(arena_bytes);
+    CHECK(!borrowed.display.owns(), "an explicit view is borrowed");
+    CHECK(borrowed.display == "bytes-that-live-in-the-arena", "and reads back");
+
+    // Copying a borrowed field stays borrowed, so copying a materialized POCO
+    // allocates nothing.
+    CodingData copy = borrowed;
+    CHECK(!copy.display.owns(), "a copy of a borrowed field is still borrowed");
+
+    // Round-trip through the reader: what comes back off the wire must borrow.
+    ObservationData observation;
+    observation.id     = "poco-borrowed";
+    observation.status = FF_ObservationStatus::Final;
+    observation.code   = CodeableConceptData{.text = "borrowed on read"};
+    const std::string json = sealed_json(observation);
+    CHECK(json.find("\"text\":\"borrowed on read\"") != std::string::npos,
+          "the borrowed literal reached the wire: " << json);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -237,5 +321,7 @@ int main(int argc, char **argv)
     ff_test::run("absence", an_unset_optional_is_absent);
     ff_test::run("choice", a_copied_choice_does_not_share_its_block);
     ff_test::run("assignment", assigning_a_datatype_infers_the_variant_tag);
+    ff_test::run("strings", a_runtime_string_outlives_the_scope_that_built_it);
+    ff_test::run("borrowing", a_literal_and_a_view_are_borrowed_not_copied);
     return ff_test::report("POCOs are values: brace-initializable, copyable, and absent when unset");
 }

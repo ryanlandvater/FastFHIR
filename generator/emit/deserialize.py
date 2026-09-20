@@ -52,10 +52,13 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}                uint32_t raw_code = LOAD_U32(__base + {vtable_off});\n"
             cpp += f"{indent}                if (raw_code != FF_CODE_NULL) {{\n"
             cpp += f"{indent}                    if (const char* _cc_label = FF_ResolveCode(raw_code, __version)) {{\n"
-            cpp += f"{indent}                        data.{f['cpp_name']}.value = _cc_label;\n"
+            cpp += f"{indent}                        data.{f['cpp_name']}.value = std::string_view(_cc_label);\n"
             cpp += f"{indent}                    }} else if (raw_code & FF_CODED_VALUE_FLAG) {{\n"
             cpp += f"{indent}                        Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, __offset);\n"
-            cpp += f"{indent}                        data.{f['cpp_name']}.value = FF_DECODE_CODED_VALUE(__base, abs_off, __version, __size).label;\n"
+            cpp += (
+                f"{indent}                        data.{f['cpp_name']}.value = std::string("
+                f"FF_DECODE_CODED_VALUE(__base, abs_off, __version, __size).label);\n"
+            )
             cpp += f"{indent}                    }}\n"
             cpp += f"{indent}                }}\n"
             cpp += f"{indent}                break;\n"
@@ -114,21 +117,17 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
                 or f["fhir_type"] in DATETIME_TYPES
             ):
                 code_enum = f.get("code_enum")
-                # DT-2 datetime arrays hold std::vector<std::string> (the data
-                # member became std::string); plain string arrays keep
-                # string_view, so only datetime needs the explicit conversion.
-                push_expr = (
-                    "std::string(blk_str.read_view(__base))"
-                    if f["fhir_type"] in DATETIME_TYPES
-                    else "blk_str.read_view(__base)"
-                )
+                # Every string-like array element -- string, code, uri and the
+                # date/time types alike -- is one member type now, and it
+                # borrows the arena bytes. The datetime branch used to build a
+                # std::string here because the member was one.
                 cpp += f"{indent}        Offset blk_str_off = LOAD_U64(blk_item_ptr);\n"
                 cpp += f"{indent}        if (blk_str_off != FF_NULL_OFFSET) {{\n"
                 cpp += f"{indent}            FF_STRING blk_str(blk_str_off, __size, __version);\n"
                 if code_enum:
                     cpp += f"{indent}            data.{f['cpp_name']}.push_back({code_enum['parse']}(blk_str.read(__base)));\n"
                 else:
-                    cpp += f"{indent}            data.{f['cpp_name']}.push_back({push_expr});\n"
+                    cpp += f"{indent}            data.{f['cpp_name']}.push_back(blk_str.read_view(__base));\n"
                 cpp += f"{indent}        }}\n"
             elif f["fhir_type"] == "Resource":
                 cpp += f"{indent}        Offset res_off = LOAD_U64(blk_item_ptr);\n"
@@ -179,13 +178,16 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             if code_enum:
                 cpp += f"{indent}        data.{f['cpp_name']} = {code_enum['parse']}(std::string(_cc_label));\n"
             else:
-                cpp += f"{indent}        data.{f['cpp_name']} = _cc_label;\n"
+                cpp += f"{indent}        data.{f['cpp_name']} = std::string_view(_cc_label);\n"
             cpp += f"{indent}    }} else if (raw_code & FF_CODED_VALUE_FLAG) {{\n"
             cpp += f"{indent}        Offset abs_off = FF_ResolveCodeableConceptOffset(raw_code, __offset);\n"
             if code_enum:
                 cpp += f"{indent}        data.{f['cpp_name']} = {code_enum['parse']}(std::string(FF_DECODE_CODED_VALUE(__base, abs_off, __version, __size).label));\n"
             else:
-                cpp += f"{indent}        data.{f['cpp_name']} = FF_DECODE_CODED_VALUE(__base, abs_off, __version, __size).label;\n"
+                cpp += (
+                    f"{indent}        data.{f['cpp_name']} = std::string("
+                    f"FF_DECODE_CODED_VALUE(__base, abs_off, __version, __size).label);\n"
+                )
             cpp += f"{indent}    }}\n"
             cpp += f"{indent}}}\n"
 
@@ -243,7 +245,7 @@ def generate_eager_deserializer(layout, block_struct_name, data_name):
             cpp += f"{indent}    if (__dt_raw != FF_DATETIME_NULL) {{\n"
             cpp += f"{indent}        if (FF_DATETIME_IS_FALLBACK(__dt_raw)) {{\n"
             cpp += f"{indent}            FF_STRING __dt_str(FF_ResolveDateTimeOffset(__dt_raw, __offset), __size, __version);\n"
-            cpp += f"{indent}            data.{f['cpp_name']} = std::string(__dt_str.read_view(__base));\n"
+            cpp += f"{indent}            data.{f['cpp_name']} = __dt_str.read_view(__base);\n"
             cpp += f"{indent}        }} else {{\n"
             cpp += f"{indent}            data.{f['cpp_name']} = FF_FORMAT_DATETIME(FF_UNPACK_DATETIME(__dt_raw), {_child_recovery_expr(f, block_struct_name)});\n"
             cpp += f"{indent}        }}\n"

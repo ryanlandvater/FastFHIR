@@ -1,25 +1,29 @@
-"""No emitted field assignment may bind a std::string_view to a temporary.
+"""No POCO string field may be a bare view that can be bound to a temporary.
 
-The generated POD structs hold `std::string_view` for every string-like field,
-pointing into the JSON buffer. Parse and store are two separate passes, so
-anything a view points at must outlive the gap between them.
-
-`generator/emit/ingest_mappings.py` emitted this for every `code` field:
+HISTORY, because it is why this gate exists. The generated POD structs used to
+hold `std::string_view` for every string-like field, pointing into the JSON
+buffer. Parse and store are two separate passes, so anything a view pointed at
+had to outlive the gap between them. `generator/emit/ingest_mappings.py` emitted
+this for every `code` field:
 
     data.code = std::string(c);      // field is std::string_view
 
-The temporary dies at the semicolon. The store pass then read freed memory, and
+The temporary died at the semicolon. The store pass then read freed memory, and
 `"8867-4"` was written to the arena as `'xIG'`. On real Synthea records it
 produced non-UTF-8 bytes in exported JSON. Sibling fields were unaffected
-because `string`/`uri` assign the view directly (`data.system = s;`) -- only the
-`code` branch wrapped it.
+because `string`/`uri` assigned the view directly (`data.system = s;`) -- only
+the `code` branch wrapped it. Nothing in the generator suite caught it: it was
+found by a byte-level trace of a corrupted round-trip.
 
-Nothing in the generator suite caught this: it was found by a byte-level trace
-of a corrupted round-trip. The C++ suite catches it, but only after a full build
-and only as a generic value mismatch.
+WHAT CHANGED. The member type is now `FastFHIR::String`, which borrows or owns
+depending on how the assignment is spelled: a `std::string` is COPIED, so
+`data.code = std::string(c)` is no longer a dangling view -- it is merely an
+allocation. That removes the whole class of bug by construction, so this gate
+no longer looks for the old spelling. It asserts the property that makes the bug
+impossible instead: no POCO string field is a bare view or a bare std::string.
 
-This test checks the property by TYPE rather than by spelling, so it catches any
-future field that acquires the same shape -- not just the one that did.
+Checked by TYPE rather than by spelling, so any future field that regresses to
+a raw view is caught, not just the one that did.
 """
 
 from __future__ import annotations
@@ -32,54 +36,59 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GENERATED = _REPO_ROOT / "generated_src"
 
+# A POCO member declaration: leading indent, a type, a name, then `;` or `= ...;`.
+_RAW_VIEW_MEMBER = re.compile(
+    r"^\s+(?:std::string_view|std::string|"
+    r"std::vector<std::string_view>|std::vector<std::string>)\s+(\w+)\s*[;=]",
+    re.M,
+)
+_STRING_MEMBER = re.compile(
+    r"^\s+(?:FastFHIR::String|std::vector<FastFHIR::String>|"
+    r"FF_Optional<FastFHIR::String>)\s+(\w+)\s*[;=]",
+    re.M,
+)
 
-def _string_view_fields() -> dict[str, set[str]]:
-    """{StructName: {field names declared std::string_view}} from FF_DataTypes.hpp."""
-    hpp = _GENERATED / "FF_DataTypes.hpp"
-    out: dict[str, set[str]] = {}
-    for struct, body in re.findall(
-        r"struct (\w+Data) \{(.*?)\n\};", hpp.read_text(encoding="utf-8"), re.S
-    ):
-        fields = set(re.findall(r"std::string_view\s+(\w+)\s*[;=]", body))
-        fields |= set(re.findall(r"std::vector<std::string_view>\s+(\w+)\s*[;=]", body))
-        if fields:
-            out[struct] = fields
+
+def _poco_bodies() -> dict[str, str]:
+    """{StructName: struct body} for every generated *Data struct."""
+    out: dict[str, str] = {}
+    for hpp in sorted(_GENERATED.glob("FF_*.hpp")):
+        for struct, body in re.findall(
+            r"struct (\w+Data) \{(.*?)\n\};", hpp.read_text(encoding="utf-8"), re.S
+        ):
+            out[struct] = body
     return out
 
 
-def test_no_view_field_is_assigned_a_temporary():
-    """A std::string_view field must never be assigned std::string(...) directly.
+def test_every_poco_string_field_is_ff_string():
+    """No generated string member may be a raw std::string_view or std::string.
 
-    `data.x = parse_Enum(std::string(c))` is fine -- the temporary is consumed
-    producing an enum value. `data.x = std::string(c)` is not.
+    A raw view is what let a temporary dangle; FastFHIR::String copies when it
+    is handed anything whose lifetime it cannot vouch for.
     """
     if not _GENERATED.is_dir():
         pytest.skip("generated_src/ not present -- configure with the generator enabled")
 
-    view_fields = _string_view_fields()
-    assert view_fields, "no *Data structs with std::string_view fields found"
-    all_view_names = {f for fields in view_fields.values() for f in fields}
+    bodies = _poco_bodies()
+    assert bodies, "no *Data structs found in generated_src/"
 
-    # data.<field> = std::string(...)   /   data.<field>.emplace_back(std::string(...))
-    direct = re.compile(r"data\.(\w+)\s*=\s*std::string\s*\(")
-    pushed = re.compile(r"data\.(\w+)\.emplace_back\s*\(\s*std::string\s*\(")
+    # P0-2: assert a non-zero floor before asserting the absence of anything.
+    total_strings = sum(len(_STRING_MEMBER.findall(b)) for b in bodies.values())
+    assert total_strings > 100, (
+        f"only {total_strings} FastFHIR::String members found across {len(bodies)} "
+        f"structs -- the scan is not seeing the POCOs, so its absence check is vacuous"
+    )
 
     offenders: list[str] = []
-    for cpp in sorted(_GENERATED.glob("*.cpp")):
-        text = cpp.read_text(encoding="utf-8")
-        for pattern, how in ((direct, "assigned"), (pushed, "emplace_back")):
-            for match in pattern.finditer(text):
-                field = match.group(1)
-                if field in all_view_names:
-                    line = text.count("\n", 0, match.start()) + 1
-                    offenders.append(
-                        f"{cpp.name}:{line} data.{field} {how} a temporary std::string"
-                    )
+    for struct, body in sorted(bodies.items()):
+        for field in _RAW_VIEW_MEMBER.findall(body):
+            offenders.append(f"{struct}::{field}")
 
     assert not offenders, (
-        f"{len(offenders)} std::string_view field(s) are bound to a temporary that dies at "
-        f"the end of the statement. The store pass runs later and will read freed memory. "
-        f"Assign the view directly (`data.x = c;`). First few: {offenders[:5]}"
+        f"{len(offenders)} POCO string field(s) are a raw std::string_view or "
+        f"std::string rather than FastFHIR::String. A raw view can be bound to a "
+        f"temporary that dies before the store pass reads it. First few: "
+        f"{offenders[:5]}"
     )
 
 
@@ -87,7 +96,10 @@ def test_code_fields_assign_the_view_directly():
     """Positive check: the `code` branch emits `= c`, like string/uri fields do.
 
     Guards the specific emitter site that regressed
-    (generator/emit/ingest_mappings.py, the non-enum `code` branch).
+    (generator/emit/ingest_mappings.py, the non-enum `code` branch). Still worth
+    pinning under FastFHIR::String: assigning the simdjson view borrows it,
+    which is correct and free, while `std::string(c)` would silently allocate on
+    every ingested code.
     """
     if not _GENERATED.is_dir():
         pytest.skip("generated_src/ not present")
@@ -100,5 +112,5 @@ def test_code_fields_assign_the_view_directly():
 
     assert re.search(r'key == "code"\)\s*\{.*?data\.code = c;', body, re.S), (
         "Coding.code no longer assigns the simdjson view directly. If it now "
-        "materialises a std::string, CodingData::code is a dangling view."
+        "materialises a std::string, every ingested code costs an allocation."
     )
