@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
         // 2. Allocate arena + stream
         auto mem = Memory::create(arena_size);
         FF_BuilderCreateInfo builder_info;
-        builder_info.arena = std::make_shared<Memory>(mem);
+        builder_info.arena = mem;
         builder_info.version = FHIR_VERSION_R5;
         FF_Builder builder;
         if (!FF_CreateBuilder(builder_info, builder)) {

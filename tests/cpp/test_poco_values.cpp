@@ -47,7 +47,7 @@ static_assert(std::is_aggregate_v<CodeableConceptData>, "CodeableConceptData mus
 static_assert(std::is_copy_constructible_v<CodingData>, "a POCO is a value");
 static_assert(std::is_copy_constructible_v<ObservationData>, "a POCO is a value");
 static_assert(std::is_copy_constructible_v<ChoiceEntry>, "a choice slot is a value");
-static_assert(sizeof(FF_Optional<CodingData>) == sizeof(void *), "FF_Optional stays one pointer wide");
+static_assert(sizeof(FastFHIR::Optional<CodingData>) == sizeof(void *), "FastFHIR::Optional stays one pointer wide");
 
 // The POCO string member. A literal must reach it without naming a type, and a
 // std::string must be accepted by value -- those two are what let a brace list

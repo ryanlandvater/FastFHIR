@@ -153,7 +153,7 @@ static bool census_bundle(const fs::path& fixture, Census& c) {
 
     auto mem = Memory::create(2ull * 1024 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     if (!FF_CreateBuilder(builder_info, builder)) return false;
@@ -227,7 +227,7 @@ static SyntheticObservation ingest_first_observation(const std::string& json) {
     SyntheticObservation out{Memory::create(16ull * 1024 * 1024), nullptr, {}};
 
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(out.arena);
+    builder_info.arena = out.arena;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     if (!FF_CreateBuilder(builder_info, builder)) { CHECK(false, "synthetic: create stream"); return out; }

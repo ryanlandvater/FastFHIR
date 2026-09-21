@@ -57,3 +57,4 @@ docs/output/
 handoff.md
 handoff*.md
 HANDOFF*.md
+.mermaid_render.html

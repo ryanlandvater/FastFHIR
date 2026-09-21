@@ -49,9 +49,9 @@ static void CHECK(bool ok, const std::string &what)
 // A one-Patient bundle, sealed, so the view reads real writer output rather
 // than a hand-built buffer (COV-1: a synthetic fixture proves the reader agrees
 // with the test author, not with the writer).
-static std::shared_ptr<Memory> build_patient(Memory::View &view_out)
+static Memory build_patient(Memory::View &view_out)
 {
-    auto arena = std::make_shared<Memory>(Memory::create(16 * 1024 * 1024));
+    auto arena = Memory::create(16 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
     builder_info.arena = arena;
     builder_info.version = FHIR_VERSION_R5;

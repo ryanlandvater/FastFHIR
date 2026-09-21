@@ -5,10 +5,15 @@
 # A consumer of the INSTALLED package, and nothing else: no source-tree include
 # path, no build-tree library path. Driven by tests/install/install_smoke.cmake.
 cmake_minimum_required(VERSION 3.20)
-project(ff_install_consumer LANGUAGES CXX)
+# C as well as CXX: the package ships a C ABI (FastFHIR.h), and only a C
+# compiler can prove that header is valid C.
+project(ff_install_consumer LANGUAGES C CXX)
 
 find_package(FastFHIR CONFIG REQUIRED)
 
 add_executable(ff_install_consumer main.cpp)
 target_link_libraries(ff_install_consumer PRIVATE FastFHIR::fastfhir)
 target_compile_features(ff_install_consumer PRIVATE cxx_std_20)
+
+add_executable(ff_install_consumer_c main_c.c)
+target_link_libraries(ff_install_consumer_c PRIVATE FastFHIR::fastfhir)

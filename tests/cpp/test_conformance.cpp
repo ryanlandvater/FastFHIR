@@ -453,7 +453,7 @@ std::vector<BYTE> ingest_bundle(const std::string& json, const ValidationHooks* 
                                 uint32_t concurrency)
 {
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena   = std::make_shared<Memory>(Memory::create(2ull * 1024 * 1024 * 1024));
+    builder_info.arena   = Memory::create(2ull * 1024 * 1024 * 1024);
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     if (!FF_CreateBuilder(builder_info, builder))

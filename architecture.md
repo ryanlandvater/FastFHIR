@@ -1,16 +1,14 @@
 # FastFHIR — Architecture Reference
 
-> **Scope.** This document is the authoritative architectural reference for the
-> FastFHIR engine. It is the document against which code revisions must be
-> measured: any change that violates the invariants laid out here is, by
-> definition, a regression. The descriptions below are synthesised directly
+> **Scope.** The architecture reference for the FastFHIR engine: the invariants
+> the wire format and runtime depend on, and the reasoning behind them. A change
+> that breaks one of these invariants is a regression. Everything here is derived
 > from the canonical headers (`include/FF_Primitives.hpp`,
 > `include/FF_Memory.hpp`, `include/FF_Builder.hpp`, `include/FF_Parser.hpp`)
 > and the generator (`generator/`).
 >
-> **Audience.** Engine maintainers, code-generator authors, and reviewers.
-> Application-level usage examples belong in the README; this document is
-> mechanical.
+> **Audience.** Engine maintainers, generator authors, and reviewers. Usage
+> examples live in the README; this document is mechanical.
 
 ---
 
@@ -36,9 +34,9 @@
   - [4.2 The V-Table Architecture](#42-the-v-table-architecture)
   - [4.3 Back-Patching — `Builder::amend_pointer`](#43-back-patching--builderamend_pointer)
 - [5. The Array Subsystem: Inline Entries and the One Indirection](#5-the-array-subsystem-inline-entries-and-the-one-indirection)
-  - [5.1 Fixed stride is the constraint; variable length is the only thing that breaks it](#51-fixed-stride-is-the-constraint-variable-length-is-the-only-thing-that-breaks-it)
+  - [5.1 Fixed stride vs variable length](#51-fixed-stride-vs-variable-length)
   - [5.2 `FF_ARRAY` Layout](#52-ff_array-layout)
-  - [5.3 The element type is the header's `RECOVERY` tag — and nothing else](#53-the-element-type-is-the-headers-recovery-tag--and-nothing-else)
+  - [5.3 Element type resolution](#53-element-type-resolution)
   - [5.4 `EntryKind` — a coarser echo of the tag](#54-entrykind--a-coarser-echo-of-the-tag)
   - [5.5 Reading Arrays](#55-reading-arrays)
 - [6. High-Performance Primitives](#6-high-performance-primitives)
@@ -50,7 +48,7 @@
   - [7.2 `ObjectHandle` & `MutableEntry` — Thin Coordinate Handles](#72-objecthandle--mutableentry--thin-coordinate-handles)
   - [7.3 Append Path — `Builder::append<T>`](#73-append-path--builderappendt)
   - [7.4 Finalisation & Sealing — `Builder::finalize`](#74-finalisation--sealing--builderfinalize)
-  - [7.5 Concurrent build throughput — what the arena actually scales to](#75-concurrent-build-throughput--what-the-arena-actually-scales-to)
+  - [7.5 Concurrent build throughput](#75-concurrent-build-throughput)
 - [8. Zero-Copy Read Path (`Reflective::Node`)](#8-zero-copy-read-path-reflectivenode)
   - [8.1 The Lens Pattern — `Reflective::Node`](#81-the-lens-pattern--reflectivenode)
   - [8.2 Field Lookup](#82-field-lookup)
@@ -96,9 +94,9 @@ read time. Concretely:
 
 **Why.** FHIR documents are fan-in: a single FHIR Bundle is read by many
 consumers, often concurrently, often in latency-bound paths (FHIR routers,
-CDS hooks, real-time analytics). Read costs dominate. Encoding the document
-once with O(1) navigation amortises to a multiplicative speed-up over JSON-
-or XML-derived shapes that recompute structure per read.
+CDS hooks, real-time analytics). Read costs dominate, so encoding the document
+once with O(1) navigation pays off repeatedly against JSON or XML shapes that
+recompute structure on every read.
 
 **Consequence.** The format never compresses field offsets out of header
 slots, never re-orders fields by frequency, and never relies on hashing for
@@ -256,12 +254,12 @@ V-Tables are relative to `m_base` (offset 0 = start of `FF_HEADER`).
 Capacity overflow throws `std::runtime_error`. Every concurrent caller gets a
 distinct offset by construction.
 
-**It is a `compare_exchange_strong` retry loop, not a `fetch_add`**
-(`src/FF_Memory.cpp:386`). The lock bit shares the word, so the claim has to
-load, test bit 63, bounds-check, and CAS; a losing CAS re-reads and retries.
-This document asserted `fetch_add` in four places until 2026-09-05 and the
-code has never done that. The distinction is a throughput one — see
-§7.5 — and both forms are equally correct.
+The claim is a `compare_exchange_strong` retry loop, not a `fetch_add`
+(`src/FF_Memory.cpp:386`): the lock bit shares the word, so the claim must
+load, test bit 63, bounds-check, and CAS, and a losing CAS re-reads and
+retries. This document said `fetch_add` in four places until 2026-09-05; the
+code never did. Both forms are correct — the difference is throughput only
+(§7.5).
 
 #### The `STREAM_LOCK_BIT` (bit 63)
 
@@ -449,7 +447,8 @@ themselves wire constants — a tag's band is part of its identity:
 | Resources | `0x1000 – 0x1FFF` | concrete FHIR resource types |
 | Sub-elements | `0x2000 – 0x7FFF` | BackboneElements (bit 15 is `RECOVER_ARRAY_BIT`, so `0x7FFF` is the ceiling) |
 
-**Bands are not documentation — they are dispatch.** `Recovery_to_Kind`
+The band is part of a tag's identity, and dispatch depends on it.
+`Recovery_to_Kind`
 (`FF_Primitives.hpp`, `Recovery_to_Kind`) tests
 `(base & 0xFF00) == RECOVER_FF_SCALAR_BLOCK` to decide whether a tag denotes an
 inline scalar, and `FF_IsScalarBlockTag` / `FF_IsResourceTag` /
@@ -634,9 +633,50 @@ not repeated here:
 
 ## 4. Binary Wire Format: `DATA_BLOCK` Anatomy
 
-Every block in the arena — `FF_HEADER`, `FF_CHECKSUM`, `FF_ARRAY`,
-`FF_STRING`, `FF_URL_DIRECTORY`, every generated FHIR resource block —
-inherits from `DATA_BLOCK` and shares a universal 10-byte header.
+Every block in the arena inherits from `DATA_BLOCK` and shares a universal 10-byte header:
+
+```mermaid
+classDiagram
+    direction TB
+    class DATA_BLOCK {
+        VALIDATION : uint64
+        RECOVERY : uint16
+        __offset __size __version
+    }
+    class FF_HEADER {
+        MAGIC / FHIR_REV / STREAM_SIZE
+        shadows vtable_offsets
+    }
+    class FF_CHECKSUM
+    class FF_ARRAY {
+        KIND_AND_STEP : uint16
+        ENTRY_COUNT : uint32
+    }
+    class FF_STRING {
+        LENGTH : uint32
+    }
+    class FF_URL_DIRECTORY
+    class FF_MODULE_REGISTRY
+    class FF_CODED_VALUE {
+        SYSTEM : uint8
+        LENGTH : uint8
+    }
+    class RESOURCE_DATATYPE_BLOCKS {
+        generated resource and datatype blocks
+    }
+
+    DATA_BLOCK <|-- FF_HEADER
+    DATA_BLOCK <|-- FF_CHECKSUM
+    DATA_BLOCK <|-- FF_ARRAY
+    DATA_BLOCK <|-- FF_STRING
+    DATA_BLOCK <|-- FF_URL_DIRECTORY
+    DATA_BLOCK <|-- FF_MODULE_REGISTRY
+    DATA_BLOCK <|-- FF_CODED_VALUE
+    DATA_BLOCK <|-- RESOURCE_DATATYPE_BLOCKS
+```
+
+`__offset`/`__size`/`__version` are runtime-only (they are not stored in the arena). `FF_HEADER` is
+the sole exception to the header layout: same position, different bytes (§4.1).
 
 ### 4.1 The Universal Header (10 bytes)
 
@@ -694,15 +734,14 @@ A FastFHIR block's bytes are laid out as:
 ```
 
 Field slots come in **fixed sizes** drawn from `TYPE_SIZE` (§3.1).
-**Crucially, slots are ordered and statically allocated even for absent
-fields.** A field that is absent in a particular instance is encoded as the
-canonical null sentinel (`FF_NULL_OFFSET = 0xFFFFFFFFFFFFFFFF` for offset
+Slots are ordered and statically allocated even for absent fields, which are
+encoded as the canonical null sentinel (`FF_NULL_OFFSET = 0xFFFFFFFFFFFFFFFF` for offset
 fields; `FF_NULL_UINT32` for codes; `FF_CODE_NULL` for code-typed primitives;
 etc., enumerated in `FF_Primitives.hpp:59–88`).
 
-**The sentinel is a bit pattern, not a value.** Every null in that family is
-all-ones *bytes*, and `FF_IsFieldEmpty` tests a slot by loading its raw width
-and comparing against all-ones — one rule, every fixed-width kind. Float slots
+Every null in that family is an all-ones *bit pattern*, and `FF_IsFieldEmpty`
+tests a slot by loading its raw width and comparing against all-ones — one rule,
+every fixed-width kind. Float slots
 are where the distinction bites: `FF_NULL_F64` must be `std::bit_cast` from
 `FF_NULL_UINT64`, never assigned from it. The numeric conversion yields the
 double `1.8446744073709552e19`, encoded `0x43F0000000000000`, which never
@@ -810,7 +849,7 @@ patch may be observed by a concurrent reader. This is acceptable because:
 rule is simple and near-absolute: **an array holds its entries.** Exactly one
 element class cannot honour it.
 
-### 5.1 Fixed stride is the constraint; variable length is the only thing that breaks it
+### 5.1 Fixed stride vs variable length
 
 Random access — `array[i]` in O(1) — requires `address(i) = base + i * stride`
 for some *constant* `stride`. So the question for every element type is not
@@ -828,7 +867,7 @@ not, and pays for one pointer hop:
 
 903 of 934 array sites hold their entries directly.
 
-Two consequences are easy to get backwards, so they are stated explicitly:
+Two consequences are easy to get backwards:
 
 - **A block element is fixed-width.** A `CodeableConcept` header is a constant
   size; its variable content (strings, codings) lives elsewhere in the arena
@@ -890,7 +929,7 @@ slot, growing it to 18 bytes and breaking 8-byte alignment of `ENTRY_COUNT`.
 Packing keeps the header at exactly 16 bytes — a power-of-two header size
 and one cache line — and exposes both fields in a single 16-bit load.
 
-### 5.3 The element type is the header's `RECOVERY` tag — and nothing else
+### 5.3 Element type resolution
 
 The two bytes at `FF_ARRAY::RECOVERY` are the array's **single source of
 truth** for what its entries are:
@@ -1061,7 +1100,7 @@ a terminator means an `FF_STRING` block is exactly 14 + LENGTH bytes — no
 padding, no special-case end byte — preserving exact `VALIDATION`-driven
 bounds.
 
-#### 6.1a `RECOVER_FF_OPAQUE_JSON` — the same block, different meaning
+#### 6.1a `RECOVER_FF_OPAQUE_JSON` — a re-tagged `FF_STRING`
 
 One other tag uses this exact layout: `RECOVER_FF_OPAQUE_JSON` (`0x0007`). Byte
 for byte it is an `FF_STRING` — 14-byte header, `LENGTH` payload bytes — and the
@@ -1087,8 +1126,8 @@ The second is the one that matters for correctness: an untyped resource used to
 be **discarded**, leaving a `Bundle.entry` with `fullUrl` and `request` but no
 `resource` — not valid FHIR in a transaction bundle, and silent clinical data
 loss (TASKS.md A26). It is now retained verbatim, so the document round-trips
-byte-exactly. What a profile decides is what this build can **index**, never what
-it may **carry**.
+byte-exactly. What a profile decides is what this build can index, not what a stream can
+carry.
 
 What is genuinely given up is *typed access*: an opaque block has no V-Table, so
 there is no `Node` navigation into its fields, no query, and no interior
@@ -1108,8 +1147,9 @@ never discovers the limitation by diffing documents.
 > as AR-1, `Node::is_empty()`, and `FF_IsFieldEmpty`.
 >
 > The rule is wider than the resource tuple. **Any branch that ends in a pointer
-> hop must re-derive the kind from the block's own tag**, because a schema kind is
-> a claim and the tag is the fact. `Attachment.data` declares kind
+> hop must re-derive the kind from the block's own tag**, because a schema kind
+> comes from the spec while the tag records what was actually written.
+> `Attachment.data` declares kind
 > `FF_FIELD_BLOCK` with `child_recovery RECOVER_FF_STRING` (the complex-block
 > mapping for `base64Binary`) and stores an `FF_STRING`; the standard path
 > re-derives (A23.3, "Bug C") and the compact path did not, so every attachment
@@ -1190,7 +1230,7 @@ preserving the array invariant of §5.
 Two slot kinds hold a value inline *most* of the time and degrade to a pointer
 when the value will not fit. They are the same mechanism at two widths, and
 this section describes them together because a reader who has understood one
-has understood the other — that is the entire design intent, and it is why the
+has understood the other — which is why the
 constants sit adjacent in `FF_Primitives.hpp` rather than in separate blocks.
 
 |  | `FF_CODE` (4 bytes) | `FF_DATETIME` (8 bytes) |
@@ -1293,7 +1333,7 @@ bits 13..3   UTC offset, signed minutes (11)
 bits  2..0   precision (3)
 ```
 
-**It is packed civil time, not an instant**, and that is forced by FHIR itself:
+It packs civil time, not an instant, and FHIR forces this:
 `dateTime` is a union of gYear/gYearMonth/date/dateTime, so `"2024"` must not
 round-trip as `"2024-01-01T00:00:00Z"`; `date` never carries a timezone, so an
 epoch-UTC encoding would invent one; `time` has no date to anchor an instant to;
@@ -1448,7 +1488,7 @@ Node ObjectHandle::as_node() const;                     // FF_Builder.hpp:363
 Node MutableEntry::as_node() const { return as_handle().as_node(); }  // FF_Builder.hpp:389
 ```
 
-The point is that during pure write traffic — `handle[Patient::active] =
+During pure write traffic — `handle[Patient::active] =
 true; handle[Patient::name] = name_arr;` — no Node is ever materialised. The
 chain is `ObjectHandle::operator[]` → `MutableEntry::operator=` →
 `Builder::amend_*`, with no intermediate lens construction. Lens
@@ -1531,7 +1571,7 @@ deployment decision (FIPS, BoringSSL, OpenSSL, an in-tree
 implementation…); accepting `std::function<std::vector<BYTE>(…)>` keeps the
 engine free of crypto dependencies and lets the integrator pick.
 
-### 7.5 Concurrent build throughput — what the arena actually scales to
+### 7.5 Concurrent build throughput
 
 The append path is lock-free and correct under contention. It is not
 currently fast under contention. Measured 2026-09-05 in FastFHIR-benchmark
@@ -1654,7 +1694,7 @@ bool             m_array_entries_are_offsets;
 const ParserOps* m_ops;                        // narrowed-offset dispatch table
 ```
 
-That's everything. There is no allocation, no virtual table, no vector of
+There is no allocation, no virtual table, no vector of
 children. The Node is constructed in CPU registers; reads against it are
 inlined pointer arithmetic. `Parser::query()` (the Builder's mid-stream
 inspection hook, `FF_Builder.hpp:90–92`) advertises this property as "nearly

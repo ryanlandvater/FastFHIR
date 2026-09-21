@@ -11,10 +11,15 @@
 # in-tree tests compile against include/ and generated_src/, so they cannot see
 # what a consumer of the package sees.
 #
-# Required -D arguments: BUILD_DIR, WORK_DIR, CONSUMER_DIR, CXX_COMPILER.
+# Two consumers, because the package ships two surfaces: main.cpp for the C++
+# API and main_c.c for the C ABI. The C header has to be compiled by a C
+# compiler. The reason FastFHIR.h exists at all is that a C program can include
+# it, and a C++ compiler accepting it would not establish that.
+#
+# Required -D arguments: BUILD_DIR, WORK_DIR, CONSUMER_DIR, CXX_COMPILER, C_COMPILER.
 # Optional: CONFIG (multi-config generators).
 
-foreach(_required BUILD_DIR WORK_DIR CONSUMER_DIR CXX_COMPILER)
+foreach(_required BUILD_DIR WORK_DIR CONSUMER_DIR CXX_COMPILER C_COMPILER)
     if(NOT DEFINED ${_required})
         message(FATAL_ERROR "install_smoke: -D${_required}=... is required")
     endif()
@@ -39,8 +44,8 @@ _ff_run("install" ${CMAKE_COMMAND} --install "${BUILD_DIR}" --prefix "${_prefix}
 
 # The package must carry the public surface and must NOT carry the internal
 # byte-arithmetic header (CLAUDE.md invariant 9).
-foreach(_public FastFHIR.hpp FF_Conformance.hpp FF_DataTypes.hpp FF_Observation.hpp
-                FF_Bundle.hpp FF_String.hpp FF_BundleIndex.hpp)
+foreach(_public FastFHIR.hpp FastFHIR.h FF_Export.h FF_Conformance.hpp FF_DataTypes.hpp
+                FF_Observation.hpp FF_Bundle.hpp FF_String.hpp FF_BundleIndex.hpp)
     if(NOT EXISTS "${_prefix}/include/${_public}")
         message(FATAL_ERROR "install_smoke: public header missing from the package: ${_public}")
     endif()
@@ -55,7 +60,11 @@ _ff_run("consumer configure" ${CMAKE_COMMAND}
     -S "${CONSUMER_DIR}" -B "${WORK_DIR}/consumer"
     -DCMAKE_PREFIX_PATH=${_prefix}
     -DCMAKE_CXX_COMPILER=${CXX_COMPILER}
+    -DCMAKE_C_COMPILER=${C_COMPILER}
     -DCMAKE_BUILD_TYPE=Debug)
 _ff_run("consumer build" ${CMAKE_COMMAND} --build "${WORK_DIR}/consumer")
+# Both surfaces: the C++ one proves the typed API, the C one proves FastFHIR.h
+# is valid C and that the C ABI's symbols export from the installed library.
 _ff_run("consumer run" "${WORK_DIR}/consumer/ff_install_consumer")
-message(STATUS "install_smoke: package at ${_prefix} builds and runs a consumer")
+_ff_run("consumer run (C)" "${WORK_DIR}/consumer/ff_install_consumer_c")
+message(STATUS "install_smoke: package at ${_prefix} builds and runs a C++ and a C consumer")

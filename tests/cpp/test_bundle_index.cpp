@@ -68,7 +68,7 @@ Memory build_bundle(const std::vector<EntrySpec> &specs)
     Memory mem = Memory::create(kArena);
 
     FF_BuilderCreateInfo info;
-    info.arena   = std::make_shared<Memory>(mem);
+    info.arena   = mem;
     info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     if (!FF_CreateBuilder(info, builder)) throw std::runtime_error("FF_CreateBuilder failed");

@@ -55,9 +55,9 @@ using namespace FastFHIR;
 // tuples stored inline -- +0 points AWAY, so walking it in place always fails.
 // Keep at least one `contained` resource here or fix #1 loses its regression
 // test (TASKS.md P0-3).
-static std::shared_ptr<Memory> build_bundle()
+static Memory build_bundle()
 {
-    auto arena = std::make_shared<Memory>(Memory::create(64 * 1024 * 1024));
+    auto arena = Memory::create(64 * 1024 * 1024);
 
     FF_BuilderCreateInfo builder_info;
     builder_info.arena = arena;
@@ -131,9 +131,9 @@ static std::shared_ptr<Memory> build_bundle()
 // c2, c1, c3, so the middle Observation's target sits below both neighbours'.
 // The intact neighbours then bracket a range that excludes the true child --
 // exactly the geometry the ingest pool produced when the test failed.
-static std::shared_ptr<Memory> build_out_of_order_contained()
+static Memory build_out_of_order_contained()
 {
-    auto arena = std::make_shared<Memory>(Memory::create(4 * 1024 * 1024));
+    auto arena = Memory::create(4 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
     builder_info.arena = arena;
     FF_Builder builder;
@@ -179,9 +179,9 @@ static std::shared_ptr<Memory> build_out_of_order_contained()
 // A private copy of a sealed stream, so each damage case starts from clean bytes.
 static Memory copy_of(const Memory &clean)
 {
-    Memory copy = Memory::create(std::max<size_t>(clean.size(), 1));
-    copy.claim_space(clean.size());
-    std::memcpy(copy.base(), clean.base(), clean.size());
+    Memory copy = Memory::create(std::max<size_t>(clean->size(), 1));
+    copy->claim_space(clean->size());
+    std::memcpy(copy->base(), clean->base(), clean->size());
     return copy;
 }
 
@@ -203,7 +203,7 @@ static void test_clean_stream_zero_false_positives()
     if (!arena)
         return;
 
-    Recovery rec(*arena);
+    Recovery rec(arena);
     const auto rep = rec.recover();
 
     // P0-2 floor: the comparison is meaningless on an empty set.
@@ -224,7 +224,7 @@ static void test_validation_flip_position_repaired()
 
     // Pick the first real reference from a clean run and break its child's
     // VALIDATION word with a single bit (REC-12 case 1).
-    Recovery clean(*arena);
+    Recovery clean(arena);
     const auto clean_rep = clean.recover();
     CHECK(clean_rep.blocks_total > 0, "clean enumeration is non-empty");
     if (clean_rep.blocks.empty())
@@ -234,7 +234,7 @@ static void test_validation_flip_position_repaired()
 
     arena->base()[static_cast<size_t>(r0.child)] ^= 0x01;
 
-    Recovery rec(*arena);
+    Recovery rec(arena);
     const auto rep = rec.recover();
     const auto *v = find_verdict(rep, r0.parent, r0.field);
     CHECK(v != nullptr, "damaged reference is still reported");
@@ -250,7 +250,7 @@ static void test_offset_flip_corroborated()
     if (!arena)
         return;
 
-    Recovery clean(*arena);
+    Recovery clean(arena);
     const auto clean_rep = clean.recover();
     CHECK(clean_rep.blocks_total > 0, "clean enumeration is non-empty");
     if (clean_rep.blocks.empty())
@@ -262,7 +262,7 @@ static void test_offset_flip_corroborated()
     const size_t slot_abs = static_cast<size_t>(r0.parent + r0.field);
     arena->base()[slot_abs] ^= 0x01;
 
-    Recovery rec(*arena);
+    Recovery rec(arena);
     const auto rep = rec.recover();
     const auto *v = find_verdict(rep, r0.parent, r0.field);
     CHECK(v != nullptr, "damaged reference is still reported");
@@ -278,7 +278,7 @@ static void test_both_halves_never_silent()
     if (!arena)
         return;
 
-    Recovery clean(*arena);
+    Recovery clean(arena);
     const auto clean_rep = clean.recover();
     CHECK(clean_rep.blocks_total > 0, "clean enumeration is non-empty");
     if (clean_rep.blocks.empty())
@@ -296,7 +296,7 @@ static void test_both_halves_never_silent()
     // the cheapest under-budget hypothesis (the true child is invisible with
     // its VALIDATION broken); whether that repair attached the RIGHT child is
     // the benchmark's baseline check (F3), not this unit's job.
-    Recovery rec(*arena);
+    Recovery rec(arena);
     const auto rep = rec.recover();
     const auto *v = find_verdict(rep, r0.parent, r0.field);
     CHECK(v != nullptr, "double-damaged reference is still reported");
@@ -317,7 +317,7 @@ static void test_clean_stream_tiles_with_no_gaps()
     if (!arena)
         return;
 
-    Recovery rec(*arena);
+    Recovery rec(arena);
     const StreamMap map = rec.scan();
 
     // P0-2 floor: a tiling assertion over an empty map is vacuous.
@@ -344,7 +344,7 @@ static void test_broken_validation_leaves_a_hole()
     if (!arena)
         return;
 
-    Recovery clean(*arena);
+    Recovery clean(arena);
     const StreamMap clean_map = clean.scan();
     CHECK(clean_map.gaps.empty(), "baseline is gap-free");
 
@@ -364,7 +364,7 @@ static void test_broken_validation_leaves_a_hole()
 
     arena->base()[static_cast<size_t>(victim)] ^= 0xFF;  // VALIDATION destroyed
 
-    Recovery rec(*arena);
+    Recovery rec(arena);
     const StreamMap map = rec.scan();
     CHECK(!map.contains(victim), "a broken VALIDATION hides the block from scan()");
 
@@ -387,7 +387,7 @@ static void test_both_witnesses_broken_is_still_found()
     if (!arena)
         return;
 
-    Recovery clean(*arena);
+    Recovery clean(arena);
     const auto clean_rep = clean.recover();
     CHECK(clean_rep.blocks_total > 0, "clean enumeration is non-empty");
     CHECK_EQ(clean_rep.holes, static_cast<size_t>(0), "clean stream reports no holes");
@@ -420,7 +420,7 @@ static void test_both_witnesses_broken_is_still_found()
     arena->base()[static_cast<size_t>(child)] ^= 0xFF;                    // witness 2 gone
     arena->base()[static_cast<size_t>(target->parent + target->field)] ^= 0xFF;  // witness 1 gone
 
-    Recovery rec(*arena);
+    Recovery rec(arena);
     const StreamMap damaged = rec.scan();
     // Precondition, asserted rather than assumed: if the block did not actually
     // vanish, everything below passes for the wrong reason.
@@ -447,7 +447,7 @@ static void test_same_version_stream_never_reports_skew()
     if (!arena)
         return;
 
-    Recovery clean(*arena);
+    Recovery clean(arena);
     const StreamMap clean_map = clean.scan();
     Offset victim = FF_NULL_OFFSET;
     for (const auto &[off, e] : clean_map)
@@ -461,7 +461,7 @@ static void test_same_version_stream_never_reports_skew()
 
     arena->base()[static_cast<size_t>(victim)] ^= 0xFF;
 
-    Recovery rec(*arena);
+    Recovery rec(arena);
     const StreamMap map = rec.scan();
     CHECK(!map.gaps.empty(), "damage opened a gap at all");
     size_t skew = 0;
@@ -481,9 +481,10 @@ static void test_compact_archive_is_refused()
     if (!arena)
         return;
 
-    Parser source(*arena);
+    Parser source(arena);
     auto dest = Memory::create(64 * 1024 * 1024);
-    const Memory::View compact = Compactor::archive(source, dest);
+    const Memory::View compact = Compactor::archive(Compactor::ArchiveInfo{
+        .source = source, .destination = dest});
     CHECK(!compact.empty(), "compaction produced a stream");
     if (compact.empty())
         return;
@@ -538,7 +539,7 @@ static void test_holes_locate_and_size_every_entry_shape()
     if (!arena)
         return;
 
-    Recovery clean(*arena);
+    Recovery clean(arena);
     const StreamMap base = clean.scan();
     CHECK(base.gaps.empty(), "baseline tiles with no gaps");
 
@@ -551,7 +552,7 @@ static void test_holes_locate_and_size_every_entry_shape()
 
         arena->base()[static_cast<size_t>(off)] ^= 0xFF;   // destroy VALIDATION
 
-        Recovery rec(*arena);
+        Recovery rec(arena);
         const StreamMap m = rec.scan();
         CHECK(!m.contains(off), what + ": broken VALIDATION hides it from scan()");
 
@@ -578,7 +579,7 @@ static void test_holes_locate_and_size_every_entry_shape()
         std::cout << " " << shape_name(shape) << "(" << base.at(off).size << "B)";
     std::cout << "\n";
 
-    Recovery after(*arena);
+    Recovery after(arena);
     CHECK(after.scan().gaps.empty(), "restoring every victim leaves the arena tiled again");
 }
 
@@ -597,7 +598,7 @@ static void test_broken_blockref_still_locates_and_sizes_the_orphan()
     if (!arena)
         return;
 
-    Recovery clean(*arena);
+    Recovery clean(arena);
     const StreamMap base = clean.scan();
     const auto clean_rep = clean.recover();
     CHECK(base.gaps.empty(), "baseline tiles with no gaps");
@@ -638,7 +639,7 @@ static void test_broken_blockref_still_locates_and_sizes_the_orphan()
         arena->base()[static_cast<size_t>(off)] ^= 0xFF;  // witness 2: VALIDATION
         arena->base()[slot] ^= 0xFF;                     // witness 1: the blockref
 
-        Recovery rec(*arena);
+        Recovery rec(arena);
         const StreamMap m = rec.scan();
         CHECK(!m.contains(off), what + ": neither witness survives, so scan() loses it");
 
@@ -663,7 +664,7 @@ static void test_broken_blockref_still_locates_and_sizes_the_orphan()
               << " slot-collides-with-child=" << skipped_collide << ")\n";
     CHECK(covered > 0, "at least one referenced block was exercised");
 
-    Recovery after(*arena);
+    Recovery after(arena);
     CHECK(after.scan().gaps.empty(), "restoring leaves the arena tiled again");
 }
 
@@ -690,7 +691,7 @@ static void test_one_damaged_witness_costs_nothing()
     if (!arena)
         return;
 
-    Recovery clean(*arena);
+    Recovery clean(arena);
     const FF_RecoveryReport clean_rep = clean.recover();
     CHECK_EQ(clean_rep.holes, static_cast<size_t>(0), "clean stream reports no holes");
 
@@ -719,7 +720,7 @@ static void test_one_damaged_witness_costs_nothing()
     // this address and this type.
     arena->base()[static_cast<size_t>(victim)] ^= 0x01;
 
-    Recovery rec(*arena);
+    Recovery rec(arena);
     const FF_RecoveryReport rep = rec.recover();
     CHECK_EQ(rep.blocks_total, clean_rep.blocks_total,
              "one damaged witness loses no references");
@@ -750,7 +751,7 @@ static void test_apply_repairs_a_copy_and_improves_it()
         return;
 
     // Damage one witness of a referenced block: the classic repairable edge.
-    Recovery probe(*arena);
+    Recovery probe(arena);
     Offset victim = FF_NULL_OFFSET;
     for (const BlockRef &r : probe.reachable_blocks())
         if (r.child != FF_NULL_OFFSET && r.child != 0) { victim = r.child; break; }
@@ -761,7 +762,7 @@ static void test_apply_repairs_a_copy_and_improves_it()
 
     const std::vector<BYTE> before(arena->base(), arena->base() + arena->size());
 
-    Recovery rec(*arena);
+    Recovery rec(arena);
     const FF_RecoveryReport dmg = rec.recover();
 
     std::vector<BYTE> fixed;
@@ -779,8 +780,8 @@ static void test_apply_repairs_a_copy_and_improves_it()
 
     // 4. The copy is better, and no worse anywhere that matters.
     auto copy = Memory::create(std::max<size_t>(fixed.size(), 1));
-    copy.claim_space(fixed.size());
-    std::memcpy(copy.base(), fixed.data(), fixed.size());
+    copy->claim_space(fixed.size());
+    std::memcpy(copy->base(), fixed.data(), fixed.size());
     Recovery rec2(copy);
     const FF_RecoveryReport rep = rec2.recover();
     CHECK(rep.intact >= dmg.intact, "repair does not reduce the intact edge count");
@@ -865,7 +866,7 @@ static void check_generational_chains(const Memory &clean, const char *fixture)
                 //   - the parent's stored offset (the slot no longer names the child)
                 //   - the child's VALIDATION word (scan can no longer find it)
                 Memory damaged = copy_of(clean);
-                BYTE *const base = damaged.base();
+                BYTE *const base = damaged->base();
                 for (const BlockRef *r : {&a, &b, &c}) {
                     base[static_cast<size_t>(r->parent) + static_cast<size_t>(r->field)] ^= 0x01;
                     base[static_cast<size_t>(r->child)] ^= 0x01;
@@ -917,11 +918,11 @@ static void test_generational_holes_recover_from_the_root()
 {
     const auto ingested = build_bundle();
     REQUIRE(ingested != nullptr, "bundle build failed");
-    check_generational_chains(*ingested, "ingest");
+    check_generational_chains(ingested, "ingest");
 
     const auto ordered = build_out_of_order_contained();
     REQUIRE(ordered != nullptr, "out-of-order fixture build failed");
-    check_generational_chains(*ordered, "out-of-order");
+    check_generational_chains(ordered, "out-of-order");
 }
 
 // ONE FLIP IN EVERY RESOURCE TUPLE, IN A LAYOUT THE SCHEDULER DID NOT CHOOSE.
@@ -943,7 +944,7 @@ static void check_resource_tuple_repoints(const Memory &clean, const char *fixtu
             continue;
         ++tuples;
         Memory damaged = copy_of(clean);
-        damaged.base()[static_cast<size_t>(r.parent) + static_cast<size_t>(r.field)] ^= 0x01;
+        damaged->base()[static_cast<size_t>(r.parent) + static_cast<size_t>(r.field)] ^= 0x01;
         const FF_RecoveryReport rep = Recovery(damaged).recover();
         const BlockVerdict *v = find_verdict(rep, r.parent, r.field);
         CHECK(v != nullptr, fixture << " tuple " << r.parent << "+" << r.field << ": has a verdict");
@@ -968,11 +969,11 @@ static void test_resource_tuple_repoint_independent_of_layout()
 {
     const auto ingested = build_bundle();
     REQUIRE(ingested != nullptr, "bundle build failed");
-    check_resource_tuple_repoints(*ingested, "ingest");
+    check_resource_tuple_repoints(ingested, "ingest");
 
     const auto ordered = build_out_of_order_contained();
     REQUIRE(ordered != nullptr, "out-of-order fixture build failed");
-    check_resource_tuple_repoints(*ordered, "out-of-order");
+    check_resource_tuple_repoints(ordered, "out-of-order");
 }
 
 
@@ -1004,7 +1005,7 @@ static void test_tag_consensus_resolves_either_damaged_copy()
     if (!arena)
         return;
 
-    Recovery clean(*arena);
+    Recovery clean(arena);
     const auto clean_rep = clean.recover();
     BYTE *const base = arena->base();
 
@@ -1036,7 +1037,7 @@ static void test_tag_consensus_resolves_either_damaged_copy()
 
             base[at] ^= 0x02;  // the flip both measured seeds made
             {
-                Recovery rec(*arena);
+                Recovery rec(arena);
                 const auto rep = rec.recover();
                 const auto *v = find_verdict(rep, r.parent, r.field);
                 if (v && v->damaged_copy != TagCopy::Undecided) {
@@ -1081,7 +1082,7 @@ static void test_interior_entry_damage_does_not_truncate_array()
     if (!arena)
         return;
 
-    Recovery clean(*arena);
+    Recovery clean(arena);
     const auto clean_rep = clean.recover();
 
     // The Bundle.entry[] array: an inline array of FF_BUNDLE_ENTRY blocks
@@ -1115,7 +1116,7 @@ static void test_interior_entry_damage_does_not_truncate_array()
     const Offset elem0 = entry_array + FF_ARRAY::HEADER_SIZE;
     arena->base()[static_cast<size_t>(elem0)] ^= 0x01;
 
-    Recovery rec(*arena);
+    Recovery rec(arena);
     const auto rep = rec.recover();
 
     // The array's count must not be extent-derived: the count is intact, the

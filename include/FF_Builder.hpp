@@ -51,17 +51,47 @@ namespace FastFHIR
     // =====================================================================
     // BUILDER
     // =====================================================================
+    // =====================================================================
+    // AMEND-VERB PARAMETERS
+    //
+    // The three low-level V-Table amenders write the SAME coordinate --
+    // (object_offset, field_vtable_offset) -- and differ only in the value and
+    // tag they place there. One Info struct per verb keeps that coordinate
+    // named identically in all three, so a caller states the slot once and the
+    // value once. A fourth verb adds a struct here rather than a fifth
+    // positional argument at its call sites. This is the same `const XxxInfo&`
+    // shape as the external FF_* surface.
+    // =====================================================================
+    struct AmendResourceInfo {
+        Offset       object_offset       = FF_NULL_OFFSET;       ///< Parent block's arena offset.
+        size_t       field_vtable_offset = 0;                    ///< Slot's byte offset within the parent V-Table.
+        Offset       new_target_offset   = FF_NULL_OFFSET;       ///< Offset of the child block to point at.
+        RECOVERY_TAG new_tag             = FF_RECOVER_UNDEFINED; ///< Recovery tag of that child.
+    };
+    struct AmendVariantInfo {
+        Offset       object_offset       = FF_NULL_OFFSET;
+        size_t       field_vtable_offset = 0;
+        uint64_t     raw_bits            = 0;                    ///< The packed polymorphic value (a FHIR [x] variant).
+        RECOVERY_TAG new_tag             = FF_RECOVER_UNDEFINED;
+    };
+    struct AmendDatetimeInfo {
+        Offset           object_offset       = FF_NULL_OFFSET;
+        size_t           field_vtable_offset = 0;
+        std::string_view text;                                   ///< Date/time text to encode into the slot.
+        RECOVERY_TAG     tag                 = FF_RECOVER_UNDEFINED;
+    };
+
     /**
-     * @brief Builder class for constructing FastFHIR binary streams in a concurrent, lock-free manner.
+     * @brief Builder_t class for constructing FastFHIR binary streams in a concurrent, lock-free manner.
      *
-     * The Builder manages a large virtual memory arena and allows multiple threads to append data concurrently.
+     * The Builder_t manages a large virtual memory arena and allows multiple threads to append data concurrently.
      * It provides thread-safe methods for appending data, setting the root resource, and finalizing the stream with a checksum.
-     * The Builder also includes proxy classes for safely patching pointers and array entries in an active concurrent context.
+     * The Builder_t also includes proxy classes for safely patching pointers and array entries in an active concurrent context.
      *
      */
-    class Builder
+    class Builder_t
     {
-        friend class FastFHIR::AdvancedBuilderAccess;
+        friend class AdvancedBuilderAccess;
         friend FF_Result FF_BuilderSetRoot(const FF_BuilderSetRootInfo&) noexcept;
         friend FF_Result FF_BuilderFinalize(const FF_BuilderFinalizeInfo&, Memory::View&) noexcept;
         friend FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo&, Parser&) noexcept;
@@ -114,11 +144,11 @@ namespace FastFHIR
         /// finalize() can seal between the check and the write, and the write
         /// lands in an already-checksummed archive.
         class AmendScope {
-            Builder* m_owner;  ///< null once moved-from
+            Builder_t* m_owner;  ///< null once moved-from
             BYTE* m_slot;
 
         public:
-            AmendScope(Builder* owner, BYTE* slot) noexcept : m_owner(owner), m_slot(slot) {}
+            AmendScope(Builder_t* owner, BYTE* slot) noexcept : m_owner(owner), m_slot(slot) {}
             AmendScope(AmendScope&& other) noexcept : m_owner(other.m_owner), m_slot(other.m_slot)
             {
                 other.m_owner = nullptr;
@@ -154,10 +184,10 @@ namespace FastFHIR
         void _check_conformance(RECOVERY_TAG tag, const void* data);
 
     public:
-        Builder(const Builder &) = delete;
-        Builder &operator=(const Builder &) = delete;
-        Builder(Builder &&) = delete;
-        Builder &operator=(Builder &&) = delete;
+        Builder_t(const Builder_t &) = delete;
+        Builder_t &operator=(const Builder_t &) = delete;
+        Builder_t(Builder_t &&) = delete;
+        Builder_t &operator=(Builder_t &&) = delete;
         const Memory &memory() const { return m_memory; }
         const FHIR_VERSION FhirVersion() const { return m_fhir_rev; }
 
@@ -202,7 +232,7 @@ namespace FastFHIR
          * is claimed, so a stream written with a layer attached is byte-identical
          * to one written without it, including on the failing path.
          *
-         * @param hooks Borrowed, and must outlive this Builder. Null detaches.
+         * @param hooks Borrowed, and must outlive this Builder_t. Null detaches.
          *              Copy Conformance::conformance_layer()'s struct before
          *              setting policy/next/diagnostic/failures on it — the layer
          *              it returns is shared and immutable.
@@ -240,8 +270,8 @@ namespace FastFHIR
          * @param memory Shared pointer to an initialized FF_Memory providing the arena for building or modifying the stream.
          * @param version FHIR version to target for schema-specific encoding rules (default: R5).
          */
-        explicit Builder(const Memory &memory, FHIR_VERSION fhir_revision = FHIR_VERSION_R5);
-        ~Builder();
+        explicit Builder_t(const Memory &memory, FHIR_VERSION fhir_revision = FHIR_VERSION_R5);
+        ~Builder_t();
 
         // --- Lock-Free Concurrent Appending ---
 
@@ -258,7 +288,7 @@ namespace FastFHIR
 
             struct MutationGuard
             {
-                Builder *self;
+                Builder_t *self;
                 ~MutationGuard() { self->end_mutation(); }
             } guard{this};
 
@@ -273,7 +303,7 @@ namespace FastFHIR
             Size data_size = TypeTraits<T_Data>::size(data, m_fhir_rev);
 
             // Thread-safe claim of space in the arena for the new data
-            Offset offset = m_memory.claim_space(data_size);
+            Offset offset = m_memory->claim_space(data_size);
 
             // Thread-safe write of the data into the claimed space. The generated
             // STORE_* returns the absolute end offset; enforcing the SIZE/STORE
@@ -349,7 +379,7 @@ namespace FastFHIR
          * needs space, and the two offsets are then handed separately to the
          * generated four-argument STORE_*.
          *
-         * This exists rather than calling `memory().claim_space()` directly so
+         * This exists rather than calling `memory()->claim_space()` directly so
          * the claim takes the same finalize guard every other mutation does --
          * a worker thread claiming into a stream that has begun sealing is the
          * one way this path can corrupt a document, and it is silent.
@@ -366,11 +396,11 @@ namespace FastFHIR
 
             struct MutationGuard
             {
-                Builder *self;
+                Builder_t *self;
                 ~MutationGuard() { self->end_mutation(); }
             } guard{this};
 
-            return m_memory.claim_space(bytes);
+            return m_memory->claim_space(bytes);
         }
 
         /**
@@ -386,12 +416,12 @@ namespace FastFHIR
         /**
          * @brief Low-level mutable access to a V-Table pointer for amending polymorphic data.
          */
-        void amend_resource(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset, RECOVERY_TAG new_tag);
+        void amend_resource(const AmendResourceInfo& info);
 
         /**
          * @brief Low-level mutable access to a V-Table variant for amending polymorphic entry data (ie FHIR [x] entries).
          */
-        void amend_variant(Offset object_offset, size_t field_vtable_offset, uint64_t raw_bits, RECOVERY_TAG new_tag);
+        void amend_variant(const AmendVariantInfo& info);
 
         /**
          * @brief Low-level mutable access to a V-Table slot for amending fixed-schema primitives.
@@ -405,8 +435,7 @@ namespace FastFHIR
          * packed, or a flagged relative offset to an FF_STRING fallback claimed
          * from child space. The mutation-path counterpart of ENCODE_FF_DATETIME.
          */
-        void amend_datetime(Offset object_offset, size_t field_vtable_offset,
-                            std::string_view text, RECOVERY_TAG tag);
+        void amend_datetime(const AmendDatetimeInfo& info);
 
         // --- Finalization & Checksums ---
 
@@ -431,19 +460,19 @@ namespace FastFHIR
     };
 
     /**
-     * @brief AdvancedBuilderAccess provides low-level, unsafe access to the Builder's internal methods for expert use cases.
+     * @brief AdvancedBuilderAccess provides low-level, unsafe access to the Builder_t's internal methods for expert use cases.
      *
      * This class is intentionally not documented in detail, as its methods are unsafe and meant for advanced users who
-     * understand the internal workings of the Builder. Use with caution, as improper use can lead to data corruption
+     * understand the internal workings of the Builder_t. Use with caution, as improper use can lead to data corruption
      * or invalid FastFHIR streams.
      *
      */
     class AdvancedBuilderAccess
     {
-        Builder *const m_builder;
+        Builder_t *const m_builder;
 
     public:
-        AdvancedBuilderAccess(Builder &builder) : m_builder(&builder) {}
+        AdvancedBuilderAccess(Builder_t &builder) : m_builder(&builder) {}
         AdvancedBuilderAccess() = delete;
         AdvancedBuilderAccess(const AdvancedBuilderAccess &) = delete;
         AdvancedBuilderAccess &operator=(const AdvancedBuilderAccess &) = delete;
@@ -485,7 +514,7 @@ namespace FastFHIR
          */
         class MutableEntry
         {
-            Builder *m_builder = nullptr;
+            Builder_t *m_builder = nullptr;
             const BYTE *m_base = nullptr;
             Offset m_parent_offset = FF_NULL_OFFSET;
             uint32_t m_vtable_offset = 0;
@@ -494,8 +523,8 @@ namespace FastFHIR
 
         public:
             MutableEntry() = default;
-            MutableEntry(Builder *b, Offset p, uint32_t v, RECOVERY_TAG r, FF_FieldKind k)
-                : m_builder(b), m_base(b ? b->memory().base() : nullptr),
+            MutableEntry(Builder_t *b, Offset p, uint32_t v, RECOVERY_TAG r, FF_FieldKind k)
+                : m_builder(b), m_base(b ? b->memory()->base() : nullptr),
                   m_parent_offset(p), m_vtable_offset(v), m_recovery(r), m_kind(k) {}
 
             // Materialize Entry view from stored coordinates
@@ -521,8 +550,8 @@ namespace FastFHIR
                 return m_base != nullptr && m_parent_offset != FF_NULL_OFFSET;
             }
 
-            // Builder and coordinate accessors
-            Builder *get_builder() const { return m_builder; }
+            // Builder_t and coordinate accessors
+            Builder_t *get_builder() const { return m_builder; }
             Offset offset() const
             {
                 return (m_parent_offset == FF_NULL_OFFSET) ? FF_NULL_OFFSET : (m_parent_offset + static_cast<Offset>(m_vtable_offset));
@@ -556,26 +585,26 @@ namespace FastFHIR
         // =====================================================================
         /**
          * @brief Thread-local handle representing a specific parent object being built.
-         * Replaces the unsafe global operator[] on the Builder itself.
+         * Replaces the unsafe global operator[] on the Builder_t itself.
          */
 
         class ObjectHandle
         {
-            Builder *m_builder = nullptr;
+            Builder_t *m_builder = nullptr;
             Offset m_offset = FF_NULL_OFFSET;
             RECOVERY_TAG m_recovery = FF_RECOVER_UNDEFINED;
 
         public:
             ObjectHandle() = default; // Default-constructible to null handle
 
-            ObjectHandle(Builder *builder, Offset offset, RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED)
+            ObjectHandle(Builder_t *builder, Offset offset, RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED)
                 : m_builder(builder), m_offset(offset), m_recovery(recovery)
             {
                 if (offset != FF_NULL_OFFSET && recovery == FF_RECOVER_UNDEFINED)
                     throw std::invalid_argument("FastFHIR: Cannot instantiate an ObjectHandle with valid offset but UNDEFINED recovery tag.");
             }
 
-            Builder *get_builder() const { return m_builder; }
+            Builder_t *get_builder() const { return m_builder; }
             Offset offset() const { return m_offset; }
             RECOVERY_TAG recovery() const { return m_recovery; }
             explicit operator bool() const { return m_builder != nullptr && m_offset != FF_NULL_OFFSET; }
@@ -637,8 +666,12 @@ namespace FastFHIR
             {
                 if (m_kind == FF_FIELD_DATETIME)
                 {
-                    m_builder->amend_datetime(m_parent_offset, m_vtable_offset,
-                                              data, m_recovery);
+                    m_builder->amend_datetime(AmendDatetimeInfo{
+                        .object_offset       = m_parent_offset,
+                        .field_vtable_offset = m_vtable_offset,
+                        .text                = data,
+                        .tag                 = m_recovery,
+                    });
                     return offset();
                 }
             }
@@ -672,7 +705,12 @@ namespace FastFHIR
                 else if constexpr (sizeof(T) == 8)
                     tag = std::is_signed_v<T> ? RECOVER_FF_INT64 : RECOVER_FF_UINT64;
 
-                m_builder->amend_variant(m_parent_offset, m_vtable_offset, static_cast<uint64_t>(val), tag);
+                m_builder->amend_variant(AmendVariantInfo{
+                    .object_offset       = m_parent_offset,
+                    .field_vtable_offset = m_vtable_offset,
+                    .raw_bits            = static_cast<uint64_t>(val),
+                    .new_tag             = tag,
+                });
             }
             else
             {
@@ -716,17 +754,17 @@ namespace FastFHIR
     } // namespace Reflective
 
     template <typename T_Data>
-    Reflective::ObjectHandle Builder::append_obj(const T_Data &data)
+    Reflective::ObjectHandle Builder_t::append_obj(const T_Data &data)
     {
         return Reflective::ObjectHandle(this, append(data), TypeTraits<T_Data>::recovery);
     }
 
-    inline Reflective::ObjectHandle Builder::append_obj(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag)
+    inline Reflective::ObjectHandle Builder_t::append_obj(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag)
     {
         return Reflective::ObjectHandle(this, append(offsets, semantic_tag), semantic_tag);
     }
 
-    inline Reflective::ObjectHandle Builder::append_opaque_json(std::string_view raw_json)
+    inline Reflective::ObjectHandle Builder_t::append_opaque_json(std::string_view raw_json)
     {
         if (!try_begin_mutation())
         {
@@ -736,12 +774,12 @@ namespace FastFHIR
 
         struct MutationGuard
         {
-            Builder *self;
+            Builder_t *self;
             ~MutationGuard() { self->end_mutation(); }
         } guard{this};
 
         const Size data_size = SIZE_FF_STRING(raw_json);
-        const Offset offset = m_memory.claim_space(data_size);
+        const Offset offset = m_memory->claim_space(data_size);
         const Size written = STORE_FF_STRING(m_base, offset, raw_json, RECOVER_FF_OPAQUE_JSON);
 
         // The same SIZE/STORE contract append() enforces. It matters more here,
@@ -758,11 +796,11 @@ namespace FastFHIR
         return Reflective::ObjectHandle(this, offset, RECOVER_FF_OPAQUE_JSON);
     }
 
-    inline Reflective::ObjectHandle Builder::root_handle() const
+    inline Reflective::ObjectHandle Builder_t::root_handle() const
     {
         if (m_root_offset != FF_NULL_OFFSET && m_root_recovery != FF_RECOVER_UNDEFINED)
         {
-            return Reflective::ObjectHandle(const_cast<Builder *>(this), m_root_offset, m_root_recovery);
+            return Reflective::ObjectHandle(const_cast<Builder_t *>(this), m_root_offset, m_root_recovery);
         }
 
         throw std::runtime_error(

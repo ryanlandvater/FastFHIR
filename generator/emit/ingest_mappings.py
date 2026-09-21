@@ -124,9 +124,9 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         cpp += (
             f"static {data_type} {fn_name}("
             f"simdjson::ondemand::object obj, "
-            f"FastFHIR::ConcurrentLogger* logger = nullptr, "
+            f"ConcurrentLogger* logger = nullptr, "
             f"std::vector<std::string_view>* concurrent_queue = nullptr, "
-            f"FastFHIR::Builder* builder = nullptr);\n"
+            f"Builder_t* builder = nullptr);\n"
         )
 
     cpp += "\n"
@@ -140,24 +140,24 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
             hpp += (
                 f"    {data_type} {fn_name}("
                 f"simdjson::ondemand::object obj, "
-                f"FastFHIR::ConcurrentLogger* logger = nullptr, "
+                f"ConcurrentLogger* logger = nullptr, "
                 f"std::vector<std::string_view>* concurrent_queue = nullptr, "
-                f"FastFHIR::Builder* builder = nullptr);\n\n"
+                f"Builder_t* builder = nullptr);\n\n"
             )
             cpp += (
                 f"{data_type} {fn_name}("
                 f"simdjson::ondemand::object obj, "
-                f"FastFHIR::ConcurrentLogger* logger, "
+                f"ConcurrentLogger* logger, "
                 f"std::vector<std::string_view>* concurrent_queue, "
-                f"FastFHIR::Builder* builder) {{\n"
+                f"Builder_t* builder) {{\n"
             )
         else:
             cpp += (
                 f"static {data_type} {fn_name}("
                 f"simdjson::ondemand::object obj, "
-                f"FastFHIR::ConcurrentLogger* logger, "
+                f"ConcurrentLogger* logger, "
                 f"std::vector<std::string_view>* concurrent_queue, "
-                f"FastFHIR::Builder* builder) {{\n"
+                f"Builder_t* builder) {{\n"
             )
 
         cpp += (
@@ -386,7 +386,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         f"                    if (builder) {{\n"
                         f"                        std::string_view child_type;\n"
                         f'                        if (res_obj["resourceType"].get_string().get(child_type) == simdjson::SUCCESS) {{\n'
-                        f"                            FastFHIR::Reflective::ObjectHandle child = dispatch_resource(child_type, res_obj.value_unsafe(), *builder, logger);\n"
+                        f"                            Reflective::ObjectHandle child = dispatch_resource(child_type, res_obj.value_unsafe(), *builder, logger);\n"
                         f"                            if (child.offset() != FF_NULL_OFFSET) {{\n"
                         f"                                data.{cpp_name}.emplace_back(child.offset(), child.recovery());\n"
                         f"                            }}\n"
@@ -485,7 +485,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                     # 0..1 string-like field (dateTime/date/instant/time/...).
                     # dateTime is absent from TYPE_MAP, so it falls through to
                     # the DEFAULT mapping: the POD member is
-                    # FF_Optional<FastFHIR::String> and the wire slot is an
+                    # FastFHIR::Optional<FastFHIR::String> and the wire slot is an
                     # FF_STRING pointer. Parse the string and assign; the
                     # store pass writes it. The view is into the ingestor's
                     # JSON buffer, which outlives the append, so String
@@ -496,7 +496,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                     cpp += (
                         f"            std::string_view sv;\n"
                         f"            if (field.value().get_string().get(sv) == simdjson::SUCCESS)\n"
-                        f"                data.{cpp_name} = FastFHIR::String(sv);\n"
+                        f"                data.{cpp_name} = String(sv);\n"
                         f"            else {{ {err_log} }}\n"
                     )
                 elif f.get("url_idx"):
@@ -544,15 +544,15 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
 
     # ── Auto-generated dispatch_resource for contained / inline resources ──
     hpp += (
-        "\n    FastFHIR::Reflective::ObjectHandle dispatch_resource("
+        "\n    Reflective::ObjectHandle dispatch_resource("
         "std::string_view resource_type, simdjson::ondemand::object obj, "
-        "FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+        "Builder_t& builder, ConcurrentLogger* logger = nullptr);\n"
     )
 
     dispatch_is_first = True
-    cpp += "\nFastFHIR::Reflective::ObjectHandle dispatch_resource("
+    cpp += "\nReflective::ObjectHandle dispatch_resource("
     cpp += "std::string_view resource_type, simdjson::ondemand::object obj, "
-    cpp += "FastFHIR::Builder& builder, FastFHIR::ConcurrentLogger* logger) {\n"
+    cpp += "Builder_t& builder, ConcurrentLogger* logger) {\n"
     for res in resources:
         prefix = "if" if dispatch_is_first else "else if"
         cpp += f'    {prefix} (resource_type == "{res}") '
@@ -578,7 +578,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         '        if (logger) logger->log(std::string("[Warning] FastFHIR Ingestion: '
         "resource type '\") + std::string(resource_type) + \"' is outside this build's "
         'profile AND its raw JSON could not be re-read; the entry was discarded.");\n'
-        "        return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
+        "        return Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
         "    }\n"
         "    // The span ends at the NEXT structural token, so it can carry trailing\n"
         "    // whitespace from a pretty-printed document. Harmless when spliced back\n"
@@ -595,19 +595,19 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
 
     # ── dispatch_block — routes RECOVERY_TAG to the correct _from_json ──
     hpp += (
-        "\n    FastFHIR::Reflective::ObjectHandle dispatch_block("
+        "\n    Reflective::ObjectHandle dispatch_block("
         "RECOVERY_TAG expected_tag, simdjson::ondemand::value& json_val, "
-        "FastFHIR::Builder& builder, "
-        "FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+        "Builder_t& builder, "
+        "ConcurrentLogger* logger = nullptr);\n"
     )
     cpp += (
-        "\nFastFHIR::Reflective::ObjectHandle dispatch_block("
+        "\nReflective::ObjectHandle dispatch_block("
         "RECOVERY_TAG expected_tag, simdjson::ondemand::value& json_val, "
-        "FastFHIR::Builder& builder, "
-        "FastFHIR::ConcurrentLogger* logger) {\n"
+        "Builder_t& builder, "
+        "ConcurrentLogger* logger) {\n"
         "    simdjson::ondemand::object obj;\n"
         "    if (json_val.get_object().get(obj) != simdjson::SUCCESS)\n"
-        "        return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
+        "        return Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
         "    switch (GetTypeFromTag(expected_tag)) {\n"
     )
     for path in sorted(master_blocks, key=lambda p: (p.count("."), p)):
@@ -615,7 +615,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         fn_name = path.replace(".", "_") + "_from_json"
         cpp += f"        case {tag_name}: return builder.append_obj({fn_name}(obj, logger, nullptr, &builder));\n"
     cpp += (
-        "        default: return FastFHIR::Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
+        "        default: return Reflective::ObjectHandle(&builder, FF_NULL_OFFSET);\n"
         "    }\n"
         "}\n\n"
     )
@@ -626,9 +626,9 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         patch_fn = f"patch_{bundle_entry_path.replace('.', '_')}_from_json"
         hpp += (
             f"void {patch_fn}(simdjson::ondemand::object& obj, "
-            f"FastFHIR::Reflective::MutableEntry& wrapper, "
-            f"FastFHIR::Builder& builder, "
-            f"FastFHIR::ConcurrentLogger* logger = nullptr);\n"
+            f"Reflective::MutableEntry& wrapper, "
+            f"Builder_t& builder, "
+            f"ConcurrentLogger* logger = nullptr);\n"
         )
         entry_struct = "FF_" + bundle_entry_path.replace(".", "_").upper()
         entry_data = bundle_entry_path.replace(".", "") + "Data"
@@ -650,9 +650,9 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
             f"// anywhere else. One parser, one store, no second spelling of the\n"
             f"// layout to drift out of sync when a field is added.\n"
             f"void {patch_fn}(simdjson::ondemand::object& obj, "
-            f"FastFHIR::Reflective::MutableEntry& wrapper, "
-            f"FastFHIR::Builder& builder, "
-            f"FastFHIR::ConcurrentLogger* logger) {{\n"
+            f"Reflective::MutableEntry& wrapper, "
+            f"Builder_t& builder, "
+            f"ConcurrentLogger* logger) {{\n"
             f"    {entry_data} data = {entry_from_json}(obj, logger, nullptr, &builder);\n"
             f"\n"
             f"    // `resource` is the one field the generic parser cannot fill: the\n"
@@ -666,7 +666,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
             f"        if (field.value().get_object().get(res_obj) != simdjson::SUCCESS) break;\n"
             f"        std::string_view child_type;\n"
             f'        if (res_obj["resourceType"].get_string().get(child_type) != simdjson::SUCCESS) break;\n'
-            f"        FastFHIR::Reflective::ObjectHandle child =\n"
+            f"        Reflective::ObjectHandle child =\n"
             f"            dispatch_resource(child_type, res_obj, builder, logger);\n"
             f"        if (child.offset() != FF_NULL_OFFSET)\n"
             f"            data.resource = ResourceReference{{child.offset(), child.recovery()}};\n"
@@ -684,7 +684,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
             f"        ? builder.claim_child_space(__child_bytes)\n"
             f"        : __hdr + {entry_struct}::HEADER_SIZE;\n"
             f"    const Offset __end = STORE_{entry_struct}(\n"
-            f"        builder.memory().base(), __hdr, __child, data, __version);\n"
+            f"        builder.memory()->base(), __hdr, __child, data, __version);\n"
             f"\n"
             f"    // Same SIZE/STORE contract Builder::append enforces. It has to be\n"
             f"    // repeated here because this call site claims the space itself: a\n"

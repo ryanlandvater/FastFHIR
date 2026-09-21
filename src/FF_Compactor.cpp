@@ -194,8 +194,8 @@ static Offset archive_string(std::string_view value, Memory& destination,
                              RECOVERY_TAG tag = RECOVER_FF_STRING) {
     if (value.empty()) return FF_NULL_OFFSET;
 
-    const Offset string_off = destination.claim_space(SIZE_FF_STRING(value));
-    STORE_FF_STRING(destination.base(), string_off, value, tag);
+    const Offset string_off = destination->claim_space(SIZE_FF_STRING(value));
+    STORE_FF_STRING(destination->base(), string_off, value, tag);
     return string_off;
 }
 
@@ -225,8 +225,8 @@ static uint32_t compact_code_bits(const Reflective::Entry& entry, Memory& destin
     const uint8_t cc_len = FF_GET_CONCEPT_LENGTH(entry.base, src_cc_off);
     const Size total_bytes = FF_CODED_VALUE::HEADER_SIZE + cc_len;
 
-    const Offset dst_cc_off = destination.claim_space(total_bytes);
-    std::memcpy(destination.base() + dst_cc_off, entry.base + src_cc_off, total_bytes);
+    const Offset dst_cc_off = destination->claim_space(total_bytes);
+    std::memcpy(destination->base() + dst_cc_off, entry.base + src_cc_off, total_bytes);
 
     const Offset relative_off = dst_cc_off - compact_parent_off;
     if (relative_off > 0x7FFFFFFF) {
@@ -237,13 +237,13 @@ static uint32_t compact_code_bits(const Reflective::Entry& entry, Memory& destin
 
 static void write_compact_code_slot(const Reflective::Entry& entry, Memory& destination,
                                     Offset compact_parent_off, Offset dense_off) {
-    STORE_U32(destination.base() + dense_off,
+    STORE_U32(destination->base() + dense_off,
               compact_code_bits(entry, destination, compact_parent_off));
 }
 
 static void write_compact_datetime_slot(const Reflective::Entry& entry, Memory& destination,
                                         Offset compact_parent_off, Offset dense_off) {
-    BYTE* base = destination.base();
+    BYTE* base = destination->base();
     const uint64_t raw = LOAD_U64(entry.base + entry.absolute_offset());
     // Packed values and the null sentinel are inline 8 bytes — copy as-is.
     if (raw == FF_DATETIME_NULL || !FF_DATETIME_IS_FALLBACK(raw)) {
@@ -259,7 +259,7 @@ static void write_compact_datetime_slot(const Reflective::Entry& entry, Memory& 
     const BYTE* src = entry.base;
     const uint32_t len = FF_GET_STRING_LENGTH(src, src_str_off);
     const Size total_bytes = FF_STRING::HEADER_SIZE + len;
-    const Offset dst_str_off = destination.claim_space(total_bytes);
+    const Offset dst_str_off = destination->claim_space(total_bytes);
     std::memcpy(base + dst_str_off, src + src_str_off, total_bytes);
 
     const int64_t relative_off = dst_str_off - compact_parent_off;
@@ -271,7 +271,7 @@ static void write_compact_datetime_slot(const Reflective::Entry& entry, Memory& 
 
 static void write_choice_slot(const Reflective::Entry& entry, ArchiveContext& context,
                               Offset compact_parent_off, Offset dense_off, std::size_t depth) {
-    BYTE* base = context.destination.base();
+    BYTE* base = context.destination->base();
     const Offset src_slot = entry.absolute_offset();
     const RECOVERY_TAG tag = FF_GET_RECOVERY_TAG(entry.base, src_slot);
     STORE_U16(base + dense_off + DATA_BLOCK::RECOVERY, tag);
@@ -374,25 +374,25 @@ static Offset archive_array(const Reflective::Node& node, ArchiveContext& contex
                              static_cast<Size>(src_arr.entry_step(src_base));
         const Size total = header + payload;
 
-        const Offset dst_off = context.destination.claim_space(total);
-        std::memcpy(context.destination.base() + dst_off, src_base + src_off, total);
+        const Offset dst_off = context.destination->claim_space(total);
+        std::memcpy(context.destination->base() + dst_off, src_base + src_off, total);
         // The copy carries the SOURCE self-offset; a block whose VALIDATION word
         // does not equal its own address is exactly what the validator rejects
         // as "the offset chain is broken".
-        STORE_U64(context.destination.base() + dst_off + DATA_BLOCK::VALIDATION, dst_off);
+        STORE_U64(context.destination->base() + dst_off + DATA_BLOCK::VALIDATION, dst_off);
         return dst_off;
     }
 
     const auto elements = node.entries();
     const Size array_size = FF_ARRAY::HEADER_SIZE + static_cast<Size>(elements.size()) * TYPE_SIZE_OFFSET;
-    Offset array_off = context.destination.claim_space(array_size);
+    Offset array_off = context.destination->claim_space(array_size);
     Offset write_head = array_off;
-    STORE_FF_ARRAY_HEADER(context.destination.base(), write_head, FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET,
+    STORE_FF_ARRAY_HEADER(context.destination->base(), write_head, FF_ARRAY::OFFSET, TYPE_SIZE_OFFSET,
                           static_cast<uint32_t>(elements.size()), node.recovery());
 
     for (const auto& element : elements) {
         if (element) {
-            write_pending_slot(context, context.destination.base(), write_head);
+            write_pending_slot(context, context.destination->base(), write_head);
             enqueue_pending_write(context, PendingWrite{
                 PendingWriteKind::NodePointer,
                 element,
@@ -406,7 +406,7 @@ static Offset archive_array(const Reflective::Node& node, ArchiveContext& contex
             // Null entry: the reader's "absent" value, never the pending
             // sentinel -- a sentinel here would read as a present entry with
             // an out-of-bounds offset.
-            STORE_U64(context.destination.base() + write_head, FF_NULL_OFFSET);
+            STORE_U64(context.destination->base() + write_head, FF_NULL_OFFSET);
         }
         write_head += TYPE_SIZE_OFFSET;
     }
@@ -444,8 +444,8 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
     // two sides cannot disagree on where the dense region starts.
     const uint32_t pbytes = compact_presence_bytes(fields.size());
     const Size object_size = DATA_BLOCK::HEADER_SIZE + pbytes + dense_bytes;
-    const Offset object_off = context.destination.claim_space(object_size);
-    BYTE* base = context.destination.base();
+    const Offset object_off = context.destination->claim_space(object_size);
+    BYTE* base = context.destination->base();
 
     STORE_U64(base + object_off + DATA_BLOCK::VALIDATION, object_off);
     STORE_U16(base + object_off + DATA_BLOCK::RECOVERY, node.recovery());
@@ -688,7 +688,7 @@ static Offset archive_node(const Reflective::Node& node, ArchiveContext& context
 }
 
 static void process_pending_write(ArchiveContext& context, const PendingWrite& pending) {
-    BYTE* base = context.destination.base();
+    BYTE* base = context.destination->base();
 
     // Restore the ancestry the enqueuing node snapshotted (PendingWrite::
     // ancestry). The queue popped this pending long after the parent's frame
@@ -770,8 +770,8 @@ static Offset archive_url_directory(const Parser& source, ArchiveContext& contex
     const Size header = dir.get_header_size();
     const Size total = header + static_cast<Size>(count) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
 
-    BYTE* const dst_base = context.destination.base();
-    const Offset dst_dir = context.destination.claim_space(total);
+    BYTE* const dst_base = context.destination->base();
+    const Offset dst_dir = context.destination->claim_space(total);
     std::memcpy(dst_base + dst_dir, src + src_dir, total);
     STORE_U64(dst_base + dst_dir + FF_URL_DIRECTORY::VALIDATION, dst_dir);
 
@@ -796,8 +796,13 @@ static Offset archive_url_directory(const Parser& source, ArchiveContext& contex
     return dst_dir;
 }
 
-Memory::View Compactor::archive(const Parser& source, const Memory& destination,
-                                FF_Checksum_Algorithm algo, const HashCallback& hasher) {
+Memory::View Compactor::archive(const ArchiveInfo& info) {
+    // Lifted into the names the traversal below already reads.
+    const Parser& source = info.source;
+    const Memory& destination = info.destination;
+    const FF_Checksum_Algorithm algo = info.algorithm;
+    const HashCallback& hasher = info.hasher;
+
     if (!destination) {
         throw std::runtime_error("FastFHIR Compactor Error: destination memory is null.");
     }
@@ -809,10 +814,10 @@ Memory::View Compactor::archive(const Parser& source, const Memory& destination,
     }
 
     Memory& dst = const_cast<Memory&>(destination);
-    dst.reset(0);
+    dst->reset(0);
     ArchiveContext context(dst);
 
-    const Offset header_off = dst.claim_space(FF_HEADER::HEADER_SIZE);
+    const Offset header_off = dst->claim_space(FF_HEADER::HEADER_SIZE);
     (void)header_off;
 
     auto root = source.root();
@@ -846,7 +851,7 @@ Memory::View Compactor::archive(const Parser& source, const Memory& destination,
     // a gated pre-fill that never enqueued) would read as a present field with
     // an out-of-bounds offset. Scans only tracked slots, never raw payload:
     // string bytes can legitimately equal the sentinel value.
-    BYTE* base = dst.base();
+    BYTE* base = dst->base();
     for (const Offset slot : context.deferred_slots) {
         if (LOAD_U64(base + slot) == FF_PENDING_OFFSET) {
             throw std::runtime_error(
@@ -873,11 +878,18 @@ Memory::View Compactor::archive(const Parser& source, const Memory& destination,
     // sat in until a test looked.
     const Offset compact_url_dir = archive_url_directory(source, context);
 
-    // Shared sealing (header + checksum + hash) with Builder::finalize.
-    return seal_stream(dst, static_cast<uint16_t>(source.version()),
-                       compact_root_off,
-                       static_cast<RECOVERY_TAG>(source.root_type()), algo,
-                       hasher, FF_STREAM_COMPACTED, compact_url_dir, FF_NULL_OFFSET);
+    // Shared sealing (header + checksum + hash) with Builder_t::finalize.
+    return seal_stream(StreamSealInfo{
+        .memory            = dst,
+        .fhir_revision     = static_cast<uint16_t>(source.version()),
+        .root_offset       = compact_root_off,
+        .root_recovery     = static_cast<RECOVERY_TAG>(source.root_type()),
+        .algorithm         = algo,
+        .hasher            = hasher,
+        .stream_layout     = FF_STREAM_COMPACTED,
+        .url_dir_offset    = compact_url_dir,
+        .module_reg_offset = FF_NULL_OFFSET,
+    });
 }
 
 } // namespace FastFHIR

@@ -21,7 +21,7 @@ endif()
 
 project(FastFHIR
     VERSION "${FASTFHIR_VERSION_MAJOR}.${FASTFHIR_VERSION_MINOR}.${FASTFHIR_VERSION_BUILD}"
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 message(STATUS "FastFHIR ${PROJECT_VERSION} — profile ${FASTFHIR_PRODUCTION_PROFILE}")
 
@@ -419,10 +419,26 @@ if(FASTFHIR_BUILD_PYTHON_BINDINGS)
     # build/python/fastfhir so ctest py_* tests — and users who point
     # PYTHONPATH at it — import the same shape that gets installed.
     set(_PY_STAGE "${CMAKE_CURRENT_BINARY_DIR}/python/fastfhir")
+    set(_PY_STAGED_INIT "${_PY_STAGE}/__init__.py")
+    set(_PY_SOURCE_INIT "${CMAKE_SOURCE_DIR}/python/fastfhir/__init__.py")
+
+    # The pure-Python half is a file-tracked rule, NOT a POST_BUILD copy: a
+    # POST_BUILD copy only re-runs when fastfhir_python relinks, so a pure edit
+    # to __init__.py left the staged copy at the previous revision and the py_*
+    # tests silently imported stale code.
+    add_custom_command(
+        OUTPUT "${_PY_STAGED_INIT}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_PY_STAGE}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_PY_SOURCE_INIT}" "${_PY_STAGED_INIT}"
+        DEPENDS "${_PY_SOURCE_INIT}"
+        VERBATIM)
+    add_custom_target(fastfhir_python_stage ALL DEPENDS "${_PY_STAGED_INIT}")
+    add_dependencies(fastfhir_python fastfhir_python_stage)
+
+    # The compiled half (the extension and the generated field modules) genuinely
+    # depends on the built target, so it stays POST_BUILD.
     add_custom_command(TARGET fastfhir_python POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_PY_STAGE}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/python/fastfhir/__init__.py" "${_PY_STAGE}/__init__.py"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${FASTFHIR_GENERATED_DIR}/python/fields" "${_PY_STAGE}/fields"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -454,7 +470,9 @@ install(TARGETS fastfhir ff_export EXPORT FastFHIRTargets
 # never lands in the prefix.
 set(FASTFHIR_PUBLIC_HEADERS
     ${FASTFHIR_INCLUDE_DIR}/FastFHIR.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FastFHIR.h
     ${FASTFHIR_INCLUDE_DIR}/FF_Version.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Export.h
     ${FASTFHIR_INCLUDE_DIR}/FF_String.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_TypeTraits.hpp
@@ -519,7 +537,8 @@ if(FASTFHIR_BUILD_TESTS)
          ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary
          ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
          ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append
-         ff_test_file_modes ff_test_poco_values ff_test_bundle_index)
+         ff_test_file_modes ff_test_poco_values ff_test_bundle_index ff_test_c_api
+         ff_make_c_api_fixture)
     if(FASTFHIR_BUILD_CONFORMANCE)
         list(APPEND _BUILD_ALL ff_test_conformance ff_example_conformance)
     endif()
@@ -598,7 +617,8 @@ if(FASTFHIR_BUILD_TESTS)
                ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
                ff_test_api ff_test_dictionary ff_test_abstraction_parity
                ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes
-               ff_test_poco_values ff_test_bundle_index)
+               ff_test_poco_values ff_test_bundle_index ff_test_c_api
+               ff_make_c_api_fixture)
         if(TARGET ${_t})
             set_target_properties(${_t} PROPERTIES FOLDER "Tests")
         endif()

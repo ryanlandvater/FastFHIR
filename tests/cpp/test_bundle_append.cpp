@@ -65,7 +65,7 @@ ObservationData make_observation(Storage& storage, const std::string& id)
 FF_Builder open_builder(const Memory& mem)
 {
     FF_BuilderCreateInfo info;
-    info.arena = std::make_shared<Memory>(mem);
+    info.arena = mem;
     info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     if (!FF_CreateBuilder(info, builder))
@@ -143,7 +143,7 @@ AppendOutcome append_ids(const Memory& mem, Storage& storage, const std::vector<
         FF_BundleAppendInfo{
             .builder = builder,
             .append =
-                [&](Builder& b, std::vector<BundleentryData>& new_entries) {
+                [&](Builder_t& b, std::vector<BundleentryData>& new_entries) {
                     for (const auto& id : ids) {
                         ObservationData obs = make_observation(storage, id);
                         out.resources_bytes += TypeTraits<ObservationData>::size(obs, FHIR_VERSION_R5);
@@ -167,8 +167,8 @@ Size sealed_size(const Memory& mem) { return Parser(mem).size_bytes(); }
 
 // Raw slot reads. The lens hides block offsets by design; these tests are
 // about where bytes live, so they read the wire directly.
-Offset root_offset(const Memory& mem) { return LOAD_U64(mem.base() + FF_HEADER::ROOT_OFFSET); }
-Offset bundle_slot(const Memory& mem, Size slot) { return LOAD_U64(mem.base() + root_offset(mem) + slot); }
+Offset root_offset(const Memory& mem) { return LOAD_U64(mem->base() + FF_HEADER::ROOT_OFFSET); }
+Offset bundle_slot(const Memory& mem, Size slot) { return LOAD_U64(mem->base() + root_offset(mem) + slot); }
 
 std::vector<std::string> entry_ids(const Memory& mem)
 {
@@ -207,7 +207,7 @@ std::string describe_dead(const Memory& mem, const std::set<Offset>& offsets)
         std::snprintf(hex, sizeof hex, "%04x", it == scanned.end() ? 0u : static_cast<unsigned>(it->second.recovery));
         out += std::string(hex) + ", size " + std::to_string(it == scanned.end() ? 0 : it->second.size) + ")";
     }
-    return out + " of " + std::to_string(mem.size());
+    return out + " of " + std::to_string(mem->size());
 }
 
 std::string differing_ranges(const std::string& a, const std::string& b, Offset base_offset)
@@ -232,7 +232,7 @@ std::set<Offset> dead_blocks(const Memory& mem)
     // The checksum block is referenced by the stream header, not by the root,
     // so the root walk never reaches it -- and every reseal moves it to the
     // new end. It is structure, not dead space.
-    const Offset checksum = LOAD_U64(mem.base() + FF_HEADER::CHECKSUM_OFFSET);
+    const Offset checksum = LOAD_U64(mem->base() + FF_HEADER::CHECKSUM_OFFSET);
     std::set<Offset> dead;
     for (const auto& [offset, entry] : scanned) {
         if (entry.type == StreamMapEntryType::Header || offset == checksum)
@@ -247,7 +247,7 @@ std::set<Offset> dead_blocks(const Memory& mem)
 // header (restamped by every reseal) and the rollback point.
 std::string bytes_between(const Memory& mem, Offset from, Offset to)
 {
-    return std::string(reinterpret_cast<const char*>(mem.base()) + from, to - from);
+    return std::string(reinterpret_cast<const char*>(mem->base()) + from, to - from);
 }
 
 bool stream_valid(const Memory& mem) { return static_cast<bool>(Parser(mem).validate_FFHR_stream()); }
@@ -413,7 +413,7 @@ void refusals()
         FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root});
         FF_BundleAppendResult result;
         const FF_Result r = FF_BundleAppendEntries(
-            FF_BundleAppendInfo{.builder = builder, .append = [](Builder&, std::vector<BundleentryData>&) {}},
+            FF_BundleAppendInfo{.builder = builder, .append = [](Builder_t&, std::vector<BundleentryData>&) {}},
             result);
         CHECK(r.code == FF_INVALID_ARGUMENT, "a non-Bundle root is refused");
     }
@@ -431,9 +431,9 @@ void refusals()
     {
         Memory mem = Memory::create(kArena);
         FF_Builder builder = open_builder(mem);
-        const Size before = mem.size();
+        const Size before = mem->size();
         CHECK_EQ(serialize_bundle_array(*builder, {}), FF_NULL_OFFSET, "an empty array has no block");
-        CHECK_EQ(mem.size(), before, "and claims no space");
+        CHECK_EQ(mem->size(), before, "and claims no space");
     }
 }
 

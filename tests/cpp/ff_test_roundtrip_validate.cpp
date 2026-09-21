@@ -121,7 +121,7 @@ static bool roundtrip_and_validate(const fs::path& fixture) {
 
     auto mem = Memory::create(2ull * 1024 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     if (!FF_CreateBuilder(builder_info, builder)) return false;

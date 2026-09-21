@@ -561,7 +561,7 @@ bool FF_WasmExtensionHost::resolve_or_fetch_module(std::string_view extension_ur
 // =====================================================================
 
 void FF_WasmExtensionHost::write_module_registry(
-    Builder& builder,
+    Builder_t& builder,
     const std::vector<std::pair<uint32_t, std::string>>& ordered_entries)
 {
     using namespace FastFHIR;

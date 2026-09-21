@@ -14,17 +14,27 @@ class Compactor {
 public:
     using HashCallback = std::function<std::vector<BYTE>(const unsigned char* byte_start, Size bytes_to_hash)>;
 
+    /// Parameters for archive(): the source stream, the destination arena it is
+    /// written into, and the optional checksum, in one bundle rather than four
+    /// positional arguments -- the same `const XxxInfo&` shape as the FF_* API.
+    struct ArchiveInfo {
+        Parser                source;                       ///< The parsed stream to archive.
+        Memory                destination;                  ///< Arena the compacted stream is written into.
+        FF_Checksum_Algorithm algorithm = FF_CHECKSUM_NONE; ///< Checksum for the compacted stream.
+        HashCallback          hasher    = nullptr;          ///< Required when algorithm != NONE.
+    };
+
     // Post-finalize archival transform.
     // Current implementation compacts the root object into dense field form and
     // copies the remaining stream payload unchanged.
     // Optionally seals the compacted stream with a checksum via the same callback
-    // contract as Builder::finalize().
+    // contract as Builder_t::finalize().
     //
     // The stored-graph traversal is depth-bounded and cycle-checked (TASKS.md
     // XP-1.1): ArchiveContext tracks ancestry (`path`) and archived-once (`done`)
     // sets with MAX_NODE_DEPTH, and every recursive entry into the graph funnels
     // through the guarded archive_node. Sealing (header + checksum + hash) is
-    // shared with Builder::finalize via seal_stream() in FF_Memory.hpp.
+    // shared with Builder_t::finalize via seal_stream() in FF_Memory.hpp.
     //
     // Every deferred slot is pre-filled with a reserved in-flight sentinel --
     // FF_PENDING_OFFSET for 8-byte pointer slots, FF_PENDING_CODE for 4-byte
@@ -34,9 +44,7 @@ public:
     // header is stamped, a pending-balance counter and a residual scan of every
     // tracked slot must both pass, so a dropped deferred write fails loudly
     // instead of sealing a stream that silently lost fields.
-    static Memory::View archive(const Parser& source, const Memory& destination,
-                                FF_Checksum_Algorithm algo = FF_CHECKSUM_NONE,
-                                const HashCallback& hasher = nullptr);
+    static Memory::View archive(const ArchiveInfo& info);
 };
 
 } // namespace FastFHIR

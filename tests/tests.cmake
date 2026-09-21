@@ -79,7 +79,7 @@ if(FASTFHIR_BUILD_TESTS)
     _ff_enable_switch_warnings(ff_test_readme)
     # ── ff_test_readme_examples: the README's OWN blocks, executed ─────
     # Generated from README.md at build time, not written by hand. This is the
-    # parity half of the doc gate: py_readme_cpp_compiles proves the published
+    # parity half of the doc gate: py_readme_compiles proves the published
     # blocks still name real API, and this proves they still WORK -- by running
     # the published bytes rather than a re-implementation of them, which is how
     # test_readme.cpp above drifted onto a dead API while ctest stayed green.
@@ -175,7 +175,7 @@ if(FASTFHIR_BUILD_TESTS)
         PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
     target_compile_definitions(ff_test_compact_roundtrip PRIVATE
         $<$<BOOL:${FASTFHIR_DOWNLOAD_SYNTHEA}>:FASTFHIR_SYNTHEA_DIR="${_SYNTHEA_DIR}">)
-    # P0-1/CAPI-13: the POCO (`as<T>()`) must agree with the reflective lens.
+    # P0-1/C_API-13: the POCO (`as<T>()`) must agree with the reflective lens.
     # Same ingestor/hasher/fixture needs as the two above, same SKIP behaviour --
     # the lens is the oracle, so it has to be fed real documents.
     add_ff_cpp_test(ff_test_abstraction_parity tests/cpp/test_abstraction_parity.cpp)
@@ -219,6 +219,24 @@ if(FASTFHIR_BUILD_TESTS)
     # WO-1 out-param contract test drives FF_Ingest, so it needs the ingestor.
     target_link_libraries(ff_test_api PRIVATE fastfhir_ingestor simdjson::simdjson)
 
+    # ── C ABI ──────────────────────────────────────────────────────
+    # A .c file, so CMake drives the C COMPILER for it and the run proves the
+    # FF_* C surface links and runs from C. Linked against the real `fastfhir`
+    # library (not fastfhir_obj) so the extern "C" symbols are exercised across
+    # a library boundary the way a third-party C consumer would.
+    add_executable(ff_test_c_api tests/cpp/test_c_api.c)
+    target_include_directories(ff_test_c_api PRIVATE ${FASTFHIR_INCLUDE_DIR})
+    target_link_libraries(ff_test_c_api PRIVATE fastfhir)
+
+    # The C surface cannot append a TYPED resource (the typed append is a C++
+    # template), so a typed .ffhr is produced from C++ and consumed by the C
+    # reader. CTest fixtures sequence the two.
+    add_executable(ff_make_c_api_fixture tests/cpp/c_api_fixture.cpp)
+    target_include_directories(ff_make_c_api_fixture PRIVATE
+        ${FASTFHIR_INCLUDE_DIR} ${FASTFHIR_GENERATED_DIR})
+    target_link_libraries(ff_make_c_api_fixture PRIVATE fastfhir_obj)
+    _ff_enable_switch_warnings(ff_make_c_api_fixture)
+
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
@@ -234,6 +252,32 @@ if(FASTFHIR_BUILD_TESTS)
     # hangs; the timeout is what turns that into a reported failure.
     set_tests_properties(cpp_ff_test_graph_bounds PROPERTIES TIMEOUT 60)
 
+    # The C ABI: a typed fixture is sealed first, then the C reader consumes it.
+    add_test(NAME c_api_fixture
+        COMMAND ff_make_c_api_fixture ${CMAKE_BINARY_DIR}/c_api_fixture.ffhr)
+    set_tests_properties(c_api_fixture PROPERTIES FIXTURES_SETUP c_api_fixture)
+    add_test(NAME cpp_ff_test_c_api
+        COMMAND ff_test_c_api ${CMAKE_BINARY_DIR}/c_api_fixture.ffhr)
+    set_tests_properties(cpp_ff_test_c_api PROPERTIES
+        FIXTURES_REQUIRED c_api_fixture TIMEOUT 60)
+
+    # Leak check for the C surface. ONE mechanism: the platform's own leak tool,
+    # run over the SAME c_api test binary (which already creates and destroys
+    # every handle type). No hand-rolled allocation counter -- a second counter
+    # disagreed with this tool and produced a false positive.
+    #   macOS: `leaks --atExit` (exit code is always 0, so match its report).
+    #   Linux: LeakSanitizer via the xcode-asan/ASan preset.
+    if(APPLE)
+        find_program(FF_LEAKS_PROGRAM leaks)
+        if(FF_LEAKS_PROGRAM)
+            add_test(NAME c_api_leaks
+                COMMAND sh -c
+                    "${FF_LEAKS_PROGRAM} --atExit -- $<TARGET_FILE:ff_test_c_api> ${CMAKE_BINARY_DIR}/c_api_fixture.ffhr 2>&1 | grep -q '0 leaks for 0 total leaked bytes'")
+            set_tests_properties(c_api_leaks PROPERTIES
+                FIXTURES_REQUIRED c_api_fixture TIMEOUT 120)
+        endif()
+    endif()
+
     # The installed package, consumed through find_package from a scratch
     # prefix under the build dir. See tests/install/install_smoke.cmake.
     add_test(NAME install_smoke
@@ -242,6 +286,7 @@ if(FASTFHIR_BUILD_TESTS)
             -DWORK_DIR=${CMAKE_BINARY_DIR}/install_smoke
             -DCONSUMER_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/install/consumer
             -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
+            -DC_COMPILER=${CMAKE_C_COMPILER}
             -DCONFIG=$<CONFIG>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/install/install_smoke.cmake)
     set_tests_properties(install_smoke PROPERTIES TIMEOUT 300)
@@ -320,7 +365,7 @@ if(FASTFHIR_BUILD_TESTS)
         # which exists only when the bindings are built -- the xcode presets
         # leave them OFF, and registering these there reported every one as a
         # failure of the code when it was a property of the configuration.
-        # py_readme_cpp_compiles and py_roundtrip import no fastfhir module and
+        # py_readme_compiles and py_roundtrip import no fastfhir module and
         # stay registered below.
         set(_PY_BINDING_TESTS "")
         if(FASTFHIR_BUILD_PYTHON_BINDINGS)
@@ -362,6 +407,7 @@ if(FASTFHIR_BUILD_TESTS)
             --readme "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
             --build-dir "${CMAKE_CURRENT_BINARY_DIR}"
             --cxx "${CMAKE_CXX_COMPILER}"
+            --cc "${CMAKE_C_COMPILER}"
             --include-dir "${FASTFHIR_INCLUDE_DIR}"
             --include-dir "${FASTFHIR_GENERATED_DIR}"
         )
@@ -383,9 +429,9 @@ if(FASTFHIR_BUILD_TESTS)
         # list below -- it imports no fastfhir module, so it runs without the
         # staged Python package and before the bindings are built.
         if(FASTFHIR_BUILD_INGESTOR)
-            add_test(NAME py_readme_cpp_compiles
+            add_test(NAME py_readme_compiles
                 COMMAND "${_PY}" "${_PY_DIR}/test_readme_compiles.py" ${_README_GATE_ARGS})
-            set_tests_properties(py_readme_cpp_compiles PROPERTIES TIMEOUT 600)
+            set_tests_properties(py_readme_compiles PROPERTIES TIMEOUT 600)
         endif()
 
         if(FASTFHIR_BUILD_PYTHON_BINDINGS)

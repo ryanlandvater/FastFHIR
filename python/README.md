@@ -2,6 +2,72 @@
 
 FastFHIR is a zero-copy clinical data engine. Ingest FHIR JSON or HL7 directly into a memory arena and traverse it with O(1) field access using generated field constants.
 
+```mermaid
+classDiagram
+    direction LR
+    class Memory {
+        +capacity size name
+        +create(capacity)
+        +create_from_file(path, capacity)
+        +view() MemoryView
+        +try_acquire_stream() StreamHead
+        +reset(committed_size)
+    }
+    class MemoryView {
+        +size empty
+        buffer protocol
+    }
+    class StreamHead {
+        +available_space
+        +commit(n)
+        context manager
+    }
+    class Builder {
+        +root
+        +version root_type
+        +to_json() str
+        +finalize(algo) MemoryView
+        +compact(algo) MemoryView
+        context manager
+    }
+    class Ingestor {
+        +is_faulted
+        +ingest(builder, source_type, payload)
+        +reset() str
+    }
+    class BuilderNode {
+        +offset recovery_tag
+        +is_array()
+        +items(recursive)
+        +to_json() str
+    }
+    class MutableEntry {
+        +value()
+        +items(recursive)
+        +to_json() str
+    }
+    class Field {
+        generated path object
+        e.g. ff.Patient.ID
+    }
+
+    Builder --> Memory : constructed on
+    Builder --> BuilderNode : root
+    Builder ..> MemoryView : finalize / compact
+    Memory --> MemoryView : view()
+    Memory --> StreamHead : try_acquire_stream()
+    Ingestor --> Builder : ingest() writes into
+    Ingestor ..> BuilderNode : returns the root
+    BuilderNode --> MutableEntry : node[Field]
+    MutableEntry --> BuilderNode : .value() on a block
+    BuilderNode ..> Field : subscript key
+    MutableEntry ..> Field : subscript key
+```
+
+`Builder` writes into a `Memory` arena, `Ingestor` fills it through a `Builder`, and
+`BuilderNode`/`MutableEntry` are live lenses over the resulting bytes. A `Field`
+(`ff.Patient.ID`) is the generated key you subscript with.
+
 ---
 
 ## 1 — Ingest a FHIR JSON file and save as `.ffhr`
@@ -289,7 +355,7 @@ with ff.Builder(src_mem, ff.FhirVersion.R5) as builder:
 src_mem.close()   # patient.compact.ffhr is a sealed compact FastFHIR archive
 ```
 
-A compact archive can be verified byte-scan or by forwarding `compact_view`
+A compact archive can be verified by byte-scanning it, or by forwarding `compact_view`
 (a buffer-protocol object) directly over a socket or to `open(..., 'wb').write(...)`.
 
 Note: `ff.Builder` cannot be constructed on a compact archive for mutation —
@@ -363,23 +429,40 @@ Available path types (complete list):
 
 ---
 
-### `MutableEntry` — returned by every field subscript
+### `BuilderNode` and `MutableEntry`
+
+Two zero-copy lenses over the same bytes:
+
+- **`MutableEntry`** — a *slot*: one field. Every subscript returns one.
+- **`BuilderNode`** — a *block*: an object or an array, and what a block-typed field's `.value()`
+  returns.
 
 ```py
-entry = node[ff.Patient.ACTIVE]
+entry = node[ff.Patient.ACTIVE]        # MutableEntry — the field
+block = node[ff.Patient.NAME].value()  # BuilderNode — the field's array
 ```
+
+Both support the same traversal:
 
 | Operation | Returns | Notes |
 |---|---|---|
-| `entry.value()` | `bool` / `int` / `float` / `str` / `BuilderNode` / `None` | Scalars coerced; blocks/arrays return a `BuilderNode` |
-| `bool(entry)` | `bool` | `True` if the field is present and populated |
-| `len(entry)` | `int` | Element count for arrays; `0` for non-arrays |
-| `for e in entry` | `MutableEntry` | Iterate array elements |
-| `entry.items()` | `list[(str, MutableEntry)]` | Present fields as lazy wrappers |
-| `entry.items(recursive=True)` | `list[(str, native)]` | Present fields as native Python values (dicts/lists/scalars) |
-| `entry == ff.Patient` | `bool` | Resource type check |
-| `entry.to_json()` | `str` | JSON text of this field |
-| `entry[ff.X.FIELD]` | `MutableEntry` | Subscript into a block entry |
+| `x[ff.X.FIELD]` | `MutableEntry` | Single field |
+| `x[ff.X.FIELD[i].SUBFIELD]` | `MutableEntry` | Deep path traversal |
+| `bool(x)` | `bool` | `True` if present and populated |
+| `len(x)` | `int` | Array size; `0` for non-arrays |
+| `for e in x` | `MutableEntry` | Iterate array elements |
+| `x.items()` | `list[(str, MutableEntry)]` | Present fields as lazy wrappers |
+| `x.items(recursive=True)` | `list[(str, native)]` | Present fields as native Python values |
+| `x.to_json()` | `str` | JSON text of this field or block |
+
+What differs:
+
+| | `MutableEntry` | `BuilderNode` |
+|---|---|---|
+| `x.value()` | the field as a Python value (below) | — |
+| `x[i]` | element `i` of an array | — (call `.value()` first) |
+| `x.recovery_tag` / `x.offset` / `x.is_array()` | — | resource kind, arena offset, array test |
+| `x == ff.Patient` | resource type check | resource type check |
 
 `.value()` return types by field kind:
 
@@ -391,26 +474,6 @@ entry = node[ff.Patient.ACTIVE]
 | `string / code` | `str` |
 | `block / resource / array` | `BuilderNode` |
 | absent or null | `None` |
-
----
-
-### `BuilderNode` — a live proxy into the arena
-
-```py
-node = patient_entry.value()   # for block/array entries
-```
-
-| Operation | Returns | Notes |
-|---|---|---|
-| `node[ff.X.FIELD]` | `MutableEntry` | Single field |
-| `node[ff.X.FIELD[i].SUBFIELD]` | `MutableEntry` | Deep path traversal |
-| `bool(node)` | `bool` | `True` if the node is present |
-| `len(node)` | `int` | Array size; `0` for non-arrays |
-| `for e in node` | `MutableEntry` | Iterate array elements |
-| `node.items()` | `list[(str, MutableEntry)]` | Present fields, lazy wrappers |
-| `node.items(recursive=True)` | `list[(str, native)]` | Present fields, fully materialized |
-| `node.recovery_tag == ff._core.ResourceType.Patient` | `bool` | Resource type check |
-| `node.to_json()` | `str` | JSON text |
 
 ---
 
@@ -443,16 +506,19 @@ with ff.Builder(mem, ff.FhirVersion.R5) as builder:
 
 | Member | Returns | Notes |
 |---|---|---|
-| `.root` | `BuilderNode` | Root node |
-| `.version` | `FhirVersion` | R4 or R5 |
-| `.root_type` | `ResourceType` | Resource kind at root |
+| `.root` | `BuilderNode` | Root node; assign it before sealing or `finalize()` refuses |
+| `.version` | `int` | FHIR revision — compares equal to `ff.FhirVersion.R4`/`R5` |
+| `.root_type` | `int` | Resource kind at root — compares equal to `ff.ResourceType.*` |
 | `.to_json()` | `str` | Full stream JSON |
-| `.finalize(algo, hasher=None)` | `MemoryView` | Seal + write checksum footer; buffer exporter with `.size` |
-| `.compact(algo=NONE, hasher=None)` | `MemoryView` | Compact sealed stream into a fresh arena it allocates; buffer exporter with `.size` |
-| `.query()` | `Parser` | A read lens over the sealed bytes. `.version`, `.root_type` and `.checksum` are conveniences over this. |
-| `.checksum` | `ChecksumValidation` | Footer metadata: payload start, byte count, algorithm, and the expected digest — enough to re-verify integrity yourself |
-| `.has_url_directory` / `.url_directory` | `bool` / `FF_URL_DIRECTORY` | The stream's interned extension-URL table |
-| `.has_module_registry` / `.module_registry` | `bool` / registry | WASM extension codecs; present only in streams built with the extension host |
+| `.finalize(algo, hasher=None)` | `MemoryView` | Seal + write checksum footer |
+| `.compact(algo=NONE, hasher=None)` | `MemoryView` | Compact a sealed stream into a fresh arena it allocates |
+| `.has_url_directory` / `.url_directory` | `bool` / `dict` | The stream's interned extension-URL table |
+| `.has_module_registry` / `.module_registry` | `bool` / `dict` | WASM extension codecs; present only in streams built with the extension host |
+
+> **`.query()` and `.checksum` are C++-only today.** Both exist on the C++ `Builder`, but
+> `Parser` and `ChecksumValidation` have no pybind11 wrapper, so from Python they raise
+> `TypeError: Unable to convert function return value to a Python type`. Use `.version`,
+> `.root_type` and `.to_json()` instead.
 
 > `.checksum` reports what the footer *claims*. It is an **integrity** record, not
 > an authenticity one — anyone who can rewrite the payload can recompute it.
@@ -474,11 +540,11 @@ node, count = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, json_string)
 | `.is_faulted` | `bool` | The engine hit an unrecoverable error and will refuse further work |
 | `.reset()` | `str` | Clear the fault and return the drained diagnostic log |
 
-> A resource type outside the compiled `FASTFHIR_PRODUCTION_PROFILE` is **not
-> dropped** — it is retained verbatim as opaque JSON and re-emitted byte-for-byte,
-> so the document round-trips losslessly. What you lose is typed access: those
-> fields are not reachable through `BuilderNode` subscripting. Check the ingest
-> result's warnings if you need to know which types took that path.
+> Data is never dropped. A resource type outside the compiled
+> `FASTFHIR_PRODUCTION_PROFILE` keeps its JSON verbatim in the stream and is
+> re-emitted byte-for-byte, so the document round-trips losslessly. You lose
+> typed access to it: those fields are not reachable through `BuilderNode`
+> subscripting. Check the ingest result's warnings to see which types took that path.
 
 ---
 

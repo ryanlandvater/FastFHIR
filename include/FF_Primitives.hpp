@@ -37,22 +37,9 @@
 #include <variant>
 #include "FF_String.hpp"
 #include "FF_Version.hpp"
+#include "FF_Export.h"
 
 #include <type_traits>
-
-#ifndef FF_EXPORT
-#if defined(_WIN32) || defined(_WIN64)
-#if defined(FF_BUILDING_DLL)
-#define FF_EXPORT __declspec(dllexport)
-#else
-#define FF_EXPORT // consumers: link against the import lib; no annotation needed
-#endif
-#elif defined(__GNUC__) || defined(__clang__)
-#define FF_EXPORT __attribute__((visibility("default")))
-#else
-#define FF_EXPORT
-#endif
-#endif
 
 // =====================================================================
 // CORE TYPES & CONSTANTS
@@ -513,17 +500,20 @@ inline constexpr FF_StreamCompaction FF_HEADER_STREAM_LAYOUT(uint32_t encoded_ve
 // =====================================================================
 // RESULT TYPE
 // =====================================================================
-/// Severity bucket of an FF_Result. Warnings are success-like: `operator bool`
+namespace FastFHIR
+{
+
+/// Severity bucket of a Result. Warnings are success-like: `operator bool`
 /// is true so callers can ignore them, but they are explicitly visible via
 /// `is_warning()`, `code`, and `message`.
-enum class FF_Result_Severity : uint8_t
+enum class Result_Severity : uint8_t
 {
     SUCCESS = 0,
     WARNING = 1,
     FAILURE = 2,
 };
 
-enum FF_Result_Code : uint32_t
+enum Result_Code : uint32_t
 {
     // ── Success ────────────────────────────────────────────────────────────
     FF_SUCCESS = 0,
@@ -543,37 +533,37 @@ enum FF_Result_Code : uint32_t
     FF_EXTENSION_FAILURE  = 0x106, // WASM extension codec failure
 };
 
-struct FF_Result
+struct Result
 {
-    FF_Result_Code code;
+    Result_Code code;
     std::string message;
-    FF_Result(FF_Result_Code c, std::string msg) : code(c), message(tag(c, std::move(msg))) {}
-    FF_Result(FF_Result_Code c) : code(c), message("") {}
+    Result(Result_Code c, std::string msg) : code(c), message(tag(c, std::move(msg))) {}
+    Result(Result_Code c) : code(c), message("") {}
 
     /// Single source of truth for severity classification.
     /// Unknown codes classify as FAILURE so a typo'd or stale code fails safe.
-    static constexpr FF_Result_Severity severity_of(FF_Result_Code c) noexcept
+    static constexpr Result_Severity severity_of(Result_Code c) noexcept
     {
         switch (c)
         {
         case FF_SUCCESS:
-            return FF_Result_Severity::SUCCESS;
+            return Result_Severity::SUCCESS;
         case FF_WARNING_PARTIAL_INGEST:
         case FF_WARNING_LOGGER_OVERFLOW:
         case FF_WARNING_EMPTY_RESULT:
-            return FF_Result_Severity::WARNING;
+            return Result_Severity::WARNING;
         default:
-            return FF_Result_Severity::FAILURE;
+            return Result_Severity::FAILURE;
         }
     }
 
     /// Message tag for a code: "" / "[WARNING] " / "[FATAL] ".
-    static const char* severity_tag(FF_Result_Code c) noexcept
+    static const char* severity_tag(Result_Code c) noexcept
     {
         switch (severity_of(c))
         {
-        case FF_Result_Severity::SUCCESS: return "";
-        case FF_Result_Severity::WARNING: return "[WARNING] ";
+        case Result_Severity::SUCCESS: return "";
+        case Result_Severity::WARNING: return "[WARNING] ";
         default:                          return "[FATAL] ";
         }
     }
@@ -582,7 +572,7 @@ struct FF_Result
     /// Appending a more severe code promotes `code` (failure > warning >
     /// success), so a warning is not lost to a later success, nor a failure to
     /// a later warning.
-    FF_Result& append(FF_Result_Code c, std::string msg)
+    Result& append(Result_Code c, std::string msg)
     {
         if (!message.empty()) message += '\n';
         message += severity_tag(c);
@@ -593,7 +583,7 @@ struct FF_Result
 
     /// Merges @p other: its (already tagged) entries stack after ours and the
     /// more severe code wins.
-    FF_Result& append(const FF_Result& other)
+    Result& append(const Result& other)
     {
         if (!other.message.empty())
         {
@@ -605,25 +595,40 @@ struct FF_Result
     }
 
     /// True for success AND warnings — warnings are ignorable by design.
-    inline bool succeeded() const noexcept { return severity_of(code) != FF_Result_Severity::FAILURE; }
+    inline bool succeeded() const noexcept { return severity_of(code) != Result_Severity::FAILURE; }
     /// True only for warnings; `message` carries the detail.
-    inline bool is_warning() const noexcept { return severity_of(code) == FF_Result_Severity::WARNING; }
+    inline bool is_warning() const noexcept { return severity_of(code) == Result_Severity::WARNING; }
     /// True only for failures — the go/no-go check for callers that must stop.
-    inline bool failed() const noexcept { return severity_of(code) == FF_Result_Severity::FAILURE; }
+    inline bool failed() const noexcept { return severity_of(code) == Result_Severity::FAILURE; }
 
     inline operator bool() const { return succeeded(); }
-    inline bool operator==(FF_Result_Code c) const { return code == c; }
-    inline bool operator!=(FF_Result_Code c) const { return code != c; }
+    inline bool operator==(Result_Code c) const { return code == c; }
+    inline bool operator!=(Result_Code c) const { return code != c; }
 
 private:
     /// Tags the initial message entry with its severity tag; SUCCESS messages
     /// pass through untagged (a success should not carry a message).
-    static std::string tag(FF_Result_Code c, std::string msg)
+    static std::string tag(Result_Code c, std::string msg)
     {
         if (msg.empty()) return msg;
         return std::string(severity_tag(c)) + std::move(msg);
     }
 };
+
+} // namespace FastFHIR
+
+// The result types' global C-style aliases. Declared HERE rather than in
+// FastFHIR.hpp's one alias block because this header is the lowest one every
+// TU sees (the generated code, FF_Builder.hpp, FF_Parser.hpp all include it),
+// and FF_Builder.hpp returns FF_Result without ever seeing FastFHIR.hpp.
+using FF_Result          = FastFHIR::Result;
+using FF_Result_Code     = FastFHIR::Result_Code;
+using FF_Result_Severity = FastFHIR::Result_Severity;
+
+/// The status-code enumerators (FF_SUCCESS, FF_FAILURE, ...) now live with
+/// their enum, one scope in. This keeps them reachable unqualified, exactly as
+/// they were when the enum was global (C++20 `using enum`).
+using enum FastFHIR::Result_Code;
 
 // =====================================================================
 // RECOVERY TAG REGISTRY (auto-generated from FHIR StructureDefinitions)
@@ -1954,42 +1959,45 @@ struct ChoiceBlock;
  * Not a wire type. This is the build-and-materialize side; no byte of any
  * stream changes because of it.
  */
+namespace FastFHIR
+{
+
 template <typename T>
-class FF_Optional
+class Optional
 {
 public:
     using element_type = T;
 
-    FF_Optional() noexcept = default;
-    ~FF_Optional() = default;
-    FF_Optional(std::nullptr_t) noexcept {}
+    Optional() noexcept = default;
+    ~Optional() = default;
+    Optional(std::nullptr_t) noexcept {}
 
     /// By value, so both `= SomeData{...}` (moved) and `= existing` (copied) work.
-    FF_Optional(T value) : m_ptr(std::make_unique<T>(std::move(value))) {}
+    Optional(T value) : m_ptr(std::make_unique<T>(std::move(value))) {}
     /// The emitters build children with make_unique; that keeps working.
-    FF_Optional(std::unique_ptr<T> ptr) noexcept : m_ptr(std::move(ptr)) {}
+    Optional(std::unique_ptr<T> ptr) noexcept : m_ptr(std::move(ptr)) {}
 
-    FF_Optional(const FF_Optional &other)
+    Optional(const Optional &other)
         : m_ptr(other.m_ptr ? std::make_unique<T>(*other.m_ptr) : nullptr) {}
-    FF_Optional(FF_Optional &&) noexcept = default;
+    Optional(Optional &&) noexcept = default;
 
-    FF_Optional &operator=(const FF_Optional &other)
+    Optional &operator=(const Optional &other)
     {
         m_ptr = other.m_ptr ? std::make_unique<T>(*other.m_ptr) : nullptr;
         return *this;
     }
-    FF_Optional &operator=(FF_Optional &&) noexcept = default;
-    FF_Optional &operator=(T value)
+    Optional &operator=(Optional &&) noexcept = default;
+    Optional &operator=(T value)
     {
         m_ptr = std::make_unique<T>(std::move(value));
         return *this;
     }
-    FF_Optional &operator=(std::unique_ptr<T> ptr) noexcept
+    Optional &operator=(std::unique_ptr<T> ptr) noexcept
     {
         m_ptr = std::move(ptr);
         return *this;
     }
-    FF_Optional &operator=(std::nullptr_t) noexcept
+    Optional &operator=(std::nullptr_t) noexcept
     {
         m_ptr.reset();
         return *this;
@@ -2009,6 +2017,8 @@ public:
 private:
     std::unique_ptr<T> m_ptr;
 };
+
+} // namespace FastFHIR
 
 struct ChoiceEntry
 {
@@ -2043,7 +2053,7 @@ struct ChoiceEntry
     std::unique_ptr<ChoiceBlock> block;
 
     /// A VALUE, copy included. It was move-only while the nested blocks were
-    /// held by std::unique_ptr, which had no copy to give; with FF_Optional they
+    /// held by std::unique_ptr, which had no copy to give; with Optional they
     /// are values too, so a ChoiceEntry deep-copies its block like any other
     /// member. That is what lets a POCO be brace-initialized, since an
     /// initializer_list can only copy its elements.

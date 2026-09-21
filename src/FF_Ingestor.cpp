@@ -153,7 +153,7 @@ namespace FastFHIR::Ingest
     //  1) producer-side tiny dedup cache (hash bucket check), and
     //  2) trie segment hashing in insert/find child operations.
     // Full URL -> ext_ref routing remains keyed by full URL string in
-    // Builder::m_url_retrieve (see consumer_process_batch and ingest
+    // Builder_t::m_url_retrieve (see consumer_process_batch and ingest
     // mapping lookup path).
     static constexpr uint64_t FNV1A_OFFSET = 14695981039346656037ULL;
     static constexpr uint64_t FNV1A_PRIME = 1099511628211ULL;
@@ -524,7 +524,7 @@ namespace FastFHIR::Ingest
         Offset seg_off = FF_NULL_OFFSET;
         if (!seg.empty())
         {
-            seg_off = mem.claim_space(SIZE_FF_STRING(seg));
+            seg_off = mem->claim_space(SIZE_FF_STRING(seg));
             STORE_FF_STRING(base, seg_off, seg);
         }
 
@@ -579,13 +579,13 @@ namespace FastFHIR::Ingest
     {
         std::vector<TrieNode> trie_nodes; // scratch trie (not FF arena)
         std::vector<TrieEntry> entries;   // parallel to FF_URL_DIRECTORY ENTRY_TABLE
-        Builder &builder;
+        Builder_t &builder;
         const Memory &mem;
         uint8_t *base;
         FF_ExtensionFilterMode mode;
 
-        ConsumerState(Builder &b, const Memory &m, FF_ExtensionFilterMode md)
-            : builder(b), mem(m), base(m.base()), mode(md)
+        ConsumerState(Builder_t &b, const Memory &m, FF_ExtensionFilterMode md)
+            : builder(b), mem(m), base(m->base()), mode(md)
         {
             trie_nodes.reserve(256);
             trie_nodes.push_back({}); // virtual root at index 0
@@ -697,11 +697,11 @@ namespace FastFHIR::Ingest
 
     void FF_PredigestExtensionURLs(
         const std::vector<simdjson::padded_string> &prechunked_entries,
-        Builder &builder,
+        Builder_t &builder,
         FF_ExtensionFilterMode mode)
     {
         const Memory &mem = builder.memory();
-        uint8_t *base = mem.base();
+        uint8_t *base = mem->base();
 
         // Chunks are required and owned by the caller for the full predigest call.
         if (prechunked_entries.empty())
@@ -778,7 +778,7 @@ namespace FastFHIR::Ingest
         const uint32_t n_entries = static_cast<uint32_t>(cs.entries.size());
         const Size dir_total = FF_URL_DIRECTORY::HEADER_SIZE +
                                static_cast<Size>(n_entries) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
-        const Offset dir_off = mem.claim_space(dir_total);
+        const Offset dir_off = mem->claim_space(dir_total);
         BYTE *dir_ptr = base + dir_off;
 
         STORE_U64(dir_ptr + FF_URL_DIRECTORY::VALIDATION, dir_off);
@@ -920,14 +920,14 @@ namespace FastFHIR::Ingest
 
     struct IngestContext
     {
-        Builder &builder;
+        Builder_t &builder;
         simdjson::ondemand::parser &parser;
         IngestStack stack;
         ConcurrentLogger *logger;
         std::deque<std::string> backing; // owns synthetic JSON strings for ArrayField items;
                                          // deque guarantees stable references after push_back
 
-        IngestContext(Builder &b, simdjson::ondemand::parser &p, ConcurrentLogger *lg)
+        IngestContext(Builder_t &b, simdjson::ondemand::parser &p, ConcurrentLogger *lg)
             : builder(b), parser(p), stack(), logger(lg) {}
     };
 
@@ -987,7 +987,7 @@ namespace FastFHIR::Ingest
                 // Read the array block offset from the owner's vtable slot for this field.
                 // key.field_offset is the byte distance from the owner block base to the
                 // 8-byte pointer slot that holds the FF_ARRAY block offset.
-                const BYTE *base = ctx.builder.memory().base();
+                const BYTE *base = ctx.builder.memory()->base();
                 Offset slot_addr = owner.offset() + key.field_offset;
                 Offset array_off = LOAD_U64(base + slot_addr);
                 if (array_off == FF_NULL_OFFSET)
@@ -1147,12 +1147,15 @@ namespace FastFHIR::Ingest
         }
     }
 
-    FF_Result Ingestor::insert_at_field(Reflective::ObjectHandle &parent_object, const FF_FieldKey &key, std::string_view payload, FF_SourceType fmt)
+    FF_Result Ingestor::insert_at_field(const InsertAtFieldInfo &info)
     {
-        switch (fmt)
+        // The json path takes a mutable handle; the Info struct's copy is the
+        // coordinate, so mutating it amends the same underlying object.
+        Reflective::ObjectHandle parent_object = info.parent;
+        switch (info.source_type)
         {
         case FF_SOURCE_FHIR_JSON:
-            return insert_at_field_json(parent_object, key, payload);
+            return insert_at_field_json(parent_object, info.key, info.payload);
         case FF_SOURCE_HL7_V2:
             return FF_Result{FF_NOT_IMPLEMENTED, "HL7 v2 field ingestion not implemented."};
         case FF_SOURCE_HL7_V3:
@@ -1407,7 +1410,7 @@ namespace FastFHIR::Ingest
             // The worker's catch block logged the ACTUAL cause (the exception
             // message) into m_logger. Nothing drains that buffer unless the caller
             // asks for it, so a precise, actionable error -- e.g. the SIZE/STORE
-            // contract violation from Builder::append_obj -- used to surface to
+            // contract violation from Builder_t::append_obj -- used to surface to
             // every tool as the useless "check the engine logs". Carry the fatal
             // lines out with the result: a fail-loud check that fails into an
             // unread buffer is a fail-silent check with extra steps.
@@ -1562,7 +1565,7 @@ namespace FastFHIR::Ingest
 //
 // Kept in this translation unit (and therefore in the ingestor target, not
 // the core library) because it is the only FF_* surface that needs simdjson.
-// FF_Ingestor_t itself is defined in FF_Ingestor.hpp.
+// Ingestor_t itself is defined in FF_Ingestor.hpp.
 // =====================================================================
 namespace FastFHIR {
 
@@ -1570,7 +1573,7 @@ FF_Result FF_CreateIngestor(const FF_IngestorCreateInfo& info, FF_Ingestor& out_
 {
     out_ingestor.reset();
     try {
-        out_ingestor = std::make_shared<FF_Ingestor_t>(info.logger_capacity, info.concurrency);
+        out_ingestor = std::make_shared<Ingestor_t>(info.logger_capacity, info.concurrency);
         return FF_Result{FF_SUCCESS};
     } catch (const std::exception& e) {
         return FF_Result{FF_FAILURE, std::string("FF_CreateIngestor: ") + e.what()};
@@ -1607,9 +1610,12 @@ FF_Result FF_IngestInsertAtField(const FF_IngestInsertInfo& info) noexcept
     if (!info.ingestor)
         return FF_Result{FF_INVALID_ARGUMENT, "FF_IngestInsertAtField: null ingestor"};
     try {
-        // Copy the handle: the engine's insert path takes a mutable reference.
-        Reflective::ObjectHandle parent = info.parent;
-        return info.ingestor->impl.insert_at_field(parent, info.key, info.payload, info.source_type);
+        return info.ingestor->impl.insert_at_field(Ingest::InsertAtFieldInfo{
+            .parent      = info.parent,
+            .key         = info.key,
+            .payload     = info.payload,
+            .source_type = info.source_type,
+        });
     } catch (const std::exception& e) {
         return FF_Result{FF_FAILURE, std::string("FF_IngestInsertAtField: ") + e.what()};
     } catch (...) {

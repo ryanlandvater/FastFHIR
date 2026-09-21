@@ -40,7 +40,7 @@ int main()
 
     auto mem = Memory::create(64ull * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     FF_Builder builder;
     CHECK(FF_CreateBuilder(builder_info, builder), "create stream");
     FF_IngestorCreateInfo ingestor_info;
@@ -113,7 +113,7 @@ int main()
 
         auto mem2 = Memory::create(64ull * 1024 * 1024);
         FF_BuilderCreateInfo builder_info2;
-        builder_info2.arena = std::make_shared<Memory>(mem2);
+        builder_info2.arena = mem2;
         FF_Builder builder2;
         CHECK(FF_CreateBuilder(builder_info2, builder2), "create stream (zero-copy)");
         FF_IngestorCreateInfo ingestor_info2;
@@ -178,7 +178,7 @@ int main()
 
         auto mem3 = Memory::create(FastFHIR::Ingest::FF_MIN_ARENA);
         FF_BuilderCreateInfo builder_info3;
-        builder_info3.arena = std::make_shared<Memory>(mem3);
+        builder_info3.arena = mem3;
         FF_Builder builder3;
         CHECK(FF_CreateBuilder(builder_info3, builder3), "create stream (tiny)");
         FF_IngestorCreateInfo ingestor_info3;

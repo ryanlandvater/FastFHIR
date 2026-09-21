@@ -97,6 +97,23 @@ private:
             }
         }
 
+        /// Frees any node still linked when the registry dies.
+        ///
+        /// Normally the chain collapses on its own: decrement_node() deletes a
+        /// node the instant its last reference drops, so a queue that is drained
+        /// and then destroyed has every slot already null. But a queue abandoned
+        /// with a node still referenced -- the Compactor's per-call PendingQueue,
+        /// which is destroyed at the end of archive() with its head node still
+        /// held -- leaves that node's slot populated and nothing frees it. One
+        /// Node carries Entry[NODE_ENTRIES], so that is ~344 KB leaked per
+        /// abandoned queue. exchange() nulls the slot as it takes the pointer, so
+        /// a slot already cleared by decrement_node() yields nullptr and this can
+        /// never double-free.
+        ~NodeRegistry() {
+            for (uint32_t i = 0; i < CAPACITY; ++i)
+                delete _slots[i].node.exchange(nullptr, std::memory_order_relaxed);
+        }
+
         void set_weak_head_ptr(std::atomic<uint64_t>* ptr) { _queue_weak_head = ptr; }
         void set_violations_ptr(std::atomic<uint32_t>* ptr) { _violations = ptr; }
         std::atomic<uint32_t>* violations_ptr() const { return _violations; }

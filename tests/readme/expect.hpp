@@ -168,14 +168,14 @@ inline void seal_resource(const fs::path& path, std::string_view json)
     fs::remove(path, ec);
     auto mem = FastFHIR::Memory::createFromFile(path.string(), 64 * 1024 * 1024);
     FastFHIR::FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<FastFHIR::Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
-    FastFHIR::FF_Builder builder;
+    FF_Builder builder;
     if (!FastFHIR::FF_CreateBuilder(builder_info, builder))
         throw std::runtime_error("fixture: FF_CreateBuilder failed");
 
     FastFHIR::FF_IngestorCreateInfo ingestor_info;
-    FastFHIR::FF_Ingestor ingestor;
+    FF_Ingestor ingestor;
     if (!FastFHIR::FF_CreateIngestor(ingestor_info, ingestor))
         throw std::runtime_error("fixture: FF_CreateIngestor failed");
 

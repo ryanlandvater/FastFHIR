@@ -18,6 +18,58 @@ Thanks for contributing. FastFHIR is a binary wire format for healthcare data �
    is ruff/black-enforced with full type hints and fail-loud error handling.
    C++ matches the surrounding hand-tuned style and is not subject to the
    Python tooling.
+4. **C++ types live in the `FastFHIR` namespace; their `FF_` names are global
+   aliases.** A type is named PascalCase inside the namespace
+   (`FastFHIR::Builder`, `FastFHIR::String`, `FastFHIR::Result`); the C-style
+   spelling is a global `using`, collected in the alias block in
+   `include/FastFHIR.hpp` (`using FF_Builder = FastFHIR::Builder;`). The block is
+   the ONE list; the only exception is a type the low-level headers return
+   before they can see `FastFHIR.hpp` — `FF_Result` and its enums alias beside
+   their definition in `FF_Primitives.hpp`, because `FF_Builder.hpp` returns an
+   `FF_Result` without including the consumer header. A heap body carries a `_t`
+   suffix and its handle is the shared_ptr over it: `Builder_t` /
+   `FastFHIR::Builder` and `Memory_t` / `FastFHIR::Memory` alike. `Memory` is
+   the typedef every call site uses; `std::shared_ptr<Memory_t>` is never
+   spelled outside `FF_Memory.hpp`. Wire block structs (`FF_HEADER`,
+   `FF_STRING`) and the C-ABI
+   `FF_*Info` structs keep their `FF_` names. Those types have no PascalCase
+   name inside the namespace for the `FF_` spelling to alias, because they are
+   themselves the C surface. Do not put a global `FF_` alias at the bottom of a
+   type's own header.
+5. **A public function takes one Info struct instead of a long argument
+   list.** It takes a single `const XxxInfo&` — plus a `T& out` where it
+   returns a handle — rather than four or more positional arguments. The
+   external `FF_*` surface, the internal
+   `seal_stream(const StreamSealInfo&)`, the `amend_*` verbs
+   (`AmendResourceInfo` / `AmendVariantInfo` / `AmendDatetimeInfo`),
+   `Compactor::archive(const ArchiveInfo&)`, and
+   `Ingest::InsertAtFieldInfo` all follow this. When a function reaches the
+   point of needing a fourth argument, collect its arguments into an Info struct
+   instead of extending the parameter list. Two things follow from that. Each
+   call site names the field it is setting, which a positional argument does not
+   do. And a field can be added to the struct later without editing any existing
+   call, because designated initializers leave the omitted field at its
+   default.
+6. **The C ABI is a separate, hand-written header.** `include/FastFHIR.h` is
+   pure C; it and `FastFHIR.hpp` are two surfaces over one library and declare
+   same-named-but-different types (`FF_MemoryCreateInfo`, `FF_CreateMemory`, …),
+   so neither includes the other. The facts they must agree on — struct fields
+   and their order, enum values — are held once in `tests/generator/c_abi_spec.py`
+   and checked against BOTH headers by `tests/generator/test_c_abi.py`. Absolute
+   5 applies to it too, and symmetrically: **where `FastFHIR.hpp` has an
+   `FF_XxxInfo`, `FastFHIR.h` has the same-named struct with the same fields in
+   the same order**, so porting between the surfaces is renaming rather than
+   redesigning. Some fields cannot cross the ABI at all; today the only one is
+   the checksum `hasher`, which is a `std::function` the library calls back
+   into. Those are marked `cpp_only` in the spec, so that a field the C struct
+   deliberately omits is recorded as a decision and a field someone simply
+   forgot to add still fails the gate. **Do not include both in one translation
+   unit**, as
+   `FastFHIR.h` itself says: the C
+   `FF_ParseInfo` is global and the C++ one is in `namespace FastFHIR`, so the
+   single `using namespace FastFHIR;` that every example writes makes the name
+   ambiguous and the TU stops compiling. Pick the surface the TU needs. Spell it
+   `c_api`, never `capi` (`src/FF_C_API.cpp`, `ff_test_c_api`).
 
 ## Build & test
 

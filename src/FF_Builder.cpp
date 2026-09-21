@@ -34,9 +34,9 @@ namespace FastFHIR {
 // Constructor / Destructor
 // =====================================================================
 
-Builder::Builder(const Memory& memory, FHIR_VERSION fhir_revision)
+Builder_t::Builder_t(const Memory& memory, FHIR_VERSION fhir_revision)
 : m_memory(memory),
-m_base(memory.base()),
+m_base(memory->base()),
 m_root_offset(FF_NULL_OFFSET),
 m_root_recovery(FF_RECOVER_UNDEFINED),
 m_fhir_rev(fhir_revision),
@@ -47,9 +47,9 @@ m_active_mutators(0)
     if (!m_memory) {
         throw std::invalid_argument("FastFHIR: Cannot initialize Builder with a null FF_Memory handle.");
     }
-    if (m_memory.read_only()) {
+    if (m_memory->read_only()) {
         throw std::invalid_argument("FastFHIR: Cannot build into a read-only arena (Memory::openReadOnly): " +
-                                    m_memory.name());
+                                    m_memory->name());
     }
 
     // Fresh writable streams start with committed size 0. Reserve exactly
@@ -58,8 +58,8 @@ m_active_mutators(0)
     // written lazily during finalize() via STORE_FF_HEADER. URL_DIR_OFFSET and
     // MODULE_REG_OFFSET start as FF_NULL_OFFSET and are patched by
     // FF_PredigestExtensionURLs / WASM subsystem before finalize() is called.
-    if (m_memory.size() == 0) {
-        m_memory.claim_space(FF_HEADER::HEADER_SIZE);
+    if (m_memory->size() == 0) {
+        m_memory->claim_space(FF_HEADER::HEADER_SIZE);
         return;
     }
 
@@ -73,13 +73,13 @@ m_active_mutators(0)
     //                 into (architecture.md 1.3: SHM arenas are addressable
     //                 from sibling processes). There is no header to parse yet.
     //                 Attach to it: no header claim, no root, just append.
-    if (FF_HEADER(m_memory.capacity()).get_magic(m_base) != FF_MAGIC_BYTES) {
+    if (FF_HEADER(m_memory->capacity()).get_magic(m_base) != FF_MAGIC_BYTES) {
         // The write head is the one thing an in-progress arena must have right;
         // a value past the end means these bytes are not a FastFHIR arena.
-        if (m_memory.size() < FF_HEADER::HEADER_SIZE || m_memory.size() > m_memory.capacity())
+        if (m_memory->size() < FF_HEADER::HEADER_SIZE || m_memory->size() > m_memory->capacity())
             throw std::runtime_error("FastFHIR: the arena's write head is " +
-                                     std::to_string(m_memory.size()) + " over a capacity of " +
-                                     std::to_string(m_memory.capacity()) +
+                                     std::to_string(m_memory->size()) + " over a capacity of " +
+                                     std::to_string(m_memory->capacity()) +
                                      "; these bytes are not a FastFHIR arena");
         return;
     }
@@ -88,7 +88,7 @@ m_active_mutators(0)
         try {
             return Parser(m_memory);
         } catch (const std::runtime_error& e) {
-            throw std::runtime_error("FastFHIR: the arena holds " + std::to_string(m_memory.size()) +
+            throw std::runtime_error("FastFHIR: the arena holds " + std::to_string(m_memory->size()) +
                                      " bytes whose header does not validate; refusing to append (" +
                                      e.what() + ")");
         }
@@ -123,15 +123,15 @@ m_active_mutators(0)
         checksum.__offset >= FF_HEADER::HEADER_SIZE &&
         checksum.__offset <= sealed_size) {
         // Rewind write head to the start of the existing checksum block.
-        m_memory.reset(checksum.__offset);
+        m_memory->reset(checksum.__offset);
         // Mark checksum as absent until finalize() appends a new one.
         STORE_U64(const_cast<BYTE*>(m_base) + FF_HEADER::CHECKSUM_OFFSET, FF_NULL_OFFSET);
     }
 }
 
-Builder::~Builder() = default; // m_memory handles its own OS cleanup
+Builder_t::~Builder_t() = default; // m_memory handles its own OS cleanup
 
-Memory Builder::mount_for_append(const std::filesystem::path& filepath, Size capacity)
+Memory Builder_t::mount_for_append(const std::filesystem::path& filepath, Size capacity)
 {
     // Memory maps bytes and knows nothing about streams, by design. The policy
     // lives here, where the wire format is already understood -- and it runs
@@ -141,7 +141,7 @@ Memory Builder::mount_for_append(const std::filesystem::path& filepath, Size cap
     const auto on_disk = std::filesystem::file_size(filepath, ec);
     if (!ec && on_disk >= FF_HEADER::HEADER_SIZE) {
         const Memory peek = Memory::openReadOnly(filepath);
-        const BYTE* const bytes = peek.base();
+        const BYTE* const bytes = peek->base();
         // An all-zero header region is an arena that was reserved and never
         // written: there is nothing there to lose.
         const bool never_written = std::all_of(bytes, bytes + FF_HEADER::HEADER_SIZE,
@@ -167,7 +167,7 @@ Memory Builder::mount_for_append(const std::filesystem::path& filepath, Size cap
 // generated layer carries no trace of the write path's error convention, and
 // why a Report-policy layer costs the same code path as a Throw-policy one.
 
-void Builder::attach_layer(const Conformance::ValidationHooks* hooks)
+void Builder_t::attach_layer(const Conformance::ValidationHooks* hooks)
 {
     // Deliberately NOT noexcept. An ABI mismatch means a layer built against a
     // different FastFHIR release is about to be read through this release's
@@ -187,7 +187,7 @@ void Builder::attach_layer(const Conformance::ValidationHooks* hooks)
     m_layer = hooks;
 }
 
-void Builder::_check_conformance(RECOVERY_TAG tag, const void* data)
+void Builder_t::_check_conformance(RECOVERY_TAG tag, const void* data)
 {
     const Conformance::Status status =
         Conformance::dispatch(m_layer, tag, data, m_fhir_rev);
@@ -225,7 +225,7 @@ void Builder::_check_conformance(RECOVERY_TAG tag, const void* data)
 // Concurrency Guards
 // =====================================================================
 
-bool Builder::try_begin_mutation()
+bool Builder_t::try_begin_mutation()
 {
     if (m_finalizing.load(std::memory_order_acquire))
         return false;
@@ -241,7 +241,7 @@ bool Builder::try_begin_mutation()
     return true;
 }
 
-void Builder::end_mutation()
+void Builder_t::end_mutation()
 {
     m_active_mutators.fetch_sub(1, std::memory_order_acq_rel);
 }
@@ -250,10 +250,10 @@ void Builder::end_mutation()
 // View Reflective::Node & Amend Pointer
 // =====================================================================
 
-Reflective::Node Builder::view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind) const
+Reflective::Node Builder_t::view_node(Offset offset, RECOVERY_TAG recovery, FF_FieldKind kind) const
 {
     // 1. Snapshot the atomic boundary once
-    Size size = m_memory.size();
+    Size size = m_memory->size();
 
     if (offset == FF_NULL_OFFSET || offset >= size)
         return Reflective::Node();
@@ -262,7 +262,7 @@ Reflective::Node Builder::view_node(Offset offset, RECOVERY_TAG recovery, FF_Fie
     return Reflective::Node(m_base, size, m_fhir_rev, offset, recovery, kind);
 }
 
-Builder::AmendScope Builder::_amend_prepare(Offset object_offset, size_t field_vtable_offset,
+Builder_t::AmendScope Builder_t::_amend_prepare(Offset object_offset, size_t field_vtable_offset,
                                             size_t total_bytes, AssignedProbe probe,
                                             const char *what)
 {
@@ -277,7 +277,7 @@ Builder::AmendScope Builder::_amend_prepare(Offset object_offset, size_t field_v
     // Bounds, written as subtractions rather than `a + b + c > capacity`.
     // Offset is 64-bit: a caller passing FF_NULL_OFFSET would wrap the addition
     // to a small number, pass the test, and hand back a wild pointer to STORE.
-    const size_t capacity = m_memory.capacity();
+    const size_t capacity = m_memory->capacity();
     if (object_offset > capacity || field_vtable_offset > (capacity - object_offset) ||
         total_bytes > (capacity - object_offset - field_vtable_offset)) {
         throw std::runtime_error(std::string("FastFHIR: ") + what + " amendment out of bounds.");
@@ -310,36 +310,36 @@ Builder::AmendScope Builder::_amend_prepare(Offset object_offset, size_t field_v
     return scope;
 }
 
-void Builder::amend_pointer(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset)
+void Builder_t::amend_pointer(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset)
 {
     AmendScope scope = _amend_prepare(object_offset, field_vtable_offset,
                                       sizeof(Offset), AssignedProbe::OffsetIsNull, "Pointer");
     STORE_U64(scope.slot(), new_target_offset);
 }
 
-void Builder::amend_resource(Offset object_offset, size_t field_vtable_offset, Offset new_target_offset, RECOVERY_TAG new_tag)
+void Builder_t::amend_resource(const AmendResourceInfo& info)
 {
-    AmendScope scope = _amend_prepare(object_offset, field_vtable_offset,
+    AmendScope scope = _amend_prepare(info.object_offset, info.field_vtable_offset,
                                       sizeof(Offset) + sizeof(RECOVERY_TAG),
                                       AssignedProbe::OffsetIsNull, "Resource");
-    STORE_U64(scope.slot(), new_target_offset);
-    STORE_U16(scope.slot() + DATA_BLOCK::RECOVERY, new_tag);
+    STORE_U64(scope.slot(), info.new_target_offset);
+    STORE_U16(scope.slot() + DATA_BLOCK::RECOVERY, info.new_tag);
 }
 
-void Builder::amend_variant(Offset object_offset, size_t field_vtable_offset, uint64_t raw_bits, RECOVERY_TAG new_tag)
+void Builder_t::amend_variant(const AmendVariantInfo& info)
 {
-    AmendScope scope = _amend_prepare(object_offset, field_vtable_offset,
+    AmendScope scope = _amend_prepare(info.object_offset, info.field_vtable_offset,
                                       sizeof(uint64_t) + sizeof(RECOVERY_TAG),
                                       AssignedProbe::TagIsZero, "Variant");
-    STORE_U64(scope.slot(), raw_bits);
-    STORE_U16(scope.slot() + DATA_BLOCK::RECOVERY, new_tag);
+    STORE_U64(scope.slot(), info.raw_bits);
+    STORE_U16(scope.slot() + DATA_BLOCK::RECOVERY, info.new_tag);
 }
 
 // The two append/amend bodies live here — not in the header — because they
 // write raw wire bytes and FF_Ops.hpp stays an implementation detail of this
 // TU (and FF_Primitives.cpp / generated code). The header declares them; the
 // stores are visible only where the offset math is done.
-Offset Builder::append(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag)
+Offset Builder_t::append(const std::vector<Offset> &offsets, RECOVERY_TAG semantic_tag)
 {
     if (!try_begin_mutation())
     {
@@ -348,7 +348,7 @@ Offset Builder::append(const std::vector<Offset> &offsets, RECOVERY_TAG semantic
 
     struct MutationGuard
     {
-        Builder *self;
+        Builder_t *self;
         ~MutationGuard() { self->end_mutation(); }
     } guard{this};
 
@@ -357,7 +357,7 @@ Offset Builder::append(const std::vector<Offset> &offsets, RECOVERY_TAG semantic
     Size data_size = FF_ARRAY::HEADER_SIZE + (count * 8);
 
     // 2. Thread-safe claim of space
-    Offset offset = m_memory.claim_space(data_size);
+    Offset offset = m_memory->claim_space(data_size);
 
     // 3. Thread-safe write of data with the injected tag
     Offset write_head = offset;
@@ -379,7 +379,7 @@ Offset Builder::append(const std::vector<Offset> &offsets, RECOVERY_TAG semantic
 
 template <typename T>
     requires std::is_arithmetic_v<T>
-void Builder::amend_scalar(Offset object_offset, size_t field_vtable_offset, T val)
+void Builder_t::amend_scalar(Offset object_offset, size_t field_vtable_offset, T val)
 {
     if (!try_begin_mutation())
     {
@@ -388,11 +388,11 @@ void Builder::amend_scalar(Offset object_offset, size_t field_vtable_offset, T v
 
     struct MutationGuard
     {
-        Builder *self;
+        Builder_t *self;
         ~MutationGuard() { self->end_mutation(); }
     } guard{this};
 
-    if (object_offset + field_vtable_offset + sizeof(T) > m_memory.capacity())
+    if (object_offset + field_vtable_offset + sizeof(T) > m_memory->capacity())
     {
         throw std::runtime_error("FastFHIR: Scalar amendment out of bounds.");
     }
@@ -421,29 +421,28 @@ void Builder::amend_scalar(Offset object_offset, size_t field_vtable_offset, T v
 }
 
 // The FHIR scalar wire set — the only T amend_scalar is instantiated with.
-template void Builder::amend_scalar<bool>(Offset, size_t, bool);
-template void Builder::amend_scalar<uint8_t>(Offset, size_t, uint8_t);
-template void Builder::amend_scalar<int32_t>(Offset, size_t, int32_t);
-template void Builder::amend_scalar<uint32_t>(Offset, size_t, uint32_t);
-template void Builder::amend_scalar<int64_t>(Offset, size_t, int64_t);
-template void Builder::amend_scalar<uint64_t>(Offset, size_t, uint64_t);
-template void Builder::amend_scalar<double>(Offset, size_t, double);
+template void Builder_t::amend_scalar<bool>(Offset, size_t, bool);
+template void Builder_t::amend_scalar<uint8_t>(Offset, size_t, uint8_t);
+template void Builder_t::amend_scalar<int32_t>(Offset, size_t, int32_t);
+template void Builder_t::amend_scalar<uint32_t>(Offset, size_t, uint32_t);
+template void Builder_t::amend_scalar<int64_t>(Offset, size_t, int64_t);
+template void Builder_t::amend_scalar<uint64_t>(Offset, size_t, uint64_t);
+template void Builder_t::amend_scalar<double>(Offset, size_t, double);
 
-void Builder::amend_datetime(Offset object_offset, size_t field_vtable_offset,
-                             std::string_view text, RECOVERY_TAG tag)
+void Builder_t::amend_datetime(const AmendDatetimeInfo& info)
 {
     // The slot's absent value is FF_DATETIME_NULL, which is all-ones — the same
     // probe semantics as OffsetIsNull, so the shared _amend_prepare applies.
-    AmendScope scope = _amend_prepare(object_offset, field_vtable_offset,
+    AmendScope scope = _amend_prepare(info.object_offset, info.field_vtable_offset,
                                       sizeof(uint64_t), AssignedProbe::OffsetIsNull,
                                       "Datetime");
     // DT-2: the fallback FF_STRING (text that does not fit the packed 63 bits)
     // is claimed from child space and written by ENCODE_FF_DATETIME; empty and
     // packable text claim nothing (SIZE_FF_DATETIME returns 0 for both).
-    const Size need = SIZE_FF_DATETIME(text, tag);
-    Offset child_off = m_memory.claim_space(need);
+    const Size need = SIZE_FF_DATETIME(info.text, info.tag);
+    Offset child_off = m_memory->claim_space(need);
     const Offset write_head = child_off;
-    const uint64_t encoded = ENCODE_FF_DATETIME(m_base, object_offset, child_off, text, tag);
+    const uint64_t encoded = ENCODE_FF_DATETIME(m_base, info.object_offset, child_off, info.text, info.tag);
     if (child_off != write_head + need)
     {
         throw std::runtime_error(
@@ -457,7 +456,7 @@ void Builder::amend_datetime(Offset object_offset, size_t field_vtable_offset,
 // =====================================================================
 // Finalization & Checksums
 // =====================================================================
-void Builder::set_root(const Reflective::ObjectHandle &handle)
+void Builder_t::set_root(const Reflective::ObjectHandle &handle)
 {
     if (handle.offset() != FF_NULL_OFFSET && handle.recovery() == FF_RECOVER_UNDEFINED) {
         throw std::invalid_argument("FastFHIR: Cannot set a root resource with an UNDEFINED recovery tag.");
@@ -468,7 +467,7 @@ void Builder::set_root(const Reflective::ObjectHandle &handle)
     }
 
     struct MutationGuard {
-        Builder *self;
+        Builder_t *self;
         ~MutationGuard() { self->end_mutation(); }
     } guard{this};
 
@@ -476,18 +475,18 @@ void Builder::set_root(const Reflective::ObjectHandle &handle)
     m_root_recovery = handle.recovery();
 }
 
-Offset Builder::allocate_raw(Size size)
+Offset Builder_t::allocate_raw(Size size)
 {
-    return m_memory.claim_space(size);
+    return m_memory->claim_space(size);
 }
 
-FF_Result Builder::write_offset_at(Offset target_addr, Offset child_offset)
+FF_Result Builder_t::write_offset_at(Offset target_addr, Offset child_offset)
 {
     STORE_U64(m_base + target_addr, child_offset);
     return FF_SUCCESS;
 }
 
-Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &hasher)
+Memory::View Builder_t::finalize(FF_Checksum_Algorithm algo, const HashCallback &hasher)
 {
     bool expected = false;
     if (!m_finalizing.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
@@ -498,7 +497,7 @@ Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &h
         std::this_thread::yield();
 
     // Finalization sanity check: Ensure a root resource was set and is within bounds
-    if (m_root_offset == FF_NULL_OFFSET || m_root_offset >= m_memory.capacity())
+    if (m_root_offset == FF_NULL_OFFSET || m_root_offset >= m_memory->capacity())
         throw std::runtime_error("FastFHIR: Cannot finalize because root is unset/invalid. Calling application must set root explicitly.");
     else if (m_root_recovery == FF_RECOVER_UNDEFINED)
         throw std::runtime_error("FastFHIR: Cannot finalize stream. Root recovery tag is UNDEFINED. Calling application must set root explicitly.");
@@ -513,11 +512,18 @@ Memory::View Builder::finalize(FF_Checksum_Algorithm algo, const HashCallback &h
     // Shared sealing (header + checksum + hash) with Compactor::archive. The
     // URL/module directory offsets are builder state; the stream stays standard
     // layout. The backing file is truncated to the sealed size afterwards.
-    const Memory::View view = seal_stream(m_memory, m_fhir_rev, m_root_offset,
-                                          m_root_recovery, algo, hasher,
-                                          FF_STREAM_COMPACTION_NONE,
-                                          m_url_dir_offset, m_module_reg_offset);
-    m_memory.truncate_file(view.size());
+    const Memory::View view = seal_stream(StreamSealInfo{
+        .memory            = m_memory,
+        .fhir_revision     = m_fhir_rev,
+        .root_offset       = m_root_offset,
+        .root_recovery     = m_root_recovery,
+        .algorithm         = algo,
+        .hasher            = hasher,
+        .stream_layout     = FF_STREAM_COMPACTION_NONE,
+        .url_dir_offset    = m_url_dir_offset,
+        .module_reg_offset = m_module_reg_offset,
+    });
+    m_memory->truncate_file(view.size());
     return view;
 }
 // =====================================================================
@@ -531,7 +537,7 @@ Entry MutableEntry::as_entry() const {
 ObjectHandle MutableEntry::as_handle() const {
     if (!m_builder) return ObjectHandle();
     
-    auto base_ptr = m_builder->memory().base();
+    auto base_ptr = m_builder->memory()->base();
     
     if (m_kind == FF_FIELD_RESOURCE || m_kind == FF_FIELD_CHOICE || m_recovery == RECOVER_FF_RESOURCE) {
         Offset target = LOAD_U64(base_ptr + m_parent_offset + m_vtable_offset); 
@@ -556,7 +562,12 @@ MutableEntry& MutableEntry::operator=(const ObjectHandle& child) {
     
     // --- INLINE POLYMORPHIC TUPLE ---
     if (m_recovery == RECOVER_FF_RESOURCE) {
-        m_builder->amend_resource(m_parent_offset, m_vtable_offset, child.offset(), child.recovery());
+        m_builder->amend_resource(AmendResourceInfo{
+            .object_offset       = m_parent_offset,
+            .field_vtable_offset = m_vtable_offset,
+            .new_target_offset   = child.offset(),
+            .new_tag             = child.recovery(),
+        });
         return *this;
     }
     
@@ -593,8 +604,8 @@ MutableEntry ObjectHandle::operator[](size_t index) const
         throw std::out_of_range("FastFHIR: Array index out of bounds.");
 
     // 2. Low-level geometry calculation
-    auto base = m_builder->memory().base();
-    FF_ARRAY array_block(m_offset, m_builder->memory().size(), 0);
+    auto base = m_builder->memory()->base();
+    FF_ARRAY array_block(m_offset, m_builder->memory()->size(), 0);
     
     uint16_t step = array_block.entry_step(base);
     const BYTE* entries_ptr = array_block.entries(base);

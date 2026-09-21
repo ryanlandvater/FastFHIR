@@ -85,6 +85,28 @@ noted above, which are deliberately staged for planned work rather than dead.
 
 ## Pipeline stages
 
+```mermaid
+flowchart TD
+    PKG["HL7 NPM packages<br/>packages.fhir.org — cached"] --> P1["1 Fetch · specs.py"]
+    P1 --> P2["2 Reconcile IDs · emit/code_ids.py"]
+    P1 --> P1B["1b Reconcile tags · emit/recovery_tags.py"]
+    P2 --> MC[("dictionaries/master_codes.json")]
+    P1B --> MT[("dictionaries/master_tags.json")]
+    MC --> P3["3 Project the ledger · emit/code_names.py"]
+    MT --> P3
+    MC --> P4["4 Code systems · emit/codesystems.py"]
+    P1 --> P5["5 Library · library.py"]
+    P3 --> OUT["generated_src/ — gitignored, rebuilt at configure"]
+    P4 --> OUT
+    P5 --> OUT
+    P5 --> VAL["validators · utilities.py"]
+    P5 --> PY["python/fields/ · bindings/python_fields.py"]
+    P1 --> P6["6 Known extensions · emit/extensions_known.py"]
+```
+
+The two cylinders are the only committed output. Everything in `generated_src/` is derived from
+them and can be deleted and rebuilt at any time.
+
 1. **Fetch** — `specs.py` pulls `hl7.fhir.r4.core` / `r5.core` from
    packages.fhir.org into `fhir_packages/<version>/package/`. Cached; needs
    network only on first run.
@@ -161,12 +183,13 @@ is worth knowing which:
 Codes need two modules because a code's *name* is a real decision:
 `FF_CODE::FHIR::ADMINISTRATIVE_GENDER::MALE` involves scoping and collision
 handling (`CO`/`co`, `T`/`t`, `PHF`/`PhF` come from different systems).
-Separating naming from numbering is what makes "a rename is allowed, a renumber
-is not" enforceable rather than aspirational.
+Separating naming from numbering is what turns "a rename is allowed, a renumber
+is not" into a rule the build enforces.
 
 Recovery tags have no such axis — the name is mechanically the path
 (`Bundle.entry` -> `RECOVER_FF_BUNDLE_ENTRY`), so there is nothing to mint and
 no second module.
 
 **The ledgers live in `dictionaries/` and are committed. Everything projected
-from them is generator output.** A projection is not a second source of truth.
+from them is generator output — never hand-edit a projection; change the ledger
+and regenerate.**

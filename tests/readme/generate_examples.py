@@ -75,6 +75,10 @@ def _mangle(fence: Fence) -> str:
 
 
 def render(fences: list[Fence], readme: Path) -> tuple[str, list[Fence], list[Fence]]:
+    # This harness emits one C++ translation unit, so a ```c fence has no place
+    # in it. Those are compile-gated by tests/python/test_readme_compiles.py,
+    # which routes each fence to the compiler its language names.
+    fences = [f for f in fences if f.lang == "cpp"]
     runnable = [f for f in fences if f.run_id]
     skipped = [f for f in fences if not f.run_id]
 

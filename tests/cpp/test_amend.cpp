@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// Guards for the shared amend_* pre-check (Builder::_amend_prepare).
+// Guards for the shared amend_* pre-check (Builder_t::_amend_prepare).
 //
 // The three amend_* entry points share one validation path. Collapsing them
 // is right, but the collapse has three ways to go subtly wrong, and each is
@@ -29,7 +29,7 @@ int main() {
     {
         auto mem = Memory::create(1ull << 20);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         std::string msg;
@@ -46,7 +46,7 @@ int main() {
     {
         auto mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         PatientData p; p.id = "p1";
@@ -65,7 +65,7 @@ int main() {
     {
         auto mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         PatientData p; p.id = "p1";

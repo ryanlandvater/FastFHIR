@@ -60,7 +60,7 @@ struct TypeTraits<String>
     }
 };
 
-// Offsets are written by the array overload of Builder::append, which builds
+// Offsets are written by the array overload of Builder_t::append, which builds
 // the header itself; there is nothing for a trait to do.
 template <>
 struct TypeTraits<std::vector<Offset>>

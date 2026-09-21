@@ -44,9 +44,9 @@ static void test_create_anonymous()
 {
     auto mem = Memory::create(1024 * 1024); // 1 MiB
     CHECK(static_cast<bool>(mem) == true, "create() returned valid handle");
-    CHECK_EQ(mem.size(), 0ULL, "fresh arena reports size 0");
-    CHECK_NE(mem.base(), nullptr, "base() is non-null");
-    CHECK_EQ(mem.capacity(), 1024ULL * 1024, "capacity matches requested");
+    CHECK_EQ(mem->size(), 0ULL, "fresh arena reports size 0");
+    CHECK_NE(mem->base(), nullptr, "base() is non-null");
+    CHECK_EQ(mem->capacity(), 1024ULL * 1024, "capacity matches requested");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,9 +61,9 @@ static void test_create_from_file()
     {
         auto mem = Memory::createFromFile(tmp, 64 * 1024);
         CHECK(static_cast<bool>(mem) == true, "createFromFile returned valid handle");
-        CHECK_EQ(mem.capacity(), 64ULL * 1024, "file-backed capacity matches");
-        CHECK_EQ(mem.size(), 0ULL, "fresh file-backed arena size is 0");
-        CHECK_NE(mem.base(), nullptr, "file-backed base() is non-null");
+        CHECK_EQ(mem->capacity(), 64ULL * 1024, "file-backed capacity matches");
+        CHECK_EQ(mem->size(), 0ULL, "fresh file-backed arena size is 0");
+        CHECK_NE(mem->base(), nullptr, "file-backed base() is non-null");
     }
 
     // File should persist after Memory destruction if not explicitly closed
@@ -85,16 +85,16 @@ static void test_claim_space()
 {
     auto mem = Memory::create(64 * 1024);
 
-    Offset a = mem.claim_space(100);
+    Offset a = mem->claim_space(100);
     CHECK_EQ(a, 0ULL, "first claim starts at 0");
 
-    Offset b = mem.claim_space(200);
+    Offset b = mem->claim_space(200);
     CHECK_EQ(b, 100ULL, "second claim follows first");
 
-    Offset c = mem.claim_space(50);
+    Offset c = mem->claim_space(50);
     CHECK_EQ(c, 300ULL, "third claim follows second");
 
-    CHECK_EQ(mem.size(), 350ULL, "size after three claims");
+    CHECK_EQ(mem->size(), 350ULL, "size after three claims");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,7 +106,7 @@ static void test_claim_space_overflow()
     bool caught = false;
     try
     {
-        mem.claim_space(10ULL * 1024 * 1024 * 1024); // 10 GiB — exceeds 1 KiB
+        mem->claim_space(10ULL * 1024 * 1024 * 1024); // 10 GiB — exceeds 1 KiB
     }
     catch (const std::runtime_error &)
     {
@@ -133,7 +133,7 @@ static void test_claim_space_concurrent()
         threads.emplace_back([&mem, t, &results]()
                              {
             for (int i = 0; i < kClaimsPerThread; ++i) {
-                Offset off = mem.claim_space(kClaimSize);
+                Offset off = mem->claim_space(kClaimSize);
                 results[t].push_back(off);
             } });
     }
@@ -156,7 +156,7 @@ static void test_claim_space_concurrent()
              "total unique offsets equals claims * threads");
 
     Offset expected_size = kThreads * kClaimsPerThread * kClaimSize;
-    CHECK_EQ(mem.size(), expected_size, "final size matches total claimed bytes");
+    CHECK_EQ(mem->size(), expected_size, "final size matches total claimed bytes");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -167,16 +167,16 @@ static void test_stream_head()
     auto mem = Memory::create(64 * 1024);
 
     // Acquire the stream head
-    auto head = mem.try_acquire_stream();
+    auto head = mem->try_acquire_stream();
     CHECK(static_cast<bool>(head) == true, "try_acquire_stream succeeds on first call");
 
     // Second acquisition should fail (lock held)
-    auto head2 = mem.try_acquire_stream();
+    auto head2 = mem->try_acquire_stream();
     CHECK(static_cast<bool>(head2) == false, "try_acquire_stream fails while lock held");
 
     // Release — head2 goes out of scope, then test another acquire
     head.reset();
-    auto head3 = mem.try_acquire_stream();
+    auto head3 = mem->try_acquire_stream();
     CHECK(static_cast<bool>(head3) == true, "try_acquire_stream succeeds after release");
 }
 
@@ -186,10 +186,10 @@ static void test_stream_head()
 static void test_view()
 {
     auto mem = Memory::create(64 * 1024);
-    Offset off = mem.claim_space(256);
+    Offset off = mem->claim_space(256);
     CHECK_EQ(off, 0ULL, "first claim starts at 0 for View test");
 
-    auto view = mem.view();
+    auto view = mem->view();
     CHECK_EQ(view.size(), 256ULL, "view size matches claimed bytes");
     CHECK_NE(view.data(), nullptr, "view data pointer is non-null");
 }
@@ -205,8 +205,8 @@ static void test_truncate_file()
 
     {
         auto mem = Memory::createFromFile(tmp, 64 * 1024);
-        mem.claim_space(4096);
-        mem.truncate_file(mem.size());
+        mem->claim_space(4096);
+        mem->truncate_file(mem->size());
         // After truncation, the file on disk should be exactly 4096 bytes
     }
 
@@ -232,12 +232,12 @@ static void test_shm_create()
     std::string shm_name = "/fastfhir_test_shm_" + std::to_string(pid);
     auto mem = Memory::create(64 * 1024, shm_name);
     CHECK(static_cast<bool>(mem) == true, "SHM create() returned valid handle");
-    CHECK_NE(mem.base(), nullptr, "SHM base() is non-null");
-    CHECK_EQ(mem.capacity(), 64ULL * 1024, "SHM capacity matches");
+    CHECK_NE(mem->base(), nullptr, "SHM base() is non-null");
+    CHECK_EQ(mem->capacity(), 64ULL * 1024, "SHM capacity matches");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test: Memory::Memory() default-constructed handle
+// Test: Memory() default-constructed handle
 // ─────────────────────────────────────────────────────────────────────────────
 static void test_default_handle()
 {

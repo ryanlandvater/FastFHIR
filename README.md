@@ -78,6 +78,7 @@ __A: I am stricter than normal FHIR when it comes to extensions. We are adding a
   - [5 — Surgically edit one patient in a 5 GB bundle and reseal](#5--surgically-edit-one-patient-in-a-5-gb-bundle-and-reseal)
   - [6 — Lock-Free Concurrent Generation](#6--lock-free-concurrent-generation)
   - [7 — Compact Archives](#7--compact-archives)
+  - [8 — Calling from C](#8--calling-from-c-fastfhirh)
 - [CLI Tools](#command-line-interface-tools)
   - [ff\_ingest](#ff_ingest)
   - [ff\_export](#ff_export)
@@ -99,60 +100,56 @@ __A: I am stricter than normal FHIR when it comes to extensions. We are adding a
 ## Why FastFHIR?
 
 ### 1. Extreme Performance & Compact Size
-FastFHIR turns data traversal into pure pointer arithmetic, outpacing text formats and avoiding the unpack step of serialized binaries.
-* **O(1) Random Access:** Jump instantly to any deeply nested FHIR field — completely bypassing the O(N) linear scanning of HL7v2 and the O(N) string-hashing and DOM construction of JSON.
-* **Zero-Heap Allocation:** Reading a FastFHIR stream requires 0 heap allocations for field navigation and reflection — field metadata is exposed as zero-copy `std::span` views over static tables, and a lightweight `Node` viewing lens is passed directly over the raw memory buffer, enabling nanosecond read times from the instant the message hits RAM. (Array materialization via `entries()` is the one exception: it returns an owning `std::vector<Node>`, one allocation per call, ~1 ns per element at `-O3`.)
-* **Zero-Copy Engine:** There is no deserialization phase — no varint unpacking, no C++ message objects. The receiver reads the bytes it was sent. Measured at 2.4–3.4x the receiver-side throughput of an `orjson` JSON pipeline across 1.7–162 MB bundles ([FastFHIR-benchmark](https://github.com/ryanlandvater/FastFHIR-benchmark), Test 1).
-* **Fraction of Size on Disk:** Optional compact archive mode reduces storage by up to **66%** on sparse resources through presence bitmasks and dense field packing (see [Compact Archives](#7--compact-archives)).
+FastFHIR turns data traversal into pointer arithmetic.
+* **O(1) Random Access:** Jump straight to any nested FHIR field. HL7v2 and JSON have to scan for it; FastFHIR does not.
+* **Zero Heap Allocation:** Navigation and reflection allocate nothing. Field metadata is zero-copy `std::span` views over static tables, and a `Node` is a lens directly over the raw buffer — reads are nanosecond-scale the moment the bytes are in RAM. (One exception: `entries()` returns an owning `std::vector<Node>`, one allocation per call.)
+* **Zero-Copy Engine:** No deserialization phase, no varint unpacking, no C++ message objects — the receiver reads the bytes it was sent. For measured throughput, see [FastFHIR-benchmark](https://github.com/ryanlandvater/FastFHIR-benchmark).
+* **Small on Disk:** Optional compact archives strip absent fields with presence bitmasks and dense packing; the savings are largest on sparse resources (see [Compact Archives](#7--compact-archives)).
 
 ### 2. Type Safety & Validated FHIR Format
-FastFHIR provides **strongly validated, type-safe FHIR encoding** with guaranteed format correctness and comprehensive extension handling.
-* **Strict Schema Validation:** The binary layout embeds explicit `RECOVERY_TAG` metadata for every object. This provides guaranteed safe polymorphic resolution and strict C++ type checking at runtime, preventing incorrect information context, garbage reads, and buffer overflows. Every resource is validated against official FHIR Structure Definitions at generation time.
-* **Native FHIR Polymorphic Type Support:** FastFHIR understands FHIR's polymorphic fields exactly as the spec defines them, including both choice elements such as `valueQuantity`, `valueString`, `valueCodeableConcept`, and other `[x]` fields, and polymorphic resource-bearing slots such as `Bundle.entry.resource`. Concrete payload types retain strict runtime identity and can be ingested, traversed, materialized, mutated, and re-exported without lossy adapter layers or non-compliant generic protobuf JSON conventions.
-* **Structured Codes & Extensions:** Extensions are intelligently routed at ingest time — registered extensions are decoded into typed binary fields (WASM-based codecs); unknown extensions are preserved with URL tracking. Codes are strongly enumerated from official FHIR CodeSystems.
-* **Primitive Extensions Preserved Correctly:** FastFHIR supports FHIR's underscore-prefixed primitive extension model, allowing extensions on scalar primitives to survive ingest, validation, traversal, and re-export. This is a critical compatibility requirement that standard Protobuf JSON serializers do not implement.
-* **Conformance Checking Is Opt-In, and Separate:** The validation above is *structural* — a block sits at its own offset, carries its tag, and fits in the arena — and it always runs. *Conformance* checking is a separate, attachable layer generated from the HL7 StructureDefinitions: required elements such as `Observation.status`, cardinality, and a queryable record of every FHIRPath invariant it does **not** evaluate. Build it with `-DFASTFHIR_BUILD_CONFORMANCE=ON`, attach it with `Builder::attach_layer`, and a stream written with it attached is byte-identical to one written without it. Detached, it costs one null check. Modelled on Vulkan validation layers: a development-time aid, not a production dependency. See `examples/conformance_layer.cpp`.
+* **Strict Schema Validation:** Every object carries an explicit `RECOVERY_TAG` in its binary layout, so polymorphic resolution and C++ type checks are enforced at runtime — no mistyped reads, no garbage, no buffer overruns. Every resource is validated against the official FHIR Structure Definitions at generation time.
+* **Native Polymorphic Types:** FastFHIR handles FHIR's polymorphic fields as the spec defines them — choice elements such as `valueQuantity` and `valueString`, and resource-bearing slots such as `Bundle.entry.resource`. Concrete payload types keep their identity through ingest, traversal, mutation, and re-export.
+* **Structured Codes & Extensions:** Extensions are routed at ingest time. Registered extensions decode into typed binary fields (WASM codecs); unknown ones keep their URL. Codes come from official FHIR CodeSystems.
+* **Primitive Extensions:** FHIR's underscore-prefixed primitive extension model works end to end — extensions on scalar primitives survive ingest, validation, traversal, and re-export. Generic protobuf JSON tools do not implement this.
+* **Conformance Checking Is Opt-In:** Structural validation (a block sits at its own offset, carries its tag, fits in the arena) always runs. *Conformance* is a separate, attachable layer generated from the HL7 StructureDefinitions: required elements like `Observation.status`, cardinality, and a queryable record of every FHIRPath invariant it does not evaluate. Build with `-DFASTFHIR_BUILD_CONFORMANCE=ON` and attach it with `Builder::attach_layer`. Attached, it writes a byte-identical stream; detached, it costs one null check. See `examples/conformance_layer.cpp`.
 
-> **Scope.** FastFHIR is a serialization library, not a FHIR server. There is no REST API, no SMART on FHIR, and no OAuth. The conformance layer checks *resources*, not *interactions* — it will tell you that an `Observation` is missing its required `status`, and it will not tell you anything about a `$validate` operation, a search parameter, or a capability statement.
+> **Scope.** FastFHIR is a serialization library, not a FHIR server. No REST API, no SMART on FHIR, no OAuth. The conformance layer checks *resources*, not *interactions* — it will tell you an `Observation` is missing its required `status`, and nothing about `$validate`, search parameters, or capability statements.
 
 ### 3. Memory Safety & Integrity
-**Memory safety is a first-class feature**. FastFHIR gives deterministic memory management and structural integrity at the OS level.
-* **OS-Protected Memory:** By utilizing Virtual Memory Arenas (via POSIX `mmap` or Win32 `VirtualAlloc`), FastFHIR ensures pointers remain perfectly stable and memory access is protected by the OS kernel. Legacy formats like JSON expose systems to heap fragmentation and injection attacks; FastFHIR eliminates these vectors entirely.
-* **Strict Polymorphic Type Checking:** The embedded `RECOVERY_TAG` metadata catches type confusion and mis-typed reads at runtime, so a field is never silently reinterpreted as the wrong type. This guards against *malformed* data; the parser has not yet been fuzzed against *hostile* data (TASKS.md G1).
-* **Integrity Footers:** Built-in checksum footers (CRC32/MD5/SHA-256) detect corruption and accidental modification. Note this is *integrity*, not *authenticity* — an attacker who can rewrite payload bytes can recompute the footer. Signed archives are tracked in TASKS.md G4.
-* **Deterministic Memory Layout:** Every byte position is mathematically predetermined. No dynamic allocation, no heap fragmentation, no surprise reallocations — perfect for safety-critical healthcare workflows.
+* **OS-Protected Memory:** Virtual Memory Arenas (POSIX `mmap` or Win32 `VirtualAlloc`) keep pointers stable and put access under the OS kernel. JSON's heap-fragmentation and injection surface is gone.
+* **Strict Polymorphic Type Checking:** The `RECOVERY_TAG` catches type confusion at runtime, so a field is never silently read as the wrong type. This guards against *malformed* data; the parser has not yet been fuzzed against *hostile* data (TASKS.md G1).
+* **Integrity Footers:** Optional checksum footers (CRC32/MD5/SHA-256) detect corruption and accidental modification. This is *integrity*, not *authenticity* — anyone who can rewrite the payload can recompute the footer. Signed archives are tracked in TASKS.md G4.
+* **Deterministic Layout:** Every byte position is predetermined. No dynamic allocation, no reallocation surprises — what safety-critical workflows need.
 
 ### 4. Clinical Informatics: Lock-Free Enrichment & Custom Profiles
-* **In-Stream Lazy Enrichment:** Read a `Patient.id` or route a payload in nanoseconds without parsing the other 9,999 fields in a `Bundle`. You only pay for the exact bytes you traverse. Append a new laboratory result for a patient without touching any other byte in the record — simply add the new result and reseal before passing the message downstream.
-* **Concurrent Mutex-Free Generation:** Serialize thousands of resources simultaneously across a thread pool. FastFHIR's atomic pointer-patching architecture allows surgical data appends (like NLP annotations) into a single contiguous stream without a single lock.
-* **Custom Implementation Guides:** Generator supports pluggable profiles — compose US Core (28 resources), UK Core (23), claims, and other groupings, or define your own to match your dataset. Generation happens automatically at build time from official HL7 bundles, and a resource outside your profile still round-trips intact (see [Resource groupings](#resource-groupings)).
+* **Lazy Enrichment:** Read a `Patient.id` or route a payload without parsing the other 9,999 fields in a `Bundle` — you pay only for the bytes you traverse. Add a lab result without touching any other byte: append it and reseal.
+* **Mutex-Free Concurrency:** Fill one contiguous stream from thousands of threads. Atomic pointer patching means surgical appends (NLP annotations, for instance) need no locks.
+* **Custom Implementation Guides:** The generator composes profiles at build time from official HL7 bundles — US Core, UK Core, claims, or your own. A resource outside your profile still round-trips intact (see [Resource groupings](#resource-groupings)).
 
 ### 5. Developer Ergonomics & Cross-Language Support
-You do not have to sacrifice a clean API for bare-metal performance — **native support for both C++ and Python**.
-* **IDE-Friendly Static Keys:** Zero-overhead, compiled O(1) typed keys (e.g., `FastFHIR::Fields::PATIENT::ACTIVE`) completely bypass runtime string hashing.
-* **Polymorphic Type Safety:** Assign fields directly to C++ types with zero-overhead implicit conversion (e.g., `std::string_view id = node[FastFHIR::Fields::PATIENT::ID]`), or eagerly materialize an entire struct (`PatientData patient = parser.root()`).
-* **JSON-Style Traversal:** Walk complex trees using native C++ `[]` operators (e.g., `root[FastFHIR::Fields::PATIENT::NAME][0]`).
-* **FHIR-Accurate JSON Conversion:** Bidirectional parsing and printing via `ff_ingest` and `ff_export` CLI tools and C++/Python APIs preserve official FHIR JSON behavior, including polymorphic choice fields, polymorphic resource slots, and primitive extensions. This avoids the incompatibilities of generic Protobuf JSON utilities such as `google::protobuf::util::MessageToJsonString`, which do not implement the FHIR JSON specification.
+Native C++ and Python, no API tax for the speed.
+* **Static Keys:** Compiled O(1) typed keys such as `FastFHIR::Fields::PATIENT::ACTIVE` replace runtime string hashing.
+* **Assign to C++ Types:** Implicit conversion works directly (`std::string_view id = node[FastFHIR::Fields::PATIENT::ID]`), or materialize a whole struct (`PatientData patient = parser.root()`).
+* **JSON-Style Traversal:** `root[FastFHIR::Fields::PATIENT::NAME][0]` walks the tree.
+* **FHIR-Accurate JSON:** `ff_ingest`, `ff_export`, and the C++/Python APIs round-trip official FHIR JSON, including choice fields, resource slots, and primitive extensions. Generic protobuf JSON helpers like `google::protobuf::util::MessageToJsonString` do not implement the FHIR JSON spec.
 
 ---
 
 # Quick Start
 
 > [!TIP]
-> ## Use Python, not C/C++? We got you.
+> ## Using Python instead of C/C++?
 >
 > #### **→ [Read the Python API guide](python/README.md)**
 >
-> **You get full functionality through our cross languge bindings.**
-> Not a subset. Not a subprocess wrapper around the CLI. The same memory-mapped
+> The cross-language bindings give you the whole library — the same memory-mapped
 > arena, the same O(1) typed field keys, the same zero-copy reads and lock-free
-> in-stream enrichment — driven entirely from Python.
+> in-stream enrichment — driven from Python.
 > 
 
 ## Build From Source Prerequisites
-* **Python 3.11+** (generator only — the generator uses PEP 604 `X | None` annotations, so
-  CMake enforces this floor. macOS ships a 3.9 with the Command Line Tools, which fails at
-  import with a `TypeError` far from its cause.)
+* **Python 3.11+** — generator only (it uses PEP 604 `X | None` annotations, so CMake
+  enforces this floor; the macOS Command Line Tools ship 3.9 and fail at import).
 * Clang, GCC, or MSVC with C++20 support
 * CMake 3.20+ — **3.25+ to use the presets below**
 * Network access (generator fetches FHIR bundles from HL7)
@@ -197,6 +194,7 @@ The `build_all` target builds every enabled component: the core library (`libfas
 | `FASTFHIR_RUN_GENERATOR` | `ON` | Run the Python code generator at configure time |
 | `FASTFHIR_GENERATE_ON_BUILD` | `OFF` | Re-run the generator before every build (may invalidate the PCH) |
 | `FASTFHIR_ENABLE_EXTENSIONS` | `OFF` | Enable the WASM extension codec host |
+| `FASTFHIR_BUILD_CONFORMANCE` | `OFF` | Build the attachable FHIR conformance layer (see `examples/conformance_layer.cpp`) |
 
 Example — UK Core profile with ingestor, tests, and Python bindings:
 
@@ -211,8 +209,8 @@ cmake --build build --target build_all -j
 
 #### Resource groupings
 
-`FASTFHIR_PRODUCTION_PROFILE` takes a **comma-separated list**, because real
-deployments compose — a payer needs US Core *and* claims:
+`FASTFHIR_PRODUCTION_PROFILE` takes a **comma-separated list** — real deployments
+compose (a payer needs US Core *and* claims):
 
 | Grouping | Resources | Covers |
 |---|---|---|
@@ -222,7 +220,7 @@ deployments compose — a payer needs US Core *and* claims:
 | `medication-admin` | 1 | `MedicationAdministration` — the "was it actually given" event US Core omits from the medication chain |
 | `supply` | 2 | `SupplyDelivery`, `SupplyRequest` |
 | `imaging` | 1 | `ImagingStudy` — the DICOM study/series/instance structure behind a `DiagnosticReport` |
-| `all` | 275 | Every concrete resource in the FHIR packages; absorbs any other name (**WARNING: this profile is absolutely massive**) |
+| `all` | 275 | Every concrete resource in the FHIR packages; also accepts any unknown name. **Very large build.** |
 
 ```bash
 -DFASTFHIR_PRODUCTION_PROFILE=us-core,billing    # US Core + claims
@@ -232,31 +230,27 @@ deployments compose — a payer needs US Core *and* claims:
 `us` and `uk` remain accepted as aliases for `us-core` / `uk-core`.
 
 **`ExplanationOfBenefit` is deliberately not in `us-core`.** US Core is
-clinical/EHR scope; EOB is a payer artifact profiled by CARIN Blue Button. If you
-are building payer-side, you want `us-core,billing`.
+clinical/EHR scope; EOB is a payer artifact from CARIN Blue Button. Building
+payer-side, use `us-core,billing`.
 
 > [!NOTE]
-> **The profile decides what this build can BINARY ENCODE – not what a stream can carry. We do NOT drop clinical data!**
-> A resource whose type is outside your profile is **not dropped** — its JSON is
-> retained verbatim in the stream and re-emitted byte-for-byte on export, so any
-> FHIR document round-trips losslessly whatever you compiled. What you give up is
-> *typed access* to that resource – in other words you have to fall back to normal
-> out of the box FHIR. A non-profiled stream has no V-Table, so there is no `Node`
-> navigation into its fields, no query, and no internal byte compaction – i.e. just normal FHIR.
-> Pick a profile for the resources you want to *FastFHIR*. You do not need to
-> enumerate every type in existance in your build.
+> **The profile decides which resources this build can *binary-encode* — not what a stream can carry.**
+> Data is never dropped. A resource outside your profile keeps its JSON verbatim in
+> the stream and is re-emitted byte-for-byte on export, so any FHIR document
+> round-trips losslessly whatever you compiled. What you lose is *typed access*:
+> with no V-Table there is no `Node` navigation, no query, and no interior compaction — it
+> behaves like ordinary FHIR. Pick a profile for the resources you want FastFHIR-native; you do
+> not have to enumerate every type in existence.
 
 > [!NOTE]
-> **You do not have to worry about profile affecting `RESOURCE` tag interoperability**. 
-> Every resource is associated with a permanent and git-tracked
-> `RECOVERY_TAG` — plus one per nested BackboneElement — but tag discovery is
-> deliberately profile-independent: the ledger `dictionaries/master_tags.json`
-> covers the whole R4 ∪ R5 spec, so `generated_src/FF_RecoveryTags.hpp` is byte-identical
-> whichever groupings you compile. A permanent wire artifact whose contents
-> depend on build configuration is not a permanent wire artifact. Switching
-> profile therefore changes only which resources get C++ emitted. If a newer FHIR
-> package introduces types the ledger has never seen, the generator appends them
-> at the next free value in their band and rewrites the ledger — an append-only
+> **Profile choice does not affect `RESOURCE` tag interoperability.**
+> Every resource gets a permanent, git-tracked `RECOVERY_TAG` — plus one per nested
+> BackboneElement — and tag discovery is profile-independent: the ledger
+> `dictionaries/master_tags.json` covers the whole R4 ∪ R5 spec, so
+> `generated_src/FF_RecoveryTags.hpp` is byte-identical whichever groupings you
+> compile. Switching profile changes only which resources get C++ emitted. When a
+> newer FHIR package adds types the ledger has never seen, the generator appends
+> them at the next free value in their band and rewrites the ledger — an append-only
 > change to a committed wire file, so review that diff. See TASKS.md A27.
 
 See [Generator Architecture](#generator-architecture) for details on profiles and the generation pipeline.
@@ -265,34 +259,32 @@ See [Generator Architecture](#generator-architecture) for details on profiles an
 
 # Getting Started
 
-These three basic steps walk you from basic FHIR to a fully-functioning binary FastFHIR
-workflow. Start at whichever step matches your use-case — you do not have to use all three
-together.
+These three steps take you from plain FHIR JSON to a working binary FastFHIR workflow.
+Start at whichever step matches your use case — you do not have to do all three.
 
-**Every `cpp` block on this page is checked by the test suite, as published — not a copy
-of it.** Two gates, because "it compiles" and "it works" are different claims:
+Every `cpp` block on this page is checked by the test suite as published. Two gates, because
+"it compiles" and "it works" are different claims:
 
 | Gate | What it does | Covers |
 |---|---|---|
-| `ctest -R py_readme_cpp_compiles` | Extracts each block and builds it `-fsyntax-only` | all 23 buildable blocks |
-| `ctest -R cpp_readme_` | **Extracts and RUNS** the block, then asserts on the result | the 7 end-to-end examples |
+| `ctest -R py_readme_compiles` | Extracts each block and builds it `-fsyntax-only` — C++ blocks as C++20, the C block as C11 | all 25 buildable blocks |
+| `ctest -R cpp_readme_` | **Extracts and runs** the block, then asserts on the result | the 8 executed blocks |
 
-The second one is the important one. The runner is *generated from this file* — the code it
-executes is the text above, verbatim, not a re-implementation. Change a value in an example
-and the suite goes red naming that block.
+The second gate matters most. The runner is generated from this file, so the code it runs is
+the text above, verbatim — not a re-implementation. Change a value in an example and the
+suite goes red, naming that block.
 
-This exists because for a long time only a hand-written parallel copy existed
+This exists because only a hand-written parallel copy used to exist
 ([tests/cpp/test_readme.cpp](tests/cpp/test_readme.cpp)). It proved the examples worked and
-could say nothing about this page, so the two drifted: every C++ block here called an API
-that no longer existed while `ctest` stayed green. Running the published bytes is the only
-thing that closes that, and doing it found four more defects the compile gate could not see
-— including examples that parsed a stream before it was sealed and assigned a field in a way
-that throws.
+said nothing about this page, so the two drifted: every C++ block here called an API that no
+longer existed while `ctest` stayed green. Running the published bytes closed that gap, and
+found four more defects the compile gate could not see — including examples that parsed a
+stream before it was sealed, and one that assigned a field in a way that throws.
 
 > **Editing a block?** The HTML comment above each fence configures the gates
-> (`program`, `fragment`, `expressions`, `needs=`, `requires=`, `run=`) and is invisible
-> when rendered. Adding `run=<id>` makes a block *execute*; its fixtures and assertions go
-> in `tests/readme/expect.hpp`, never in this page. `--dump <n>` on
+> (`program`, `fragment`, `expressions`, `needs=`, `requires=`, `run=`) and is invisible when
+> rendered. Adding `run=<id>` makes a block execute; its fixtures and assertions go in
+> `tests/readme/expect.hpp`, never on this page. `--dump <n>` on
 > `tests/python/test_readme_compiles.py` prints exactly what was compiled.
 
 ---
@@ -375,8 +367,8 @@ That is the complete read path.
 
 ## Step 2 — Create a `Memory` arena
 
-FastFHIR's Virtual Memory Arena (VMA) is the backing store used by the `Builder` and the
-streaming ingestion path. There are three flavours:
+FastFHIR's Virtual Memory Arena (VMA) backs the `Builder` and the streaming ingest path. Two
+ways to create one:
 
 ### Anonymous RAM arena (in-process only)
 
@@ -403,7 +395,7 @@ auto mem = FastFHIR::Memory::createFromFile("patient.ffhr");
 
 ### Using a FastFHIR Memory Arena
 
-Once a `Memory` object is created, it can be used to parse or parse, build, or ingest FHIR resources.
+Once a `Memory` object exists, it can parse, build, or ingest FHIR resources.
 
 <!-- ff-compile: fragment needs=arena -->
 ```cpp
@@ -413,7 +405,9 @@ auto root = parser.root();
 ```
 
 > [!TIP]
-> **A `Memory` arena is much more powerful than a simple filestream or memory buffer.** It can create a `Memory::Streamhead` into which a network socket can directly stream network data and the `Memory` can safely (and lockelessly) write FastFHIR data into the same archive from multiple concurrent threads. **If unsure, always use a `FastFHIR::Memory` arena.**
+> **A `Memory` arena does more than a filestream or buffer.** A `Memory::StreamHead` lets a
+> network socket stream directly into it, and multiple threads can write into the same
+> archive safely without locks. If unsure, use a `FastFHIR::Memory` arena.
 
 ---
 
@@ -433,13 +427,13 @@ serialize pipeline with a single in-place ingestion pass.
 auto mem = FastFHIR::Memory::create(/*Optionally provide arena upper bounds (something like 4 GB)*/);
 
 FastFHIR::FF_BuilderCreateInfo builder_info;
-builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+builder_info.arena   = mem;
 builder_info.version = FHIR_VERSION_R5;
-FastFHIR::FF_Builder builder;
+FF_Builder builder;
 FastFHIR::FF_CreateBuilder(builder_info, builder);
 
 FastFHIR::FF_IngestorCreateInfo ingestor_info;
-FastFHIR::FF_Ingestor ingestor;
+FF_Ingestor ingestor;
 FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
 
 // Any valid FHIR R4/R5 Patient JSON string.
@@ -514,13 +508,13 @@ sealed FastFHIR archive on disk.
 auto mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
 
 FastFHIR::FF_BuilderCreateInfo builder_info;
-builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+builder_info.arena   = mem;
 builder_info.version = FHIR_VERSION_R5;
-FastFHIR::FF_Builder builder;
+FF_Builder builder;
 FastFHIR::FF_CreateBuilder(builder_info, builder);
 
 FastFHIR::FF_IngestorCreateInfo ingestor_info;
-FastFHIR::FF_Ingestor ingestor;
+FF_Ingestor ingestor;
 FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
 
 std::vector<uint8_t> raw = open_read_only_file("patient.json");
@@ -612,12 +606,9 @@ for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
     std::cout << family << "\n";
 }
 
-// Eagerly materialize into a generated C++ struct (strict schema validation).
-// Reach for this ONLY when you need the whole resource or its strict
-// validation. For a query that reads a few fields it is the anti-pattern: it
-// deserializes every field of the abstraction — strings, vectors, sub-objects —
-// the exact O(N) work the zero-copy read path exists to avoid (see "Reading data"
-// below).
+// Materialize into a generated C++ struct (runs strict schema validation).
+// Use it only when you need the whole resource: it deserializes every field,
+// which is the cost the zero-copy read path avoids (see "Reading data" below).
 PatientData patient_data = root;
 
 // Same API works for polymorphic resource slots (e.g. Bundle.entry.resource):
@@ -626,8 +617,7 @@ PatientData patient_data = root;
 
 ### Reading data — the zero-copy pattern
 
-FastFHIR gives you **two independent readers over the same bytes**. Choosing
-between them is the most consequential read-path decision you make:
+There are two ways to read, and picking the right one matters:
 
 | | how you use it | allocates? |
 |---|---|---|
@@ -635,36 +625,30 @@ between them is the most consequential read-path decision you make:
 | **Abstraction** | `node.as<ObservationData>()` | yes — copies into a struct |
 
 The **abstraction types** are the generated data structs — `PatientData`,
-`ObservationData`, `CodeableConceptData` — ordinary C++ values with public fields
-and no behaviour. `node.as<T>()` and `PatientData p = node;` are the same
-operation: walk the entire block and copy every field out of the arena into one.
+`ObservationData`, `CodeableConceptData` — plain C++ values with public fields and no
+behaviour. `node.as<T>()` and `PatientData p = node;` do the same thing: walk the whole block
+and copy every field into the struct.
 
-The lens hands back a *view* instead. An `Entry`/`Node` is a coordinate into the
-mapped file, so a field read is a vtable-slot lookup plus a bounds check, and the
-`std::string_view` it yields points at the arena's own bytes — nothing is copied
-and nothing is freed.
+The lens returns a *view* instead. An `Entry`/`Node` is a coordinate into the mapped file, so
+a field read is a vtable-slot lookup plus a bounds check, and the `std::string_view` it
+returns points at the arena's own bytes — nothing is copied or freed.
 
-**Do** — lens reads: navigate to exactly the fields you need and coerce them to
-`std::string_view` / scalars. Nodes are views over the arena, not copies.
-Index-walk arrays (`node[i]`) instead of `entries()` when you don't need the
-materialized list — the index walk allocates nothing.
+**Do** use lens reads: navigate to the fields you need and coerce them to `std::string_view`
+or scalars. Nodes are views, not copies. Index-walk arrays (`node[i]`) instead of `entries()`
+when you don't need the materialized list.
 
-**Don't** — materialize the whole resource (`PatientData p = root;`) to answer a
-query that needs two fields. The whole abstraction gets deserialized — every field
-the query never touches — which is precisely the O(N) work the format exists to
-avoid, and it is invisible in the timing if you only measure the query. This is
-the single most common misuse of the read API; it is why the benchmark's
-query stage originally ran at parity with a DOM parser despite the O(1) per-field
-access underneath. Whole-resource materialization is for validation and
-whole-record consumers, not for field access.
+**Don't** materialize a whole resource (`PatientData p = root;`) to answer a query that needs
+two fields. It deserializes every field the query never touches — the O(N) work the format
+exists to avoid — and the cost hides if you only time the query. Materialization is for
+validation and whole-record consumers.
 
 Two slot kinds need care:
 
-- **Date/time slots** (`birthDate`, `issued`, `effective`) are packed; the
-  string-view reader throws on them. Check presence with the slot's truthiness
-  and use `print_json` only when the text is required (CAPI-4).
-- **Choice slots** (`value[x]`, `effective[x]`) carry their variant type in the
-  slot's recovery tag — read `entry.target_recovery` without expanding the node.
+- **Date/time slots** (`birthDate`, `issued`, `effective`) are packed; the string-view reader
+  throws on them. Check presence with the slot's truthiness, and use `print_json` only when
+  the text is required (CAPI-4).
+- **Choice slots** (`value[x]`, `effective[x]`) carry their variant type in the slot's
+  recovery tag — read `entry.target_recovery` without expanding the node.
 
 ---
 
@@ -684,13 +668,13 @@ pointers). The file grows solely by the delta; no copy of existing data is ever 
 auto mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024);
 
 FastFHIR::FF_BuilderCreateInfo builder_info;
-builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+builder_info.arena   = mem;
 builder_info.version = FHIR_VERSION_R5;
-FastFHIR::FF_Builder builder;
+FF_Builder builder;
 FastFHIR::FF_CreateBuilder(builder_info, builder);
 
 FastFHIR::FF_IngestorCreateInfo ingestor_info;
-FastFHIR::FF_Ingestor ingestor;
+FF_Ingestor ingestor;
 FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
 
 // Obtain a mutable handle to the existing root
@@ -745,7 +729,7 @@ loopback TCP transport.
 auto mem = FastFHIR::Memory::create(256 * 1024 * 1024);   // 256 MB anonymous arena
 
 FastFHIR::FF_IngestorCreateInfo ingestor_info;
-FastFHIR::FF_Ingestor ingestor;
+FF_Ingestor ingestor;
 FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
 
 asio::io_context io;
@@ -755,7 +739,7 @@ asio::ip::tcp::socket conn(io);
 // ── Step 1: receive FHIR JSON directly into the arena (zero-copy ingest) ──
 std::string raw_json;
 {
-    auto head = mem.try_acquire_stream();   // exclusive stream lock
+    auto head = mem->try_acquire_stream();   // exclusive stream lock
     if (!head) throw std::runtime_error("stream busy");
 
     std::array<char, 65536> buf{};
@@ -767,9 +751,9 @@ std::string raw_json;
 // ── Step 2: ingest and enrich ──
 auto mem2 = FastFHIR::Memory::create(256 * 1024 * 1024);
 FastFHIR::FF_BuilderCreateInfo builder_info;
-builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem2);
+builder_info.arena   = mem2;
 builder_info.version = FHIR_VERSION_R5;
-FastFHIR::FF_Builder builder;
+FF_Builder builder;
 FastFHIR::FF_CreateBuilder(builder_info, builder);
 
 FastFHIR::Reflective::ObjectHandle patient_handle;
@@ -830,13 +814,13 @@ Finding one patient, appending a lab result, and resealing never loads the other
 auto mem = FastFHIR::Memory::createFromFile("bundle.ffhr", 8ULL * 1024 * 1024 * 1024);
 
 FastFHIR::FF_BuilderCreateInfo builder_info;
-builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+builder_info.arena   = mem;
 builder_info.version = FHIR_VERSION_R5;
-FastFHIR::FF_Builder builder;
+FF_Builder builder;
 FastFHIR::FF_CreateBuilder(builder_info, builder);
 
 FastFHIR::FF_IngestorCreateInfo ingestor_info;
-FastFHIR::FF_Ingestor ingestor;
+FF_Ingestor ingestor;
 FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
 
 auto parser = FastFHIR::Parser(mem);
@@ -860,7 +844,7 @@ if (!found) throw std::runtime_error("patient-42 not found");
 FastFHIR::FF_BundleAppendResult appended;
 FastFHIR::FF_BundleAppendEntries(FastFHIR::FF_BundleAppendInfo{
     .builder = builder,
-    .append  = [&](FastFHIR::Builder&, std::vector<BundleentryData>& new_entries) {
+    .append  = [&](FastFHIR::Builder_t&, std::vector<BundleentryData>& new_entries) {
         FastFHIR::Reflective::ObjectHandle obs_handle;
         Size count = 0;
         FastFHIR::FF_Ingest(FastFHIR::FF_IngestInfo{
@@ -901,9 +885,9 @@ FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
 
 ## 6 — Lock-Free Concurrent Generation
 
-FastFHIR supports **two ways to fill an array**, and both are first-class. They produce
-the same logical `Bundle`, and readers cannot tell them apart. The difference is who
-tracks the array while it is being filled, and where it lands in the stream.
+There are two ways to fill an array. Both produce the same logical `Bundle`, and a reader
+cannot tell them apart. They differ in who tracks the array while it is being filled, and
+where it lands in the stream.
 
 | | **6a — Collect, then serialize** | **6b — Allocate, then backfill** |
 |---|---|---|
@@ -935,9 +919,9 @@ parallel STL backend is typically oneTBB.
 std::vector<uint8_t> serialize_bundle_parallel(const std::vector<ObservationData>& raw_observations) {
     auto mem = FastFHIR::Memory::create(256 * 1024 * 1024); // Allocate 256 MB VMA arena
     FastFHIR::FF_BuilderCreateInfo builder_info;
-    builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+    builder_info.arena   = mem;
     builder_info.version = FHIR_VERSION_R5;
-    FastFHIR::FF_Builder builder;
+    FF_Builder builder;
     FastFHIR::FF_CreateBuilder(builder_info, builder);
 
     // 1) Concurrently append Observation resources into one shared lock-free stream.
@@ -1019,9 +1003,9 @@ std::vector<uint8_t> serialize_bundle_backfill(const std::vector<ObservationData
                                                unsigned workers) {
     auto mem = FastFHIR::Memory::create(256 * 1024 * 1024);
     FastFHIR::FF_BuilderCreateInfo builder_info;
-    builder_info.arena   = std::make_shared<FastFHIR::Memory>(mem);
+    builder_info.arena   = mem;
     builder_info.version = FHIR_VERSION_R5;
-    FastFHIR::FF_Builder builder;
+    FF_Builder builder;
     FastFHIR::FF_CreateBuilder(builder_info, builder);
 
     // 1) Allocate: the Bundle and N empty entries, written as one contiguous array.
@@ -1075,11 +1059,9 @@ original is not modified — and is **read-only** (decompact by rebuilding from 
 standard stream before mutation).
 
 > [!TIP]
-> **Use compact archives when a stream is finalized, unlikely to be mutated, and will
-> be stored or transmitted at scale.** Compact archives are just as fast and fully 
-> traversable via `Parser` using the identical typed-key API as standard streams — 
-> no code changes needed on the read side. They **should** be used for long term
-> archiving of data - there is no reason not to archive if not actively editing a resource. 
+> **Use compact archives for finalized, store-once data.** They are just as fast and fully
+> traversable through `Parser` with the same typed-key API as standard streams, so the read
+> side needs no changes. If you are not actively editing a resource, archive it.
 
 ### Stream Format Comparison
 
@@ -1090,16 +1072,11 @@ standard stream before mutation).
 
 ### Size Savings
 
-Savings scale with field sparsity — the more absent fields, the greater the reduction.
-Empirical results from the test suite (real FHIR resources, no artificial padding):
-
-| Resource | Standard | Compact | Reduction |
-|----------|----------|---------|-----------|
-| `Patient` (id, gender, active, name/given/family) | 1 041 B | 356 B | **−66 %** |
-| `Bundle` (`Patient` + `Observation` with components) | 1 799 B | 1 067 B | **−41 %** |
-
-Reductions are larger for sparse resources (most FHIR resources have many optional fields
-left unset) and smaller for dense records where most fields are populated.
+Savings scale with field sparsity: the more absent fields, the greater the reduction. Real
+FHIR resources are mostly optional fields left unset, so most streams shrink; dense records
+shrink least. The test suite tracks compact sizes against their standard streams, and
+[FastFHIR-benchmark](https://github.com/ryanlandvater/FastFHIR-benchmark) owns the published
+numbers.
 
 ### Usage
 
@@ -1117,7 +1094,8 @@ auto src_mem = FastFHIR::Memory::createFromFile("patient.ffhr", 64 * 1024 * 1024
 auto compact_mem = FastFHIR::Memory::createFromFile("patient.compact.ffhr",
                                                      64 * 1024 * 1024);
 FastFHIR::Parser src(src_mem);
-auto compact_view = FastFHIR::Compactor::archive(src, compact_mem);
+auto compact_view = FastFHIR::Compactor::archive(FastFHIR::Compactor::ArchiveInfo{
+    .source = src, .destination = compact_mem});
 
 // 3. Read the compact archive — identical typed-key API, zero copies.
 FastFHIR::Parser compact(compact_mem);
@@ -1137,6 +1115,115 @@ for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
 
 > **Note:** Compact archives are immutable. To append or modify fields, open the original
 > standard stream, enrich it, re-finalize, and re-compact.
+
+---
+
+## 8 — Calling from C (`FastFHIR.h`)
+
+Everything above is the C++ API (`FastFHIR.hpp`). There is also a **pure-C** surface,
+`FastFHIR.h`, so a C program can link `libfastfhir` with no C++ compiler. It is a
+separate header, not a re-export: the C++ side keeps its classes, references and
+templates, and the two name the same concepts with different types. Include whichever
+one your translation unit needs.
+
+The C surface uses **opaque handles** — you only ever see a pointer, and the library owns
+the object behind it. Every factory has a matching `FF_Destroy*`, every `FF_Destroy*`
+accepts `NULL`, and every entry point takes a parameter struct or a handle, never a long
+positional argument list. The `FF_*Info` structs mirror their `FastFHIR.hpp` counterparts
+field for field, so porting between the two surfaces is renaming, not redesigning.
+
+```c
+#include <FastFHIR.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int seal_patient(void)
+{
+    /* 1. A builder, on an arena it owns. */
+    FF_BuilderCreateInfo binfo = {0};
+    binfo.capacity     = 1u << 20;
+    binfo.fhir_version = FF_FHIR_R5;
+
+    /* Every handle starts NULL and is destroyed once, at the end. FF_Destroy*
+     * ignores NULL, so one cleanup path serves every way out of this function. */
+    FF_BuilderHandle builder = NULL;
+    FF_ObjectHandle  root    = NULL;
+    FF_ViewHandle    sealed  = NULL;
+    FF_ParserHandle  parser  = NULL;
+    char            *out     = NULL;
+    int              status  = 1;
+
+    FF_ResultInfo r = FF_CreateBuilder(&binfo, &builder);
+    if (FF_ResultFailed(&r)) { fprintf(stderr, "%s\n", r.message); goto done; }
+
+    /* 2. Retain a resource and make it the root. The struct literal names each
+     *    field, so a new field is a new line, not a new argument. */
+    const char *json = "{\"resourceType\":\"Patient\",\"id\":\"p1\"}";
+    r = FF_BuilderAppendOpaqueJson(
+        &(FF_BuilderAppendOpaqueJsonInfo){
+            .builder = builder, .json = json, .length = (uint64_t)strlen(json)},
+        &root);
+    if (FF_ResultFailed(&r)) { fprintf(stderr, "%s\n", r.message); goto done; }
+
+    r = FF_BuilderSetRoot(&(FF_BuilderSetRootInfo){.builder = builder, .root = root});
+    if (FF_ResultFailed(&r)) { fprintf(stderr, "%s\n", r.message); goto done; }
+
+    /* 3. Seal. The view owns the bytes and outlives the builder. */
+    r = FF_BuilderFinalize(
+        &(FF_BuilderFinalizeInfo){.builder = builder, .algorithm = FF_CHECKSUM_ALGO_NONE},
+        &sealed);
+    if (FF_ResultFailed(&r)) { fprintf(stderr, "%s\n", r.message); goto done; }
+
+    /* 4. Read it back: parse the sealed bytes, validate, export JSON. */
+    FF_ParseInfo pinfo = {0};
+    pinfo.buffer = FF_ViewData(sealed);
+    pinfo.size   = FF_ViewSize(sealed);
+
+    r = FF_Parse(&pinfo, &parser);
+    if (FF_ResultFailed(&r)) { fprintf(stderr, "%s\n", r.message); goto done; }
+
+    r = FF_ValidateStream(parser);
+    if (FF_ResultFailed(&r)) { fprintf(stderr, "%s\n", r.message); goto done; }
+
+    /* Export is two calls: one to size, one to fill a buffer of that size. */
+    uint64_t needed = 0;
+    r = FF_ExportJson(&(FF_ExportJsonInfo){.parser = parser}, &needed);
+    if (FF_ResultFailed(&r)) { fprintf(stderr, "%s\n", r.message); goto done; }
+
+    out = (char *)malloc((size_t)needed);
+    if (out) {
+        r = FF_ExportJson(&(FF_ExportJsonInfo){.parser = parser, .buffer = out,
+                                               .capacity = needed}, &needed);
+        if (FF_ResultFailed(&r)) { fprintf(stderr, "%s\n", r.message); goto done; }
+        puts(out);
+    }
+    status = 0;
+
+done:
+    free(out);
+    FF_DestroyParser(parser);
+    FF_DestroyView(sealed);
+    FF_DestroyObjectHandle(root);
+    FF_DestroyBuilder(builder);
+    return status;
+}
+```
+
+Two things to know:
+
+- **`FF_ResultInfo`** carries the status: check `FF_ResultSucceeded(&r)` /
+  `FF_ResultFailed(&r)`. `r.message` points into a **thread-local** buffer owned by the
+  library, valid only until the next FastFHIR C call on the same thread — copy it if it
+  must outlive that.
+- **Errors never throw across the boundary.** Everything that can fail returns an
+  `FF_ResultInfo`; the `FF_Destroy*` functions and the size getters cannot fail and are
+  safe on `NULL`.
+
+The C declarations and the C++ `FF_*Info` structs are kept in lock-step by a gate
+(`tests/generator/test_c_abi.py`): the shared facts — struct fields and enum values —
+live once in `tests/generator/c_abi_spec.py` and are checked against both headers. A
+worked consumer is compiled and run as part of `install_smoke`.
 
 ---
 
@@ -1331,13 +1418,10 @@ resolution order:
    and **relative to the containing block** — to the `FF_CODED_VALUE` block
 3. Decode that block per its system discriminator and return the label
 
-The relative pointer is resolved while the containing block is still known: on
-the fast path by `Entry`, which holds both coordinates, and otherwise at node
-construction. A `Node` keeps only its own offset, so nothing downstream of that
-point can redo the arithmetic.
-
-This is why code fields can be assigned with normal strings while still keeping
-fast dictionary-backed storage for known values.
+The relative pointer is resolved while the containing block is still known — on the fast path
+by `Entry`, which holds both coordinates, otherwise at node construction. A `Node` keeps only
+its own offset, so nothing downstream of that point can redo the arithmetic. So codes can be
+assigned as ordinary strings while still storing dictionary-backed values for known codes.
 
 ### Date/Time Assignment Semantics
 
@@ -1360,11 +1444,11 @@ rule, same null convention, one width up:
 #### 1) Packed inline
 
 The value is packed into 63 bits as **civil time plus precision plus UTC
-offset** — not an instant. FHIR forces this: `"2024"` is not
+offset** — not an instant. FHIR requires this: `"2024"` is not
 `"2024-01-01T00:00:00Z"`, `date` never carries a timezone, `time` has no date,
-and a leap second (`:60`) is legal and must survive. Comparison for equality
-becomes an integer compare instead of a string compare, and a value costs 8
-bytes instead of an 8-byte pointer plus a 14-byte block header plus the text.
+and a leap second (`:60`) is legal and must survive. Equality becomes an integer
+compare, and a value costs 8 bytes instead of a pointer plus a block header plus
+the text.
 
 <!-- ff-compile: fragment needs=handles -->
 ```cpp
@@ -1390,9 +1474,9 @@ obs_handle[FastFHIR::Fields::OBSERVATION::ISSUED] = std::string_view("2024-01-15
 // 6 fractional digits -> FF_STRING fallback; the text is preserved byte-for-byte.
 ```
 
-The round trip is byte-exact on **both** paths. The fallback is not a data-loss
-path and not an error path: unparseable text is preserved rather than rejected,
-for the same reason an unknown code becomes a block instead of an exception.
+The round trip is byte-exact on both paths. The fallback is neither a data-loss
+nor an error path: text that cannot be packed is preserved, not rejected — the
+same way an unknown code becomes a block instead of an exception.
 
 #### 3) Null handling
 
@@ -1536,17 +1620,14 @@ FHIR_VERSION_R5   // HL7 FHIR R5 (default)
 
 > FHIR extensibility specification: [https://www.hl7.org/fhir/extensibility.html](https://www.hl7.org/fhir/extensibility.html)
 
-FHIR `extension` and `modifierExtension` arrays contain elements whose `url` field identifies the
-extension type. FastFHIR resolves each URL at ingest time and takes one of three paths, encoded in
-a single 4-byte routing word called `EXT_REF` stored at the binary `FF_EXTENSION::EXT_REF` slot.
-
-The routing decision is made once — during predigestion — and baked into the binary record.
-Subsequent reads pay no URL-lookup cost at all.
+FHIR `extension` and `modifierExtension` arrays identify each extension by its `url`. FastFHIR
+resolves the URL once at ingest time and records the result in a 4-byte routing word, `EXT_REF`,
+at the `FF_EXTENSION::EXT_REF` slot. Reads then pay no URL-lookup cost.
 
 | Condition | `EXT_REF` value | Stored as |
 |---|---|---|
 | URL resolves to a **registered WASM module** | `MSB = 1` → `MODULE_IDX` | Decoded at near-native speed; module indexed in `FF_MODULE_REGISTRY` |
-| URL is **unknown** at ingest time | `MSB = 0` → `URL_IDX` | Raw opaque JSON blob; URL indexed in `FF_URL_DIRECTORY` |
+| URL is **unknown** at ingest time | `MSB = 0` → `URL_IDX` | URL indexed in `FF_URL_DIRECTORY`; content is not guaranteed to round-trip |
 | URL is a **known/filtered** native extension | `FF_NULL_UINT32` (`0xFFFFFFFF`) | Block is suppressed — no arena bytes written |
 
 ### EXT_REF bit layout
@@ -1569,44 +1650,37 @@ ff_ext_ref_index(ref)       // extract the lower 31-bit index
 
 ---
 
-### Condition 1 — Registered WASM modules — binary-speed extension codecs
+### Condition 1 — Registered WASM modules
 
-FastFHIR's most distinctive capability is its open **extension module registry** — by default
-pointing to `https://registry.fastfhir.org` but configurable via the `FF_ExtensionRegistry`
-interface to point to any registry server. Any well-known custom extension — US Core
-race/ethnicity, clinical trial identifiers, organisation-specific profile extensions, and more —
-can have a published **WebAssembly codec module** that fully decodes the extension into typed
-binary fields, stored directly in the FastFHIR arena alongside natively generated resource data.
+FastFHIR has an open **extension module registry**. It points at
+`https://registry.fastfhir.org` by default and is configurable via `FF_ExtensionRegistry`. A
+published **WebAssembly codec module** decodes a custom extension into typed binary fields
+stored in the arena alongside natively generated data — US Core race/ethnicity, clinical trial
+identifiers, organisation-specific extensions, and so on.
 
-When a module is registered for an extension URL, FastFHIR treats that extension with exactly the
-same performance and zero-copy access as a first-class built-in FHIR field. The ecosystem of
-available codecs grows over time as organisations and implementers publish modules to one or
-more registries.
+Once a module is registered for a URL, that extension gets the same performance and zero-copy
+access as a built-in FHIR field.
 
 #### Why WebAssembly?
 
-Compiled WASM modules execute at **near-native speed** inside the FastFHIR runtime. A registered
-module replaces the generic JSON-blob fallback with a structured binary representation that is
-zero-copy readable — the same flat-buffer access pattern used by all first-class FHIR fields.
-Hot paths that access a registered extension field are indistinguishable in performance from
-accessing a built-in field like `Patient.birthDate`.
+Compiled modules run at near-native speed. A registered module replaces the fallback with a
+structured, zero-copy binary representation — the same flat-buffer access every built-in field
+uses — so reading a registered extension costs no more than reading `Patient.birthDate`.
 
-#### Safe sandboxing
+#### Sandboxing
 
-WASM's linear-memory model provides **hard memory isolation** between the host FastFHIR runtime
-and any loaded codec module:
+WASM's linear-memory model isolates the host from each codec module:
 
-- Each module operates exclusively within its own bounded linear memory region.
-  It cannot read or write FastFHIR's arena, stack, or other modules' memory.
-- There are no native pointers shared across the boundary — all data exchange goes through
-  explicitly typed host-import/export function calls.
-- A misbehaving or malicious codec module cannot corrupt the host process, escalate privileges,
-  or access patient data outside its own sandbox.
-- Modules may be loaded, unloaded, and replaced at runtime without restarting the host.
+- A module runs inside its own bounded linear memory and cannot read or write FastFHIR's arena,
+  stack, or other modules.
+- No native pointers cross the boundary; all exchange goes through typed host-import/export
+  calls.
+- A misbehaving module cannot corrupt the process, escalate privileges, or reach patient data
+  outside its sandbox.
+- Modules load, unload, and swap at runtime without restarting the host.
 
-This makes it safe to consume community-published modules from a configured registry server
-(e.g. `https://registry.fastfhir.org`) — or a partner organisation's proprietary
-profile codec — without trusting their compiled binary with direct memory access.
+So you can consume community modules — or a partner's proprietary codec — without giving their
+compiled binary direct memory access.
 
 #### Module registration
 
@@ -1647,13 +1721,11 @@ bool loaded = FastFHIR::Extensions::FF_WasmExtensionHost::get()
 
 ### Condition 2 — Unknown extensions — URL retention
 
-When an extension URL has not been seen before and no WASM module is registered for it, FastFHIR
-records the URL in the stream-level `FF_URL_DIRECTORY` (a chained-segment trie that deduplicates
-shared URL prefixes). This preserves the extension identifier for lookup and module registration
-workflows, but the current predigestion/export pipeline does **not** preserve the full unknown
-extension JSON payload as an opaque blob for automatic re-emission. In other words, unknown
-extension URLs can be retained, but this should not be interpreted as a **lossless round-trip**
-guarantee for arbitrary, unhandled extension content.
+When an extension URL is new and no WASM module is registered for it, FastFHIR records the URL in
+the stream-level `FF_URL_DIRECTORY` — a chained-segment trie that stores shared URL prefixes once.
+The URL is kept for lookup and module registration, but the current predigestion/export pipeline
+does **not** preserve the extension's JSON payload for re-emission. Retaining the URL is not a
+general lossless round-trip guarantee for unhandled extension content.
 
 `FF_URL_DIRECTORY` uses a chained-segment model so that many URLs sharing a common prefix (e.g.
 `http://example.org/fhir/StructureDefinition/`) store that prefix only once:
@@ -1681,28 +1753,26 @@ if (parser.has_url_directory()) {
 
 ### Condition 3 — Filtered / suppressed extensions
 
-Some extensions carry no clinical payload of interest (e.g. HL7-defined rendering hints,
-US Core race narrative text, data-absent-reason flags that are already captured natively).
-For these, FastFHIR writes `FF_NULL_UINT32` into `EXT_REF` at predigestion time and skips the
-block entirely during the ingest pass. No memory is allocated, no bytes are written to the arena,
-and no pointer appears in the binary record.
+Some extensions carry no clinical payload of interest — HL7 rendering hints, US Core race
+narrative text, data-absent-reason flags already captured natively. For these, FastFHIR writes
+`FF_NULL_UINT32` into `EXT_REF` at predigestion time and skips the block during ingest: no arena
+bytes, no pointer in the record.
 
-The filter table is generated from the official HL7 FHIR spec bundles during code generation and
-is baked into the library. Extensions can also be registered as filtered at runtime before
-ingestion begins.
+The filter table is generated from the official HL7 FHIR spec bundles at code-generation time
+and baked into the library; extensions can also be marked filtered at runtime before ingestion.
 
 | Filter mode | Effect |
 |---|---|
-| `FILTER_ALL_KNOWN` *(default)* | Suppresses all profile-native and HL7-informational-only extensions; unknown URLs are interned and preserved |
+| `FILTER_ALL_KNOWN` *(default)* | Suppresses all profile-native and HL7-informational-only extensions; unknown URLs are interned |
 | `FILTER_NONE` | Every URL is interned; nothing is suppressed |
 
 At ingest time `FF_PredigestExtensionURLs()` runs before any resource data is written. It scans
 the full payload, classifies each URL against the filter table, and builds the intern state
 consumed by all subsequent worker threads.
 
-`modifierExtension` elements follow **exactly the same** three-path routing as `extension`. A
-modifier extension with a registered module is decoded at full binary speed; one with an unknown
-URL is preserved as raw JSON with full fidelity.
+`modifierExtension` elements follow the same three-path routing as `extension` — a modifier
+extension with a registered module is decoded at full binary speed, and one with an unknown URL
+keeps its URL but is not guaranteed a lossless round-trip.
 
 ---
 

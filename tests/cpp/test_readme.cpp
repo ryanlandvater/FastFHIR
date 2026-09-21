@@ -122,9 +122,9 @@ static void socket_send_all(asio::ip::tcp::socket &out_sock, const char *data, s
 // path for framed protocols.
 static void socket_recv_exact_to_memory(asio::ip::tcp::socket &in_sock, Memory &dst, size_t expected)
 {
-    dst.reset(0); // Start the stream at absolute offset 0 for a full archive copy.
+    dst->reset(0); // Start the stream at absolute offset 0 for a full archive copy.
 
-    auto head_opt = dst.try_acquire_stream();
+    auto head_opt = dst->try_acquire_stream();
     REQUIRE(head_opt.has_value(), "failed to acquire stream lock on destination Memory");
     auto &head = *head_opt;
 
@@ -171,6 +171,14 @@ static const fs::path TEST_ARTIFACT_DIR = []
 }();
 
 static const fs::path PATIENT_FFHR = TEST_ARTIFACT_DIR / "patient.ffhr";
+// The Getting Started story builds its OWN patient (family "Smith") and writes
+// it under this dedicated name. It must not share "patient.ffhr" with the
+// Example chain below: both write the file, the CTest resource lock only
+// serialises them, and under `ctest -jN` the "Smith" write landed between
+// cpp_test_1 (which seeds "Landvater") and cpp_test_8 (which reads it), failing
+// the read. A dedicated filename gives the story ownership of its own artifact
+// -- the same "each block seeds its own fixtures" rule the README harness uses.
+static const fs::path GETTING_STARTED_FFHR = TEST_ARTIFACT_DIR / "getting_started.ffhr";
 static const fs::path BUNDLE_FFHR = TEST_ARTIFACT_DIR / "bundle.ffhr";
 static const fs::path PATIENT_COMPACT_FFHR = TEST_ARTIFACT_DIR / "patient.compact.ffhr";
 static const fs::path BUNDLE_COMPLEX_FFHR = TEST_ARTIFACT_DIR / "bundle.complex.ffhr";
@@ -260,7 +268,7 @@ static fs::path find_synthea_bundle_json()
 
 static void cleanup_artifacts()
 {
-    for (auto &p : {PATIENT_FFHR, BUNDLE_FFHR, PATIENT_COMPACT_FFHR,
+    for (auto &p : {PATIENT_FFHR, GETTING_STARTED_FFHR, BUNDLE_FFHR, PATIENT_COMPACT_FFHR,
                     BUNDLE_COMPLEX_FFHR, BUNDLE_COMPLEX_COMPACT_FFHR})
     {
         std::error_code ec;
@@ -272,13 +280,13 @@ static void cleanup_artifacts()
 // Test runner
 // ─────────────────────────────────────────────────────────────────────────────
 
-struct Result
+struct TestResult
 {
     std::string name;
     bool passed;
     std::string error;
 };
-static std::vector<Result> g_results;
+static std::vector<TestResult> g_results;
 
 template <typename Fn>
 static void run(const char *name, Fn fn)
@@ -444,11 +452,11 @@ static constexpr std::string_view BUNDLE_EXTENSION_URLS_JSON = R"({
 static void test_getting_started_231()
 {
     // Step 2: Create a file-backed Memory arena so we can persist patient.ffhr.
-    auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
+    auto mem = Memory::createFromFile(GETTING_STARTED_FFHR, 64 * 1024 * 1024);
 
     // Step 3: Build from inline FHIR JSON, enrich with typed field keys, and seal.
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
@@ -492,7 +500,7 @@ static void test_getting_started_231()
     REQUIRE(!view.empty(), "getting-started finalize returned empty view");
 
     // Step 1: Open patient.ffhr read-only, parse bytes, and read fields only if present.
-    std::FILE *fp = std::fopen(PATIENT_FFHR.string().c_str(), "rb");
+    std::FILE *fp = std::fopen(GETTING_STARTED_FFHR.string().c_str(), "rb");
     REQUIRE(fp != nullptr, "fopen(patient.ffhr, rb) failed");
 
     REQUIRE(std::fseek(fp, 0, SEEK_END) == 0, "fseek failed");
@@ -581,7 +589,7 @@ static void test_10()
     // surgical mutation without going through JSON — set deceased to false.
     auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
@@ -619,7 +627,7 @@ static void test_1(const fs::path &patient_json)
     // Map the arena straight to a file — every write goes directly to disk
     auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
@@ -728,7 +736,7 @@ static void test_3()
     // Mount the existing archive — stays mapped to the same file
     auto mem = Memory::createFromFile(PATIENT_FFHR, 64 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
@@ -779,7 +787,7 @@ static void test_4(const fs::path &patient_json)
     // Anonymous arena — no file backing
     auto mem = Memory::create(64 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
@@ -862,7 +870,7 @@ static void test_5()
     // ── Step A: ingest the bundle ──
     auto mem = Memory::createFromFile(BUNDLE_FFHR, 64 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
@@ -897,7 +905,7 @@ static void test_5()
     // ── Step B: re-open and find patient-1 ──
     auto mem2 = Memory::createFromFile(BUNDLE_FFHR, 64 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info2;
-    builder_info2.arena = std::make_shared<Memory>(mem2);
+    builder_info2.arena = mem2;
     builder_info2.version = FHIR_VERSION_R5;
     FF_Builder builder2;
     REQUIRE(FF_CreateBuilder(builder_info2, builder2), "create stream (re-open)");
@@ -916,9 +924,9 @@ static void test_5()
 
         // Deserialize this patient directly from the arena to read its id
         auto patient_data = FF_PATIENT::deserialize(
-            mem2.base(),
+            mem2->base(),
             entry.resource.offset,
-            mem2.capacity(),
+            mem2->capacity(),
             FHIR_VERSION_R5);
 
         if (patient_data.id == "patient-1")
@@ -966,7 +974,7 @@ static void test_5()
         if (entry.resource.recovery != FF_PATIENT::recovery)
             continue;
         auto p = FF_PATIENT::deserialize(
-            mem3.base(), entry.resource.offset, mem3.capacity(), FHIR_VERSION_R5);
+            mem3->base(), entry.resource.offset, mem3->capacity(), FHIR_VERSION_R5);
         if (p.id == "patient-1")
         {
             REQUIRE(!p.telecom.empty(), "patient-1 telecom empty after surgical edit");
@@ -1001,7 +1009,7 @@ static void test_6()
 
     auto mem = Memory::create(256 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
@@ -1169,7 +1177,7 @@ static void test_9()
 {
     auto mem = Memory::createFromFile(BUNDLE_COMPLEX_FFHR, 64 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
@@ -1307,7 +1315,7 @@ static void test_11()
 
     auto mem = Memory::create(64 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
@@ -1419,7 +1427,7 @@ static void test_synthea_bundle()
     // Synthea bundles can be large (>10 MB of FHIR JSON); 256 MB arena is ample.
     auto mem = Memory::create(256 * 1024 * 1024);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     builder_info.version = FHIR_VERSION_R5;
     FF_Builder builder;
     REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");

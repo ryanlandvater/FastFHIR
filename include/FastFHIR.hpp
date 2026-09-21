@@ -20,7 +20,7 @@
  *
  * // 1. Build a stream
  * FastFHIR::FF_BuilderCreateInfo create_info;          // defaults: 4 GB arena, R5
- * FastFHIR::FF_Builder builder;
+ * FF_Builder builder;
  * FastFHIR::FF_CreateBuilder(create_info, builder);
  *
  * ObservationData obs;
@@ -68,7 +68,7 @@
  *
  * FastFHIR::FF_BuilderCreateInfo create_info;
  * create_info.capacity = 2ULL * 1024 * 1024 * 1024;   // 2GB Virtual Arena
- * FastFHIR::FF_Builder builder;
+ * FF_Builder builder;
  * FastFHIR::FF_CreateBuilder(create_info, builder);
  * std::vector<std::thread> pool;
  *
@@ -117,6 +117,53 @@
 #include <functional>
 #include <string_view>
 
+// =====================================================================
+// HANDLES AND SHARED ALIASES
+// =====================================================================
+// A handle is the type a caller passes around; the heap body it owns carries
+// the _t suffix. Builder and Ingestor are always heap-allocated, so their
+// handle is a shared_ptr and these names alias it. Memory IS its own handle --
+// a copyable value that owns the arena by shared_ptr -- so it keeps its name.
+//
+// Declared above the FF_*Info structs, because those name the handles by
+// their global FF_ spelling (the block just below).
+namespace FastFHIR
+{
+class Ingestor_t;  ///< opaque; defined in the internal FF_Ingestor.hpp
+using Builder  = std::shared_ptr<Builder_t>;
+using Ingestor = std::shared_ptr<Ingestor_t>;
+
+/** @brief Checksum callback: hashes [byte_start, byte_start + bytes_to_hash). */
+using HashCallback = std::function<std::vector<BYTE>(const unsigned char* byte_start, Size bytes_to_hash)>;
+} // namespace FastFHIR
+
+// =====================================================================
+// GLOBAL C-STYLE ALIASES -- the ONE list
+// =====================================================================
+// Inside the namespace every type has its plain C++ name; these FF_-prefixed
+// names are that type's C-style spelling, at global scope, for a consumer that
+// does not want to qualify with FastFHIR:: on every line. The FF_ prefix is
+// the namespace spelled out; it is never a second type.
+//
+// Not aliased here: the wire block structs (FF_HEADER, FF_STRING, ...) and the
+// C-ABI Info structs (FF_ParseInfo, FF_BuilderCreateInfo, ...), which keep
+// their FF_ names because they ARE the C surface, not a C++ type behind one.
+using FF_Memory       = FastFHIR::Memory;        // shared_ptr<Memory_t>, the arena handle
+using FF_Builder      = FastFHIR::Builder;       // shared_ptr<Builder_t>
+using FF_Ingestor     = FastFHIR::Ingestor;      // shared_ptr<Ingestor_t>
+using FF_String       = FastFHIR::String;        // POCO string field
+using FF_HashCallback = FastFHIR::HashCallback;  // checksum callback
+
+// The result types (FF_Result, FF_Result_Code, FF_Result_Severity) and their
+// enumerators alias in FF_Primitives.hpp, beside those definitions, because
+// FF_Builder.hpp returns FF_Result without seeing this header. One list, split
+// only where the include graph forces it.
+
+/// The POCO 0..1 child block. A template alias, so `FF_Optional<T>` is the
+/// consumer spelling of `FastFHIR::Optional<T>`.
+template <typename T>
+using FF_Optional = FastFHIR::Optional<T>;
+
 namespace FastFHIR {
 
 // =====================================================================
@@ -130,8 +177,10 @@ namespace FastFHIR {
 // signatures.
 //
 // Design conventions (see Iris-Headers for the origin of this shape):
-//   - Handles are shared-ownership value types: FF_Memory, FF_Builder,
-//     FF_Ingestor. Copy them freely; they refer to one underlying object.
+//   - Handles are shared-ownership value types: Memory, Builder, Ingestor.
+//     Copy them freely; they refer to one underlying object. Inside the
+//     namespace they carry their plain C++ names; the FF_-prefixed aliases at
+//     the top of this header are the C-style spelling for consumers.
 //   - Create/lifecycle functions follow the Vulkan pattern: an Info struct
 //     in, a `T& out` parameter, an FF_Result out. Errors never throw — the
 //     implementation catches everything below this boundary.
@@ -155,27 +204,6 @@ inline FF_Version FF_GetVersion() noexcept
 {
     return { FASTFHIR_VERSION_MAJOR, FASTFHIR_VERSION_MINOR, FASTFHIR_VERSION_BUILD };
 }
-
-// =====================================================================
-// HANDLES
-// =====================================================================
-// FF_Memory  — virtual memory arena (RAM, SHM, or file-backed).
-// FF_Builder — writes a FastFHIR stream into a Memory arena.
-// FF_Ingestor — concurrent clinical-data ingestion engine.
-//
-// FF_Ingestor_t is intentionally opaque: its definition lives in the internal
-// FF_Ingestor.hpp so this header never drags in simdjson/WAMR.
-
-using FF_Memory   = std::shared_ptr<Memory>;
-using FF_Builder  = std::shared_ptr<Builder>;
-class FF_Ingestor_t;
-using FF_Ingestor = std::shared_ptr<FF_Ingestor_t>;
-
-// =====================================================================
-// SHARED CALLBACK
-// =====================================================================
-/** @brief Checksum callback: hashes [byte_start, byte_start + bytes_to_hash). */
-using FF_HashCallback = std::function<std::vector<BYTE>(const unsigned char* byte_start, Size bytes_to_hash)>;
 
 // =====================================================================
 // MEMORY (ARENA) API
@@ -249,7 +277,7 @@ FF_EXPORT FF_Result FF_BuilderSetRoot(const FF_BuilderSetRootInfo& info) noexcep
 struct FF_BuilderFinalizeInfo {
     FF_Builder            builder   = nullptr;
     FF_Checksum_Algorithm algorithm = FF_CHECKSUM_NONE;
-    FF_HashCallback       hasher    = nullptr;  ///< Optional; required when algorithm != NONE.
+    HashCallback          hasher    = nullptr;  ///< Optional; required when algorithm != NONE.
 };
 
 /** @brief Seals the stream (header + optional checksum) and returns a zero-copy view of it. */
@@ -286,7 +314,7 @@ FF_EXPORT FF_Result FF_Parse(const FF_ParseInfo& info, Parser& out_parser) noexc
 struct FF_CompactInfo {
     Parser                source;    ///< Parsed stream to archive.
     FF_Checksum_Algorithm algorithm = FF_CHECKSUM_NONE;
-    FF_HashCallback       hasher    = nullptr;
+    HashCallback          hasher    = nullptr;
 };
 
 /** @brief Archives @p source into a fresh arena and returns a view of the compacted stream. */

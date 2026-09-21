@@ -50,11 +50,11 @@ inline constexpr size_t FF_MIN_ARENA = 2ull << 20;  // 2 MiB
 // =====================================================================
 void FF_PredigestExtensionURLs(
     const std::vector<simdjson::padded_string>& prechunked_entries,
-    Builder&                builder,
+    Builder_t&                builder,
     FF_ExtensionFilterMode  mode = FF_ExtensionFilterMode::FILTER_ALL_KNOWN);
 
 struct IngestRequest {
-    FastFHIR::Builder& builder;
+    Builder_t& builder;
     FF_SourceType source_type = FF_SOURCE_FHIR_JSON;
     FF_ExtensionFilterMode extension_filter = FF_ExtensionFilterMode::FILTER_ALL_KNOWN;
     std::string_view json_string;
@@ -79,6 +79,15 @@ struct IngestRequest {
      * the whole document.
      */
     size_t payload_capacity = 0;
+};
+
+/// Parameters for Ingestor::insert_at_field(): which field of which object, and
+/// the payload to parse into it, in one bundle -- the `const XxxInfo&` shape.
+struct InsertAtFieldInfo {
+    Reflective::ObjectHandle parent;      ///< The object being amended (a lightweight coordinate handle).
+    FF_FieldKey              key;         ///< The field within @p parent to write.
+    std::string_view         payload;     ///< Raw source document to parse.
+    FF_SourceType            source_type = FF_SOURCE_FHIR_JSON;
 };
 
 class Ingestor {
@@ -123,7 +132,7 @@ public:
      *       *_from_json and only its offset is patched into the parent slot, and readers
      *       re-derive the element layout from the FF_ARRAY header on the wire.
      */
-    FF_Result insert_at_field(Reflective::ObjectHandle& parent_object, const FF_FieldKey& key, std::string_view payload, FF_SourceType fmt = FF_SOURCE_FHIR_JSON);
+    FF_Result insert_at_field(const InsertAtFieldInfo& info);
 
     /**
      * @brief Resets the engine state for a new file and returns all accumulated logs.
@@ -149,15 +158,15 @@ private:
 // =====================================================================
 // FF_* INGEST HANDLE BODY
 // =====================================================================
-// FF_Ingestor_t is declared opaque in FastFHIR.hpp (installed header) so
+// Ingestor_t is declared opaque in FastFHIR.hpp (installed header) so
 // consumers never see simdjson; the definition lives in this internal header,
 // which is where the ingest engine itself is defined.
 namespace FastFHIR {
 
-class FF_Ingestor_t {
+class Ingestor_t {
 public:
     Ingest::Ingestor impl;
-    FF_Ingestor_t(Size logger_capacity, uint32_t concurrency)
+    Ingestor_t(Size logger_capacity, uint32_t concurrency)
         : impl(logger_capacity, concurrency) {}
 };
 

@@ -1,4 +1,4 @@
-"""Extract every ```cpp fence from README.md.
+"""Extract every ```cpp and ```c fence from README.md.
 
 The README's code blocks are the thing readers copy. Nothing compiled them
 until now, which is how all six examples drifted onto a `FastFHIR::Builder` /
@@ -6,6 +6,15 @@ until now, which is how all six examples drifted onto a `FastFHIR::Builder` /
 `tests/cpp/test_readme.cpp` is a hand-maintained parallel implementation of the
 same examples, not an extraction of these blocks, so it cannot witness the
 README's own bytes.
+
+Both languages are extracted because the README documents both surfaces. The
+```c fence holds the C ABI example. `FastFHIR.h` is hand-written, recent, and
+has no generator keeping it in step with the library, so its example is the one
+most likely to fall out of date; if it were left unextracted, the C block would
+rot in exactly the way the C++ blocks did before this gate existed.
+`Fence.lang` records which compiler each block needs. The gate uses it to pick
+between the C and C++ compilers, and the runtime harness, which emits a single
+C++ translation unit, skips every fence whose lang is not cpp.
 
 This module is the extraction half. `tests/python/test_readme_compiles.py` is
 the gate.
@@ -17,7 +26,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-FENCE_OPEN = re.compile(r"^\s*```cpp\s*$")
+FENCE_OPEN = re.compile(r"^\s*```(?P<lang>cpp|c)\s*$")
 FENCE_CLOSE = re.compile(r"^\s*```\s*$")
 # An HTML comment carrying gate directives. Invisible in rendered Markdown, so
 # it can sit directly above the fence it configures without changing the page.
@@ -34,9 +43,10 @@ INCLUDE = re.compile(r"^\s*#\s*include\b")
 @dataclass
 class Fence:
     index: int              # 1-based, in document order
-    line: int               # 1-based line of the ```cpp opener
+    line: int               # 1-based line of the fence opener
     heading: str            # nearest preceding Markdown heading
     body: list[str]         # fence content, verbatim, without the fences
+    lang: str = "cpp"       # "cpp" | "c" -- which compiler this block is owed
     mode: str = "fragment"  # "fragment" | "program" | "expressions" | "skip"
     reason: str = ""        # required when mode == "skip"
     needs: list[str] = field(default_factory=list)  # preamble stanzas to inject
@@ -53,7 +63,7 @@ class Fence:
 
     @property
     def label(self) -> str:
-        return f"fence {self.index} (README.md:{self.line}, {self.heading!r})"
+        return f"{self.lang} fence {self.index} (README.md:{self.line}, {self.heading!r})"
 
 
 def _parse_directive(text: str) -> tuple[str, str, list[str], list[str], str]:
@@ -90,17 +100,22 @@ def extract(readme: Path) -> list[Fence]:
     while i < len(lines):
         if lines[i].startswith("#"):
             heading = lines[i].strip()
-        if FENCE_OPEN.match(lines[i]):
+        opener = FENCE_OPEN.match(lines[i])
+        if opener:
+            lang = opener.group("lang")
             j = i + 1
             while j < len(lines) and not FENCE_CLOSE.match(lines[j]):
                 j += 1
             if j >= len(lines):
                 raise RuntimeError(
-                    f"README.md:{i + 1}: ```cpp fence is never closed"
+                    f"README.md:{i + 1}: ```{lang} fence is never closed"
                 )
             # A directive applies to the next fence; look back over blank lines
             # so it may sit above the prose sentence introducing the block.
-            mode, reason, needs, requires, run_id = "fragment", "", [], [], ""
+            # A C block is a whole translation unit; there is no C wrapper to
+            # drop a fragment into, and no shared C preamble to inject.
+            mode, reason, needs, requires, run_id = (
+                "program" if lang == "c" else "fragment", "", [], [], "")
             for k in range(i - 1, max(-1, i - 6), -1):
                 m = DIRECTIVE.search(lines[k])
                 if m:
@@ -108,7 +123,7 @@ def extract(readme: Path) -> list[Fence]:
                      run_id) = _parse_directive(m.group("body"))
                     break
             fences.append(Fence(
-                index=len(fences) + 1, line=i + 1, heading=heading,
+                index=len(fences) + 1, line=i + 1, heading=heading, lang=lang,
                 body=lines[i + 1:j], mode=mode, reason=reason, needs=needs,
                 requires=requires, run_id=run_id,
             ))

@@ -101,14 +101,14 @@ proves it. Those are the ones to take if you are picking without other context.
 |---|---|---|---|
 | **P0** | **P0-3 / REC-10…17** | Recovery: stream map, bit-similarity edge restoration, `src/FF_Recovery.cpp`. Has its own work order written for a flash model | `^# ▶ P0-3` |
 | **P0** | **REC-20** | Recovery: cross-reference the two producers' holes, match 10-byte tuples by Hamming | `^# ▶ REC-20` |
-| **P0** | **AMEND/APPEND** | Amend + append must take the abstraction types, not only JSON (CAPI-12) | `^# ▶ P0 — AMEND` |
+| **P0** | **AMEND/APPEND** | Amend + append must take the abstraction types, not only JSON (C_API-12) | `^# ▶ P0 — AMEND` |
 | **P1** | **REC-21** | Recovery: arrays in holes — bound the count by geometry, propose then confirm | `^# ▶ REC-21` |
-| **P1** | CAPI-1, 2, 3, 8, **16** | Consumer-API gaps: inline-block array writes, validator/deserializer disagreement, `ChoiceEntry` across arenas, allocating `entries()`. **CAPI-16 is new (2026-09-10)**: a `code` field cannot be assigned through a mutable handle at all — it throws, and four README blocks documented it working. Read A8.2 before starting it | `^## CAPI-` |
+| **P1** | C_API-1, 2, 3, 8, **16** | Consumer-API gaps: inline-block array writes, validator/deserializer disagreement, `ChoiceEntry` across arenas, allocating `entries()`. **C_API-16 is new (2026-09-10)**: a `code` field cannot be assigned through a mutable handle at all — it throws, and four README blocks documented it working. Read A8.2 before starting it | `^## C_API-` |
 | **P1** | Block C | Archive recovery subsystem — **governed by P0-3; do not start before REC-10** | `^## Block C` |
 | **P1** | DT-2.4, DT-3, DT-4 | Packed date/time: array-typed fields, ingest/export, wire baseline | `^## DT-` |
 | **P1** | COV-1 | Writer-vs-reader coverage: COV-1.2–1.4 open | `^## COV-1` |
 | **P2** | AR-2, **AR-6** | The schema tables disagree with the wire (6 array fields) and with each other (70 of 85 choice slots) | `^## AR-[26]` |
-| **P2** | CAPI-4, 5, 7, 9, 10, 11, 14 | Consumer-API ergonomics and doc gaps | `^## CAPI-` |
+| **P2** | C_API-4, 5, 7, 9, 10, 11, 14 | Consumer-API ergonomics and doc gaps | `^## C_API-` |
 | **P2** | Block B | Test coverage: builder, parser, pipeline, byte fixtures. **B7 is the "assert against bytes" one** | `^## Block B` |
 | **P2–P3** | Blocks D, E, F, G, H, I | WASM, hygiene (35 items, mostly small), benchmarks, security, packaging, spec | `^## Block ` |
 | **planned** | Block J | External code systems. **J4/J5/J6 gated on A8.** J1's layer boundary is now Block K's `ValidationHooks`, so J needs a LOADER, not a mechanism — see J1's "Reconciliation OUTCOME". J3/J7/J8 need neither | `^## Block J` |
@@ -723,7 +723,7 @@ the Python tooling does not apply here). Follow `../Arbiter/directives/style_gui
 early return over nested guards, **no nesting beyond 3 levels — extract a helper**, RAII,
 `noexcept` on leaf helpers that cannot fail, specific exceptions carrying the offending
 value. Every read is on untrusted bytes: **bounds-check before every dereference**, and
-never dereference a header field at construction (that is CAPI-15, already paid for once).
+never dereference a header field at construction (that is C_API-15, already paid for once).
 
 - [ ] **REC-10. `StreamMap` + the scan.** New `src/FF_Recovery.cpp`, new
   `include/FF_Recovery.hpp`. **Step 0 is the rename:** `generator/emit/recovery_tags.py`
@@ -898,28 +898,32 @@ ninja` 43/43, `pytest tests/generator -q` 48 passed, then the probe per REC-19.9
 
 ---
 
-# ▶ CONSUMER-API FINDINGS — INDEX (CAPI-1…13)
+# ▶ CONSUMER-API FINDINGS — INDEX (C_API-1…13)
 
 Filed 2026-08-26 from FastFHIR-benchmark, the first code outside this repo to drive the
 public API hard. Full detail for each is in the work order further down
-(`grep -n "^## CAPI-" TASKS.md`). Ordered by what to fix first.
+(`grep -n "^## C_API-" TASKS.md`). Ordered by what to fix first.
+
+> **These IDs were `CAPI-n` until 2026-09-21** and are `C_API-n` now — the old spelling
+> read as one word. Numbers are unchanged, so `CAPI-13` in a commit message before that
+> date is `C_API-13` here. Task IDs are not wire constants; renaming one costs a grep.
 
 | ID | Finding | P | Consumer impact |
 |---|---|---|---|
-| ~~**CAPI-13**~~ | ~~`deserialize` emits nothing for singular block fields~~ | **P0** | ✅ **FIXED 2026-08-26** — see P0-1 above |
-| **CAPI-12** | Cannot append one element to an existing sealed array | P1 | Enrichment requires rebuilding the array |
-| **CAPI-1** | No public API for writing an inline-block array | P1 | Field-by-field assembly writes a corrupt stream, no compile error |
-| **CAPI-2** | `validate_FFHR_stream()` accepts streams the deserializer segfaults on | P1 | "It validates" is not evidence the stream is readable |
-| **CAPI-3** | Block-typed `ChoiceEntry` cannot round-trip across arenas | P1 | `deserialize`→`store` is not an identity; 95 % of real `value[x]` |
-| **CAPI-8** | `entries()` allocates per array; no non-allocating iterator | P1 | ~19 % of a generic walk; contradicts the zero-allocation claim |
-| **CAPI-7** | `FF_FieldInfo` has no `name_len`, so reflection pays a `strlen` per field | P2 | ~22 % of a generic walk, for a value the lookup discards |
-| **CAPI-4** | No zero-copy reader for packed date/time | P2 | `print_json` is the only public path; distorts any query benchmark |
-| **CAPI-9** | `as<std::string_view>()` throws on kinds the docs don't enumerate | P2 | The published README example threw until 2026-08-26 |
-| **CAPI-10** | `Compactor::archive()` output is write-once and the doc doesn't say so | P2 | Enrich-on-compact is impossible; discovered by trying it |
-| **CAPI-11** | Hydrated `ChoiceEntry` exposes the raw packed datetime slot | P2 | Consumers emit a 63-bit integer where a date belongs |
-| **CAPI-5** | `TypeTraits<std::string>` undefined while POCO fields are `std::string` | P2 | Assigning a POCO field back does not compile |
-| **CAPI-6** | Stale `SourceType::FHIR_JSON` in `FF_Ingestor.hpp:69` | P3 | Wrong name in the first example a consumer copies |
-| **CAPI-17** | The conformance layer cannot be attached from Python (filed 2026-09-15) | P2 | Python ingest gets no conformance checking at all |
+| ~~**C_API-13**~~ | ~~`deserialize` emits nothing for singular block fields~~ | **P0** | ✅ **FIXED 2026-08-26** — see P0-1 above |
+| **C_API-12** | Cannot append one element to an existing sealed array | P1 | Enrichment requires rebuilding the array |
+| **C_API-1** | No public API for writing an inline-block array | P1 | Field-by-field assembly writes a corrupt stream, no compile error |
+| **C_API-2** | `validate_FFHR_stream()` accepts streams the deserializer segfaults on | P1 | "It validates" is not evidence the stream is readable |
+| **C_API-3** | Block-typed `ChoiceEntry` cannot round-trip across arenas | P1 | `deserialize`→`store` is not an identity; 95 % of real `value[x]` |
+| **C_API-8** | `entries()` allocates per array; no non-allocating iterator | P1 | ~19 % of a generic walk; contradicts the zero-allocation claim |
+| **C_API-7** | `FF_FieldInfo` has no `name_len`, so reflection pays a `strlen` per field | P2 | ~22 % of a generic walk, for a value the lookup discards |
+| **C_API-4** | No zero-copy reader for packed date/time | P2 | `print_json` is the only public path; distorts any query benchmark |
+| **C_API-9** | `as<std::string_view>()` throws on kinds the docs don't enumerate | P2 | The published README example threw until 2026-08-26 |
+| **C_API-10** | `Compactor::archive()` output is write-once and the doc doesn't say so | P2 | Enrich-on-compact is impossible; discovered by trying it |
+| **C_API-11** | Hydrated `ChoiceEntry` exposes the raw packed datetime slot | P2 | Consumers emit a 63-bit integer where a date belongs |
+| **C_API-5** | `TypeTraits<std::string>` undefined while POCO fields are `std::string` | P2 | Assigning a POCO field back does not compile |
+| **C_API-6** | Stale `SourceType::FHIR_JSON` in `FF_Ingestor.hpp:69` | P3 | Wrong name in the first example a consumer copies |
+| **C_API-17** | The conformance layer cannot be attached from Python (filed 2026-09-15) | P2 | Python ingest gets no conformance checking at all |
 
 **Two claims-alignment items** are filed against README.md as **I3.6** (the `orjson` ratio
 cites a benchmark result that does not exist — no orjson arm has ever existed, and the
@@ -931,7 +935,7 @@ on a real Synthea bundle is **−49 %**).
 
 # ▶ P0 — AMEND/APPEND MUST ACCEPT THE ABSTRACTION TYPES DIRECTLY (HIGH PRIORITY)
 
-**Filed 2026-08-26** from FastFHIR-benchmark (evidence trail: CAPI-12). The
+**Filed 2026-08-26** from FastFHIR-benchmark (evidence trail: C_API-12). The
 amendment/append surface accepts JSON but not the abstraction types (generated
 POCOs) — yet every JSON payload is parsed into the abstraction **before** it is
 written, as part of the write-datablock workflow (`createXXInfo` →
@@ -945,7 +949,7 @@ serialize/parse round-trip of data that is already an abstraction in memory.
   JSON overload. A caller holding an in-memory observation (e.g. a laboratory
   system handing FastFHIR a POCO) appends the abstraction directly; JSON
   support stays for wire/text callers.
-- Appending one element to an **existing sealed array** must work (CAPI-12):
+- Appending one element to an **existing sealed array** must work (C_API-12):
   extend the array block at the write head and bump the count, or an explicit
   "open array" build mode. Today `MutableEntry[n]` throws `out_of_range` past
   the array end and `insert_at_field` refuses already-assigned slots
@@ -4147,7 +4151,7 @@ compiler will read.
      The "surgically edit one patient in a bundle" example was fiction. Rewritten
      to scan with `Entry::concrete_recovery()` (API-1, real and tested) and to
      amend through `stream->root_handle()`. ⚠ **Editing a nested entry in place
-     still has no public API** — that is CAPI-12, still open; the example no
+     still has no public API** — that is C_API-12, still open; the example no
      longer pretends otherwise.
    - `resource.recovery() != RECOVERY_TAG::Patient` — `RECOVERY_TAG` is an
      UNSCOPED enum, so the spelling is `RECOVER_FF_PATIENT`.
@@ -4185,7 +4189,7 @@ compiler will read.
    |---|---|---|
    | `Parser(mem).root()` before `finalize()` | Example 1 | no `FF_HEADER` yet → "magic bytes mismatch". `FF_BuilderQuery` also fails (no root until `FF_BuilderSetRoot`). The pre-seal read is `patient_handle.as_node()` |
    | `string_view birthdate = root[BIRTH_DATE]` | Step 3 | packed date/time slot → throws "Node is not a string or code". **The same page warns about this under Example 2** — it contradicted itself |
-   | `handle[GENDER] = std::string_view("male")` | Step 3 + 3 more | **throws.** No `amend_code` exists on the Builder → **CAPI-16** |
+   | `handle[GENDER] = std::string_view("male")` | Step 3 + 3 more | **throws.** No `amend_code` exists on the Builder → **C_API-16** |
    | Example 5 searched for `patient-42` | Example 5 | the example is only meaningful against a bundle that contains it; the fixture now does |
 
    Note the shape of the first two: in both, `tests/cpp/test_readme.cpp` used the *working*
@@ -4210,9 +4214,13 @@ compiler will read.
 
 - [x] **4.** ✅ **DONE 2026-09-10 — the README's blocks are now compiled by the suite.**
    This item did not exist when the work order was written; it is the root cause of it.
-   `ctest -R py_readme_cpp_compiles` (`tests/python/test_readme_compiles.py`, extractor and
-   context stanzas in `tests/readme/`) pulls every ```cpp fence out of `README.md` and
-   compiles it `-fsyntax-only`. **23 of 25 blocks compile; 2 are environment-gated**
+   `ctest -R py_readme_compiles` (`tests/python/test_readme_compiles.py`, extractor and
+   context stanzas in `tests/readme/`) pulls every ```cpp and ```c fence out of
+   `README.md` and compiles it `-fsyntax-only` — C++ blocks as C++20, and the C ABI block
+   as C11 under `$CC`, which is the only place anything checks that `FastFHIR.h` still
+   compiles as C. The test was called `py_readme_cpp_compiles` until 2026-09-21, and was
+   renamed when it began compiling C blocks as well as C++ ones.
+   **25 of 28 blocks compile; 2 are environment-gated**
    (`requires=extensions` — `FF_Extensions.hpp` is entirely inside
    `#ifdef FASTFHIR_ENABLE_EXTENSIONS` and needs WAMR's `<wasm_export.h>`, and the option
    defaults OFF, so those two are reported `n/a` rather than skipped: they are checked in
@@ -4247,7 +4255,7 @@ compiler will read.
 **Rules:** do not commit; do not edit `generated_src/`; verify with
 `cmake --build --preset ninja && ctest --preset ninja`.
 **A changed or added README block is now checked automatically** — run
-`ctest --test-dir build -R py_readme_cpp_compiles`, and use
+`ctest --test-dir build -R py_readme_compiles`, and use
 `python3 tests/python/test_readme_compiles.py --dump <n>` to see the exact TU it built.
 The old manual compile-probe is no longer necessary. Note what the gate does **not** do:
 it does not run the blocks, and it does not compare them against
@@ -4330,13 +4338,13 @@ These are **not** correctness bugs in FastFHIR's own gates — 342/342 round-tri
 41/41 and the wire gate all pass over every one of them. They are gaps in what a
 *consumer* can do through the **public** surface, and the benchmark is the first code
 outside this repo to lean on that surface hard enough to find them. Three of the six
-(CAPI-1, CAPI-2, CAPI-3) let a consumer produce a **structurally invalid stream with no
+(C_API-1, C_API-2, C_API-3) let a consumer produce a **structurally invalid stream with no
 compile error and no validator complaint**, which is the class of defect this project is
 built to make impossible.
 
-Per rule 1, claim one CAPI ID per session. Per rule 2, run the *Locate* line first.
+Per rule 1, claim one C_API ID per session. Per rule 2, run the *Locate* line first.
 
-## CAPI-1 — No public API for writing an inline-block array (P1)
+## C_API-1 — No public API for writing an inline-block array (P1)
 
 **Locate:**
 ```bash
@@ -4365,7 +4373,7 @@ SEGV in FF_STRING::read_view <- FF_CODEABLECONCEPT::deserialize
      <- FF_OBSERVATION::deserialize <- Node::as<ObservationData>()
 ```
 
-No compile error. No validator error (see CAPI-2). The only signal was a segfault three
+No compile error. No validator error (see C_API-2). The only signal was a segfault three
 layers down in generated code, which reads as a FastFHIR bug, not a caller bug.
 
 **Ask (either is sufficient):**
@@ -4380,11 +4388,11 @@ layers down in generated code, which reads as a FastFHIR bug, not a caller bug.
 actually does, and it is what the benchmark's parity layer must do to keep all four arms
 writing the same field set through the same shape of call. Without this, FastFHIR is the
 one arm that cannot be driven field-by-field, which forces the benchmark to choose between
-parity and correctness. See also CAPI-3 — same root shape, different field kind.
+parity and correctness. See also C_API-3 — same root shape, different field kind.
 
-## CAPI-2 — `validate_FFHR_stream()` accepts streams the deserializer segfaults on (P1)
+## C_API-2 — `validate_FFHR_stream()` accepts streams the deserializer segfaults on (P1)
 
-**Current state.** The stream CAPI-1 produced returned `FF_SUCCESS` from
+**Current state.** The stream C_API-1 produced returned `FF_SUCCESS` from
 `validate_FFHR_stream()`. The array header and its offsets are self-consistent by the
 validator's rules; only the *generated deserializer* walks those entries as blocks and
 discovers they are not blocks.
@@ -4404,7 +4412,7 @@ guarantee.
 and fails on arrays whose entries all read back empty. That is the check the validator
 lacks; the gap is that it lives in the test suite, not in the API a consumer can call.
 
-## CAPI-3 — Block-typed `ChoiceEntry` cannot round-trip across arenas (P1)
+## C_API-3 — Block-typed `ChoiceEntry` cannot round-trip across arenas (P1)
 
 **Locate:**
 ```bash
@@ -4472,7 +4480,7 @@ byte-identical, which means the most clinically important field in an `Observati
 absent from the comparison. The claim FastFHIR leads with is the one its benchmark cannot
 currently demonstrate.
 
-## CAPI-7 — `FF_FieldInfo` has no `name_len`, so reflection costs a `strlen` per field (P2)
+## C_API-7 — `FF_FieldInfo` has no `name_len`, so reflection costs a `strlen` per field (P2)
 
 **Locate:**
 ```bash
@@ -4517,7 +4525,7 @@ hashing" is true of the *typed-key* path, and this is not that path — but it i
 any generic consumer takes (a walker, an exporter, a diff tool), and it reintroduces a
 per-field string operation the design is meant to have eliminated.
 
-## CAPI-8 — `entries()` allocates, and there is no non-allocating array iterator (P1)
+## C_API-8 — `entries()` allocates, and there is no non-allocating array iterator (P1)
 
 **Locate:**
 ```bash
@@ -4544,7 +4552,7 @@ the only change being `node[i]` in place of `entries()`:
 |---|---:|---:|
 | `entries()` | 2,318,333 ns | — |
 | `node[i]` index loop | 1,874,208 ns | **−19.2%** |
-| `node[i]` + no `strlen` (CAPI-7) | 1,853,041 ns | −20.1% |
+| `node[i]` + no `strlen` (C_API-7) | 1,853,041 ns | −20.1% |
 
 Re-measured 2026-08-26, 7-run medians, `-c opt`, `--bundle-targets-mb 64`, 81,844 nodes,
 via `BENCH_WALK=1 BENCH_INDEX_WALK=1`. The allocation alone is ~19% of a generic walk.
@@ -4570,11 +4578,11 @@ documented path rather than an undocumented one. A consumer reading § 1 will re
    `entries()` caveat, so the allocation is opt-in rather than the obvious choice.
 
 **Why it matters here.** The benchmark's Test 2 currently shows FastFHIR ~2.4-3.0x slower
-than simdjson on full traversal. About a third of that gap is CAPI-7 + CAPI-8 — API
+than simdjson on full traversal. About a third of that gap is C_API-7 + C_API-8 — API
 overhead, not architecture. Retiring both makes the comparison a fair one between a
 random-access layout and a sequential tape, which is the honest question.
 
-## CAPI-4 — No zero-copy reader for packed date/time (P2)
+## C_API-4 — No zero-copy reader for packed date/time (P2)
 
 **Current state.** Since DT-2, `Node::as<std::string_view>()` throws *"Node is not a string
 or code"* on `Patient.birthDate`. The only public path to the text is `print_json`, which
@@ -4585,7 +4593,7 @@ JSON printer, not its read path — a real and quantifiable distortion, currentl
 the benchmark's Test 3. The workarounds in `../FastFHIR-benchmark/bench/bench_test_3.hpp`:
 `read_text_field()` (print_json) when the text is required, or — cheaper, and enough for
 any query that only counts presence — checking the slot as a falsy `Entry` without decoding
-(CAPI-9 documents the accessor contract gap).
+(C_API-9 documents the accessor contract gap).
 
 **Ask:** a zero-copy or caller-buffer reader — `Node::as<FF_DateTime>()` returning the
 packed value, and/or a `to_chars`-style `format_datetime(Node, std::span<char>)` that
@@ -4593,7 +4601,7 @@ writes ISO-8601 into a caller buffer with no allocation and no JSON layer. The z
 read-path claim in README § 1 does not currently hold for date fields through the public
 API.
 
-## CAPI-5 — `TypeTraits<std::string>` undefined while generated POCOs use `std::string` (P2)
+## C_API-5 — `TypeTraits<std::string>` undefined while generated POCOs use `std::string` (P2)
 
 **Current state.** Only `std::string_view` is specialised, so assigning a `std::string`
 fails to compile. The generated date/time POCO fields (`birthdate`, `issued`, …) **are**
@@ -4604,7 +4612,7 @@ every assignment site (PORT-8).
 **Ask:** specialise `TypeTraits<std::string>` to forward to the `string_view` path. Small,
 and it removes a papercut from every consumer that round-trips a POCO.
 
-## CAPI-6 — Stale doc comment in `FF_Ingestor.hpp` (P3)
+## C_API-6 — Stale doc comment in `FF_Ingestor.hpp` (P3)
 
 **Locate:** `sed -n '69p' include/FF_Ingestor.hpp`
 
@@ -4613,14 +4621,14 @@ That name no longer exists; it is `FF_SOURCE_FHIR_JSON` (used correctly two line
 `:57` and again at `:122`). One-line fix; it is in the worked example a new consumer copies
 first.
 
-## CAPI-9 — `as<std::string_view>()` throws on node kinds the docs don't enumerate (P2)
+## C_API-9 — `as<std::string_view>()` throws on node kinds the docs don't enumerate (P2)
 
 **Locate:** `include/FF_Parser.hpp` — `Reflective::Node::as<>` /
 `Entry::operator std::string_view()`; the exception text is in `FF_Utilities.hpp`.
 
 **Current state.** The reflective string accessor throws
 `std::runtime_error("FastFHIR: Node is not a string or code")` on `FF_FIELD_DATETIME`
-slots. CAPI-4 documents the `Patient.birthDate` case; the header documents **neither
+slots. C_API-4 documents the `Patient.birthDate` case; the header documents **neither
 which kinds are readable per `T`, nor that unsupported kinds throw** — a consumer writing
 a reflective census query (string `code.coding[*]` + datetime `issued` in one loop)
 discovers the boundary as an uncaught exception mid-query. The message is also
@@ -4631,15 +4639,15 @@ misleading in the other direction: code slots ARE readable (via `FF_ResolveCode`
 aborted on `Observation.issued` (`FF_FIELD_DATETIME`) with exactly this throw. Two
 workarounds, both now in the benchmark: (a) **presence-only reads** — an absent slot
 reads as a falsy `Entry`, so a census that only counts presence never needs the decode;
-(b) `read_text_field()` (print_json) when the text is actually required (CAPI-4).
+(b) `read_text_field()` (print_json) when the text is actually required (C_API-4).
 
 **Ask:** document the throwing contract on `Node::as<>` / `Entry::operator T()` — which
 kinds are readable per `T`, and that unsupported kinds throw rather than returning empty
 or a null node. Optionally have the exception name the offending kind and the supported
-set. Small; the "throws on date/time" fact is already known (CAPI-4) — this is the
+set. Small; the "throws on date/time" fact is already known (C_API-4) — this is the
 "say it on the accessor" half.
 
-## CAPI-10 — `Compactor::archive()` output is write-once, and the doc doesn't say so (P2)
+## C_API-10 — `Compactor::archive()` output is write-once, and the doc doesn't say so (P2)
 
 **Locate:** `include/FF_Compactor.hpp` — the class comment ("Post-finalize archival transform ... copies the remaining stream payload unchanged").
 
@@ -4649,7 +4657,7 @@ set. Small; the "throws on date/time" fact is already known (CAPI-4) — this is
 
 **Ask:** document on `Compactor::archive` that the result is sealed/read-only (no `Builder`), and — if the round-trip is intended to exist — name the decompaction path the error message implies but the API surface does not provide. P2: it cost a consumer a failed instrument row, not a crash.
 
-## CAPI-11 — Hydrated `ChoiceEntry` exposes the raw packed datetime slot (P2)
+## C_API-11 — Hydrated `ChoiceEntry` exposes the raw packed datetime slot (P2)
 
 **Locate:** `include/FF_Primitives.hpp` — `struct ChoiceEntry` (the `value`
 variant) and `FF_UNPACK_DATETIME`.
@@ -4670,7 +4678,7 @@ the gap is that nothing on `ChoiceEntry` says the value is a slot, not a value.
 choices carry the packed slot and must be decoded via `FF_UNPACK_DATETIME`, and
 that the fallback-flag/offset case resolves through the owning arena.
 
-## CAPI-12 — Cannot append one element to an EXISTING sealed array (P1)
+## C_API-12 — Cannot append one element to an EXISTING sealed array (P1)
 
 **Locate:** `include/FF_Builder.hpp` — `MutableEntry::operator=(const T_Data&)`,
 `ObjectHandle::operator[](size_t)` (in `src/FF_Builder.cpp`);
@@ -4704,7 +4712,7 @@ at the write head and bump the count (or an explicit "open array" build mode
 where the entry array is buildable incrementally). This is the API the
 "append to the end and reseal" story in §4.1 requires.
 
-## CAPI-14 — Generated POCO string fields are `std::string_view`: assigning a temporary dangles (P2)
+## C_API-14 — Generated POCO string fields are `std::string_view`: assigning a temporary dangles (P2)
 
 **Locate:** `generated_src/FF_Patient.hpp` (and peers) — `std::string_view id;`
 
@@ -4727,14 +4735,14 @@ variant. Small doc change; it is a silent footgun for every new consumer.
 ---
 
 **Verify (block):** each item's *Locate* output still matches the *Current state* quoted
-above before it is claimed. CAPI-1/2/3 should each land with a test that fails before the
-fix: for CAPI-1 a field-by-field-assembled `Observation.category` that reads back; for
-CAPI-2 the CAPI-1 stream rejected by `validate_FFHR_stream()`; for CAPI-3 a
+above before it is claimed. C_API-1/2/3 should each land with a test that fails before the
+fix: for C_API-1 a field-by-field-assembled `Observation.category` that reads back; for
+C_API-2 the C_API-1 stream rejected by `validate_FFHR_stream()`; for C_API-3 a
 `valueQuantity` hydrated from arena A, stored into arena B, and read back equal.
 
 ---
 
-## CAPI-16 — A `code` field cannot be assigned through a mutable handle (P1)
+## C_API-16 — A `code` field cannot be assigned through a mutable handle (P1)
 
 **Found 2026-09-10 by the README example runner, on its first execution.** The
 compile gate passed this; only running it surfaced the throw.
@@ -4767,7 +4775,7 @@ slot has the same property: it is a 4-byte value that is *either* a permanent
 dictionary ID *or* a block-relative offset with `FF_CODED_VALUE_FLAG` set
 (CLAUDE.md, "THREE POLYMORPHIC SLOTS"), so it cannot be pointer-patched either.
 
-- [ ] CAPI-16.1 Add `Builder::amend_code(object_offset, field_vtable_offset,
+- [ ] C_API-16.1 Add `Builder::amend_code(object_offset, field_vtable_offset,
       std::string_view)` mirroring `amend_datetime`, and dispatch to it from
       `MutableEntry::operator=` on `m_kind == FF_FIELD_CODE`. It must reproduce
       the ingest path's encoding order exactly: `FF_GetDictionaryCode` first,
@@ -4775,13 +4783,13 @@ dictionary ID *or* a block-relative offset with `FF_CODED_VALUE_FLAG` set
       measured **relative to the containing block**, then `FF_CODE_NULL` for an
       empty string. Reuse the ingest encoder rather than writing a second one —
       two encoders for one slot is how SIZE and STORE drifted apart (A8.2).
-- [ ] CAPI-16.2 **Sequencing: read A8.2 first.** `SIZE_FF_CODE` and
+- [ ] C_API-16.2 **Sequencing: read A8.2 first.** `SIZE_FF_CODE` and
       `ENCODE_FF_CODE` agree today only by numeric coincidence on the single
       reachable branch, and this task adds a second writer of that slot. Landing
-      CAPI-16 on top of a SIZE/STORE disagreement arms it from a new direction.
-- [ ] CAPI-16.3 Restore the README. Three blocks under "Code Assignment
+      C_API-16 on top of a SIZE/STORE disagreement arms it from a new direction.
+- [ ] C_API-16.3 Restore the README. Three blocks under "Code Assignment
       Semantics" and one line in "Step 3" documented this working; they now
-      carry an explicit "not supported, tracked as CAPI-16" caveat. Remove the
+      carry an explicit "not supported, tracked as C_API-16" caveat. Remove the
       caveat and re-tag the three blocks `run=` so the runner executes them.
 - Acceptance: the four README blocks execute; `gender` round-trips as a
   dictionary ID and an unknown code round-trips through the concept fallback.
@@ -4789,7 +4797,7 @@ dictionary ID *or* a block-relative offset with `FF_CODED_VALUE_FLAG` set
 
 ---
 
-## CAPI-17 — The conformance layer cannot be attached from Python (P2)
+## C_API-17 — The conformance layer cannot be attached from Python (P2)
 
 **Filed 2026-09-15**, recording the follow-up K-WO-2 deferred. `Builder::attach_layer`
 (`include/FF_Builder.hpp`) takes a **borrowed** `const ValidationHooks*` that must
@@ -4798,12 +4806,12 @@ too. pybind11 has no safe way to hand a C++ caller a pointer whose lifetime Pyth
 controls, so `python/FF_PythonBindings.cpp` exposes nothing from Block K
 (`grep -n attach_layer python/` → empty).
 
-- [ ] CAPI-17.1 Bind an owning wrapper instead of the raw pointer: a Python object
+- [ ] C_API-17.1 Bind an owning wrapper instead of the raw pointer: a Python object
       that holds the `ValidationHooks` copy, its `ConcurrentLogger` and its
       `std::atomic<uint64_t>`, and that the stream object keeps alive
       (`py::keep_alive`) for as long as it is attached. Expose `policy`,
       `failures` and the logged diagnostics as read-only properties.
-- [ ] CAPI-17.2 Link `fastfhir_conformance` into `_core` only when
+- [ ] C_API-17.2 Link `fastfhir_conformance` into `_core` only when
       `FASTFHIR_BUILD_CONFORMANCE` is ON, and make the Python symbol absent (not
       a stub that raises) when it is OFF — the layer is opt-in in Python too.
 - Acceptance: a Python test ingests one Synthea bundle with the layer attached under
@@ -5128,8 +5136,8 @@ This list exists so finished work is not re-litigated, **not** as a progress log
 | 2026-09-10 | **A26** | Bundle entries dropped (250 in / 209 out) and `fullUrl` / `request` never parsed. Fixed by delegating the non-resource entry fields to `Bundle_entry_from_json` instead of growing the hardcoded patcher. Verify: 857→857, 820→820, 847→847, 250→250 with all three keys present. |
 | 2026-09-10 | **A28** | Standalone generator run did not reproduce `python/fields/` (85 of 228 files differed) because `emit_python_fields` and `emit_python_ast` wrote the same filename. Closed by the keyword-only `truncated_by` contract — first touch in a run truncates, later touches append — which also fixed a worse latent bug the task never named: 144 modules had no truncating writer at all, so a blind append restacked the class on every configure (36 copies of `BUNDLE_ENTRY_PATH` in a long-lived tree). `test_determinism.py`'s `filecmp.dircmp` walk is recursive, so it covers `python/`. |
 | 2026-08-27 | **REC-18** | Gap analysis. `classify_block()` now sizes every tag (generated blocks from `reflected_fields_view`, plus `FF_CODED_VALUE` / `FF_URL_DIRECTORY` / `FF_CHECKSUM`), so the arena tiles; `find_gaps()` reports each run of bytes no entry claims as a `Hole` — the one damage class (both witnesses destroyed) scan + reachability cannot represent. Compact streams are refused. `1c98659`, `6a56c2b`. |
-| 2026-08-26 | **P0-1 / CAPI-13** | `deserialize` emitted no code for singular block fields *and* `FF_FIELD_URL`. 736 dropped fields across 37 files → 0. Fail-loud `else` added. `tests/cpp/test_poco_parity.cpp` pins it. |
-| 2026-08-26 | **CAPI-15** | `Parser(const void*, size_t)` SEGV'd on a corrupted `CHECKSUM_OFFSET`; now bounds-checked before dereference. `FastFHIR::Recovery` shipped alongside. |
+| 2026-08-26 | **P0-1 / C_API-13** | `deserialize` emitted no code for singular block fields *and* `FF_FIELD_URL`. 736 dropped fields across 37 files → 0. Fail-loud `else` added. `tests/cpp/test_poco_parity.cpp` pins it. |
+| 2026-08-26 | **C_API-15** | `Parser(const void*, size_t)` SEGV'd on a corrupted `CHECKSUM_OFFSET`; now bounds-checked before dereference. `FastFHIR::Recovery` shipped alongside. |
 | 2026-08-26 | **REC-1** | `known_resource_tag()` tested a hardcoded 5-tag list; now `FF_IsResourceTag()` over the whole band. |
 | 2026-08-26 | **REC-5** | Resync is type-checked against the parent's stored tag; `tag_conflicts` / `unrecovered` counters added; `Stats::units` was declared and never populated — fixed. |
 | 2026-08-26 | **P0-2 (py_roundtrip)** | Source-containment was implemented but unmeasured. `DiffStats` + `COVERAGE_SHORTFALL` added; 342/342 fixtures, 18,457,492 source values compared, all present. |

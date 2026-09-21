@@ -2351,11 +2351,11 @@ FF_ApplyReport Recovery::apply(const FF_RecoveryReport& report, std::vector<BYTE
 }
 
 Recovery::Recovery(const Memory& memory) noexcept
-    : m_base(memory.base()),
+    : m_base(memory->base()),
       // THE DECLARED SIZE IS A WIRE VALUE, AND THIS CLASS TRUSTS NO WIRE VALUE.
       //
-      // Memory::size() reads the arena's write head, and the head lives at
-      // byte 8 of the arena (Memory::STREAM_CURSOR_OFFSET) -- the same 8 bytes
+      // Memory_t::size() reads the arena's write head, and the head lives at
+      // byte 8 of the arena (Memory_t::STREAM_CURSOR_OFFSET) -- the same 8 bytes
       // FF_HEADER::STREAM_SIZE occupies. That identity is the design: sealing a
       // stream parks the head at the payload size, so it becomes the declared
       // file size. It also means that on a DAMAGED stream those 8 bytes are
@@ -2373,8 +2373,8 @@ Recovery::Recovery(const Memory& memory) noexcept
       // there is one; capacity() is only the sparse RESERVATION (4 GiB by
       // default), so it is the weaker fallback used for an anonymous arena.
       // Neither is read from the stream, which is the whole point.
-      m_size(std::min<uint64_t>(memory.size(),
-                                memory.disk_size() != 0 ? memory.disk_size()
-                                                        : memory.capacity())) {}
+      m_size(std::min<uint64_t>(memory->size(),
+                                memory->disk_size() != 0 ? memory->disk_size()
+                                                        : memory->capacity())) {}
 
 }  // namespace FastFHIR

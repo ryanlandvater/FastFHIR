@@ -44,7 +44,7 @@ _RAW_VIEW_MEMBER = re.compile(
 )
 _STRING_MEMBER = re.compile(
     r"^\s+(?:FastFHIR::String|std::vector<FastFHIR::String>|"
-    r"FF_Optional<FastFHIR::String>)\s+(\w+)\s*[;=]",
+    r"FastFHIR::Optional<FastFHIR::String>)\s+(\w+)\s*[;=]",
     re.M,
 )
 

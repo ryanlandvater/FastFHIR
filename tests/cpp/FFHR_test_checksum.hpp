@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  *
- * SHA-256 hasher for Builder::finalize() in the standalone C++ tests.
+ * SHA-256 hasher for Builder_t::finalize() in the standalone C++ tests.
  *
  * Four test files carried an identical copy of this function.
  *
@@ -22,7 +22,7 @@
 namespace ff_test
 {
     /// Matches FastFHIR's HashCallback signature, so it is passed straight to
-    /// FF_BuilderFinalize / Builder::finalize as `.hasher`.
+    /// FF_BuilderFinalize / Builder_t::finalize as `.hasher`.
     inline std::vector<BYTE> sha256(const unsigned char *data, Size len)
     {
         std::vector<BYTE> hash(EVP_MAX_MD_SIZE);

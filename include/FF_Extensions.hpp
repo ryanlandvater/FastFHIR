@@ -201,7 +201,7 @@ public:
      * Back-patches FF_HEADER::MODULE_REG_OFFSET.
      */
     void write_module_registry(
-        Builder& builder,
+        Builder_t& builder,
         const std::vector<std::pair<uint32_t, std::string>>& ordered_entries);
 
     /**

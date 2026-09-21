@@ -54,12 +54,12 @@ namespace FastFHIR {
  * `entry` slot at the result (`amend_pointer` on an unassigned slot) or let
  * `FF_BundleAppendEntries` do it.
  *
- * Thread-safe in the same sense as `Builder::append`: the claim is lock-free
+ * Thread-safe in the same sense as `Builder_t::append`: the claim is lock-free
  * and nothing else is touched. Throws on a SIZE/STORE disagreement.
  *
  * @return FF_NULL_OFFSET for an empty vector (an absent array has no block).
  */
-FF_EXPORT Offset serialize_bundle_array(Builder& builder, const std::vector<BundleentryData>& entries);
+FF_EXPORT Offset serialize_bundle_array(Builder_t& builder, const std::vector<BundleentryData>& entries);
 
 /**
  * @brief Where an append put things. Offsets are absolute in the arena.
@@ -111,7 +111,7 @@ struct FF_BundleAppendResult
 struct FF_BundleAppendInfo
 {
     FF_Builder builder;
-    std::function<void(Builder& builder, std::vector<BundleentryData>& new_entries)> append;
+    std::function<void(Builder_t& builder, std::vector<BundleentryData>& new_entries)> append;
 };
 
 FF_EXPORT FF_Result FF_BundleAppendEntries(const FF_BundleAppendInfo& info,

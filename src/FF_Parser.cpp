@@ -389,7 +389,7 @@ Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast
 
 // CLAMP THE CLAIMED STREAM SIZE TO WHAT IS ACTUALLY MAPPED.
 //
-// Memory::size() reads the write head, and the write head lives in the same
+// Memory_t::size() reads the write head, and the write head lives in the same
 // eight bytes as FF_HEADER::STREAM_SIZE -- so on damaged input it IS corrupted
 // data (CLAUDE.md invariant 8). Every bounds check in the reader is
 // FF_BLOCK_IN_BOUNDS(off, m_size, width), so a single flip there does not
@@ -403,13 +403,13 @@ Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast
 // capacity() is the arena's mapped extent and is not on the wire, so it cannot
 // be corrupted by the stream it holds.
 static inline size_t ff_mapped_extent(const Memory& memory) {
-    const size_t claimed = memory.size();
-    const size_t mapped  = memory.capacity();
+    const size_t claimed = memory->size();
+    const size_t mapped  = memory->capacity();
     return claimed < mapped ? claimed : mapped;
 }
 
 Parser::Parser(const Memory& memory)
-    : m_memory(memory), m_base(memory.base()), m_size(ff_mapped_extent(memory)) {
+    : m_memory(memory), m_base(memory->base()), m_size(ff_mapped_extent(memory)) {
     if (m_size < FF_HEADER::HEADER_SIZE) {
         throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
     }
@@ -452,7 +452,7 @@ Parser::ChecksumValidation Parser::checksum() const {
 // =====================================================================
 // XP-2.3 — Parser::validate_FFHR_stream()
 //
-// Explicit, never automatic. Construction stays O(1) so Builder::query() and
+// Explicit, never automatic. Construction stays O(1) so Builder_t::query() and
 // the ordinary open path pay nothing; a caller reading bytes it did not produce
 // asks for this walk deliberately. (IFE's split, which this mirrors:
 // validate_FFHR_stream is a call, not a constructor side effect.)
@@ -973,7 +973,7 @@ static std::string_view get_choice_suffix(RECOVERY_TAG tag) {
             // it enumerates resources only and returns "" for Quantity,
             // CodeableConcept, Period and every other data type, which is how
             // 1,416 fields came out as bare `value`.
-            return FastFHIR::reflected_choice_suffix(tag);
+            return reflected_choice_suffix(tag);
     }
 }
 

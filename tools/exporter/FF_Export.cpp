@@ -99,8 +99,7 @@ int main(int argc, char** argv) {
                   .size = parse_size,
               }, parser)
             : FastFHIR::FF_Parse(FastFHIR::FF_ParseInfo{
-                  .memory = std::make_shared<FastFHIR::Memory>(
-                      FastFHIR::Memory::openReadOnly(input_file)),
+                  .memory = FastFHIR::Memory::openReadOnly(input_file),
               }, parser);
         if (!parse_result)
         {

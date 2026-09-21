@@ -15,7 +15,7 @@
 //      with heavy        the no-visited-set hang into a reported failure)
 //      sharing
 //
-// Documents are built with the Builder (standard layout), which can express
+// Documents are built with the Builder_t (standard layout), which can express
 // cycles via amend_pointer -- the same shape a crafted file would carry.
 
 #include <FastFHIR.hpp>
@@ -55,7 +55,7 @@ int main() {
     {
         Memory mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         IdentifierData ix, iy;
@@ -89,7 +89,7 @@ int main() {
     {
         Memory mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         constexpr int CHAIN = 70;
@@ -129,7 +129,7 @@ int main() {
     {
         Memory mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         CodeableConceptData cc;                       // the shared subtree
@@ -168,7 +168,7 @@ int main() {
     {
         Memory mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         IdentifierData id;
@@ -210,7 +210,7 @@ int main() {
     {
         Memory mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         IdentifierData ix, iy;
@@ -282,7 +282,7 @@ int main() {
     {
         Memory mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         MetaData meta;
@@ -322,7 +322,7 @@ int main() {
     {
         Memory mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         PatientData p; p.id = "scalar-split"; p.active = true;
@@ -362,7 +362,7 @@ int main() {
     {
         Memory mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         IdentifierData idd;
@@ -446,7 +446,7 @@ int main() {
     {
         Memory mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         ObservationData o; o.id = "choice-variant";
@@ -522,7 +522,7 @@ int main() {
     {
         Memory mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         ObservationData o; o.id = "flagged-code-decode";
@@ -586,7 +586,7 @@ int main() {
     {
         Memory mem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo info;
-        info.arena = std::make_shared<Memory>(mem);
+        info.arena = mem;
         FF_Builder builder;
         CHECK(FF_CreateBuilder(info, builder), "create stream");
         PatientData p; p.id = "dt-flagged";

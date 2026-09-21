@@ -60,17 +60,17 @@ struct PyMemory {
 
     void close() {
         m_closed = true;
-        m_core.reset();
+        m_core = nullptr;
     }
 
     Memory& get() {
         if (m_closed || !m_core) throw py::value_error("I/O operation on closed FastFHIR Memory object.");
-        return *m_core;
+        return m_core;
     }
     
     const Memory& get() const {
         if (m_closed || !m_core) throw py::value_error("I/O operation on closed FastFHIR Memory object.");
-        return *m_core;
+        return m_core;
     }
 };
 
@@ -91,12 +91,12 @@ struct PyBuilder {
         m_builder.reset();
     }
 
-    Builder& get() {
+    Builder_t& get() {
         if (m_closed || !m_builder) throw py::value_error("I/O operation on closed FastFHIR Builder.");
         return *m_builder;
     }
     
-    const Builder& get() const {
+    const Builder_t& get() const {
         if (m_closed || !m_builder) throw py::value_error("I/O operation on closed FastFHIR Builder.");
         return *m_builder;
     }
@@ -108,17 +108,17 @@ struct PyBuilder {
 // These carry the shared_ptr seamlessly through Python to guarantee memory safety
 // without altering the lightweight C++ AST architecture.
 struct PyBuilderNode {
-    std::shared_ptr<Builder> builder;
+    std::shared_ptr<Builder_t> builder;
     Reflective::ObjectHandle handle;
 
-    PyBuilderNode(std::shared_ptr<Builder> b, Reflective::ObjectHandle h) : builder(std::move(b)), handle(h) {}
+    PyBuilderNode(std::shared_ptr<Builder_t> b, Reflective::ObjectHandle h) : builder(std::move(b)), handle(h) {}
 };
 
 struct PyMutableEntry {
-    std::shared_ptr<Builder> builder;
+    std::shared_ptr<Builder_t> builder;
     Reflective::MutableEntry entry;
 
-    PyMutableEntry(std::shared_ptr<Builder> b, Reflective::MutableEntry e) : builder(std::move(b)), entry(e) {}
+    PyMutableEntry(std::shared_ptr<Builder_t> b, Reflective::MutableEntry e) : builder(std::move(b)), entry(e) {}
 
     FF_FieldKind kind() const { return entry.m_kind; }
     RECOVERY_TAG recovery() const { return entry.m_recovery; }
@@ -149,7 +149,7 @@ static std::string render_handle_json(const Reflective::ObjectHandle& handle) {
     return render_node_json(handle.as_node());
 }
 
-static py::object materialize_handle_value(const std::shared_ptr<Builder>& builder,
+static py::object materialize_handle_value(const std::shared_ptr<Builder_t>& builder,
                                            const Reflective::ObjectHandle& handle);
 
 static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wrapper,
@@ -161,7 +161,7 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
     }
 
     const auto* builder = entry_wrapper.entry.get_builder();
-    const Size arena_size = builder ? builder->memory().size() : 0;
+    const Size arena_size = builder ? builder->memory()->size() : 0;
     const uint32_t version = builder ? static_cast<uint32_t>(builder->FhirVersion()) : 0;
 
     switch (kind) {
@@ -304,7 +304,7 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
             // Block/resource: read tag from child and wrap as handle
             RECOVERY_TAG child_tag = FF_GET_RECOVERY_TAG(entry.base, child_off);
             Reflective::ObjectHandle elevated(
-                const_cast<Builder*>(builder),
+                const_cast<Builder_t*>(builder),
                 child_off, child_tag);
             if (elevated.offset() == FF_NULL_OFFSET) {
                 return py::none();
@@ -319,7 +319,7 @@ static py::object materialize_mutable_entry_value(const PyMutableEntry& entry_wr
     }
 }
 
-static py::object materialize_handle_value(const std::shared_ptr<Builder>& builder,
+static py::object materialize_handle_value(const std::shared_ptr<Builder_t>& builder,
                                            const Reflective::ObjectHandle& handle) {
     if (!handle || handle.offset() == FF_NULL_OFFSET) {
         return py::none();
@@ -399,7 +399,7 @@ static std::string render_parser_json(const Parser& parser) {
     return oss.str();
 }
 
-/// Snapshot the live stream via the FF_* surface; query() is private on Builder.
+/// Snapshot the live stream via the FF_* surface; query() is private on Builder_t.
 static Parser builder_query(const PyBuilder& self) {
     Parser parser;
     FF_Result res = FF_BuilderQuery(FF_BuilderQueryInfo{
@@ -454,7 +454,7 @@ static bool try_extract_recovery_tag(py::handle obj, RECOVERY_TAG& out_tag) {
     return false;
 }
 
-static py::list collect_filled_object_values(const std::shared_ptr<Builder>& builder,
+static py::list collect_filled_object_values(const std::shared_ptr<Builder_t>& builder,
                                             const Reflective::ObjectHandle& handle) {
     py::list filled_fields;
     if (!handle || handle.offset() == FF_NULL_OFFSET) {
@@ -479,7 +479,7 @@ static py::list collect_filled_object_values(const std::shared_ptr<Builder>& bui
     return filled_fields;
 }
 
-static py::list collect_filled_object_items(const std::shared_ptr<Builder>& builder,
+static py::list collect_filled_object_items(const std::shared_ptr<Builder_t>& builder,
                                            const Reflective::ObjectHandle& handle) {
     py::list items;
     if (!handle || handle.offset() == FF_NULL_OFFSET) {
@@ -669,19 +669,19 @@ PYBIND11_MODULE(_core, m) {
             return std::make_shared<PyMemory>(path, cap); }, 
             py::arg("filepath"), py::arg("capacity") = 4ULL * 1024 * 1024 * 1024)
         .def("try_acquire_stream", [](PyMemory& mem) {
-            auto sh = mem.get().try_acquire_stream();
+            auto sh = mem.get()->try_acquire_stream();
             if (!sh) throw std::runtime_error("Stream lock currently held by another socket/thread.");
             return std::move(*sh);
         }, py::keep_alive<0, 1>())
-        .def("reset", [](PyMemory& mem, size_t committed_size) { mem.get().reset(committed_size); },
+        .def("reset", [](PyMemory& mem, size_t committed_size) { mem.get()->reset(committed_size); },
             py::arg("committed_size") = 0)
         .def("close", &PyMemory::close)
         .def("__enter__", [](PyMemory& self) -> PyMemory& { return self; })
         .def("__exit__", [](PyMemory& self, py::object, py::object, py::object) { self.close(); })
-        .def_property_readonly("capacity", [](const PyMemory& self) { return self.get().capacity(); })
-        .def_property_readonly("name", [](const PyMemory& self) { return self.get().name(); })
-        .def_property_readonly("size", [](const PyMemory& self) { return self.get().size(); })
-        .def("view", [](const PyMemory& self) { return self.get().view(); });
+        .def_property_readonly("capacity", [](const PyMemory& self) { return self.get()->capacity(); })
+        .def_property_readonly("name", [](const PyMemory& self) { return self.get()->name(); })
+        .def_property_readonly("size", [](const PyMemory& self) { return self.get()->size(); })
+        .def("view", [](const PyMemory& self) { return self.get()->view(); });
 
     // =====================================================================
     // 3. Object Proxies
@@ -877,7 +877,7 @@ PYBIND11_MODULE(_core, m) {
         });
 
     // =====================================================================
-    // 4. Builder Wrapper & Context Manager
+    // 4. Builder_t Wrapper & Context Manager
     // =====================================================================
     py::class_<PyBuilder, std::shared_ptr<PyBuilder>>(m, "Builder")
         .def(py::init<PyMemory&, FHIR_VERSION>(), py::arg("memory"), py::arg("fhir_version") = FHIR_VERSION_R5)
@@ -994,7 +994,7 @@ PYBIND11_MODULE(_core, m) {
     // =====================================================================
     // 5. Ingestor
     // =====================================================================
-    py::class_<FF_Ingestor_t, std::shared_ptr<FF_Ingestor_t>>(m, "Ingestor")
+    py::class_<Ingestor_t, std::shared_ptr<Ingestor_t>>(m, "Ingestor")
         .def(py::init([](size_t logger_capacity, unsigned int concurrency) {
             FF_IngestorCreateInfo info;
             info.logger_capacity = logger_capacity;
@@ -1017,6 +1017,6 @@ PYBIND11_MODULE(_core, m) {
             if (res.failed()) throw std::runtime_error(res.message);
             return py::make_tuple(PyBuilderNode(builder.m_builder, root), static_cast<size_t>(count));
         }, py::arg("builder"), py::arg("source_type"), py::arg("payload"))
-        .def("reset", [](FF_Ingestor_t& self) { return self.impl.reset(); })
-        .def_property_readonly("is_faulted", [](FF_Ingestor_t& self) { return self.impl.is_faulted(); });
+        .def("reset", [](Ingestor_t& self) { return self.impl.reset(); })
+        .def_property_readonly("is_faulted", [](Ingestor_t& self) { return self.impl.is_faulted(); });
 }

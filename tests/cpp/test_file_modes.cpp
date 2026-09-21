@@ -104,7 +104,7 @@ FF_Result parse_file(const std::string &path, Parser &out)
     FF_Memory memory;
     try
     {
-        memory = std::make_shared<Memory>(Memory::openReadOnly(path));
+        memory = Memory::openReadOnly(path);
     }
     catch (const std::exception &e)
     {
@@ -150,12 +150,12 @@ void read_changes_nothing()
     }
     {
         Memory memory = Memory::openReadOnly(path);
-        CHECK(memory.read_only(), "openReadOnly arena reports read_only()");
-        CHECK(memory.capacity() == before.size(), "it maps exactly the file: " << memory.capacity());
-        CHECK(throws_mentioning([&] { memory.claim_space(8); }, "read-only"), "claim_space throws, named");
-        CHECK(throws_mentioning([&] { memory.reset(0); }, "read-only"), "reset throws, named");
-        CHECK(throws_mentioning([&] { memory.truncate_file(0); }, "read-only"), "truncate_file throws, named");
-        CHECK(throws_mentioning([&] { Builder builder(memory, FHIR_VERSION_R5); }, "read-only"),
+        CHECK(memory->read_only(), "openReadOnly arena reports read_only()");
+        CHECK(memory->capacity() == before.size(), "it maps exactly the file: " << memory->capacity());
+        CHECK(throws_mentioning([&] { memory->claim_space(8); }, "read-only"), "claim_space throws, named");
+        CHECK(throws_mentioning([&] { memory->reset(0); }, "read-only"), "reset throws, named");
+        CHECK(throws_mentioning([&] { memory->truncate_file(0); }, "read-only"), "truncate_file throws, named");
+        CHECK(throws_mentioning([&] { Builder_t builder(memory, FHIR_VERSION_R5); }, "read-only"),
               "a Builder refuses a read-only arena");
     }
 
@@ -327,30 +327,30 @@ void attaching_to_a_live_shared_arena_disturbs_nothing()
     // the normal state of a shared segment another process is writing into.
     Memory producer = Memory::create(4 * 1024 * 1024, name);
     FF_Builder first_writer;
-    REQUIRE(FF_CreateBuilder(FF_BuilderCreateInfo{.arena = std::make_shared<Memory>(producer)},
+    REQUIRE(FF_CreateBuilder(FF_BuilderCreateInfo{.arena = producer},
                              first_writer).succeeded(),
             "a Builder over a fresh shared arena");
     PatientData first;
     first.id = "shm-first";
     const auto first_handle = first_writer->append_obj(first);
-    const uint64_t head = producer.size();
+    const uint64_t head = producer->size();
     REQUIRE(head > FF_HEADER::HEADER_SIZE, "the producer claimed space: " << head);
 
     // A sibling attaches by name -- the same call another process makes.
     Memory attached = Memory::create(4 * 1024 * 1024, name);
-    CHECK(attached.size() == head, "the attached arena sees the producer's head: " << attached.size());
-    CHECK(producer.size() == head, "and attaching did not move it: " << producer.size());
+    CHECK(attached->size() == head, "the attached arena sees the producer's head: " << attached->size());
+    CHECK(producer->size() == head, "and attaching did not move it: " << producer->size());
 
     // It can append to the live arena, after the producer's data, not over it.
     FF_Builder second_writer;
-    REQUIRE(FF_CreateBuilder(FF_BuilderCreateInfo{.arena = std::make_shared<Memory>(attached)},
+    REQUIRE(FF_CreateBuilder(FF_BuilderCreateInfo{.arena = attached},
                              second_writer).succeeded(),
             "a second Builder attaches to the in-progress arena");
     PatientData second;
     second.id = "shm-second";
     const auto second_handle = second_writer->append_obj(second);
     CHECK(second_handle.offset() >= head, "the attached writer appends past the producer's data");
-    CHECK(producer.size() > head, "and the shared write head advanced for both");
+    CHECK(producer->size() > head, "and the shared write head advanced for both");
 
     // Sealing from either handle leaves both resources in one readable stream.
     REQUIRE(FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = first_writer, .root = first_handle})
@@ -361,7 +361,7 @@ void attaching_to_a_live_shared_arena_disturbs_nothing()
             "finalize the shared arena");
 
     Parser parser;
-    REQUIRE(FF_Parse(FF_ParseInfo{.memory = std::make_shared<Memory>(attached)}, parser).succeeded(),
+    REQUIRE(FF_Parse(FF_ParseInfo{.memory = attached}, parser).succeeded(),
             "the attached arena parses once sealed");
     CHECK(root_id(parser) == "shm-first", "the producer's resource survived the attach");
     CHECK(parser.validate_FFHR_stream().succeeded(), "and the stream validates");

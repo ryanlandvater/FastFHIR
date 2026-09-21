@@ -7,7 +7,7 @@
  * @brief The string member type of every generated POCO.
  *
  * NOT A WIRE TYPE. This is the build-and-materialize side only; no byte of any
- * stream changes because of it. Same status as FF_Optional.
+ * stream changes because of it. Same status as FastFHIR::Optional.
  */
 #pragma once
 
@@ -172,7 +172,3 @@ private:
 };
 
 }  // namespace FastFHIR
-
-/// Global alias, matching FF_Optional's spelling for consumers outside the
-/// namespace. The FF_ prefix is the namespace when there is not one.
-using FF_String = FastFHIR::String;

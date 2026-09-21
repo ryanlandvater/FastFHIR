@@ -70,7 +70,7 @@ int main() {
         CHECK(FF_CreateBuilder(ok, s) && s, "pre-populate stream handle");
 
         FF_BuilderCreateInfo bad;
-        bad.arena = std::make_shared<Memory>(Memory::create(1ull << 20));
+        bad.arena = Memory::create(1ull << 20);
         bad.filepath = "/tmp/fastfhir-would-never-exist";
         FF_Result r = FF_CreateBuilder(bad, s);
         CHECK(r.failed(), "FF_CreateBuilder rejects arena + filepath");

@@ -199,8 +199,7 @@ int main(int argc, char *argv[])
         Parser source;
         FF_Result parse_result = reading_stdin
             ? FF_Parse(FF_ParseInfo{.buffer = parse_buffer, .size = parse_size}, source)
-            : FF_Parse(FF_ParseInfo{.memory = std::make_shared<Memory>(
-                                        Memory::openReadOnly(input_path))}, source);
+            : FF_Parse(FF_ParseInfo{.memory = Memory::openReadOnly(input_path)}, source);
         if (!parse_result)
         {
             std::cerr << "[ff_compact] Error: " << parse_result.message << "\n";

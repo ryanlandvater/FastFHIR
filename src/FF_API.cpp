@@ -50,14 +50,14 @@ FF_Result FF_Invalid(const char* op, const char* why) noexcept
 // =====================================================================
 FF_Result FF_CreateMemory(const FF_MemoryCreateInfo& info, FF_Memory& out_memory) noexcept
 {
-    out_memory.reset();
+    out_memory = nullptr;
     if (info.shm_name && info.filepath)
         return FF_Invalid("FF_CreateMemory", "shm_name and filepath are mutually exclusive");
     return FF_Guard("FF_CreateMemory", [&] {
         if (info.filepath)
-            out_memory = std::make_shared<Memory>(Memory::createFromFile(info.filepath, info.capacity));
+            out_memory = Memory::createFromFile(info.filepath, info.capacity);
         else
-            out_memory = std::make_shared<Memory>(Memory::create(info.capacity, info.shm_name ? info.shm_name : ""));
+            out_memory = Memory::create(info.capacity, info.shm_name ? info.shm_name : "");
     });
 }
 
@@ -92,16 +92,16 @@ FF_Result FF_CreateBuilder(const FF_BuilderCreateInfo& info, FF_Builder& out_bui
     return FF_Guard("FF_CreateBuilder", [&] {
         Memory arena;
         if (info.arena)
-            arena = *info.arena;
+            arena = info.arena;
         else if (info.filepath)
             // The shortcut: the library opens the file, so it also owes the
             // caller a refusal that does not touch a file it will not append to.
-            arena = Builder::mount_for_append(info.filepath, info.capacity);
+            arena = Builder_t::mount_for_append(info.filepath, info.capacity);
         else if (info.shm_name)
             arena = Memory::create(info.capacity, info.shm_name);
         else
             arena = Memory::create(info.capacity);
-        out_builder = std::make_shared<Builder>(arena, info.version);
+        out_builder = std::make_shared<Builder_t>(arena, info.version);
     });
 }
 
@@ -139,7 +139,7 @@ FF_Result FF_Parse(const FF_ParseInfo& info, Parser& out_parser) noexcept
     if (info.memory && info.buffer)
         return FF_Invalid("FF_Parse", "buffer and memory are mutually exclusive");
     if (info.memory)
-        return FF_Guard("FF_Parse", [&] { out_parser = Parser(*info.memory); });
+        return FF_Guard("FF_Parse", [&] { out_parser = Parser(info.memory); });
     if (!info.buffer && info.size != 0)
         return FF_Invalid("FF_Parse", "null buffer");
     return FF_Guard("FF_Parse", [&] { out_parser = Parser(info.buffer, info.size); });
@@ -157,7 +157,12 @@ FF_Result FF_Compact(const FF_CompactInfo& info, Memory::View& out_view) noexcep
         // The compacted stream is strictly smaller than the source, so the
         // source size is a safe arena bound; the archive allocates it.
         Memory destination = Memory::create(info.source.size());
-        out_view = Compactor::archive(info.source, destination, info.algorithm, info.hasher);
+        out_view = Compactor::archive(Compactor::ArchiveInfo{
+            .source      = info.source,
+            .destination = destination,
+            .algorithm   = info.algorithm,
+            .hasher      = info.hasher,
+        });
     });
 }
 

@@ -35,7 +35,7 @@ ResourceReference load_resource(const BYTE* base, Offset entry)
 
 } // namespace
 
-Offset serialize_bundle_array(Builder& builder, const std::vector<BundleentryData>& entries)
+Offset serialize_bundle_array(Builder_t& builder, const std::vector<BundleentryData>& entries)
 {
     if (entries.empty())
         return FF_NULL_OFFSET;
@@ -52,7 +52,7 @@ Offset serialize_bundle_array(Builder& builder, const std::vector<BundleentryDat
         total += SIZE_FF_BUNDLE_ENTRY(entry, version);
 
     const Offset start = builder.claim_child_space(total);
-    BYTE* const base = builder.memory().base();
+    BYTE* const base = builder.memory()->base();
 
     Offset child = start;
     STORE_FF_ARRAY_HEADER(base, child, FF_ARRAY::INLINE_BLOCK, kEntryStep, n,
@@ -62,7 +62,7 @@ Offset serialize_bundle_array(Builder& builder, const std::vector<BundleentryDat
     for (uint32_t i = 0; i < n; ++i)
         child = STORE_FF_BUNDLE_ENTRY(base, first + i * kEntryStep, child, entries[i], version);
 
-    // The SIZE/STORE contract Builder::append enforces, for the same reason:
+    // The SIZE/STORE contract Builder_t::append enforces, for the same reason:
     // a disagreement would let the next claim overlap this array's tail.
     if (child != start + total) {
         throw std::runtime_error(
@@ -83,12 +83,12 @@ FF_Result FF_BundleAppendEntries(const FF_BundleAppendInfo& info,
         return FF_Result{FF_INVALID_ARGUMENT, std::string(op) + ": null append callback"};
 
     try {
-        Builder& b = *info.builder;
+        Builder_t& b = *info.builder;
 
         if (!b.try_begin_mutation())
             return FF_Result{FF_FAILURE, std::string(op) + ": builder is finalizing"};
         struct Guard {
-            Builder* self;
+            Builder_t* self;
             ~Guard() { self->end_mutation(); }
         } guard{&b};
 
@@ -104,7 +104,7 @@ FF_Result FF_BundleAppendEntries(const FF_BundleAppendInfo& info,
 
         const BYTE* const base = b.m_base;
         const Offset root = b.m_root_offset;
-        const Size head = b.m_memory.size();
+        const Size head = b.m_memory->size();
         const auto version = static_cast<uint32_t>(b.m_fhir_rev);
 
         if (root > head || head - root < FF_BUNDLE::ENTRY + sizeof(Offset))
@@ -197,7 +197,7 @@ FF_Result FF_BundleAppendEntries(const FF_BundleAppendInfo& info,
         }
 
         if (at_tail) {
-            b.m_memory.reset(A);
+            b.m_memory->reset(A);
             out_result.rewrite_from = A;
         } else if (A != FF_NULL_OFFSET) {
             out_result.relocated = true;

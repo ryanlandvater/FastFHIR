@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Every ```cpp block in README.md must compile.
+"""Every ```cpp and ```c block in README.md must compile.
 
 WHY THIS EXISTS
 ---------------
@@ -21,6 +21,19 @@ both now checked:
 
     test_readme.cpp        the examples work
     this gate              the README says something that compiles
+
+BOTH LANGUAGES
+--------------
+The README documents two surfaces, so this gate drives two compilers: ```cpp
+blocks go to $CXX as C++20, and ```c blocks go to $CC as C11. The ```c block
+holds the C ABI example. `FastFHIR.h` is hand-written and recent, and no
+generator keeps it in step with the library, so its example is the one most
+likely to fall out of date. It has to be compiled by a C compiler: the reason
+that header exists at all is that a C program can include it, and a C++
+compiler accepting it would not establish that. A C block is always compiled as
+a whole translation unit, because there is no C equivalent of the function
+wrapper the C++ fragments are dropped into, and no set of shared C includes
+that the blocks would benefit from.
 
 HOW A BLOCK DECLARES ITSELF
 ---------------------------
@@ -63,6 +76,11 @@ from extract import Fence, extract  # noqa: E402
 # make a red run green -- that is the failure mode they exist to prevent.
 MIN_BLOCKS_COMPILED = 20
 MAX_BLOCKS_SKIPPED = 2
+# The C surface is one block today, out of roughly twenty-five. Deleting it
+# would leave the total well above MIN_BLOCKS_COMPILED, so the overall floor
+# would not notice, and nothing would then be checking that FastFHIR.h is valid
+# C. This floor counts the C blocks on their own so that deletion fails here.
+MIN_C_BLOCKS_COMPILED = 1
 
 
 def _shared_preamble() -> str:
@@ -161,6 +179,14 @@ def _context_stanzas(fence: Fence) -> list[str]:
 
 def build_tu(fence: Fence) -> str:
     """Render one fence as a compilable translation unit."""
+    if fence.lang == "c":
+        # Verbatim. The block already carries its own #includes and is a
+        # complete TU; there is nothing to wrap it in and no C context header.
+        return "\n".join([
+            f"/* README.md:{fence.line} -- {fence.heading} */",
+            *fence.body,
+        ]) + "\n"
+
     parts = [
         f"// README.md:{fence.line} -- {fence.heading}",
         f"// mode={fence.mode} needs={','.join(fence.needs) or '-'}",
@@ -191,12 +217,21 @@ def build_tu(fence: Fence) -> str:
 
 
 def compile_one(fence: Fence, cxx: list[str], include_dirs: list[str],
-                keep_dir: Path | None = None) -> tuple[bool, str]:
+                keep_dir: Path | None = None,
+                cc: list[str] | None = None) -> tuple[bool, str]:
     tu = build_tu(fence)
+    is_c = fence.lang == "c"
     with tempfile.TemporaryDirectory() as td:
-        src = Path(td) / f"ff_readme_fence_{fence.index}.cpp"
+        src = Path(td) / f"ff_readme_fence_{fence.index}.{'c' if is_c else 'cpp'}"
         src.write_text(tu, encoding="utf-8")
-        cmd = [*cxx, "-std=c++20", "-fsyntax-only", "-DASIO_STANDALONE"]
+        if is_c:
+            # Warnings are enabled as well as -fsyntax-only. Readers copy this
+            # example into their own projects and build it with warnings on, so
+            # an ignored return value or a signed/unsigned comparison in the
+            # README would be a defect that this gate should report.
+            cmd = [*(cc or cxx), "-std=c11", "-fsyntax-only", "-Wall", "-Wextra"]
+        else:
+            cmd = [*cxx, "-std=c++20", "-fsyntax-only", "-DASIO_STANDALONE"]
         for feature in fence.requires:
             cmd.append(f"-D{_FEATURES[feature][1]}")
         for d in include_dirs:
@@ -264,6 +299,8 @@ def main() -> int:
     ap.add_argument("--readme", default=str(_REPO_ROOT / "README.md"))
     ap.add_argument("--build-dir", default=str(_REPO_ROOT / "build"))
     ap.add_argument("--cxx", default=os.environ.get("CXX") or "c++")
+    ap.add_argument("--cc", default=os.environ.get("CC") or "cc",
+                    help="C compiler for ```c blocks")
     ap.add_argument("--sysroot", default=None,
                     help="-isysroot for the compiler (macOS default: xcrun --show-sdk-path)")
     ap.add_argument("--include-dir", action="append", default=[],
@@ -286,6 +323,15 @@ def main() -> int:
     sysroot = args.sysroot or _macos_sysroot()
     compiler = [cxx, "-isysroot", sysroot] if sysroot else [cxx]
 
+    # Resolved the same way and refused the same way: a missing C compiler
+    # means the C block did not run, and "did not run" is not "passed" (P0-2).
+    cc = shutil.which(args.cc)
+    if cc is None:
+        print(f"README compile gate: no C compiler found (tried {args.cc!r}).")
+        print("Set CC or pass --cc. Refusing to report success on the C blocks.")
+        return 2
+    c_compiler = [cc, "-isysroot", sysroot] if sysroot else [cc]
+
     readme = Path(args.readme)
     fences = extract(readme)
 
@@ -306,7 +352,7 @@ def main() -> int:
         return 2
 
     keep_dir = Path(args.keep_failed) if args.keep_failed else None
-    compiled = skipped = 0
+    compiled = skipped = c_compiled = 0
     failures: list[tuple[Fence, str]] = []
     skips: list[Fence] = []
     unavailable: list[tuple[Fence, str]] = []
@@ -341,18 +387,21 @@ def main() -> int:
             print(f"  n/a   {fence.label}: requires {why}")
             continue
 
-        ok, err = compile_one(fence, compiler, include_dirs, keep_dir)
+        ok, err = compile_one(fence, compiler, include_dirs, keep_dir, c_compiler)
         if ok:
             compiled += 1
+            if fence.lang == "c":
+                c_compiled += 1
             print(f"  ok    {fence.label} [{fence.mode}]")
         else:
             failures.append((fence, err))
             print(f"  FAIL  {fence.label} [{fence.mode}]")
 
     print()
+    n_c = sum(1 for f in fences if f.lang == "c")
     print(f"README compile gate: {compiled} compiled, {skipped} skipped, "
           f"{len(unavailable)} unavailable, {len(failures)} failed, "
-          f"of {len(fences)} ```cpp blocks.")
+          f"of {len(fences)} blocks ({n_c} of them ```c).")
     if unavailable:
         print("  Unavailable blocks are checked in a build that has the feature;")
         print("  configure with it enabled to cover them here:")
@@ -394,9 +443,20 @@ def main() -> int:
             for f in skips:
                 print(f"    {f.label}: {f.reason}")
             verdict = 1
+        # A separate floor for C: the C blocks are a handful among thirty, so a
+        # deleted one stays comfortably above the overall floor and vanishes
+        # unnoticed. The surface with the fewest blocks needs its own count.
+        if c_compiled < MIN_C_BLOCKS_COMPILED:
+            print()
+            print(f"C FLOOR BREACH: {c_compiled} ```c blocks compiled, floor is "
+                  f"{MIN_C_BLOCKS_COMPILED}. The C ABI example is the only check "
+                  f"on FastFHIR.h being valid C; losing it silently is exactly "
+                  f"what this floor prevents.")
+            verdict = 1
 
     if verdict == 0:
-        print(f"OK -- every one of {compiled} README C++ blocks compiles.")
+        print(f"OK -- every one of {compiled} README blocks compiles "
+              f"({c_compiled} C, {compiled - c_compiled} C++).")
     return verdict
 
 

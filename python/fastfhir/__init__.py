@@ -33,6 +33,22 @@ def _default_crc32_hasher(view: memoryview) -> bytes:
     # zlib returns an unsigned 32-bit int. Pack to 4 little-endian bytes.
     return zlib.crc32(view).to_bytes(4, byteorder='little')
 
+# The one place a Checksum maps to its hashlib/zlib implementation. finalize()
+# and compact() both seal through it, so adding an algorithm is one edit here,
+# not one per caller -- the same single-source rule as the rest of the tree.
+_HASHERS: dict = {
+    Checksum.SHA256: _default_sha256_hasher,
+    Checksum.MD5:    _default_md5_hasher,
+    Checksum.CRC32:  _default_crc32_hasher,
+}
+
+def _resolve_hasher(algo: Checksum,
+                    hasher: Optional[Callable[[memoryview], bytes]]) -> Optional[Callable[[memoryview], bytes]]:
+    """The caller's hasher if given, else the standard one for @p algo (None for NONE)."""
+    if hasher is not None:
+        return hasher
+    return _HASHERS.get(algo)
+
 # ---------------------------------------------------------
 # Builder Wrapper (Enhances C++ Builder)
 # ---------------------------------------------------------
@@ -57,16 +73,8 @@ class Builder(_core.Builder):
             hasher: A custom callback. If None and algo is SHA256,
                     the standard hashlib.sha256 is used automatically.
         """
-        if hasher is None:
-            if algo == Checksum.SHA256:
-                hasher = _default_sha256_hasher
-            elif algo == Checksum.MD5:
-                hasher = _default_md5_hasher
-            elif algo == Checksum.CRC32:
-                hasher = _default_crc32_hasher
-            
         # Call the underlying C++ method
-        return super().finalize(algo, hasher)
+        return super().finalize(algo, _resolve_hasher(algo, hasher))
 
     def compact(self, algo: Checksum = Checksum.NONE, hasher: Optional[Callable[[memoryview], bytes]] = None) -> MemoryView:
         """
@@ -86,14 +94,7 @@ class Builder(_core.Builder):
         Returns:
             A zero-copy sealed compact archive view.
         """
-        if hasher is None:
-            if algo == Checksum.SHA256:
-                hasher = _default_sha256_hasher
-            elif algo == Checksum.MD5:
-                hasher = _default_md5_hasher
-            elif algo == Checksum.CRC32:
-                hasher = _default_crc32_hasher
-        return super().compact(algo, hasher)
+        return super().compact(algo, _resolve_hasher(algo, hasher))
 
 
 def stream_readinto_to_memory(source, memory: Memory) -> int:

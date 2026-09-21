@@ -27,7 +27,7 @@
 #include "FF_Utilities.hpp"
 
 namespace FastFHIR {
-class Builder;
+class Builder_t;
 struct ArchiveContext;
 template<typename T> struct TypeTraits;
 
@@ -64,7 +64,7 @@ struct Entry;
  * a wrong assumption.
  */
 class Parser {
-    friend class Builder;
+    friend class Builder_t;
     // Non-const so Parser stays copy-assignable (FF_* out-parameter pattern).
     // The handle is never rebound after construction; the const-ness was
     // stylistic and blocked Parser& out params.

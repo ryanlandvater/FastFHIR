@@ -3,19 +3,32 @@
 :toc: macro
 :source-highlighter: highlight.js
 
-This document is the reference for the FastFHIR *external* C++ API — the `FF_*`
-surface declared in `include/FastFHIR.hpp`. Every entry point below is a
-free function that returns an `FF_Result` (or a lightweight value), is `noexcept`,
-and — except for the one templated append — takes a single `const FF_XxxInfo&`
-argument so the surface can grow by adding struct fields instead of changing
-signatures.
+This document is the reference for FastFHIR's *external* surface across all
+three languages it ships. Each is a distinct, hand-written entry point over one
+library:
 
-> **Source of truth.** `include/FastFHIR.hpp` is the canonical declaration of
-> everything on this page. Keeping the two in sync by hand is tracked in
-> TASKS.md, *"WORK ORDER — FF_* EXTERNAL API: asciidoc generation + README
-> sweep"*; the goal is to generate this document from the header so it can never
-> drift. Until then every claim here is hand-checked against the header, and the
-> checks that were run are noted where they are not obvious.
+* **C++** — the `FF_*` surface declared in `include/FastFHIR.hpp`. Every entry
+  point is a free function that returns an `FF_Result`, is `noexcept`, and —
+  except for the one templated append — takes a single `const FF_XxxInfo&`
+  argument so the surface can grow by adding struct fields instead of changing
+  signatures. The first sections below cover it.
+* **C** — the pure-C ABI in `include/FastFHIR.h`, with opaque handles and
+  `FF_ResultInfo`. See <<C ABI (`FastFHIR.h`)>>.
+* **Python** — the `fastfhir` package (`python/`), a pybind11 binding over the
+  C++ core plus a small Pythonic layer. See <<Python API>>.
+
+All three share the same design conventions — one `const XxxInfo&`-shaped
+parameter struct per call, handles rather than long argument lists, errors
+returned rather than thrown across the boundary — so learning one teaches the
+shape of the others.
+
+> **Source of truth.** `include/FastFHIR.hpp` declares the C++ surface,
+> `include/FastFHIR.h` the C surface, and `python/fastfhir/__init__.py` (with the
+> `_core` extension) the Python surface. Keeping this page in sync by hand is
+> tracked in TASKS.md, *"WORK ORDER — FF_* EXTERNAL API: asciidoc generation +
+> README sweep"*; the goal is to generate the C++ portion from the header so it
+> can never drift. Until then every claim here is hand-checked against the
+> source, and the checks that were run are noted where they are not obvious.
 
 toc::[]
 
@@ -48,27 +61,26 @@ FF_Version FF_GetVersion() noexcept;
 == Handles
 
 ```cpp
-using FF_Memory   = std::shared_ptr<Memory>;      // virtual memory arena
-using FF_Builder  = std::shared_ptr<Builder>;     // writes a FastFHIR stream
-class FF_Ingestor_t;                              // opaque; hides simdjson
-using FF_Ingestor = std::shared_ptr<FF_Ingestor_t>; // concurrent ingestion engine
+using FF_Memory   = FastFHIR::Memory;   // copyable arena handle (owns a Memory_t)
+using FF_Builder  = FastFHIR::Builder;  // = std::shared_ptr<Builder_t>
+using FF_Ingestor = FastFHIR::Ingestor; // = std::shared_ptr<Ingestor_t>
 ```
 
-`FF_Ingestor_t` is deliberately opaque in the installed header — its definition
+`FastFHIR::Ingestor_t` is deliberately opaque in the installed header — its definition
 lives in the internal `FF_Ingestor.hpp` so consumers never see simdjson/WAMR.
 
 ```mermaid
 classDiagram
+    class Memory { }
+    class Builder_t { }
+    class Ingestor_t { }
     class FF_Memory { }
     class FF_Builder { }
     class FF_Ingestor { }
-    class Memory { }
-    class Builder { }
-    class FF_Ingestor_t { }
-    FF_Memory --> Memory : shared_ptr
-    FF_Builder --> Builder : shared_ptr
-    FF_Ingestor --> FF_Ingestor_t : shared_ptr (opaque)
-    class FF_Result { }
+    FF_Memory --> Memory
+    FF_Builder --> Builder_t : shared_ptr
+    FF_Ingestor --> Ingestor_t : shared_ptr (opaque)
+    class Result { }
     class FF_BuilderCreateInfo { }
     class FF_ParseInfo { }
     class FF_IngestInfo { }
@@ -79,10 +91,15 @@ classDiagram
 
 == Result type
 
-```cpp
-enum class FF_Result_Severity : uint8_t { SUCCESS, WARNING, FAILURE };
+The result types are declared in `namespace FastFHIR` and reachable globally as
+`FF_Result` / `FF_Result_Code` / `FF_Result_Severity` (the `FF_` spelling of the
+namespace, per the type-naming rule). The status-code enumerators
+(`FF_SUCCESS`, `FF_FAILURE`, …) stay reachable unqualified.
 
-enum FF_Result_Code : uint32_t {
+```cpp
+enum class Result_Severity : uint8_t { SUCCESS, WARNING, FAILURE };
+
+enum Result_Code : uint32_t {
     // success
     FF_SUCCESS = 0,
     // warnings — operator bool is TRUE; inspect code/message to see them
@@ -101,21 +118,21 @@ enum FF_Result_Code : uint32_t {
     FF_EXTENSION_FAILURE  = 0x106, // WASM extension codec failure
 };
 
-struct FF_Result {
-    FF_Result_Code code;
+struct Result {
+    Result_Code code;
     std::string message;   // newline-stacked, severity-tagged entries
     // Construction. The one-argument form is NOT explicit, so `return
     // FF_SUCCESS;` compiles. There is no default constructor.
-    FF_Result(FF_Result_Code c, std::string msg); // tags msg by severity
-    FF_Result(FF_Result_Code c);                  // empty message
+    Result(Result_Code c, std::string msg); // tags msg by severity
+    Result(Result_Code c);                  // empty message
     // severity_of(code) is the single classification source
     bool succeeded() const noexcept;  // true for SUCCESS and WARNING
     bool is_warning() const noexcept; // true only for WARNING codes
     bool failed() const noexcept;     // true only for FAILURE codes
     operator bool() const noexcept;   // == succeeded()
     // message construction
-    FF_Result& append(FF_Result_Code c, std::string msg); // one tagged entry per line
-    FF_Result& append(const FF_Result& other);            // merge; most severe code wins
+    Result& append(Result_Code c, std::string msg); // one tagged entry per line
+    Result& append(const Result& other);            // merge; most severe code wins
 };
 ```
 
@@ -336,21 +353,224 @@ flowchart LR
 * **`Compactor::archive`** — internal; external callers use `FF_Compact`.
 * **`Ingest::Ingestor` / `IngestRequest`** — internal; external callers use
   the FF_Ingest surface.
-* **`FF_Queue`, `FF_SIMD`, `FF_Extensions`, `FF_Logger`, `FF_Compactor`,
-  `FF_Ingestor`** — internal helpers, not in the install set.
+* **`FF_Queue`, `FF_SIMD`, `FF_Extensions`, `FF_Compactor`** — internal
+  helpers, not in the install set.
 
 === Installed headers
 
-`install(FILES ...)` in `CMakeLists.txt` ships exactly seven headers:
-`FastFHIR.hpp`, `FF_Parser.hpp`, `FF_Builder.hpp`, `FF_Primitives.hpp`, and the
-generated `FF_FieldKeys.hpp`, `FF_Recovery.hpp`, `FF_ResourceTypes.hpp`.
+The public header set is **derived once** in `CMakeLists.txt`
+(`FASTFHIR_PUBLIC_HEADERS`): the named `include/` headers, `FastFHIR.hpp` and
+`FastFHIR.h` among them, plus a filtered glob of `generated_src/FF_*.hpp` that
+excludes the `*_internal.hpp` wire/view headers and the ingestor-only
+`FF_IngestMappings.hpp` / `FF_KnownExtensions.hpp` / `FF_Conformance_Layer.hpp`.
+So the installed POCO set is exactly the build profile's. `FF_Ops.hpp` (arena
+byte arithmetic) is internal by design and is never installed — CLAUDE.md
+invariant 9. `FF_TypeTraits.hpp` and `FF_Export.h` are installed because the
+public headers include them.
 
-WARNING: That set is **not self-contained**, so `#include <FastFHIR.hpp>` does
-not compile against an installed prefix today. `FastFHIR.hpp` includes
-`FF_Version.hpp`, and `FF_Parser.hpp` includes `FF_Dictionary.hpp`,
-`FF_Memory.hpp`, `FF_Ops.hpp` and `FF_Utilities.hpp` — none of the five are
-installed. Those five are therefore neither public nor safely private: they are
-implementation headers that an installed header depends on. This is a packaging
-defect, not a documentation one; it is recorded in TASKS.md, and the open
-question is which of them become public versus having their public parts hoisted
-into `FF_Primitives.hpp`.
+The set is self-contained: `#include <FastFHIR.hpp>` and `#include <FastFHIR.h>`
+both compile against an installed prefix. `tests/install/install_smoke.cmake`
+(ctest `install_smoke`) installs to a scratch prefix and builds a
+`find_package(FastFHIR CONFIG)` consumer against it only, asserting the public
+headers are present and `FF_Ops.hpp`, `FF_AllTypes.hpp` and `*_internal.hpp`
+are absent.
+
+== C ABI (`FastFHIR.h`)
+
+The surface documented above is C++. A **pure-C** surface — `include/FastFHIR.h`,
+implemented by `src/FF_C_API.cpp` — lets a C program link `libfastfhir` with no
+C++ compiler. It is a separate header, not a re-export: the C++ side keeps its
+classes, references and templates, and the two name the same concepts with
+different types. Neither includes the other, and **neither may be included
+alongside the other in one translation unit**: the C `FF_ParseInfo` is global
+while the C++ one is in `namespace FastFHIR`, so a single
+`using namespace FastFHIR;` — which every example writes — makes the name
+ambiguous and the translation unit stops compiling. Pick the surface the
+translation unit needs.
+
+The C surface uses **opaque handles** (`FF_MemoryHandle`, `FF_BuilderHandle`,
+`FF_ParserHandle`, `FF_ViewHandle`, `FF_ObjectHandle`) and returns
+`FF_ResultInfo` (`code`, `severity`, and a thread-local `message`). Every
+factory has a matching `FF_Destroy*`; nothing throws across the boundary. Like
+the C++ surface, every entry point takes a parameter struct (`const
+FF_XxxInfo*`) or a handle rather than a long positional list, and each
+`FF_XxxInfo` mirrors its C++ twin field for field. There is one documented
+divergence. The checksum `hasher` is a `std::function` that the library calls
+back into, which cannot be expressed across a C ABI, so the C
+`FF_BuilderFinalizeInfo` and `FF_CompactInfo` each carry one field fewer than
+the C++ struct of the same name. The gate described below marks that field
+`cpp_only`, which records the omission as a decision and still fails when a
+field goes missing by accident.
+
+```cpp
+using FF_Memory   = FastFHIR::Memory;   /* an opaque pointer in C */
+struct FF_MemoryCreateInfo {            /* C twin in FastFHIR.h       */
+    uint64_t    capacity;
+    const char *shm_name;
+    const char *filepath;
+};
+FF_ResultInfo FF_CreateMemory(const FF_MemoryCreateInfo *info, FF_MemoryHandle *out);
+```
+
+The shared facts — struct fields and their order, enum values — are held once in
+`tests/generator/c_abi_spec.py` and checked against BOTH headers by
+`tests/generator/test_c_abi.py`, so a field added to one and forgotten in the
+other fails the gate by name. That is why the two `FF_MemoryCreateInfo`
+definitions can coexist without drift even though neither includes the other.
+
+== Python API
+
+The `fastfhir` package (`python/`) is a pybind11 binding over the C++ core
+(`_core`) plus a thin Pythonic layer in `fastfhir/__init__.py`. Import it as:
+
+```python
+import fastfhir as ff
+```
+
+It exposes the same three entry points as the C++ surface — a `Memory` arena, a
+`Builder` that writes into it, and an `Ingestor` that parses FHIR JSON — with
+Python naming (snake_case members) and Python value types in place of C++
+structs. `.value()` and `.items()` return native `bool` / `int` / `float` /
+`str` / `dict` / `list` where the C++ side returns a view or a block.
+
+=== Enums
+
+Enums live at the top level as nested classes, not bare constants:
+
+[cols="1,2"]
+|===
+| `ff.FhirVersion` | `R4`, `R5`
+| `ff.SourceType` | `FHIR_JSON`, `HL7_V2`, `HL7_V3`
+| `ff.Checksum` | `NONE`, `CRC32`, `MD5`, `SHA256`
+| `ff.ResourceType` | `Patient`, `Bundle`, `Observation`, `Encounter`, `DiagnosticReport`, …
+|===
+
+=== `ff.Memory`
+
+The arena. `create` is anonymous RAM; `create_from_file` is file-backed and
+appends to an existing sealed stream, exactly as it does in C++.
+
+```python
+mem = ff.Memory.create(capacity=4 * 1024**3)                       # anonymous RAM
+mem = ff.Memory.create_from_file("data.ffhr", capacity=4 * 1024**3) # file-backed
+```
+
+[cols="1,1,3"]
+|===
+| Member | Returns | Notes
+| `.capacity` | `int` | Bytes *reserved* (virtual address space), not committed pages
+| `.size` | `int` | Bytes currently written
+| `.name` | `str` | SHM name; empty for anonymous arenas
+| `.view()` | `MemoryView` | Zero-copy buffer-protocol slice of the committed arena
+| `.reset(committed_size=0)` | — | Rewind the write head; the mapping stays open
+| `.try_acquire_stream()` | `StreamHead` | Exclusive raw-ingest cursor; use as a context manager and `.commit(n)`
+| `.close()` | — | Release the mapping
+|===
+
+=== `ff.Builder`
+
+A context manager that binds an arena and seals it on exit. `finalize` and
+`compact` inject the standard-library hasher for `SHA256` / `MD5` / `CRC32`
+automatically when none is given, so the common case needs no callback.
+
+```python
+with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+    ...
+    view = builder.finalize(algo=ff.Checksum.SHA256)   # MemoryView over the sealed bytes
+```
+
+[cols="1,1,3"]
+|===
+| Member | Returns | Notes
+| `.root` | `BuilderNode` | Root node
+| `.version` | `FhirVersion` | R4 or R5
+| `.root_type` | `ResourceType` | Resource kind at root
+| `.to_json()` | `str` | Full stream JSON
+| `.finalize(algo=NONE, hasher=None)` | `MemoryView` | Seal and write the checksum footer
+| `.compact(algo=NONE, hasher=None)` | `MemoryView` | Compact the sealed stream into a fresh arena it allocates
+| `.query()` | `Parser` | A read lens over the sealed bytes
+| `.checksum` | `ChecksumValidation` | Footer metadata: payload start, byte count, algorithm, expected digest
+| `.has_url_directory` / `.url_directory` | `bool` / `FF_URL_DIRECTORY` | The stream's interned extension-URL table
+| `.has_module_registry` / `.module_registry` | `bool` / registry | WASM extension codecs; only in streams built with the extension host
+|===
+
+> `.checksum` reports what the footer *claims*. It is an **integrity** record,
+> not an authenticity one — anyone who can rewrite the payload can recompute it.
+
+=== `ff.Ingestor`
+
+Parses a payload and appends the resulting resource(s) into a builder.
+
+```python
+ingestor = ff.Ingestor(concurrency=4)
+node, count = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, json_string)
+# node  → BuilderNode at the root resource
+# count → number of resources written
+```
+
+[cols="1,1,3"]
+|===
+| Member | Returns | Notes
+| `.ingest(builder, source_type, payload)` | `(BuilderNode, int)` | Root node and the resource count written
+| `.is_faulted` | `bool` | The engine hit an unrecoverable error and will refuse further work
+| `.reset()` | `str` | Clear the fault and return the drained diagnostic log
+|===
+
+> A resource type outside the compiled `FASTFHIR_PRODUCTION_PROFILE` is **not
+> dropped** — it is retained verbatim as opaque JSON and re-emitted byte-for-byte.
+> What you lose is typed access; check the ingest warnings to see which types took
+> that path. Same behaviour as the C++ `Builder::append_opaque_json`.
+
+=== Field registry — `ff.<Type>.<FIELD>`
+
+Fields are generated path objects, imported from `fastfhir.fields`. Type names
+are PascalCase, field names SCREAMING_CASE, and array fields support integer
+indexing to build deep paths:
+
+```python
+ff.Patient.ID                 # patient.id           (scalar)
+ff.Patient.NAME               # patient.name         (array of HumanName)
+ff.Patient.NAME[0].FAMILY     # patient.name[0].family (deep path)
+ff.Bundle.ENTRY[0].RESOURCE   # bundle.entry[0].resource
+ff.Observation.CODE           # CodeableConcept block
+```
+
+=== The read path — `BuilderNode` and `MutableEntry`
+
+`node[ff.X.FIELD]` returns a `MutableEntry`; a block- or array-valued entry
+yields a `BuilderNode` from `.value()`. Both support presence (`bool`), length
+(`len`), iteration, `items()` (lazy) and `items(recursive=True)` (fully
+materialized into native Python values), and `to_json()`.
+
+```python
+root   = builder.root
+active = root[ff.Patient.ACTIVE].value()          # bool
+name   = root[ff.Patient.NAME][0]                 # MutableEntry, array element
+family = name[ff.HumanName.FAMILY].value()        # str
+for key, entry in root.items():                   # present fields only
+    print(key, entry.value())
+```
+
+=== Complete example
+
+```python
+import fastfhir as ff
+
+mem      = ff.Memory.create(capacity=512 * 1024 * 1024)
+ingestor = ff.Ingestor()
+
+with open("patient.json") as f:
+    payload = f.read()
+
+with ff.Builder(mem, ff.FhirVersion.R5) as builder:
+    root, _ = ingestor.ingest(builder, ff.SourceType.FHIR_JSON, payload)
+    builder.finalize(algo=ff.Checksum.SHA256)
+
+# Read it back through the same zero-copy lens.
+with ff.Builder(mem, ff.FhirVersion.R5) as reader:
+    node = reader.root
+    print(node[ff.Patient.ID].value(), node[ff.Patient.GENDER].value())
+```
+
+The full worked tour — socket ingest, in-place enrich, a 5 GB bundle edit, and
+compaction — lives in `python/README.md`.

@@ -24,7 +24,11 @@ cc_library(
             "generated_src/FF_Conformance_Layer.cpp",
         ],
     ),
-    hdrs = glob(["include/*.hpp", "generated_src/*.hpp"]),
+    # include/*.h as well as *.hpp: the C ABI (FastFHIR.h) and the shared
+    # visibility macro (FF_Export.h, which FF_Primitives.hpp includes) are C
+    # headers. Leaving them out makes every build that reaches FF_Primitives.hpp
+    # fail on an undeclared inclusion.
+    hdrs = glob(["include/*.hpp", "include/*.h", "generated_src/*.hpp"]),
     copts = _COPTS,
     includes = ["generated_src", "include"],
 )

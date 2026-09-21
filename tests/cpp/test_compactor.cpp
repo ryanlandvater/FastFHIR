@@ -32,7 +32,7 @@ int main() {
     // `type` slot at the SAME CodeableConcept block C.
     auto mem = Memory::create(1ull << 22);
     FF_BuilderCreateInfo builder_info;
-    builder_info.arena = std::make_shared<Memory>(mem);
+    builder_info.arena = mem;
     FF_Builder builder;
     CHECK(FF_CreateBuilder(builder_info, builder), "create stream");
 
@@ -108,7 +108,7 @@ int main() {
     {
         Memory mem2 = Memory::create(1ull << 22);
         FF_BuilderCreateInfo builder_info2;
-        builder_info2.arena = std::make_shared<Memory>(mem2);
+        builder_info2.arena = mem2;
         FF_Builder builder2;
         CHECK(FF_CreateBuilder(builder_info2, builder2), "create stream (twin)");
         CodeableConceptData cc1, cc2;
@@ -166,7 +166,7 @@ int main() {
     {
         Memory cmem = Memory::create(1ull << 22);
         FF_BuilderCreateInfo builder_info3;
-        builder_info3.arena = std::make_shared<Memory>(cmem);
+        builder_info3.arena = cmem;
         FF_Builder builder3;
         CHECK(FF_CreateBuilder(builder_info3, builder3), "create stream (deferred)");
 
