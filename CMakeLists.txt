@@ -365,6 +365,8 @@ if(FASTFHIR_BUILD_CONFORMANCE)
     add_library(fastfhir_conformance STATIC
         ${FASTFHIR_GENERATED_DIR}/FF_Conformance_Layer.cpp
         src/conformance/FF_ConformanceEngine.hpp
+        src/conformance/FF_StreamCheck.cpp
+        src/conformance/FF_StreamCheck.hpp
     )
     add_library(FastFHIR::conformance ALIAS fastfhir_conformance)
     target_include_directories(fastfhir_conformance PUBLIC

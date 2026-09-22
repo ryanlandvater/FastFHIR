@@ -423,6 +423,7 @@ def generate_conformance_layer(
         f"{auto_header}"
         '#include "FF_Conformance_Layer.hpp"\n'
         '#include "FF_ConformanceEngine.hpp"\n'
+        '#include "FF_StreamCheck.hpp"\n'
         f"{includes}\n"
         "#include <iterator>\n\n"
         "namespace FastFHIR\n{\nnamespace Conformance\n{\nnamespace\n{\n\n"
@@ -448,6 +449,11 @@ def generate_conformance_layer(
         "        hooks.entries = ENTRIES;\n"
         "        hooks.count   = static_cast<uint32_t>(std::size(ENTRIES));\n"
         "        hooks.policy  = LayerPolicy::Throw;\n"
+        "        // The one whole-document check. A per-block check cannot ask\n"
+        "        // whether a reference resolves, because the target may not be\n"
+        "        // written yet; this runs at finalize, when the entry set is\n"
+        "        // complete. See src/conformance/FF_StreamCheck.hpp.\n"
+        "        hooks.stream_check = &check_stream_references;\n"
         "        return hooks;\n"
         "    }();\n"
         "    return layer;\n"

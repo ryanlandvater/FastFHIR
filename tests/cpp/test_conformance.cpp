@@ -20,6 +20,7 @@
 #include <FastFHIR.hpp>
 #include <FF_Ingestor.hpp>
 #include "FF_AllTypes.hpp"
+#include "FF_Bundle.hpp"
 #include "FF_Conformance_Layer.hpp"
 #include "FF_ConformanceEngine.hpp"
 #include "FF_Logger.hpp"
@@ -557,6 +558,230 @@ void the_layer_never_changes_ingested_output()
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// The STREAM-level check (T10). Every check above runs on ONE block as it is
+// written; whether a reference names an entry is a question about the whole
+// document, so it is asked once, at finalize.
+// ══════════════════════════════════════════════════════════════════════════
+
+/// A `collection` Bundle of Observations, one per (fullUrl, subject) pair. An
+/// empty subject writes no `Reference` at all. Every element the PER-BLOCK layer
+/// requires is supplied, so a failure in these cases is the stream check and
+/// never a block check firing first.
+std::vector<BYTE> write_bundle(const std::vector<std::pair<std::string, std::string>>& entries,
+                               const ValidationHooks* hooks, bool& refused, std::string& what)
+{
+    refused = false;
+    what.clear();
+    FF_Builder builder;
+    if (!FF_CreateBuilder(FF_BuilderCreateInfo{}, builder))
+        return {};
+    if (hooks != nullptr)
+        builder->attach_layer(hooks);
+
+    try
+    {
+        BundleData bundle;
+        bundle.type = FF_BundleType::Collection;
+        for (const auto& [url, subject] : entries)
+        {
+            ObservationData observation;
+            observation.status = FF_ObservationStatus::Final;
+            observation.code   = CodeableConceptData{};
+            if (!subject.empty())
+                observation.subject = ReferenceData{.reference = subject};
+
+            BundleentryData entry;
+            entry.fullurl  = url;
+            entry.resource = static_cast<ResourceReference>(builder->append_obj(observation));
+            bundle.entry.push_back(std::move(entry));
+        }
+        const Reflective::ObjectHandle root = builder->append_obj(bundle);
+        if (!FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root}))
+            return {};
+    }
+    catch (const std::runtime_error& e)
+    {
+        refused = true;
+        what    = e.what();
+        return {};
+    }
+
+    // Finalize is where the stream check runs; FF_BuilderFinalize converts the
+    // throw into a Result, so this is where a refusal surfaces.
+    Memory::View view;
+    const FF_Result sealed = FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view);
+    if (!sealed)
+    {
+        refused = true;
+        what    = sealed.message;
+        return {};
+    }
+    return std::vector<BYTE>(view.data(), view.data() + view.size());
+}
+
+/// A reference to an entry that IS in the Bundle resolves, and silence is the
+/// whole point: the check must not report healthy documents.
+void a_resolvable_reference_is_silent()
+{
+    TEST_GROUP("stream resolves");
+    ConcurrentLogger      logger;
+    std::atomic<uint64_t> failures{0};
+    ValidationHooks       hooks = conformance_layer();
+    hooks.policy     = LayerPolicy::Report;
+    hooks.diagnostic = &logger;
+    hooks.failures   = &failures;
+
+    bool        refused = false;
+    std::string what;
+    const std::vector<BYTE> bytes =
+        write_bundle({{"urn:uuid:a", ""}, {"urn:uuid:b", "urn:uuid:a"}}, &hooks, refused, what);
+
+    CHECK(!refused, "a reference that names an entry is not reported: " << what);
+    CHECK(!bytes.empty(), "and the stream seals");
+    CHECK_EQ(failures.load(), 0u, "nothing counted");
+    CHECK(logger.to_string().empty(), "nothing logged: " << logger.to_string());
+}
+
+/// A `urn:` identifier has no meaning outside the Bundle that defines it, so an
+/// unresolved one is an error, and under the default Throw policy it stops the
+/// finalize.
+void an_unresolved_urn_reference_is_refused()
+{
+    TEST_GROUP("stream urn error");
+    ValidationHooks hooks = conformance_layer();  // Throw, as shipped
+
+    bool        refused = false;
+    std::string what;
+    const std::vector<BYTE> bytes =
+        write_bundle({{"urn:uuid:a", "urn:uuid:missing"}}, &hooks, refused, what);
+
+    CHECK(refused, "an unresolved urn: reference stops the finalize under Throw");
+    CHECK(bytes.empty(), "and nothing is sealed");
+    CHECK(what.find("urn:uuid:missing") != std::string::npos,
+          "the message names the reference: " << what);
+    CHECK(what.find("Observation.subject") != std::string::npos,
+          "and the path that carries it: " << what);
+    CHECK(what.find("not an entry in this Bundle") != std::string::npos,
+          "and says what is wrong: " << what);
+}
+
+/// The same document under Report: counted, logged, and written. The reference
+/// is still a defect, but the policy says a caller wants the stream anyway.
+void a_reported_reference_failure_still_seals()
+{
+    TEST_GROUP("stream urn report");
+    ConcurrentLogger      logger;
+    std::atomic<uint64_t> failures{0};
+    ValidationHooks       hooks = conformance_layer();
+    hooks.policy     = LayerPolicy::Report;
+    hooks.diagnostic = &logger;
+    hooks.failures   = &failures;
+
+    bool        refused = false;
+    std::string what;
+    const std::vector<BYTE> bytes =
+        write_bundle({{"urn:uuid:a", "urn:uuid:missing"}}, &hooks, refused, what);
+
+    CHECK(!refused, "Report policy does not stop the finalize: " << what);
+    CHECK(!bytes.empty(), "it writes the stream");
+    CHECK_EQ(failures.load(), 1u, "one unresolved reference counted");
+    CHECK(logger.to_string().find("urn:uuid:missing") != std::string::npos,
+          "the diagnostic reached the sink: " << logger.to_string());
+
+    // BYTE IDENTITY on the stream check's own path: a reported failure must
+    // write exactly what a detached build writes.
+    bool        detach_refused = false;
+    std::string detach_what;
+    const std::vector<BYTE> detached =
+        write_bundle({{"urn:uuid:a", "urn:uuid:missing"}}, nullptr, detach_refused, detach_what);
+    REQUIRE(!detached.empty(), "detached stream sealed");
+    CHECK(bytes == detached, "a REPORTED reference failure writes byte-identical output");
+}
+
+/// A relative reference may resolve on the receiving server, so an unresolved
+/// one is a warning: reported and counted, but it must not stop a finalize --
+/// not even under Throw.
+void a_relative_reference_only_warns()
+{
+    TEST_GROUP("stream relative");
+    ConcurrentLogger      logger;
+    std::atomic<uint64_t> failures{0};
+    ValidationHooks       hooks = conformance_layer();  // Throw, as shipped
+    hooks.diagnostic = &logger;
+    hooks.failures   = &failures;
+
+    bool        refused = false;
+    std::string what;
+    const std::vector<BYTE> bytes =
+        write_bundle({{"urn:uuid:a", "Patient/999"}}, &hooks, refused, what);
+
+    CHECK(!refused, "a relative reference does not stop the finalize: " << what);
+    CHECK(!bytes.empty(), "the stream seals");
+    CHECK_EQ(failures.load(), 1u, "the warning was counted");
+    CHECK(logger.to_string().find("Patient/999") != std::string::npos,
+          "and logged: " << logger.to_string());
+}
+
+/// An absolute URL names something outside this stream by construction, so it is
+/// not this check's business and produces nothing.
+void an_absolute_reference_is_not_checked()
+{
+    TEST_GROUP("stream absolute");
+    ConcurrentLogger      logger;
+    std::atomic<uint64_t> failures{0};
+    ValidationHooks       hooks = conformance_layer();
+    hooks.diagnostic = &logger;
+    hooks.failures   = &failures;
+
+    bool        refused = false;
+    std::string what;
+    const std::vector<BYTE> bytes =
+        write_bundle({{"urn:uuid:a", "http://example.org/fhir/Patient/1"}}, &hooks, refused, what);
+
+    CHECK(!refused, "an absolute reference is not reported: " << what);
+    CHECK(!bytes.empty(), "the stream seals");
+    CHECK_EQ(failures.load(), 0u, "nothing counted");
+    CHECK(logger.to_string().empty(), "nothing logged: " << logger.to_string());
+}
+
+/// A refusal from the stream check must leave the Builder USABLE, so a caller
+/// can correct the stream and finalize again rather than rebuild it. The check
+/// writes nothing, so releasing the finalize latch is safe -- and this is the
+/// property that would be lost if the latch stayed one-way.
+void a_stream_refusal_leaves_the_builder_usable()
+{
+    TEST_GROUP("stream latch");
+    FF_Builder builder;
+    REQUIRE(FF_CreateBuilder(FF_BuilderCreateInfo{}, builder), "create builder");
+    ValidationHooks hooks = conformance_layer();
+    builder->attach_layer(&hooks);
+
+    ObservationData observation;
+    observation.status  = FF_ObservationStatus::Final;
+    observation.code    = CodeableConceptData{};
+    observation.subject = ReferenceData{.reference = "urn:uuid:missing"};
+
+    BundleData bundle;
+    bundle.type = FF_BundleType::Collection;
+    BundleentryData entry;
+    entry.fullurl  = "urn:uuid:a";
+    entry.resource = static_cast<ResourceReference>(builder->append_obj(observation));
+    bundle.entry.push_back(std::move(entry));
+    const Reflective::ObjectHandle root = builder->append_obj(bundle);
+    REQUIRE(FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root}), "set root");
+
+    Memory::View view;
+    const FF_Result first =
+        FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view);
+    CHECK(!first, "the first finalize refuses the dangling reference");
+
+    bool append_ok = true;
+    try { builder->append_obj(observation); }
+    catch (const std::runtime_error&) { append_ok = false; }
+    CHECK(append_ok, "the Builder is still mutable after a stream-check refusal");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -574,5 +799,11 @@ int main(int argc, char** argv)
     ff_test::run("abi", an_abi_mismatch_is_refused);
     ff_test::run("versions", a_rule_only_applies_to_the_revision_that_states_it);
     ff_test::run("ingest_identity", the_layer_never_changes_ingested_output);
+    ff_test::run("stream_resolves", a_resolvable_reference_is_silent);
+    ff_test::run("stream_urn_error", an_unresolved_urn_reference_is_refused);
+    ff_test::run("stream_urn_report", a_reported_reference_failure_still_seals);
+    ff_test::run("stream_relative", a_relative_reference_only_warns);
+    ff_test::run("stream_absolute", an_absolute_reference_is_not_checked);
+    ff_test::run("stream_latch", a_stream_refusal_leaves_the_builder_usable);
     return ff_test::report("conformance layer");
 }

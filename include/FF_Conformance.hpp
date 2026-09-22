@@ -56,6 +56,10 @@ namespace Conformance
 /// compiled against a different value is refused at attach time rather than
 /// misread at dispatch time — a runtime-loaded Block J layer is the case this
 /// exists for, and refusing loudly is the whole reason the field is first.
+///
+/// Still 1 while nothing outside this tree speaks it. The version exists for a
+/// layer built by another toolchain, and there is no such layer yet, so growing
+/// the struct (stream_check, UNRESOLVED_REFERENCE) does not move it.
 inline constexpr uint32_t FF_CONFORMANCE_ABI = 1;
 
 /// Which FHIR revisions a Rule applies to. FHIR_VERSION's own values (0x0400,
@@ -84,15 +88,20 @@ inline constexpr uint8_t FF_CONF_VERSION_ALL = FF_CONF_VERSION_R4 | FF_CONF_VERS
 /// are raised by the Builder and Parser whether or not a layer is attached, and
 /// duplicating them here would suggest this layer is load-bearing for them.
 ///
-/// This vocabulary lists only what something actually produces. A layer that
-/// needs a new code bumps FF_CONFORMANCE_ABI along with it, which is the whole
-/// reason that field exists — an enumerator nobody emits is indistinguishable
-/// from one that is broken.
+/// This vocabulary lists only what something actually produces — an enumerator
+/// nobody emits is indistinguishable from one that is broken. Adding a code is
+/// an ordinary in-tree change; it moves FF_CONFORMANCE_ABI only when a layer
+/// built by another toolchain must agree on the value, which is the whole
+/// reason that field exists.
 enum class Check : uint8_t
 {
     OK = 0,
     REQUIRED_MISSING,  ///< an element with min >= 1 is absent
     CARDINALITY_MAX,   ///< an array holds more elements than max allows
+    /// A reference that must resolve inside the stream does not. Only the
+    /// stream-level check below produces this: whether a `urn:` reference names
+    /// an entry is a whole-document question, and no single block can answer it.
+    UNRESOLVED_REFERENCE,
 };
 
 /// What a Rule row asks of a field.
@@ -183,6 +192,26 @@ struct ValidationHooks;
 using CheckFn = Status (*)(const void* data, uint32_t fhir_version,
                            const ValidationHooks* self) noexcept;
 
+/// One WHOLE-STREAM check.
+///
+/// Type-erased like CheckFn, and for the same reason: this header pulls in no
+/// FastFHIR headers, so the hook receives an arena as opaque numbers and the
+/// implementation — which does know FastFHIR's types — casts them back.
+///
+/// WHERE IT DIFFERS FROM CheckFn, and why. A block check runs per block, on the
+/// append path, before any space is claimed, and allocates nothing. This runs
+/// ONCE, at finalize, through dispatch_stream(), and it MAY allocate: the
+/// reference check builds a resolution index, and that allocation is the whole
+/// point — whether one resource names another cannot be asked until every
+/// resource is written. So it is deliberately NOT noexcept, unlike CheckFn.
+///
+/// Byte identity still holds. The check reads the arena and never writes it, so
+/// a stream with a layer attached is byte-for-byte the stream without one, even
+/// when the check reports.
+using StreamCheckFn = Status (*)(const void* arena, uint64_t arena_size, uint32_t fhir_version,
+                                 uint64_t root_offset, uint64_t root_recovery,
+                                 const ValidationHooks* self);
+
 /// A tag and its check. Tables are sorted by tag so find() is a binary search.
 struct Entry
 {
@@ -206,6 +235,10 @@ struct ValidationHooks
 
     const Entry* entries = nullptr;  ///< sorted by tag, ascending
     uint32_t     count   = 0;
+
+    /// The whole-stream check, or null. Runs once, at finalize, through
+    /// dispatch_stream(); a layer without one contributes nothing here.
+    StreamCheckFn stream_check = nullptr;
 
     LayerPolicy policy = LayerPolicy::Throw;
 
@@ -255,6 +288,32 @@ struct ValidationHooks
         const Entry* const entry = layer->find(tag);
         if (entry == nullptr) continue;
         Status status = entry->check(data, fhir_version, layer);
+        if (!status)
+        {
+            status.policy = layer->policy;
+            return status;
+        }
+    }
+    return {};
+}
+
+/// Runs the whole-stream check through every layer in the chain, stopping at the
+/// first failure. The stream-level counterpart of dispatch(), with the same
+/// chain walk, the same "a layer reports its own failures" rule, and the same
+/// policy carried back on the verdict.
+///
+/// A layer that offers no stream check is skipped rather than treated as a
+/// pass, so a chain of block-only layers runs nothing here -- which is right:
+/// there is no stream-level question they have an opinion about.
+[[nodiscard]] inline Status dispatch_stream(const ValidationHooks* head, const void* arena,
+                                            uint64_t arena_size, uint32_t fhir_version,
+                                            uint64_t root_offset, uint64_t root_recovery)
+{
+    for (const ValidationHooks* layer = head; layer != nullptr; layer = layer->next)
+    {
+        if (layer->stream_check == nullptr) continue;
+        Status status = layer->stream_check(arena, arena_size, fhir_version,
+                                            root_offset, root_recovery, layer);
         if (!status)
         {
             status.policy = layer->policy;

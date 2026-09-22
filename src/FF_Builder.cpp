@@ -29,6 +29,37 @@
 #include <sys/mman.h>
 #endif
 
+namespace
+{
+/// The one place a conformance Status becomes a message. Shared by the
+/// per-block check and the stream-level check so the two cannot drift into
+/// different shapes, and so a Status with an empty `path` (the stream check
+/// names its subject in `human`) reads cleanly rather than as ": : ".
+[[nodiscard]] std::string conformance_message(const FastFHIR::Conformance::Status& status)
+{
+    std::string message = "FastFHIR: conformance: ";
+    if (status.path[0] != '\0')
+    {
+        message += status.path;
+        message += ": ";
+    }
+    message += status.human;
+    if (status.key[0] != '\0')
+    {
+        message += " [";
+        message += status.key;
+        message += "]";
+    }
+    if (status.url[0] != '\0')
+    {
+        message += " (";
+        message += status.url;
+        message += ")";
+    }
+    return message;
+}
+}  // namespace
+
 namespace FastFHIR {
 // =====================================================================
 // Constructor / Destructor
@@ -200,25 +231,7 @@ void Builder_t::_check_conformance(RECOVERY_TAG tag, const void* data)
     if (status.policy == Conformance::LayerPolicy::Report)
         return;
 
-    // Formatting is affordable on this branch alone: the exception allocates
-    // anyway. Every operand is static storage from the generated layer.
-    std::string message = "FastFHIR: conformance: ";
-    message += status.path;
-    message += ": ";
-    message += status.human;
-    if (status.key[0] != '\0')
-    {
-        message += " [";
-        message += status.key;
-        message += "]";
-    }
-    if (status.url[0] != '\0')
-    {
-        message += " (";
-        message += status.url;
-        message += ")";
-    }
-    throw std::runtime_error(message);
+    throw std::runtime_error(conformance_message(status));
 }
 
 // =====================================================================
@@ -501,6 +514,38 @@ Memory::View Builder_t::finalize(FF_Checksum_Algorithm algo, const HashCallback 
         throw std::runtime_error("FastFHIR: Cannot finalize because root is unset/invalid. Calling application must set root explicitly.");
     else if (m_root_recovery == FF_RECOVER_UNDEFINED)
         throw std::runtime_error("FastFHIR: Cannot finalize stream. Root recovery tag is UNDEFINED. Calling application must set root explicitly.");
+
+    // The STREAM-LEVEL conformance check runs here, and only here. The mutators
+    // have drained, so the resource set is complete and a cross-resource
+    // question -- does every reference resolve -- can be asked for the first
+    // time; a per-block check could not ask it, because the target may not have
+    // been appended yet. It reads the arena and writes nothing, so the layer's
+    // byte-identity guarantee holds on this path too.
+    if (m_layer != nullptr)
+    {
+        // A Throw policy that fires must leave the Builder USABLE: the check is
+        // a read-only observer, so releasing the latch lets a caller correct the
+        // reference and finalize again instead of rebuilding the stream from
+        // scratch. The guard releases on any exit from this scope that is not
+        // the success path, and is DISARMED once the check passes, so a later
+        // seal_stream failure keeps the latch one-way exactly as it was.
+        struct StreamCheckLatch
+        {
+            std::atomic<bool>& flag;
+            bool               passed = false;
+            ~StreamCheckLatch()
+            {
+                if (!passed) flag.store(false, std::memory_order_release);
+            }
+        } latch{m_finalizing};
+
+        const Conformance::Status status = Conformance::dispatch_stream(
+            m_layer, m_memory->base(), m_memory->capacity(), m_fhir_rev,
+            m_root_offset, m_root_recovery);
+        if (!status && status.policy != Conformance::LayerPolicy::Report)
+            throw std::runtime_error(conformance_message(status));
+        latch.passed = true;
+    }
 
     // If no hasher or algorithm is provided, default to FF_CHECKSUM_NONE and emit a warning. 
     // The stream will still be valid but with a zeroed checksum.
