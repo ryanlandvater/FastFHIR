@@ -43,7 +43,8 @@ The surface follows the Iris/Vulkan shape:
   implementation catches everything below this boundary.
 * **Read/query returns** (`Parser`, `Memory::View`) are cheap value types.
   `Parser` is deliberately *not* a handle: it is a zero-copy, copyable value
-  over a buffer, returned by value from `FF_Parse`.
+  over a buffer, built with one of its two constructors (`Parser(buffer, size)`
+  or `Parser(memory)`).
 * **The mutation path is unchanged**: once an object is appended, fields are
   written with the reflective handle (`handle[key] = value`), exactly as before.
   String values are assigned as `std::string_view`; see the Builder API section.
@@ -82,7 +83,6 @@ classDiagram
     FF_Ingestor --> Ingestor_t : shared_ptr (opaque)
     class Result { }
     class FF_BuilderCreateInfo { }
-    class FF_ParseInfo { }
     class FF_IngestInfo { }
     FF_BuilderCreateInfo --> FF_Memory : arena (optional)
     FF_IngestInfo --> FF_Builder : builder
@@ -250,18 +250,35 @@ wrong resource type by mistake. Prefer the typed key.
 
 == Parse API
 
-```cpp
-struct FF_ParseInfo {
-    const void* buffer = nullptr; // first byte of a sealed FastFHIR stream
-    Size        size   = 0;       // total bytes available at buffer
-};
+`Parser` is the read lens, and it is the one surface that is *not* an
+`FF_*Info` struct. It is built directly with one of **two explicit
+constructors**:
 
-FF_Result FF_Parse(const FF_ParseInfo& info, Parser& out_parser) noexcept;
+```cpp
+Parser(const void* buffer, size_t size);  // bytes the caller already holds
+Parser(const Memory& memory);             // an arena: openReadOnly() or a Builder's
 ```
 
-`Parser` is a cheap value type; `FF_Parse` validates the header and root
-offset only (see `FF_Parser.hpp` for the trust model). `out_parser` is invalid
-(`bool` false) on failure.
+The two forms are mutually exclusive by construction — you cannot supply both,
+so there is no `FF_ParseInfo` and no runtime "buffer and memory are mutually
+exclusive" check to run.
+
+[cols="1,1,3"]
+|===
+| Form | Constructor | Use
+| Raw bytes | `Parser(buffer, size)` | A socket read, a `std::vector`, any buffer the caller already owns
+| Arena | `Parser(memory)` | `Memory::openReadOnly()` over a file, or the arena a `Builder` just wrote
+|===
+
+`Parser(memory)` keeps the arena handle, so the mapping lives exactly as long
+as the parser does — that is what lets a reader mount a file read-only with no
+copy of its bytes. Both validate the header and root offset only (see
+`FF_Parser.hpp` for the trust model) and throw `FastFHIR Parsing Error: ...` on
+a bad stream, including a null buffer or arena.
+
+The C ABI has no constructors, so it mirrors the pair with two factories —
+`FF_CreateParserFromBuffer(buffer, size, &out)` and
+`FF_CreateParserFromMemory(memory, &out)`; see <<C ABI (`FastFHIR.h`)>>.
 
 == Compact API
 
@@ -336,7 +353,7 @@ flowchart LR
     D --> E[FF_BuilderAppendObject + handle path]
     E --> F[FF_BuilderSetRoot]
     F --> G[FF_BuilderFinalize]
-    G --> H[FF_Parse]
+    G --> H[Parser buffer/size or memory]
     H --> I[read path: Node / Entry / print_json]
     H --> J[FF_Compact]
 ```
@@ -382,8 +399,8 @@ implemented by `src/FF_C_API.cpp` — lets a C program link `libfastfhir` with n
 C++ compiler. It is a separate header, not a re-export: the C++ side keeps its
 classes, references and templates, and the two name the same concepts with
 different types. Neither includes the other, and **neither may be included
-alongside the other in one translation unit**: the C `FF_ParseInfo` is global
-while the C++ one is in `namespace FastFHIR`, so a single
+alongside the other in one translation unit**: the C `FF_MemoryCreateInfo` is
+global while the C++ one is in `namespace FastFHIR`, so a single
 `using namespace FastFHIR;` — which every example writes — makes the name
 ambiguous and the translation unit stops compiling. Pick the surface the
 translation unit needs.
@@ -391,16 +408,18 @@ translation unit needs.
 The C surface uses **opaque handles** (`FF_MemoryHandle`, `FF_BuilderHandle`,
 `FF_ParserHandle`, `FF_ViewHandle`, `FF_ObjectHandle`) and returns
 `FF_ResultInfo` (`code`, `severity`, and a thread-local `message`). Every
-factory has a matching `FF_Destroy*`; nothing throws across the boundary. Like
-the C++ surface, every entry point takes a parameter struct (`const
-FF_XxxInfo*`) or a handle rather than a long positional list, and each
-`FF_XxxInfo` mirrors its C++ twin field for field. There is one documented
-divergence. The checksum `hasher` is a `std::function` that the library calls
-back into, which cannot be expressed across a C ABI, so the C
-`FF_BuilderFinalizeInfo` and `FF_CompactInfo` each carry one field fewer than
-the C++ struct of the same name. The gate described below marks that field
-`cpp_only`, which records the omission as a decision and still fails when a
-field goes missing by accident.
+factory has a matching `FF_Destroy*`; nothing throws across the boundary. Each
+entry point takes a parameter struct (`const FF_XxxInfo*`) or a handle rather
+than a long positional list, and each `FF_XxxInfo` mirrors its C++ twin field
+for field. The one exception is the parse pair — `FF_CreateParserFromBuffer` /
+`FF_CreateParserFromMemory` take positional arguments, because they are the two
+`Parser` constructors and each needs at most three arguments, which is the
+threshold the Info-struct rule exists to stay under. Two documented divergences
+follow. The checksum `hasher` is a `std::function` the library calls back into,
+so it cannot cross the ABI and the C `FF_BuilderFinalizeInfo` / `FF_CompactInfo`
+stop one field short; the gate records that as `cpp_only` rather than letting
+the two lists differ quietly. And there is no C `FF_ParseInfo`, because there is
+no C++ one to mirror.
 
 ```cpp
 using FF_Memory   = FastFHIR::Memory;   /* an opaque pointer in C */

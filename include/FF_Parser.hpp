@@ -297,6 +297,27 @@ struct Entry {
     // Serialize an inline scalar (bool, int, uint, float, code) directly to JSON.
     void print_scalar_json(std::ostream& out, uint32_t version) const;
 
+    /**
+     * @brief The date/time this slot holds, in whichever arm it holds it.
+     *
+     * Defined in FF_Parser.cpp, like `operator std::string_view()` above and
+     * for the same reason: reading the 8-byte slot needs FF_Ops.hpp, which is
+     * internal (CLAUDE.md invariant 9).
+     *
+     * IT LIVES ON Entry RATHER THAN Node BECAUSE OF THE FALLBACK ARM. When bit
+     * 63 is set the slot is a signed offset measured from the CONTAINING
+     * BLOCK, so resolving it takes two operands -- the slot and its parent --
+     * and a Node carries only its own offset. Entry still holds both, so this
+     * is the last point where the arithmetic is possible at all. Deferring it
+     * is the defect CLAUDE.md records for the code slot one width down.
+     *
+     * Degrades rather than throws (invariant 10): a slot that is not a
+     * date/time, a choice whose live variant is some other type, a null slot,
+     * or a fallback offset that does not land on a block vouching for itself
+     * all come back as an absent DateTime, which is falsy.
+     */
+    DateTime datetime_value() const;
+
     // Produce a Node over a DATA_BLOCK field (block, array, string, choice, resource).
     // 4-arg form used by generated code and Python bindings.
     Node as_node(Size size, uint32_t version, RECOVERY_TAG tag, FF_FieldKind field_kind,
@@ -655,6 +676,7 @@ inline Entry::operator T() const { return as_node().as<T>(); }
 template <typename T>
 inline T Entry::as() const {
     if constexpr (std::is_same_v<T, bool>)               return as_scalar<bool>(RECOVER_FF_BOOL);
+    else if constexpr (std::is_same_v<T, DateTime>)      return datetime_value();
     else if constexpr (std::is_same_v<T, std::string_view>) return operator std::string_view();
     else if constexpr (std::is_same_v<T, int32_t>)       return operator int32_t();
     else if constexpr (std::is_same_v<T, uint32_t>)      return operator uint32_t();

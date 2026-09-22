@@ -53,6 +53,35 @@ BASE_BLOCK_HEADER_SIZE: int = 10
 
 
 # ---------------------------------------------------------------------------
+# The FHIR Quantity family -- the datatypes that carry a coded unit.
+# ---------------------------------------------------------------------------
+# Quantity, Age, Count, Distance and Duration are the only blocks whose fields
+# are a value plus a UCUM unit spread across `unit`, `system` and `code`
+# (Age/Count/Distance/Duration constrain Quantity). They are found by that
+# SHAPE rather than by name, so a further Quantity profile is covered the moment
+# it is generated. Exactly five match today.
+def _carries_ucum_unit(layout: list[dict]) -> bool:
+    names = {f["orig_name"] for f in layout}
+    return {"value", "unit", "system", "code"} <= names
+
+
+_QUANTITY_SET_UNIT_DECL = (
+    "    /// Fill the coded unit -- `unit`, `system` and `code` -- from one UCUM\n"
+    "    /// constant.\n"
+    "    ///\n"
+    "    /// The three fields are one fact: `code` is the UCUM expression, `unit`\n"
+    "    /// is that same expression in human form, and `system` is the UCUM URL.\n"
+    "    /// Written by hand they can disagree with each other; a unit constant\n"
+    "    /// cannot. A UCUM unit is its own type, so a code from another system\n"
+    "    /// does not compile here.\n"
+    "    ///\n"
+    "    /// Defined in FF_DataTypes.cpp: the expression text comes from the\n"
+    "    /// dictionary, and that header is not reachable from this public one.\n"
+    "    void set_unit(FastFHIR::UcumUnit unit);\n"
+)
+
+
+# ---------------------------------------------------------------------------
 # Conformance facts (TASKS.md Block K).
 #
 # PURE EXTRACTION. Nothing here decides what is enforceable -- that is the
@@ -372,6 +401,8 @@ def generate_cxx_for_blocks(master_blocks, versions):
                     public_hpp += f"    {f['data_type']} {f['cpp_name']} = FF_NULL_UINT32;\n"
                 else:
                     public_hpp += f"    {f['data_type']} {f['cpp_name']}{{}};\n"
+        if _carries_ucum_unit(layout):
+            public_hpp += _QUANTITY_SET_UNIT_DECL
         public_hpp += "};\n\n"
 
         # ── PUBLIC: POCO reflection ──────────────────────────────
@@ -528,6 +559,22 @@ def generate_cxx_for_blocks(master_blocks, versions):
             f" Offset __offset, Size __size, uint32_t __version) {{\n"
             f"    return {s_name}::deserialize(__base, __offset, __size, __version);\n}}\n\n"
         )
+
+        if _carries_ucum_unit(layout):
+            cpp += (
+                f"void {d_name}::set_unit(FastFHIR::UcumUnit ucum) {{\n"
+                f"    const char* const text = FF_ResolveUCUMCode(ucum);\n"
+                f"    if (text == nullptr)\n"
+                f"        throw std::runtime_error(\n"
+                f'            "FastFHIR: set_unit: no UCUM unit with id " +\n'
+                f"            std::to_string(ucum.id));\n"
+                f"    // The dictionary strings are permanent static storage, so\n"
+                f"    // `unit` and `code` borrow it rather than copy it.\n"
+                f"    unit   = std::string_view(text);\n"
+                f"    system = FastFHIR::UcumUnit::SYSTEM_URL;\n"
+                f"    code   = std::string_view(text);\n"
+                f"}}\n\n"
+            )
 
     public_hpp += traits_hpp
     return public_hpp, internal_hpp, cpp

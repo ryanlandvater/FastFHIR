@@ -41,7 +41,12 @@ _TAG = re.compile(r"\b(FF_RECOVER_[A-Z0-9_]+|RECOVER_FF_[A-Z0-9_]+)\s*=\s*(0x[0-
 # hash-based, revision-prefixed scheme that no longer exists. Names are now
 # scoped by terminology source then CodeSystem and IDs are sequential ledger
 # entries, so nothing matched and `codes` witnessed an empty dict.
-_CODE_DEF = re.compile(r"\bFF_CODE_DEF\s+([A-Za-z_]\w*)\s*=\s*(\d+)")
+#
+# TWO SHAPES, one witness. The UCUM block's constants are `UcumUnit` values, so
+# they brace-initialize (`FF_UCUM_DEF MG_PER_DL{2809};`) rather than assign a
+# bare integer; every other scope still assigns one. Both carry the same
+# permanent ID, which is the thing being witnessed.
+_CODE_DEF = re.compile(r"\bFF_(?:CODE|UCUM)_DEF\s+([A-Za-z_]\w*)\s*(?:=\s*(\d+)|{\s*(\d+)\s*})")
 
 # --- a `namespace X {` or `struct X {` scope opener in FF_Codes.hpp ---
 _SCOPE_OPEN = re.compile(r"^\s*(?:namespace|struct)\s+([A-Za-z_][\w:]*)")
@@ -127,7 +132,7 @@ def _dictionary_codes(text: str, root: str = "FastFHIR::FF_CODE") -> dict[str, i
         cm = _CODE_DEF.search(s)
         if cm:
             names = [n for _, n in stack if n != root]
-            out["::".join([*names, cm.group(1)])] = int(cm.group(2))
+            out["::".join([*names, cm.group(1)])] = int(cm.group(2) or cm.group(3))
         depth += s.count("{") - s.count("}")
         while stack and stack[-1][0] > depth:
             stack.pop()

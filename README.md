@@ -78,7 +78,6 @@ __A: I am stricter than normal FHIR when it comes to extensions. We are adding a
   - [5 — Surgically edit one patient in a 5 GB bundle and reseal](#5--surgically-edit-one-patient-in-a-5-gb-bundle-and-reseal)
   - [6 — Lock-Free Concurrent Generation](#6--lock-free-concurrent-generation)
   - [7 — Compact Archives](#7--compact-archives)
-  - [8 — Calling from C](#8--calling-from-c-fastfhirh)
 - [CLI Tools](#command-line-interface-tools)
   - [ff\_ingest](#ff_ingest)
   - [ff\_export](#ff_export)
@@ -194,7 +193,6 @@ The `build_all` target builds every enabled component: the core library (`libfas
 | `FASTFHIR_RUN_GENERATOR` | `ON` | Run the Python code generator at configure time |
 | `FASTFHIR_GENERATE_ON_BUILD` | `OFF` | Re-run the generator before every build (may invalidate the PCH) |
 | `FASTFHIR_ENABLE_EXTENSIONS` | `OFF` | Enable the WASM extension codec host |
-| `FASTFHIR_BUILD_CONFORMANCE` | `OFF` | Build the attachable FHIR conformance layer (see `examples/conformance_layer.cpp`) |
 
 Example — UK Core profile with ingestor, tests, and Python bindings:
 
@@ -238,9 +236,8 @@ payer-side, use `us-core,billing`.
 > Data is never dropped. A resource outside your profile keeps its JSON verbatim in
 > the stream and is re-emitted byte-for-byte on export, so any FHIR document
 > round-trips losslessly whatever you compiled. What you lose is *typed access*:
-> with no V-Table there is no `Node` navigation, no query, and no interior compaction — it
-> behaves like ordinary FHIR. Pick a profile for the resources you want FastFHIR-native; you do
-> not have to enumerate every type in existence.
+> with no V-Table there is no `Node` navigation, no query, and no interior compaction — it behaves like ordinary FHIR. Pick a profile for the resources you
+> want FastFHIR-native; you do not have to enumerate every type in existence.
 
 > [!NOTE]
 > **Profile choice does not affect `RESOURCE` tag interoperability.**
@@ -268,7 +265,7 @@ Every `cpp` block on this page is checked by the test suite as published. Two ga
 | Gate | What it does | Covers |
 |---|---|---|
 | `ctest -R py_readme_compiles` | Extracts each block and builds it `-fsyntax-only` — C++ blocks as C++20, the C block as C11 | all 25 buildable blocks |
-| `ctest -R cpp_readme_` | **Extracts and runs** the block, then asserts on the result | the 8 executed blocks |
+| `ctest -R cpp_readme_` | **Extracts and runs** the block, then asserts on the result | the 8 end-to-end examples |
 
 The second gate matters most. The runner is generated from this file, so the code it runs is
 the text above, verbatim — not a re-implementation. Change a value in an example and the
@@ -367,8 +364,8 @@ That is the complete read path.
 
 ## Step 2 — Create a `Memory` arena
 
-FastFHIR's Virtual Memory Arena (VMA) backs the `Builder` and the streaming ingest path. Two
-ways to create one:
+FastFHIR's Virtual Memory Arena (VMA) is the backing store used by the `Builder` and the
+streaming ingestion path. There are three flavours:
 
 ### Anonymous RAM arena (in-process only)
 
@@ -606,9 +603,12 @@ for (auto& name_node : root[FastFHIR::Fields::PATIENT::NAME].entries()) {
     std::cout << family << "\n";
 }
 
-// Materialize into a generated C++ struct (runs strict schema validation).
-// Use it only when you need the whole resource: it deserializes every field,
-// which is the cost the zero-copy read path avoids (see "Reading data" below).
+// Eagerly materialize into a generated C++ struct (strict schema validation).
+// Reach for this ONLY when you need the whole resource or its strict
+// validation. For a query that reads a few fields it is the anti-pattern: it
+// deserializes every field of the abstraction — strings, vectors, sub-objects —
+// the exact O(N) work the zero-copy read path exists to avoid (see "Reading data"
+// below).
 PatientData patient_data = root;
 
 // Same API works for polymorphic resource slots (e.g. Bundle.entry.resource):
@@ -617,7 +617,8 @@ PatientData patient_data = root;
 
 ### Reading data — the zero-copy pattern
 
-There are two ways to read, and picking the right one matters:
+FastFHIR gives you **two independent readers over the same bytes**. Choosing
+between them is the most consequential read-path decision you make:
 
 | | how you use it | allocates? |
 |---|---|---|
@@ -625,30 +626,36 @@ There are two ways to read, and picking the right one matters:
 | **Abstraction** | `node.as<ObservationData>()` | yes — copies into a struct |
 
 The **abstraction types** are the generated data structs — `PatientData`,
-`ObservationData`, `CodeableConceptData` — plain C++ values with public fields and no
-behaviour. `node.as<T>()` and `PatientData p = node;` do the same thing: walk the whole block
-and copy every field into the struct.
+`ObservationData`, `CodeableConceptData` — ordinary C++ values with public fields
+and no behaviour. `node.as<T>()` and `PatientData p = node;` are the same
+operation: walk the entire block and copy every field out of the arena into one.
 
-The lens returns a *view* instead. An `Entry`/`Node` is a coordinate into the mapped file, so
-a field read is a vtable-slot lookup plus a bounds check, and the `std::string_view` it
-returns points at the arena's own bytes — nothing is copied or freed.
+The lens hands back a *view* instead. An `Entry`/`Node` is a coordinate into the
+mapped file, so a field read is a vtable-slot lookup plus a bounds check, and the
+`std::string_view` it yields points at the arena's own bytes — nothing is copied
+and nothing is freed.
 
-**Do** use lens reads: navigate to the fields you need and coerce them to `std::string_view`
-or scalars. Nodes are views, not copies. Index-walk arrays (`node[i]`) instead of `entries()`
-when you don't need the materialized list.
+**Do** — lens reads: navigate to exactly the fields you need and coerce them to
+`std::string_view` / scalars. Nodes are views over the arena, not copies.
+Index-walk arrays (`node[i]`) instead of `entries()` when you don't need the
+materialized list — the index walk allocates nothing.
 
-**Don't** materialize a whole resource (`PatientData p = root;`) to answer a query that needs
-two fields. It deserializes every field the query never touches — the O(N) work the format
-exists to avoid — and the cost hides if you only time the query. Materialization is for
-validation and whole-record consumers.
+**Don't** — materialize the whole resource (`PatientData p = root;`) to answer a
+query that needs two fields. The whole abstraction gets deserialized — every field
+the query never touches — which is precisely the O(N) work the format exists to
+avoid, and it is invisible in the timing if you only measure the query. This is
+the single most common misuse of the read API; it is why the benchmark's
+query stage originally ran at parity with a DOM parser despite the O(1) per-field
+access underneath. Whole-resource materialization is for validation and
+whole-record consumers, not for field access.
 
 Two slot kinds need care:
 
-- **Date/time slots** (`birthDate`, `issued`, `effective`) are packed; the string-view reader
-  throws on them. Check presence with the slot's truthiness, and use `print_json` only when
-  the text is required (CAPI-4).
-- **Choice slots** (`value[x]`, `effective[x]`) carry their variant type in the slot's
-  recovery tag — read `entry.target_recovery` without expanding the node.
+- **Date/time slots** (`birthDate`, `issued`, `effective`) are packed; the
+  string-view reader throws on them. Check presence with the slot's truthiness
+  and use `print_json` only when the text is required (CAPI-4).
+- **Choice slots** (`value[x]`, `effective[x]`) carry their variant type in the
+  slot's recovery tag — read `entry.target_recovery` without expanding the node.
 
 ---
 
@@ -885,9 +892,9 @@ FastFHIR::FF_BuilderFinalize(FastFHIR::FF_BuilderFinalizeInfo{
 
 ## 6 — Lock-Free Concurrent Generation
 
-There are two ways to fill an array. Both produce the same logical `Bundle`, and a reader
-cannot tell them apart. They differ in who tracks the array while it is being filled, and
-where it lands in the stream.
+FastFHIR supports **two ways to fill an array**, and both are first-class. They produce
+the same logical `Bundle`, and readers cannot tell them apart. The difference is who
+tracks the array while it is being filled, and where it lands in the stream.
 
 | | **6a — Collect, then serialize** | **6b — Allocate, then backfill** |
 |---|---|---|
@@ -1059,9 +1066,11 @@ original is not modified — and is **read-only** (decompact by rebuilding from 
 standard stream before mutation).
 
 > [!TIP]
-> **Use compact archives for finalized, store-once data.** They are just as fast and fully
-> traversable through `Parser` with the same typed-key API as standard streams, so the read
-> side needs no changes. If you are not actively editing a resource, archive it.
+> **Use compact archives when a stream is finalized, unlikely to be mutated, and will
+> be stored or transmitted at scale.** Compact archives are just as fast and fully 
+> traversable via `Parser` using the identical typed-key API as standard streams — 
+> no code changes needed on the read side. They **should** be used for long term
+> archiving of data - there is no reason not to archive if not actively editing a resource. 
 
 ### Stream Format Comparison
 
@@ -1072,11 +1081,16 @@ standard stream before mutation).
 
 ### Size Savings
 
-Savings scale with field sparsity: the more absent fields, the greater the reduction. Real
-FHIR resources are mostly optional fields left unset, so most streams shrink; dense records
-shrink least. The test suite tracks compact sizes against their standard streams, and
-[FastFHIR-benchmark](https://github.com/ryanlandvater/FastFHIR-benchmark) owns the published
-numbers.
+Savings scale with field sparsity — the more absent fields, the greater the reduction.
+Empirical results from the test suite (real FHIR resources, no artificial padding):
+
+| Resource | Standard | Compact | Reduction |
+|----------|----------|---------|-----------|
+| `Patient` (id, gender, active, name/given/family) | 1 041 B | 356 B | **−66 %** |
+| `Bundle` (`Patient` + `Observation` with components) | 1 799 B | 1 067 B | **−41 %** |
+
+Reductions are larger for sparse resources (most FHIR resources have many optional fields
+left unset) and smaller for dense records where most fields are populated.
 
 ### Usage
 
@@ -1176,11 +1190,7 @@ int seal_patient(void)
     if (FF_ResultFailed(&r)) { fprintf(stderr, "%s\n", r.message); goto done; }
 
     /* 4. Read it back: parse the sealed bytes, validate, export JSON. */
-    FF_ParseInfo pinfo = {0};
-    pinfo.buffer = FF_ViewData(sealed);
-    pinfo.size   = FF_ViewSize(sealed);
-
-    r = FF_Parse(&pinfo, &parser);
+    r = FF_CreateParserFromBuffer(FF_ViewData(sealed), FF_ViewSize(sealed), &parser);
     if (FF_ResultFailed(&r)) { fprintf(stderr, "%s\n", r.message); goto done; }
 
     r = FF_ValidateStream(parser);
@@ -1418,10 +1428,13 @@ resolution order:
    and **relative to the containing block** — to the `FF_CODED_VALUE` block
 3. Decode that block per its system discriminator and return the label
 
-The relative pointer is resolved while the containing block is still known — on the fast path
-by `Entry`, which holds both coordinates, otherwise at node construction. A `Node` keeps only
-its own offset, so nothing downstream of that point can redo the arithmetic. So codes can be
-assigned as ordinary strings while still storing dictionary-backed values for known codes.
+The relative pointer is resolved while the containing block is still known: on
+the fast path by `Entry`, which holds both coordinates, and otherwise at node
+construction. A `Node` keeps only its own offset, so nothing downstream of that
+point can redo the arithmetic.
+
+This is why code fields can be assigned with normal strings while still keeping
+fast dictionary-backed storage for known values.
 
 ### Date/Time Assignment Semantics
 
@@ -1444,11 +1457,11 @@ rule, same null convention, one width up:
 #### 1) Packed inline
 
 The value is packed into 63 bits as **civil time plus precision plus UTC
-offset** — not an instant. FHIR requires this: `"2024"` is not
+offset** — not an instant. FHIR forces this: `"2024"` is not
 `"2024-01-01T00:00:00Z"`, `date` never carries a timezone, `time` has no date,
-and a leap second (`:60`) is legal and must survive. Equality becomes an integer
-compare, and a value costs 8 bytes instead of a pointer plus a block header plus
-the text.
+and a leap second (`:60`) is legal and must survive. Comparison for equality
+becomes an integer compare instead of a string compare, and a value costs 8
+bytes instead of an 8-byte pointer plus a 14-byte block header plus the text.
 
 <!-- ff-compile: fragment needs=handles -->
 ```cpp
@@ -1474,9 +1487,9 @@ obs_handle[FastFHIR::Fields::OBSERVATION::ISSUED] = std::string_view("2024-01-15
 // 6 fractional digits -> FF_STRING fallback; the text is preserved byte-for-byte.
 ```
 
-The round trip is byte-exact on both paths. The fallback is neither a data-loss
-nor an error path: text that cannot be packed is preserved, not rejected — the
-same way an unknown code becomes a block instead of an exception.
+The round trip is byte-exact on **both** paths. The fallback is not a data-loss
+path and not an error path: unparseable text is preserved rather than rejected,
+for the same reason an unknown code becomes a block instead of an exception.
 
 #### 3) Null handling
 
@@ -1620,14 +1633,17 @@ FHIR_VERSION_R5   // HL7 FHIR R5 (default)
 
 > FHIR extensibility specification: [https://www.hl7.org/fhir/extensibility.html](https://www.hl7.org/fhir/extensibility.html)
 
-FHIR `extension` and `modifierExtension` arrays identify each extension by its `url`. FastFHIR
-resolves the URL once at ingest time and records the result in a 4-byte routing word, `EXT_REF`,
-at the `FF_EXTENSION::EXT_REF` slot. Reads then pay no URL-lookup cost.
+FHIR `extension` and `modifierExtension` arrays contain elements whose `url` field identifies the
+extension type. FastFHIR resolves each URL at ingest time and takes one of three paths, encoded in
+a single 4-byte routing word called `EXT_REF` stored at the binary `FF_EXTENSION::EXT_REF` slot.
+
+The routing decision is made once — during predigestion — and baked into the binary record.
+Subsequent reads pay no URL-lookup cost at all.
 
 | Condition | `EXT_REF` value | Stored as |
 |---|---|---|
 | URL resolves to a **registered WASM module** | `MSB = 1` → `MODULE_IDX` | Decoded at near-native speed; module indexed in `FF_MODULE_REGISTRY` |
-| URL is **unknown** at ingest time | `MSB = 0` → `URL_IDX` | URL indexed in `FF_URL_DIRECTORY`; content is not guaranteed to round-trip |
+| URL is **unknown** at ingest time | `MSB = 0` → `URL_IDX` | Raw opaque JSON blob; URL indexed in `FF_URL_DIRECTORY` |
 | URL is a **known/filtered** native extension | `FF_NULL_UINT32` (`0xFFFFFFFF`) | Block is suppressed — no arena bytes written |
 
 ### EXT_REF bit layout
@@ -1650,37 +1666,44 @@ ff_ext_ref_index(ref)       // extract the lower 31-bit index
 
 ---
 
-### Condition 1 — Registered WASM modules
+### Condition 1 — Registered WASM modules — binary-speed extension codecs
 
-FastFHIR has an open **extension module registry**. It points at
-`https://registry.fastfhir.org` by default and is configurable via `FF_ExtensionRegistry`. A
-published **WebAssembly codec module** decodes a custom extension into typed binary fields
-stored in the arena alongside natively generated data — US Core race/ethnicity, clinical trial
-identifiers, organisation-specific extensions, and so on.
+FastFHIR's most distinctive capability is its open **extension module registry** — by default
+pointing to `https://registry.fastfhir.org` but configurable via the `FF_ExtensionRegistry`
+interface to point to any registry server. Any well-known custom extension — US Core
+race/ethnicity, clinical trial identifiers, organisation-specific profile extensions, and more —
+can have a published **WebAssembly codec module** that fully decodes the extension into typed
+binary fields, stored directly in the FastFHIR arena alongside natively generated resource data.
 
-Once a module is registered for a URL, that extension gets the same performance and zero-copy
-access as a built-in FHIR field.
+When a module is registered for an extension URL, FastFHIR treats that extension with exactly the
+same performance and zero-copy access as a first-class built-in FHIR field. The ecosystem of
+available codecs grows over time as organisations and implementers publish modules to one or
+more registries.
 
 #### Why WebAssembly?
 
-Compiled modules run at near-native speed. A registered module replaces the fallback with a
-structured, zero-copy binary representation — the same flat-buffer access every built-in field
-uses — so reading a registered extension costs no more than reading `Patient.birthDate`.
+Compiled WASM modules execute at **near-native speed** inside the FastFHIR runtime. A registered
+module replaces the generic JSON-blob fallback with a structured binary representation that is
+zero-copy readable — the same flat-buffer access pattern used by all first-class FHIR fields.
+Hot paths that access a registered extension field are indistinguishable in performance from
+accessing a built-in field like `Patient.birthDate`.
 
-#### Sandboxing
+#### Safe sandboxing
 
-WASM's linear-memory model isolates the host from each codec module:
+WASM's linear-memory model provides **hard memory isolation** between the host FastFHIR runtime
+and any loaded codec module:
 
-- A module runs inside its own bounded linear memory and cannot read or write FastFHIR's arena,
-  stack, or other modules.
-- No native pointers cross the boundary; all exchange goes through typed host-import/export
-  calls.
-- A misbehaving module cannot corrupt the process, escalate privileges, or reach patient data
-  outside its sandbox.
-- Modules load, unload, and swap at runtime without restarting the host.
+- Each module operates exclusively within its own bounded linear memory region.
+  It cannot read or write FastFHIR's arena, stack, or other modules' memory.
+- There are no native pointers shared across the boundary — all data exchange goes through
+  explicitly typed host-import/export function calls.
+- A misbehaving or malicious codec module cannot corrupt the host process, escalate privileges,
+  or access patient data outside its own sandbox.
+- Modules may be loaded, unloaded, and replaced at runtime without restarting the host.
 
-So you can consume community modules — or a partner's proprietary codec — without giving their
-compiled binary direct memory access.
+This makes it safe to consume community-published modules from a configured registry server
+(e.g. `https://registry.fastfhir.org`) — or a partner organisation's proprietary
+profile codec — without trusting their compiled binary with direct memory access.
 
 #### Module registration
 
@@ -1721,11 +1744,13 @@ bool loaded = FastFHIR::Extensions::FF_WasmExtensionHost::get()
 
 ### Condition 2 — Unknown extensions — URL retention
 
-When an extension URL is new and no WASM module is registered for it, FastFHIR records the URL in
-the stream-level `FF_URL_DIRECTORY` — a chained-segment trie that stores shared URL prefixes once.
-The URL is kept for lookup and module registration, but the current predigestion/export pipeline
-does **not** preserve the extension's JSON payload for re-emission. Retaining the URL is not a
-general lossless round-trip guarantee for unhandled extension content.
+When an extension URL has not been seen before and no WASM module is registered for it, FastFHIR
+records the URL in the stream-level `FF_URL_DIRECTORY` (a chained-segment trie that deduplicates
+shared URL prefixes). This preserves the extension identifier for lookup and module registration
+workflows, but the current predigestion/export pipeline does **not** preserve the full unknown
+extension JSON payload as an opaque blob for automatic re-emission. In other words, unknown
+extension URLs can be retained, but this should not be interpreted as a **lossless round-trip**
+guarantee for arbitrary, unhandled extension content.
 
 `FF_URL_DIRECTORY` uses a chained-segment model so that many URLs sharing a common prefix (e.g.
 `http://example.org/fhir/StructureDefinition/`) store that prefix only once:
@@ -1753,26 +1778,28 @@ if (parser.has_url_directory()) {
 
 ### Condition 3 — Filtered / suppressed extensions
 
-Some extensions carry no clinical payload of interest — HL7 rendering hints, US Core race
-narrative text, data-absent-reason flags already captured natively. For these, FastFHIR writes
-`FF_NULL_UINT32` into `EXT_REF` at predigestion time and skips the block during ingest: no arena
-bytes, no pointer in the record.
+Some extensions carry no clinical payload of interest (e.g. HL7-defined rendering hints,
+US Core race narrative text, data-absent-reason flags that are already captured natively).
+For these, FastFHIR writes `FF_NULL_UINT32` into `EXT_REF` at predigestion time and skips the
+block entirely during the ingest pass. No memory is allocated, no bytes are written to the arena,
+and no pointer appears in the binary record.
 
-The filter table is generated from the official HL7 FHIR spec bundles at code-generation time
-and baked into the library; extensions can also be marked filtered at runtime before ingestion.
+The filter table is generated from the official HL7 FHIR spec bundles during code generation and
+is baked into the library. Extensions can also be registered as filtered at runtime before
+ingestion begins.
 
 | Filter mode | Effect |
 |---|---|
-| `FILTER_ALL_KNOWN` *(default)* | Suppresses all profile-native and HL7-informational-only extensions; unknown URLs are interned |
+| `FILTER_ALL_KNOWN` *(default)* | Suppresses all profile-native and HL7-informational-only extensions; unknown URLs are interned and preserved |
 | `FILTER_NONE` | Every URL is interned; nothing is suppressed |
 
 At ingest time `FF_PredigestExtensionURLs()` runs before any resource data is written. It scans
 the full payload, classifies each URL against the filter table, and builds the intern state
 consumed by all subsequent worker threads.
 
-`modifierExtension` elements follow the same three-path routing as `extension` — a modifier
-extension with a registered module is decoded at full binary speed, and one with an unknown URL
-keeps its URL but is not guaranteed a lossless round-trip.
+`modifierExtension` elements follow **exactly the same** three-path routing as `extension`. A
+modifier extension with a registered module is decoded at full binary speed; one with an unknown
+URL is preserved as raw JSON with full fidelity.
 
 ---
 

@@ -103,7 +103,11 @@ RESERVED_MACROS = frozenset(
 
 _SYMBOLS = {
     "%": "PERCENT_",
-    "/": "PER_",
+    # A '/' JOINS two words, so it takes a boundary underscore on both sides:
+    # "mg/dL" -> MG_PER_DL, not MGPER_DL. The fold collapses runs of '_', which
+    # is why the leading underscore is safe to add unconditionally -- "%/100"
+    # still folds to PERCENT_PER_100.
+    "/": "_PER_",
     "*": "TIMES_",
     "+": "PLUS_",
     "'": "PRIME",
@@ -220,13 +224,22 @@ def generate(output_dir: str = "generated_src") -> None:
     # but is named per scope, so id 15024 is UCUM::LITER and FDI_SURFACE::L.
     scopes = ledger["scopes"]
 
-    def members(scope: str, indent: str) -> list[str]:
+    def members(
+        scope: str, indent: str, macro: str = "FF_CODE_DEF", typed: bool = False
+    ) -> list[str]:
         out, seen = [], set()
         for cid, ident in sorted(scopes.get(scope, {}).items(), key=lambda kv: int(kv[0])):
             if ident in seen:
                 raise RuntimeError(f"{scope}: duplicate identifier {ident!r} (id {cid})")
             seen.add(ident)
-            out.append(f"{indent}FF_CODE_DEF {ident} = {cid};")
+            # A typed constant is brace-initialized: UcumUnit's constructor is
+            # EXPLICIT, which is what stops a bare uint32_t from becoming a unit
+            # on its own, and an `= <id>` initializer would require an implicit
+            # one.
+            if typed:
+                out.append(f"{indent}{macro} {ident}{{{cid}}};")
+            else:
+                out.append(f"{indent}{macro} {ident} = {cid};")
         return out
 
     lines = [
@@ -241,14 +254,20 @@ def generate(output_dir: str = "generated_src") -> None:
         "// FF_R4/R5/UCUM_DICTIONARY lookup tables.",
         "#pragma once",
         "#include <cstdint>",
+        '#include "FF_Primitives.hpp"',
         "",
         "namespace FastFHIR::FF_CODE {",
         "",
+        "// UCUM units are TYPED; every other scope below is a plain uint32_t. A",
+        "// unit is the one code a datatype spreads across three fields",
+        "// (unit/system/code), so set_unit() takes the type -- and a code from any",
+        "// other system cannot be passed to it by accident.",
+        "#define FF_UCUM_DEF static inline constexpr FastFHIR::UcumUnit",
         "#define FF_CODE_DEF static inline constexpr uint32_t",
         "",
         "// ---- UCUM (unitsofmeasure.org) ----",
         "namespace UCUM {",
-        *members("UCUM", "    "),
+        *members("UCUM", "    ", macro="FF_UCUM_DEF", typed=True),
         "}  // namespace UCUM",
         "",
         "// ---- HL7 FHIR CodeSystems ----",

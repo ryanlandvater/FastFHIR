@@ -197,12 +197,15 @@ int main(int argc, char *argv[])
         // 3. Parse and validate the source stream
         // -----------------------------------------------------------------
         Parser source;
-        FF_Result parse_result = reading_stdin
-            ? FF_Parse(FF_ParseInfo{.buffer = parse_buffer, .size = parse_size}, source)
-            : FF_Parse(FF_ParseInfo{.memory = Memory::openReadOnly(input_path)}, source);
-        if (!parse_result)
+        try
         {
-            std::cerr << "[ff_compact] Error: " << parse_result.message << "\n";
+            source = reading_stdin
+                ? Parser(parse_buffer, parse_size)
+                : Parser(Memory::openReadOnly(input_path));
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "[ff_compact] Error: " << e.what() << "\n";
             return 1;
         }
 

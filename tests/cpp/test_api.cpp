@@ -42,11 +42,7 @@ int main() {
     }, sealed_view), "finalize fixture stream");
     CHECK(!sealed_view.empty(), "fixture stream sealed non-empty");
 
-    Parser sealed_parser;
-    CHECK(FF_Parse(FF_ParseInfo{
-        .buffer = sealed_view.data(),
-        .size = sealed_view.size(),
-    }, sealed_parser), "parse fixture stream");
+    Parser sealed_parser(sealed_view.data(), sealed_view.size());
     CHECK(static_cast<bool>(sealed_parser), "fixture parser is valid");
 
     // ── 1. FF_CreateMemory — shm_name + filepath mutually exclusive ─────────
@@ -96,13 +92,12 @@ int main() {
         CHECK(!parser, "FF_BuilderQuery cleared out_parser on invalid args");
     }
 
-    // ── 5. FF_Parse — null buffer with nonzero size ─────────────────────────
+    // ── 5. Parser(buffer, size) — a null buffer throws ──────────────────────
     {
-        Parser parser = sealed_parser;  // populated
-        CHECK(static_cast<bool>(parser), "pre-populate out_parser (parse)");
-        FF_Result r = FF_Parse(FF_ParseInfo{nullptr, 16}, parser);
-        CHECK(r.failed(), "FF_Parse rejects null buffer");
-        CHECK(!parser, "FF_Parse cleared out_parser on invalid args");
+        bool threw = false;
+        try { Parser rejected(nullptr, 16); }
+        catch (const std::exception &) { threw = true; }
+        CHECK(threw, "Parser(buffer, size) rejects a null buffer");
     }
 
     // ── 6. FF_Compact — invalid source parser ───────────────────────────────
@@ -195,10 +190,7 @@ int main() {
         CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, sealed),
               "finalize mixed bundle");
 
-        Parser parser;
-        CHECK(FF_Parse(FF_ParseInfo{
-            .buffer = sealed.data(), .size = sealed.size()}, parser),
-            "parse mixed bundle");
+        Parser parser(sealed.data(), sealed.size());
 
         const BYTE* const bytes = reinterpret_cast<const BYTE*>(sealed.data());
         const auto entries = parser.root()[Fields::BUNDLE::ENTRY].entries();

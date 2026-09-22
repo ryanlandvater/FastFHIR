@@ -152,8 +152,8 @@ static FixtureResult compact_roundtrip_json(const std::string& json) {
     if (view.empty()) return result;
 
     Parser source;
-    if (!FF_Parse(FF_ParseInfo{.buffer = view.data(), .size = view.size()}, source))
-        return result;
+    try { source = Parser(view.data(), view.size()); }
+    catch (const std::exception &e) { printf("    parse failed: %s\n", e.what()); return result; }
     if (!source.root()) { printf("    source root is null\n"); return result; }
 
     std::ostringstream source_json;
@@ -169,9 +169,8 @@ static FixtureResult compact_roundtrip_json(const std::string& json) {
     if (compact_view.empty()) { printf("    compact produced no stream\n"); return result; }
 
     Parser compact;
-    if (!FF_Parse(FF_ParseInfo{
-            .buffer = compact_view.data(), .size = compact_view.size()}, compact))
-        return result;
+    try { compact = Parser(compact_view.data(), compact_view.size()); }
+    catch (const std::exception &e) { printf("    compact parse failed: %s\n", e.what()); return result; }
     if (!compact.root()) { printf("    compact root is null\n"); return result; }
 
     std::ostringstream compact_json;

@@ -44,11 +44,7 @@
  * }, payload);
  *
  * // 2. Parse the zero-copy stream
- * FastFHIR::Parser parser;
- * FastFHIR::FF_Parse(FastFHIR::FF_ParseInfo{
- *     .buffer = payload.data(),
- *     .size = payload.size(),
- * }, parser);
+ * FastFHIR::Parser parser(payload.data(), payload.size());
  * 
  * // 3. Access the root resource and its fields with zero-copy accessors
  * // Access by generated field key for better performance and safety:
@@ -146,12 +142,15 @@ using HashCallback = std::function<std::vector<BYTE>(const unsigned char* byte_s
 // the namespace spelled out; it is never a second type.
 //
 // Not aliased here: the wire block structs (FF_HEADER, FF_STRING, ...) and the
-// C-ABI Info structs (FF_ParseInfo, FF_BuilderCreateInfo, ...), which keep
-// their FF_ names because they ARE the C surface, not a C++ type behind one.
+// C-ABI Info structs (FF_BuilderCreateInfo, ...), which keep their FF_ names
+// because they ARE the C surface, not a C++ type behind one. There is no
+// FF_ParseInfo on either side: the parse surface is Parser's two constructors.
 using FF_Memory       = FastFHIR::Memory;        // shared_ptr<Memory_t>, the arena handle
 using FF_Builder      = FastFHIR::Builder;       // shared_ptr<Builder_t>
 using FF_Ingestor     = FastFHIR::Ingestor;      // shared_ptr<Ingestor_t>
 using FF_String       = FastFHIR::String;        // POCO string field
+using FF_DateTime     = FastFHIR::DateTime;      // POCO date/time field: components or text
+using FF_UcumUnit     = FastFHIR::UcumUnit;      // a UCUM unit constant (FF_CODE::UCUM::*)
 using FF_HashCallback = FastFHIR::HashCallback;  // checksum callback
 
 // The result types (FF_Result, FF_Result_Code, FF_Result_Severity) and their
@@ -184,7 +183,12 @@ namespace FastFHIR {
 //   - Create/lifecycle functions follow the Vulkan pattern: an Info struct
 //     in, a `T& out` parameter, an FF_Result out. Errors never throw — the
 //     implementation catches everything below this boundary.
-//   - Read/query returns (Parser, Memory::View) are cheap value types.
+//   - Read/query returns (Parser, Memory::View) are cheap value types. Parser
+//     is the one surface that is NOT an Info struct: it is built directly with
+//     `Parser(buffer, size)` or `Parser(memory)`, because the two forms are
+//     mutually exclusive and two constructors make that a compile-time fact
+//     rather than a runtime check. A bad stream throws `FastFHIR Parsing
+//     Error: ...` from the constructor.
 //   - The Reflective mutation path (`handle["field"] = value`) is unchanged
 //     and remains the way fields are written once an object is appended.
 // =====================================================================
@@ -214,7 +218,7 @@ struct FF_MemoryCreateInfo {
     const char* shm_name = nullptr;  ///< Cross-process SHM segment name; null = anonymous RAM.
     /// File-backed arena, writable (Memory::createFromFile). To read a file
     /// without being able to change it, use Memory::openReadOnly() and hand the
-    /// arena to FF_Parse. Exclusive with shm_name.
+    /// arena to `Parser(memory)`. Exclusive with shm_name.
     const char* filepath = nullptr;
 };
 
@@ -294,18 +298,16 @@ FF_EXPORT FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo& info, Parser& out
 // =====================================================================
 // PARSE API
 // =====================================================================
-/** @brief Parameters for parsing a sealed FastFHIR byte stream. */
-struct FF_ParseInfo {
-    const void* buffer = nullptr;  ///< First byte of a sealed FastFHIR stream (e.g. read from a FILE* or a socket).
-    Size        size   = 0;        ///< Total bytes available at @p buffer.
-    /// An arena holding a sealed stream — from Memory::openReadOnly() for a file
-    /// on disk, or the one a Builder just wrote. The Parser keeps the handle, so
-    /// the mapping lives as long as it does. Exclusive with @p buffer.
-    FF_Memory   memory = nullptr;
-};
-
-/** @brief Parses and validates a stream header. @p out_parser is invalid (bool false) on failure. */
-FF_EXPORT FF_Result FF_Parse(const FF_ParseInfo& info, Parser& out_parser) noexcept;
+// There is no FF_ParseInfo and no FF_Parse here: `Parser` IS the parse
+// surface, built with one of its two explicit constructors —
+//   Parser(buffer, size)  bytes the caller already holds (a socket, a vector)
+//   Parser(memory)        an arena from Memory::openReadOnly(), or a Builder
+// The two forms are mutually exclusive by construction, so the old runtime
+// "buffer and memory are mutually exclusive" check is gone rather than moved.
+// Construction validates the header and root, and throws `FastFHIR Parsing
+// Error: ...` on a bad stream (including a null buffer or arena). The C ABI
+// mirrors the two constructors with two factories, FF_CreateParserFromBuffer
+// and FF_CreateParserFromMemory (FastFHIR.h).
 
 // =====================================================================
 // COMPACT API

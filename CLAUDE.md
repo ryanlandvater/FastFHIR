@@ -169,7 +169,7 @@ duplicate one. Per-check `PASS` lines are now off by default and restored with
 
 | Gate | Mechanism |
 |---|---|
-| `py_readme_compiles` | every ```cpp block extracted and built `-fsyntax-only` as C++20, and every ```c block built the same way as C11 by `$CC` with `-Wall -Wextra` (25 blocks, 1 of them C). The C block is the only thing that checks whether `FastFHIR.h` still compiles as C, and there is one of it among roughly twenty-five blocks, so deleting it would leave the overall count comfortably above `MIN_BLOCKS_COMPILED` and the gate would still report success. `MIN_C_BLOCKS_COMPILED` counts the C blocks separately so that deletion fails the run |
+| `py_readme_compiles` | every ```cpp block extracted and built `-fsyntax-only` as C++20, and every ```c block built the same way as C11 by `$CC` with `-Wall -Wextra` (25 blocks, 1 of them C). The C ABI example is the only check that `FastFHIR.h` is valid C, so it has its own floor — `MIN_C_BLOCKS_COMPILED` — because one block among twenty-five would otherwise vanish without moving the overall count below its floor |
 | `cpp_readme_*` | 8 blocks extracted and **executed**; `tests/readme/generate_examples.py` emits the test at build time. A new `run=` id also needs adding to the `foreach` list in `tests/tests.cmake`, or it runs inside the binary but has no ctest entry of its own |
 
 **Do not add a hand-written test for a README example.** That is what existed before, and

@@ -25,6 +25,8 @@
  *   assignment   `value = QuantityData{...}` infers the variant tag
  *   strings      a field built from a runtime string outlives its source
  *   borrowing    a field assigned a view does not copy
+ *   ucum_unit    one UCUM constant fills unit/system/code, and the constant is
+ *                a UNIT type -- a code from another system does not compile
  */
 
 #include <FastFHIR.hpp>
@@ -95,9 +97,10 @@ std::string sealed_json(const ObservationData &observation)
         return {};
     }
     Parser parser;
-    if (!FF_Parse(FF_ParseInfo{.buffer = sealed.data(), .size = sealed.size()}, parser).succeeded())
+    try { parser = Parser(sealed.data(), sealed.size()); }
+    catch (const std::exception &e)
     {
-        CHECK(false, "parse");
+        CHECK(false, "parse: " << e.what());
         return {};
     }
     std::ostringstream json;
@@ -311,6 +314,59 @@ void a_literal_and_a_view_are_borrowed_not_copied()
           "the borrowed literal reached the wire: " << json);
 }
 
+/// T7: one UCUM constant fills the three fields that describe a unit. The
+/// constant is a UCUM UNIT, not a bare dictionary id, which is what makes the
+/// argument unambiguous -- every FHIR code is also a uint32_t.
+void a_ucum_unit_fills_all_three_fields()
+{
+    TEST_GROUP("ucum_unit");
+
+    // The type is the feature. A bare id must NOT become a unit on its own, and
+    // a unit must still be a dictionary code everywhere one is wanted -- the
+    // R4/R5/UCUM lookup tables alias these constants symbolically.
+    static_assert(!std::is_convertible_v<uint32_t, FF_UcumUnit>,
+                  "a bare code ID must not become a UCUM unit by accident");
+    static_assert(std::is_convertible_v<FF_UcumUnit, uint32_t>,
+                  "a UCUM unit is still a dictionary code where one is wanted");
+    static_assert(std::is_constructible_v<FF_UcumUnit, uint32_t>,
+                  "the generated tables construct a unit from its id");
+
+    QuantityData quantity;
+    quantity.value = 94.0;
+    quantity.set_unit(FF_CODE::UCUM::MG_PER_DL);
+
+    CHECK(quantity.code == "mg/dL", "code is the UCUM expression: " << quantity.code);
+    CHECK(quantity.unit == "mg/dL", "unit is the same expression in human form");
+    CHECK(quantity.system == "http://unitsofmeasure.org", "system is the UCUM CodeSystem URL");
+
+    ObservationData observation;
+    observation.id         = "poco-ucum";
+    observation.status     = FF_ObservationStatus::Final;
+    observation.value      = std::move(quantity);   // infers the variant tag (T5)
+    const std::string json = sealed_json(observation);
+    CHECK(json.find("\"valueQuantity\"") != std::string::npos, "stores as a Quantity: " << json);
+    CHECK(json.find("\"unit\":\"mg/dL\"") != std::string::npos, "unit reached the wire");
+    CHECK(json.find("\"code\":\"mg/dL\"") != std::string::npos, "code reached the wire: " << json);
+    CHECK(json.find("\"system\":\"http://unitsofmeasure.org\"") != std::string::npos,
+          "system reached the wire: " << json);
+
+    // Every datatype in the family carries it, not Quantity alone.
+    AgeData age;
+    age.set_unit(FF_CODE::UCUM::MMOL_PER_L);
+    CHECK(age.code == "mmol/L", "Age takes the same call: " << age.code);
+    CHECK(age.system == "http://unitsofmeasure.org", "with the same system");
+
+    // An id that is not in the dictionary fails loudly rather than writing an
+    // empty unit into a stream (CLAUDE.md invariant 5).
+    bool threw = false;
+    try { DurationData bad; bad.set_unit(FF_UcumUnit{0xFFFFFFFFu}); }
+    catch (const std::runtime_error &e)
+    {
+        threw = std::string(e.what()).find("set_unit") != std::string::npos;
+    }
+    CHECK(threw, "an unknown unit id throws, naming the call");
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -323,5 +379,6 @@ int main(int argc, char **argv)
     ff_test::run("assignment", assigning_a_datatype_infers_the_variant_tag);
     ff_test::run("strings", a_runtime_string_outlives_the_scope_that_built_it);
     ff_test::run("borrowing", a_literal_and_a_view_are_borrowed_not_copied);
+    ff_test::run("ucum_unit", a_ucum_unit_fills_all_three_fields);
     return ff_test::report("POCOs are values: brace-initializable, copyable, and absent when unset");
 }

@@ -7,7 +7,7 @@
  * @brief What opening an arena may do to what is already there.
  *
  * Every case goes through the real pipeline -- a Builder writes the file,
- * FF_Parse or a second Builder opens it -- and then compares the bytes on disk.
+ * the Parser or a second Builder opens it -- and then compares the bytes on disk.
  * A hand-built buffer would only prove the reader agrees with this file's idea
  * of the format (CLAUDE.md, "A green suite here has meant less than it looks").
  *
@@ -101,16 +101,15 @@ void seal_patient(const std::string &path, std::string_view id)
 /// the Parser. Nothing here may create, grow or write the file.
 FF_Result parse_file(const std::string &path, Parser &out)
 {
-    FF_Memory memory;
     try
     {
-        memory = Memory::openReadOnly(path);
+        out = Parser(Memory::openReadOnly(path));
+        return FF_Result{FF_SUCCESS};
     }
     catch (const std::exception &e)
     {
         return FF_Result{FF_FAILURE, e.what()};
     }
-    return FF_Parse(FF_ParseInfo{.memory = memory}, out);
 }
 
 std::string root_id(const Parser &parser)
@@ -169,7 +168,7 @@ void missing_path_creates_nothing()
 
     Parser parser;
     CHECK(!parse_file(missing, parser).succeeded(),
-          "FF_Parse on a missing path fails");
+          "Parser on a missing path fails");
     CHECK(!fs::exists(missing), "and creates no file");
 
     const std::string stub = scratch("stub.ffhr");
@@ -245,7 +244,7 @@ void damaged_stream_is_refused_untouched()
     CHECK(file_bytes(path) == bytes, "the damaged file is byte-identical: its header was not zeroed");
 
     Parser parser;
-    CHECK(!parse_file(path, parser).succeeded(), "FF_Parse reports the damage");
+    CHECK(!parse_file(path, parser).succeeded(), "Parser reports the damage");
     CHECK(file_bytes(path) == bytes, "and still leaves the file byte-identical");
 
     const std::string foreign = scratch("foreign.bin");
@@ -361,8 +360,11 @@ void attaching_to_a_live_shared_arena_disturbs_nothing()
             "finalize the shared arena");
 
     Parser parser;
-    REQUIRE(FF_Parse(FF_ParseInfo{.memory = attached}, parser).succeeded(),
-            "the attached arena parses once sealed");
+    try { parser = Parser(attached); }
+    catch (const std::exception &e)
+    {
+        REQUIRE(false, "the attached arena parses once sealed: " << e.what());
+    }
     CHECK(root_id(parser) == "shm-first", "the producer's resource survived the attach");
     CHECK(parser.validate_FFHR_stream().succeeded(), "and the stream validates");
     (void)second_handle;

@@ -2200,6 +2200,247 @@ static_assert(FF_IsDateTimeTag(RECOVER_FF_DATE) && FF_IsDateTimeTag(RECOVER_FF_D
 static_assert(!FF_IsDateTimeTag(RECOVER_FF_STRING) && !FF_IsDateTimeTag(RECOVER_FF_CODE),
               "FF_IsDateTimeTag must not claim the string or code tags");
 
+// =====================================================================
+// UCUM UNITS -- the one dictionary code a FHIR datatype fills three fields from
+// =====================================================================
+// A UCUM unit is a permanent dictionary code like any other (FF_CODE::UCUM::*),
+// but it is the only kind a datatype spreads across THREE fields: Quantity's
+// `code` is the UCUM expression, `unit` is the same expression in human form,
+// and `system` is the CodeSystem URL. Writing those three by hand is three
+// chances to disagree with each other, so `set_unit` takes this instead.
+//
+// Wrapping the constant in a type is the whole point: a UCUM unit is a
+// dictionary code, and so is every FHIR code, so as bare uint32_t they are
+// indistinguishable and `set_unit(some_fhir_code)` would compile. The
+// constructor is explicit so a uint32_t does NOT become a unit on its own, and
+// the conversion operator is implicit so a UCUM constant still works everywhere
+// a uint32_t already does -- the version lookup tables alias these constants
+// symbolically, and none of that should learn a new type.
+namespace FastFHIR
+{
+
+struct UcumUnit
+{
+    /// The CodeSystem URI every UCUM unit shares. `unit` and `code` carry the
+    /// UCUM expression itself ("mg/dL"); this is the `system` that names it.
+    static constexpr std::string_view SYSTEM_URL = "http://unitsofmeasure.org";
+
+    uint32_t id;
+
+    constexpr explicit UcumUnit(uint32_t ucum_id) noexcept : id(ucum_id) {}
+
+    constexpr operator uint32_t() const noexcept { return id; }
+};
+
+} // namespace FastFHIR
+
+// =====================================================================
+// DateTime -- one field type for both directions of a date/time slot
+// =====================================================================
+namespace FastFHIR
+{
+
+/**
+ * A date/time field, holding EITHER the civil components or the original text.
+ *
+ * The 8-byte wire slot has two arms and the conversion between them only runs
+ * one way. Civil components always render to text (FF_FORMAT_DATETIME builds
+ * it). Text only packs into components when it fits, and the text arm exists
+ * precisely for the values that do not: a fractional second of four or more
+ * digits, a year outside 0001..9999, an offset beyond +/-14:00, or text that
+ * is not valid FHIR grammar at all and is kept verbatim so the document still
+ * round-trips. ENCODE_FF_DATETIME is where that choice is made.
+ *
+ * So a reader typed to return FF_DateTimeParts alone has nothing correct to
+ * hand back for the text arm -- a zeroed struct reads as 0001-01-01 for a
+ * value that is really 12345-06-07 -- and this type is what closes that hole.
+ *
+ * ONE TYPE SERVES BOTH DIRECTIONS, which is why the text arm owns rather than
+ * borrows. A producer's string may die before the append:
+ *
+ *     { std::string drawn = lis_collection_time(); obs.effective = drawn; }
+ *     builder->append_obj(obs);      // drawn is gone; the copy is not
+ *
+ * FastFHIR::String does that owning half, and keeps a literal or an explicit
+ * view borrowed, so the read path still materializes arena text with no
+ * allocation. The spelling of the right-hand side picks the arm, exactly as it
+ * does for a plain string field.
+ *
+ *     field = "2024-01-15";              // literal  -> borrowed text
+ *     field = computed_std_string;       // string   -> owned text
+ *     field = FF_DateTimeParts{...};     // components, no text at all
+ *     field = runtime_char_pointer;      // COMPILE ERROR -- say which you meant
+ *
+ * THE TAG IS NOT ALWAYS KNOWN AT ASSIGNMENT. Which of date / dateTime / time /
+ * instant a slot holds is the field's schema, not the value's, so a producer
+ * writing text leaves `tag()` at FF_RECOVER_UNDEFINED and the encoder supplies
+ * it from the field. A reader always fills it in, because rendering needs it.
+ */
+class DateTime
+{
+public:
+    /// Which arm is live. ABSENT is a real state: FF_DATETIME_NULL means the
+    /// field was never set, which is different from an empty string.
+    enum class Form : uint8_t { ABSENT = 0, CIVIL = 1, TEXT = 2 };
+
+    DateTime() noexcept : m_civil(), m_form(Form::ABSENT) {}
+
+    DateTime(const FF_DateTimeParts &parts, RECOVERY_TAG tag = FF_RECOVER_UNDEFINED) noexcept
+        : m_civil(parts), m_form(Form::CIVIL), m_tag(tag) {}
+
+    /// consteval, so ONLY a string literal binds here -- the same guard
+    /// FastFHIR::String uses, and for the same reason. A pointer that is not a
+    /// compile-time constant cannot reach it, which rejects `p = s.c_str()`
+    /// and a local char buffer alike instead of storing a dangling view.
+    consteval DateTime(const char *literal) : m_text(literal), m_form(Form::TEXT) {}
+
+    /// The caller asserting these bytes outlive the append: the arena on the
+    /// read path, the ingestor's JSON buffer on the write path.
+    DateTime(std::string_view text) noexcept : m_text(text), m_form(Form::TEXT) {}
+
+    /// A std::string may be gone before the append, so its text is kept.
+    DateTime(std::string text) noexcept : m_text(std::move(text)), m_form(Form::TEXT) {}
+
+    DateTime(String text, RECOVERY_TAG tag = FF_RECOVER_UNDEFINED) noexcept
+        : m_text(std::move(text)), m_form(Form::TEXT), m_tag(tag) {}
+
+    ~DateTime() { release(); }
+
+    DateTime(const DateTime &other) : m_form(other.m_form), m_tag(other.m_tag)
+    {
+        if (m_form == Form::TEXT) std::construct_at(&m_text, other.m_text);
+        else                      std::construct_at(&m_civil, other.m_civil);
+    }
+
+    DateTime(DateTime &&other) noexcept : m_form(other.m_form), m_tag(other.m_tag)
+    {
+        if (m_form == Form::TEXT) std::construct_at(&m_text, std::move(other.m_text));
+        else                      std::construct_at(&m_civil, other.m_civil);
+    }
+
+    /// Same-arm assignment stays in the arm and never re-activates the union,
+    /// so the common case is String's own operator=. Crossing arms builds the
+    /// replacement BEFORE releasing, so a throwing copy leaves this object
+    /// intact and self-assignment cannot free what it is about to read. Same
+    /// shape as FastFHIR::String::operator=, deliberately.
+    DateTime &operator=(const DateTime &other)
+    {
+        if (this == &other) return *this;
+        if (m_form == Form::TEXT && other.m_form == Form::TEXT)
+        {
+            m_text = other.m_text;
+            m_tag  = other.m_tag;
+            return *this;
+        }
+        DateTime replacement(other);
+        release();
+        adopt(std::move(replacement));
+        return *this;
+    }
+
+    DateTime &operator=(DateTime &&other) noexcept
+    {
+        if (this == &other) return *this;
+        if (m_form == Form::TEXT && other.m_form == Form::TEXT)
+        {
+            m_text = std::move(other.m_text);
+            m_tag  = other.m_tag;
+            return *this;
+        }
+        release();
+        adopt(std::move(other));
+        return *this;
+    }
+
+    [[nodiscard]] Form form() const noexcept { return m_form; }
+    [[nodiscard]] bool is_civil() const noexcept { return m_form == Form::CIVIL; }
+    [[nodiscard]] bool is_text() const noexcept { return m_form == Form::TEXT; }
+    [[nodiscard]] bool absent() const noexcept { return m_form == Form::ABSENT; }
+
+    /// Present, in the sense the read path means it: a slot that was set.
+    explicit operator bool() const noexcept { return m_form != Form::ABSENT; }
+
+    /// Which FHIR type this is -- date, dateTime, time or instant. Rendering
+    /// needs it, because one layout serves all four and the tag is the only
+    /// thing that says a `date` must not grow a timezone.
+    [[nodiscard]] RECOVERY_TAG tag() const noexcept { return m_tag; }
+    void set_tag(RECOVERY_TAG tag) noexcept { m_tag = tag; }
+
+    /// PRECONDITION: is_civil(). Checked, because reading the wrong arm of a
+    /// union is not a wrong answer but undefined behaviour.
+    [[nodiscard]] const FF_DateTimeParts &parts() const
+    {
+        if (m_form != Form::CIVIL)
+            throw std::runtime_error("FastFHIR: DateTime::parts() on a value that holds "
+                                     "text or nothing; test is_civil() first");
+        return m_civil;
+    }
+
+    /// PRECONDITION: is_text().
+    [[nodiscard]] const String &text() const
+    {
+        if (m_form != Form::TEXT)
+            throw std::runtime_error("FastFHIR: DateTime::text() on a value that holds "
+                                     "components or nothing; test is_text() first");
+        return m_text;
+    }
+
+    /// The text of this value WHICHEVER arm it holds, which is the call a
+    /// consumer that only wants to print it should make. Empty when absent.
+    /// Civil components are rendered on demand, because their text does not
+    /// exist on the wire. Defined out of class below, where
+    /// FF_FORMAT_DATETIME is visible.
+    [[nodiscard]] std::string to_string() const;
+
+private:
+    void adopt(DateTime &&other) noexcept
+    {
+        m_form = other.m_form;
+        m_tag  = other.m_tag;
+        if (m_form == Form::TEXT) std::construct_at(&m_text, std::move(other.m_text));
+        else                      std::construct_at(&m_civil, other.m_civil);
+    }
+
+    /// The single point where the text arm is torn down.
+    void release() noexcept
+    {
+        if (m_form == Form::TEXT) std::destroy_at(&m_text);
+    }
+
+    union {
+        FF_DateTimeParts m_civil;
+        String           m_text;
+    };
+    Form         m_form;
+    RECOVERY_TAG m_tag = FF_RECOVER_UNDEFINED;
+};
+
+}  // namespace FastFHIR
+
+// DateTime::to_string is out of class for the same reason as
+// ChoiceEntry::to_string below: FF_FORMAT_DATETIME is only declared further up
+// this header, and the body is inline so every TU sees one definition.
+namespace FastFHIR
+{
+inline std::string DateTime::to_string() const
+{
+    switch (m_form)
+    {
+    case Form::TEXT:
+        // Already text, on the wire or supplied by the producer. Returned
+        // verbatim, which is what keeps an unpackable value byte-exact.
+        return std::string(m_text);
+    case Form::CIVIL:
+        // Synthesized: a packed value has no text on the wire, so this is
+        // where the allocation belongs rather than at decode.
+        return FF_FORMAT_DATETIME(m_civil, m_tag);
+    case Form::ABSENT:
+    default:
+        return {};
+    }
+}
+}  // namespace FastFHIR
+
 // Defined out of class so FF_FORMAT_DATETIME (declared above) is visible; the
 // body is inline so every TU sees the same definition.
 //

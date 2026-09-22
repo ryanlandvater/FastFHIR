@@ -72,13 +72,8 @@ static void produce_round_trip(void)
         const uint64_t nbytes = FF_ViewSize(sealed_view);
         check(bytes != NULL && nbytes > 0, "the sealed view carries bytes");
 
-        FF_ParseInfo pinfo;
-        memset(&pinfo, 0, sizeof(pinfo));
-        pinfo.buffer = bytes;
-        pinfo.size   = nbytes;
-
         FF_ParserHandle parser = NULL;
-        check_result(FF_Parse(&pinfo, &parser), "FF_Parse");
+        check_result(FF_CreateParserFromBuffer(bytes, nbytes, &parser), "FF_CreateParserFromBuffer");
         check(FF_ParserSize(parser) == nbytes, "the parser reports the sealed size");
         check_result(FF_ValidateStream(parser), "FF_ValidateStream");
 
@@ -96,12 +91,8 @@ static void consume_typed_stream(const char *path)
     FF_MemoryHandle memory = NULL;
     if (!check_result(FF_OpenMemoryReadOnly(path, &memory), "FF_OpenMemoryReadOnly")) return;
 
-    FF_ParseInfo pinfo;
-    memset(&pinfo, 0, sizeof(pinfo));
-    pinfo.memory = memory;
-
     FF_ParserHandle parser = NULL;
-    if (!check_result(FF_Parse(&pinfo, &parser), "FF_Parse (memory)"))
+    if (!check_result(FF_CreateParserFromMemory(memory, &parser), "FF_CreateParserFromMemory"))
     {
         FF_DestroyMemory(memory);
         return;
@@ -252,13 +243,9 @@ static void view_outlives_builder(void)
           "the sealed bytes are byte-identical after the Builder is gone");
     free(before);
 
-    FF_ParseInfo pinfo;
-    memset(&pinfo, 0, sizeof(pinfo));
-    pinfo.buffer = FF_ViewData(view);
-    pinfo.size   = nbytes;
-
     FF_ParserHandle parser = NULL;
-    check_result(FF_Parse(&pinfo, &parser), "parse the view after the Builder is gone");
+    check_result(FF_CreateParserFromBuffer(FF_ViewData(view), nbytes, &parser),
+                 "parse the view after the Builder is gone");
     check_result(FF_ValidateStream(parser), "validate the view after the Builder is gone");
 
     FF_DestroyParser(parser);

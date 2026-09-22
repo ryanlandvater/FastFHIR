@@ -14,15 +14,16 @@
  * side keeps its classes, references and templates, and the two are different
  * surfaces over one library. Do NOT include both headers in one translation
  * unit; they name the same concepts with different types. Concretely: this
- * header's FF_ParseInfo is global and FastFHIR.hpp's is in namespace FastFHIR,
- * so one `using namespace FastFHIR;` makes the name ambiguous and the
+ * header's FF_MemoryCreateInfo is global and FastFHIR.hpp's is in namespace
+ * FastFHIR, so one `using namespace FastFHIR;` makes the name ambiguous and the
  * translation unit stops compiling. Pick the surface you need.
  *
  * HANDLES ARE OPAQUE. A C caller only ever sees the pointer; the library owns
  * the object behind it. Every entry point that produces a handle
- * (FF_CreateMemory, FF_OpenMemoryReadOnly, FF_CreateBuilder, FF_Parse,
- * FF_Compact) has a matching FF_Destroy*, and the caller MUST call it. Handles
- * are independent: destroying one never invalidates another.
+ * (FF_CreateMemory, FF_OpenMemoryReadOnly, FF_CreateBuilder,
+ * FF_CreateParserFromBuffer, FF_CreateParserFromMemory, FF_Compact) has a
+ * matching FF_Destroy*, and the caller MUST call it. Handles are independent:
+ * destroying one never invalidates another.
  *
  * NOTHING THROWS ACROSS THE BOUNDARY. Every function that can fail returns an
  * FF_ResultInfo; the void-returning FF_Destroy* functions and the size/accessor
@@ -114,12 +115,6 @@ typedef struct FF_BuilderCreateInfo {
     const char     *shm_name;     /* nullable; SHM arena */
 } FF_BuilderCreateInfo;
 
-typedef struct FF_ParseInfo {
-    const void     *buffer; /* sealed stream bytes; nullable if memory is set */
-    uint64_t        size;   /* bytes available at buffer */
-    FF_MemoryHandle memory; /* nullable; exclusive with buffer */
-} FF_ParseInfo;
-
 /* =====================================================================
  * MEMORY (ARENA) API
  * ===================================================================== */
@@ -201,14 +196,31 @@ FF_EXPORT void FF_DestroyObjectHandle(FF_ObjectHandle object);
  * PARSE / READ API
  * ===================================================================== */
 
-/** @brief Parses and validates a stream header. @p out is null on failure. */
-FF_EXPORT FF_ResultInfo FF_Parse(const FF_ParseInfo *info, FF_ParserHandle *out);
+/**
+ * @brief Builds a read lens over bytes the caller already holds.
+ *
+ * The C counterpart of C++ `Parser(buffer, size)`. @p buffer and @p size are
+ * the alternative to FF_CreateParserFromMemory — pick one factory, not both.
+ * @p out is null on failure.
+ */
+FF_EXPORT FF_ResultInfo FF_CreateParserFromBuffer(const void *buffer, uint64_t size,
+                                                  FF_ParserHandle *out);
+
+/**
+ * @brief Builds a read lens over an arena (Memory::openReadOnly, or a Builder's).
+ *
+ * The C counterpart of C++ `Parser(memory)`. The parser keeps the arena alive,
+ * so the mapping lives as long as @p out. @p out is null on failure.
+ */
+FF_EXPORT FF_ResultInfo FF_CreateParserFromMemory(FF_MemoryHandle memory,
+                                                  FF_ParserHandle *out);
 
 /**
  * @brief Walks the whole offset graph and checks it is structurally sound.
  *
- * Call this on any stream you did not produce. FF_Parse validates the header
- * and root offset only; every other offset is untrusted until this returns.
+ * Call this on any stream you did not produce. Parser construction validates
+ * the header and root offset only; every other offset is untrusted until this
+ * returns.
  */
 FF_EXPORT FF_ResultInfo FF_ValidateStream(FF_ParserHandle parser);
 

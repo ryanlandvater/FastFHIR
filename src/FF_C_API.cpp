@@ -233,19 +233,25 @@ void FF_DestroyObjectHandle(FF_ObjectHandle object) { delete object; }
 
 /* ── Parse / read ───────────────────────────────────────────────────── */
 
-FF_ResultInfo FF_Parse(const FF_ParseInfo *info, FF_ParserHandle *out)
+FF_ResultInfo FF_CreateParserFromBuffer(const void *buffer, uint64_t size, FF_ParserHandle *out)
 {
-    if (!info || !out) return fail_result("FF_Parse", "null argument");
+    if (!buffer || !out) return fail_result("FF_CreateParserFromBuffer", "null argument");
     *out = nullptr;
     try
     {
-        FastFHIR::FF_ParseInfo pi;
-        if (info->memory) pi.memory = info->memory->v;
-        else { pi.buffer = info->buffer; pi.size = info->size; }
-        FastFHIR::Parser parser;
-        const FastFHIR::Result r = FastFHIR::FF_Parse(pi, parser);
-        if (!r.succeeded()) return from_cpp(r);
-        *out = new FF_Parser_t{std::move(parser)};
+        *out = new FF_Parser_t{FastFHIR::Parser(buffer, static_cast<size_t>(size))};
+        return ok_result();
+    }
+    catch (const std::exception &e) { return make_result(FastFHIR::FF_FAILURE, e.what()); }
+}
+
+FF_ResultInfo FF_CreateParserFromMemory(FF_MemoryHandle memory, FF_ParserHandle *out)
+{
+    if (!memory || !out) return fail_result("FF_CreateParserFromMemory", "null argument");
+    *out = nullptr;
+    try
+    {
+        *out = new FF_Parser_t{FastFHIR::Parser(memory->v)};
         return ok_result();
     }
     catch (const std::exception &e) { return make_result(FastFHIR::FF_FAILURE, e.what()); }

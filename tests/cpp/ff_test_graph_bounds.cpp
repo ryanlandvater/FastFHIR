@@ -68,11 +68,7 @@ int main() {
         CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
             .builder = builder,
         }, view), "finalize");
-        Parser source;
-        CHECK(FF_Parse(FF_ParseInfo{
-            .buffer = view.data(),
-            .size = view.size(),
-        }, source), "parse");
+        Parser source(view.data(), view.size());
         Memory::View compact_view;
         FF_Result compact_result = FF_Compact(FF_CompactInfo{
             .source = source,
@@ -106,11 +102,7 @@ int main() {
         CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
             .builder = builder,
         }, view), "finalize");
-        Parser source;
-        CHECK(FF_Parse(FF_ParseInfo{
-            .buffer = view.data(),
-            .size = view.size(),
-        }, source), "parse");
+        Parser source(view.data(), view.size());
         Memory::View compact_view;
         FF_Result compact_result = FF_Compact(FF_CompactInfo{
             .source = source,
@@ -147,11 +139,7 @@ int main() {
         CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
             .builder = builder,
         }, view), "finalize");
-        Parser source;
-        CHECK(FF_Parse(FF_ParseInfo{
-            .buffer = view.data(),
-            .size = view.size(),
-        }, source), "parse");
+        Parser source(view.data(), view.size());
         Memory::View compact_view;
         FF_Result compact_result = FF_Compact(FF_CompactInfo{
             .source = source,

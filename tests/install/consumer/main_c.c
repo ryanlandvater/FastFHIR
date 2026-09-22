@@ -6,17 +6,15 @@
  * @file main_c.c
  * @brief The installed package's C ABI, compiled by a C compiler.
  *
- * The C++ consumer beside this file is compiled as C++, so it cannot tell
- * whether FastFHIR.h is still valid C, which is the reason that header exists.
- * This file is therefore a .c translation unit, and it sees ONLY the install
+ * The C++ consumer beside this file cannot catch a broken C header: it is
+ * compiled as C++, where the whole point of FastFHIR.h -- that it is valid C --
+ * is never tested. So this is a .c translation unit that sees ONLY the install
  * prefix. It builds a stream, seals it, reads it back and destroys every
- * handle. That is enough to establish three things: the header parses under a
- * C compiler, the FF_* symbols are exported from the shared library, and
- * FF_Export.h was installed alongside it.
+ * handle, which is enough to prove the header parses as C, the FF_* symbols
+ * export from the shared library, and FF_Export.h came along with them.
  *
- * tests/cpp/test_c_api.c is the thorough test of the C surface and runs
- * in-tree. This file exists to fail when a header is missing from the
- * installed package.
+ * The exhaustive C-surface test is tests/cpp/test_c_api.c, in-tree. This one
+ * exists to fail when a header is missing from the package.
  */
 
 #include <FastFHIR.h>
@@ -63,13 +61,9 @@ int main(void)
     check_result(FF_BuilderFinalize(&(FF_BuilderFinalizeInfo){.builder = builder, .algorithm = FF_CHECKSUM_ALGO_NONE}, &sealed), "FF_BuilderFinalize");
     check(FF_ViewData(sealed) != NULL && FF_ViewSize(sealed) > 0, "the sealed view carries bytes");
 
-    FF_ParseInfo pinfo;
-    memset(&pinfo, 0, sizeof(pinfo));
-    pinfo.buffer = FF_ViewData(sealed);
-    pinfo.size   = FF_ViewSize(sealed);
-
     FF_ParserHandle parser = NULL;
-    check_result(FF_Parse(&pinfo, &parser), "FF_Parse");
+    check_result(FF_CreateParserFromBuffer(FF_ViewData(sealed), FF_ViewSize(sealed), &parser),
+                 "FF_CreateParserFromBuffer");
     check_result(FF_ValidateStream(parser), "FF_ValidateStream");
 
     FF_DestroyParser(parser);

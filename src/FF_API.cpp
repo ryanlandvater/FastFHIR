@@ -133,17 +133,10 @@ FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo& info, Parser& out_parser) n
 // =====================================================================
 // PARSE API
 // =====================================================================
-FF_Result FF_Parse(const FF_ParseInfo& info, Parser& out_parser) noexcept
-{
-    out_parser = Parser();
-    if (info.memory && info.buffer)
-        return FF_Invalid("FF_Parse", "buffer and memory are mutually exclusive");
-    if (info.memory)
-        return FF_Guard("FF_Parse", [&] { out_parser = Parser(info.memory); });
-    if (!info.buffer && info.size != 0)
-        return FF_Invalid("FF_Parse", "null buffer");
-    return FF_Guard("FF_Parse", [&] { out_parser = Parser(info.buffer, info.size); });
-}
+// There is no FF_Parse here. `Parser` is constructed directly --
+// Parser(buffer, size) or Parser(memory) -- and throws on a bad stream, so
+// there is no Result to translate and no "buffer and memory are mutually
+// exclusive" branch to run. See FastFHIR.hpp.
 
 // =====================================================================
 // COMPACT API

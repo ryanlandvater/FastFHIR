@@ -32,24 +32,18 @@ Thanks for contributing. FastFHIR is a binary wire format for healthcare data �
    the typedef every call site uses; `std::shared_ptr<Memory_t>` is never
    spelled outside `FF_Memory.hpp`. Wire block structs (`FF_HEADER`,
    `FF_STRING`) and the C-ABI
-   `FF_*Info` structs keep their `FF_` names. Those types have no PascalCase
-   name inside the namespace for the `FF_` spelling to alias, because they are
-   themselves the C surface. Do not put a global `FF_` alias at the bottom of a
-   type's own header.
-5. **A public function takes one Info struct instead of a long argument
-   list.** It takes a single `const XxxInfo&` — plus a `T& out` where it
-   returns a handle — rather than four or more positional arguments. The
-   external `FF_*` surface, the internal
+   `FF_*Info` structs keep their `FF_` names — they ARE the C surface, not a C++
+   type behind one. Do not put a global `FF_` alias at the bottom of a type's
+   own header.
+5. **Info structs are better than long argument lists.** A public function takes one
+   `const XxxInfo&` — plus a `T& out` where it returns a handle — rather than
+   four or more positional arguments. The external `FF_*` surface, the internal
    `seal_stream(const StreamSealInfo&)`, the `amend_*` verbs
    (`AmendResourceInfo` / `AmendVariantInfo` / `AmendDatetimeInfo`),
    `Compactor::archive(const ArchiveInfo&)`, and
-   `Ingest::InsertAtFieldInfo` all follow this. When a function reaches the
-   point of needing a fourth argument, collect its arguments into an Info struct
-   instead of extending the parameter list. Two things follow from that. Each
-   call site names the field it is setting, which a positional argument does not
-   do. And a field can be added to the struct later without editing any existing
-   call, because designated initializers leave the omitted field at its
-   default.
+   `Ingest::InsertAtFieldInfo` all follow this. A function that needs a fourth
+   argument is a signal to bundle, not to add a parameter: it lets the call site
+   name each field and lets the surface grow a field without touching callers.
 6. **The C ABI is a separate, hand-written header.** `include/FastFHIR.h` is
    pure C; it and `FastFHIR.hpp` are two surfaces over one library and declare
    same-named-but-different types (`FF_MemoryCreateInfo`, `FF_CreateMemory`, …),
@@ -59,17 +53,15 @@ Thanks for contributing. FastFHIR is a binary wire format for healthcare data �
    5 applies to it too, and symmetrically: **where `FastFHIR.hpp` has an
    `FF_XxxInfo`, `FastFHIR.h` has the same-named struct with the same fields in
    the same order**, so porting between the surfaces is renaming rather than
-   redesigning. Some fields cannot cross the ABI at all; today the only one is
-   the checksum `hasher`, which is a `std::function` the library calls back
-   into. Those are marked `cpp_only` in the spec, so that a field the C struct
-   deliberately omits is recorded as a decision and a field someone simply
-   forgot to add still fails the gate. **Do not include both in one translation
-   unit**, as
+   redesigning. A field that cannot cross the ABI — today only the checksum
+   `hasher`, a `std::function` the library calls back into — is marked
+   `cpp_only` in the spec, which is what keeps "absent on purpose" distinct from
+   "forgotten". **Do not include both in one translation unit**, as
    `FastFHIR.h` itself says: the C
-   `FF_ParseInfo` is global and the C++ one is in `namespace FastFHIR`, so the
-   single `using namespace FastFHIR;` that every example writes makes the name
-   ambiguous and the TU stops compiling. Pick the surface the TU needs. Spell it
-   `c_api`, never `capi` (`src/FF_C_API.cpp`, `ff_test_c_api`).
+   `FF_MemoryCreateInfo` is global and the C++ one is in `namespace FastFHIR`,
+   so the single `using namespace FastFHIR;` that every example writes makes the
+   name ambiguous and the TU stops compiling. Pick the surface the TU needs.
+   Spell it `c_api`, never `capi` (`src/FF_C_API.cpp`, `ff_test_c_api`).
 
 ## Build & test
 

@@ -61,11 +61,7 @@ int main() {
     }, view), "finalize");
     CHECK(!view.empty(), "builder finalize produced a stream");
 
-    Parser source;
-    CHECK(FF_Parse(FF_ParseInfo{
-        .buffer = view.data(),
-        .size = view.size(),
-    }, source), "parse source");
+    Parser source(view.data(), view.size());
     CHECK((bool)source.root(), "source stream parses");
 
     // ── Archive ─────────────────────────────────────────────────────────────
@@ -75,11 +71,7 @@ int main() {
     }, compact_view), "compact");
     CHECK(!compact_view.empty(), "archive produced a compact stream");
 
-    Parser compact;
-    CHECK(FF_Parse(FF_ParseInfo{
-        .buffer = compact_view.data(),
-        .size = compact_view.size(),
-    }, compact), "parse compact");
+    Parser compact(compact_view.data(), compact_view.size());
     auto root = compact.root();
     CHECK((bool)root, "compact stream parses");
 
@@ -132,11 +124,7 @@ int main() {
         CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
             .builder = builder2,
         }, view2), "finalize (twin)");
-        Parser source2;
-        CHECK(FF_Parse(FF_ParseInfo{
-            .buffer = view2.data(),
-            .size = view2.size(),
-        }, source2), "parse source (twin)");
+        Parser source2(view2.data(), view2.size());
         Memory::View twin_view;
         CHECK(FF_Compact(FF_CompactInfo{
             .source = source2,
@@ -198,11 +186,7 @@ int main() {
             .builder = builder3,
         }, cview), "finalize (deferred)");
 
-        Parser csource;
-        CHECK(FF_Parse(FF_ParseInfo{
-            .buffer = cview.data(),
-            .size = cview.size(),
-        }, csource), "parse source (deferred)");
+        Parser csource(cview.data(), cview.size());
         const Reflective::Entry src_code =
             csource.root()[FastFHIR::Fields::PATIENT::IDENTIFIER].as_node()
                 .entries()[0][FastFHIR::Fields::IDENTIFIER::TYPE].as_node()
@@ -219,11 +203,7 @@ int main() {
         }, compact_cview), "compact (deferred)");
         CHECK(!compact_cview.empty(), "archive resolves the deferred code slot");
 
-        Parser ccompact;
-        CHECK(FF_Parse(FF_ParseInfo{
-            .buffer = compact_cview.data(),
-            .size = compact_cview.size(),
-        }, ccompact), "parse compact (deferred)");
+        Parser ccompact(compact_cview.data(), compact_cview.size());
         const Reflective::Entry out_code =
             ccompact.root()[FastFHIR::Fields::PATIENT::IDENTIFIER].as_node()
                 .entries()[0][FastFHIR::Fields::IDENTIFIER::TYPE].as_node()

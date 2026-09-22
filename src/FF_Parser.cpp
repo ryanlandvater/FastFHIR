@@ -369,6 +369,12 @@ static Offset checked_root_offset(Offset root, size_t size) {
 }
 
 Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast<const BYTE*>(buffer)), m_size(size) {
+    // A null buffer has no bytes to validate, so it is rejected before the size
+    // check: validate_full dereferences m_base, and a length check alone cannot
+    // catch a null pointer carrying a plausible length.
+    if (buffer == nullptr) {
+        throw std::runtime_error("FastFHIR Parsing Error: null buffer.");
+    }
     if (size < FF_HEADER::HEADER_SIZE) {
         throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
     }
@@ -409,7 +415,12 @@ static inline size_t ff_mapped_extent(const Memory& memory) {
 }
 
 Parser::Parser(const Memory& memory)
-    : m_memory(memory), m_base(memory->base()), m_size(ff_mapped_extent(memory)) {
+    : m_memory(memory),
+      m_base(memory ? memory->base() : nullptr),
+      m_size(memory ? ff_mapped_extent(memory) : 0) {
+    if (!memory) {
+        throw std::runtime_error("FastFHIR Parsing Error: null arena.");
+    }
     if (m_size < FF_HEADER::HEADER_SIZE) {
         throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
     }
@@ -1417,6 +1428,73 @@ Node::Node(const BYTE* base, Size size, uint32_t version, Offset offset,
       m_kind(kind),
             m_array_entries_are_offsets(array_entries_are_offsets),
             m_ops(ops) {}
+
+// ===========================================================================
+// Entry::datetime_value -- the typed read of an 8-byte date/time slot
+// ===========================================================================
+// The same discriminator entry_as_node and resolve_choice already apply, but
+// producing a VALUE rather than a Node. It has to be a value: the fallback arm
+// holds text that never packed, and FF_DateTimeParts cannot represent it, so a
+// reader typed to the parts alone would return a zeroed struct that reads as
+// 0001-01-01 for a date that is really 12345-06-07.
+DateTime Entry::datetime_value() const
+{
+    if (base == nullptr || parent_offset == FF_NULL_OFFSET) return {};
+
+    // Which FHIR type this is -- date, dateTime, time or instant. Both slot
+    // shapes answer through target_recovery: standard_node_lookup_field
+    // already reads a CHOICE's runtime tag off the wire and stores it there,
+    // because the static child_recovery names only the first variant. Reading
+    // the tag again here would be a second spelling of the same fact, and a
+    // mutation confirmed it changed nothing.
+    //
+    // A scalar slot is the opposite case and it is worth stating: all 70
+    // FF_FIELD_DATETIME field keys carry FF_RECOVER_UNDEFINED, and nothing on
+    // the wire records which of the four types the slot was. That is
+    // deliberate -- Kind_to_Recovery maps the kind back to nothing rather than
+    // guess, because a guess exports a `date` as `valueDateTime`. The
+    // precision field carries the shape, so rendering is still exact.
+    const RECOVERY_TAG tag = target_recovery;
+    if (kind == FF_FIELD_CHOICE)
+    {
+        // The live variant is some other alternative. Absent is the honest
+        // answer: there is no date/time in this slot to return.
+        if (!FF_IsDateTimeTag(tag)) return {};
+    }
+    else if (kind != FF_FIELD_DATETIME)
+    {
+        return {};
+    }
+
+    // Belt and braces, like the null test below, and said plainly rather than
+    // implied: operator[] has already bounds-checked the V-Table this slot
+    // sits in, so a mutation removing this line changes no test. It guards an
+    // Entry a caller assembled by hand, where m_size is whatever they passed.
+    const Offset slot = absolute_offset();
+    if (!FF_BLOCK_IN_BOUNDS(slot, m_size, sizeof(uint64_t))) return {};
+
+    const uint64_t raw = LOAD_U64(base + slot);
+    // Belt and braces rather than load-bearing, and the comment says so: an
+    // unset slot does not reach here through operator[], because
+    // FF_IsFieldEmpty rejects it first and returns a null Entry. This catches
+    // an Entry a caller assembled directly, where unpacking all-ones would
+    // report a present date at year 1.
+    if (raw == FF_DATETIME_NULL) return {};
+
+    if (!FF_DATETIME_IS_FALLBACK(raw))
+        return DateTime(FF_UNPACK_DATETIME(raw), tag);       // packed civil components
+
+    // Bit 63 set: the low 63 bits are a signed offset relative to the
+    // CONTAINING BLOCK, so parent_offset is the second operand and this is the
+    // last place it is in hand.
+    const Offset text_offset = FF_ResolveDateTimeOffset(raw, parent_offset);
+    if (!FF_BLOCK_SELF_VALIDATES(base, text_offset, m_size)) return {};
+
+    // Borrowed, not copied: the bytes are in the arena, which outlives every
+    // Node read from it, so materializing a date/time stays allocation-free
+    // exactly as reading a string field does.
+    return DateTime(String(FF_GET_STRING_VIEW(base, text_offset)), tag);
+}
 
 Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version, 
                                                     Offset parent_offset, Offset value_offset, FF_FieldKind schema_kind,

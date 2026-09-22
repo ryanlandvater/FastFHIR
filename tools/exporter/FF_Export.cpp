@@ -93,17 +93,15 @@ int main(int argc, char** argv) {
 
         // 3. Mount the Parser
         FastFHIR::Parser parser;
-        FF_Result parse_result = input_file.empty()
-            ? FastFHIR::FF_Parse(FastFHIR::FF_ParseInfo{
-                  .buffer = parse_buffer,
-                  .size = parse_size,
-              }, parser)
-            : FastFHIR::FF_Parse(FastFHIR::FF_ParseInfo{
-                  .memory = FastFHIR::Memory::openReadOnly(input_file),
-              }, parser);
-        if (!parse_result)
+        try
         {
-            std::cerr << "FastFHIR Export Error: " << parse_result.message << "\n";
+            parser = input_file.empty()
+                ? FastFHIR::Parser(parse_buffer, parse_size)
+                : FastFHIR::Parser(FastFHIR::Memory::openReadOnly(input_file));
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "FastFHIR Export Error: " << e.what() << "\n";
             return 1;
         }
 

@@ -74,11 +74,7 @@ int main()
     }, view), "finalize");
     CHECK(!view.empty(), "sealed stream is non-empty");
 
-    Parser parser;
-    CHECK(FF_Parse(FF_ParseInfo{
-        .buffer = view.data(),
-        .size = view.size(),
-    }, parser), "parse");
+    Parser parser(view.data(), view.size());
     auto entries = parser.root()[Fields::BUNDLE::ENTRY].entries();
     CHECK(entries.size() == 3,
           "all 3 entries present (got " + std::to_string(entries.size()) + ")");
@@ -142,11 +138,7 @@ int main()
             CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
                 .builder = builder2,
             }, view2), "finalize (zero-copy)");
-            Parser parser2;
-            CHECK(FF_Parse(FF_ParseInfo{
-                .buffer = view2.data(),
-                .size = view2.size(),
-            }, parser2), "parse (zero-copy)");
+            Parser parser2(view2.data(), view2.size());
             auto entries2 = parser2.root()[Fields::BUNDLE::ENTRY].entries();
             CHECK(entries2.size() == 3,
                   "zero-copy path yields 3 entries (got " +
@@ -206,11 +198,7 @@ int main()
             CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
                 .builder = builder3,
             }, view3), "finalize (tiny)");
-            Parser parser3;
-            CHECK(FF_Parse(FF_ParseInfo{
-                .buffer = view3.data(),
-                .size = view3.size(),
-            }, parser3), "parse (tiny)");
+            Parser parser3(view3.data(), view3.size());
             std::string_view id = parser3.root()[Fields::PATIENT::ID];
             CHECK(id == "p1", "tiny patient id == p1 (got '" + std::string(id) + "')");
         }

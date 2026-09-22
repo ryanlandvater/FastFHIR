@@ -102,14 +102,6 @@ C_STRUCTS: tuple[Struct, ...] = (
         ),
     ),
     Struct(
-        "FF_ParseInfo",
-        (
-            Field("buffer", "const void*", "buffer", "const void *"),
-            Field("size", "Size", "size", "uint64_t"),
-            Field("memory", "FF_Memory", "memory", "FF_MemoryHandle"),
-        ),
-    ),
-    Struct(
         "FF_BuilderSetRootInfo",
         (
             Field("builder", "FF_Builder", "builder", "FF_BuilderHandle"),

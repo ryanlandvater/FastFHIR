@@ -62,9 +62,11 @@ int main()
     check(FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, sealed).succeeded(),
           "FF_BuilderFinalize");
 
+    bool parser_ok = true;
     Parser parser;
-    check(FF_Parse(FF_ParseInfo{.buffer = sealed.data(), .size = sealed.size()}, parser).succeeded(),
-          "FF_Parse over the sealed view");
+    try { parser = Parser(sealed.data(), sealed.size()); }
+    catch (const std::exception &) { parser_ok = false; }
+    check(parser_ok, "Parser over the sealed view");
 
     const Reflective::Node observation_node = parser.root();
     check(observation_node.is<RESOURCETYPE::OBSERVATION>(), "root is an Observation");

@@ -44,6 +44,12 @@
 #include <FF_Primitives.hpp>
 #include <FF_Ops.hpp>
 #include <FF_Utilities.hpp>
+// The [DateTimeReader] group builds real streams and reads them back, so it
+// needs the writer and the Parser. The rest of this suite deliberately works
+// against a raw arena, which is why these arrive late.
+#include <FastFHIR.hpp>
+#include <FF_FieldKeys.hpp>
+#include "FF_AllTypes.hpp"
 
 #include "FFHR_tests.hpp"
 
@@ -52,6 +58,7 @@
 #include <iostream>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -818,6 +825,525 @@ static void test_choice_to_string_generic()
     CHECK(q.to_string().empty(), "block choice formats to nothing");
 }
 
+// ── DateTime: the wrapper that holds EITHER components or text ─────────────
+//
+// The type exists because the conversion between the two arms only runs one
+// way: components always render to text, text only packs when it fits. So a
+// reader typed to FF_DateTimeParts alone has nothing correct to return for a
+// value that did not pack, and a zeroed struct would read as 0001-01-01 for a
+// date that is really 12345-06-07.
+
+/// Text that CANNOT pack, so it is what the fallback arm really carries: four
+/// fractional digits, which the layout has no precision code for.
+static constexpr const char *UNPACKABLE = "2024-01-15T13:45:30.1234+05:30";
+
+static void test_datetime_value_forms()
+{
+    const DateTime absent;
+    CHECK(absent.absent(), "a default DateTime is ABSENT");
+    CHECK(!static_cast<bool>(absent), "and falsy, because the slot was never set");
+    CHECK_EQ(absent.to_string(), std::string(), "an absent value has no text");
+
+    const auto parsed = FF_PARSE_DATETIME("2024-01-15", RECOVER_FF_DATE);
+    REQUIRE(parsed.has_value(), "probe date must parse");
+    const DateTime civil(*parsed, RECOVER_FF_DATE);
+    CHECK(civil.is_civil(), "constructed from parts, it holds components");
+    CHECK(static_cast<bool>(civil), "and is present");
+    CHECK_EQ(civil.tag(), RECOVER_FF_DATE, "it carries the FHIR type it was given");
+    CHECK_EQ(civil.parts().days, parsed->days, "and the components are the ones handed in");
+    CHECK_EQ(civil.to_string(), std::string("2024-01-15"),
+             "components render to text on demand, because their text is not on the wire");
+
+    const DateTime text(UNPACKABLE);
+    CHECK(text.is_text(), "constructed from a literal, it holds text");
+    CHECK_EQ(text.to_string(), std::string(UNPACKABLE),
+             "and returns it verbatim, which is what keeps an unpackable value byte-exact");
+    CHECK(!text.text().owns(), "a literal is borrowed, so nothing was allocated");
+}
+
+/// The property the whole type exists for on the WRITE path: a producer's
+/// std::string may die before the append reaches the wire.
+static void test_datetime_value_owns_a_runtime_string()
+{
+    DateTime field;
+    std::string expected;
+    {
+        std::string drawn = std::string("2024-01-15T13:45:30.") + "1234+05:30";
+        expected = drawn;
+        field = drawn;  // a std::string, so the field takes a copy
+        CHECK(field.text().owns(), "an assigned std::string is owned, not borrowed");
+    }
+    CHECK_EQ(field.to_string(), expected, "the text outlives the local it came from");
+
+    // An explicit view is the caller vouching for the bytes, so it stays free.
+    static const std::string arena_bytes = "2026-02-03T04:05:06Z";
+    const DateTime borrowed(std::string_view{arena_bytes});
+    CHECK(!borrowed.text().owns(), "an explicit view is borrowed, so the read path stays zero-copy");
+    CHECK_EQ(borrowed.to_string(), arena_bytes, "and still reads back correctly");
+
+    // A runtime const char* is a COMPILE ERROR, not a dangling view: the
+    // literal constructor is consteval. That cannot be asserted at runtime --
+    // is_constructible_v does not evaluate consteval-ness, so a static_assert
+    // on it PASSES for the wrong reason. Verified by compiling it instead.
+}
+
+static void test_datetime_value_copy_and_move()
+{
+    const auto parsed = FF_PARSE_DATETIME("2024-01-15T13:45:30Z", RECOVER_FF_INSTANT);
+    REQUIRE(parsed.has_value(), "probe instant must parse");
+
+    // DIRECT copy construction of each arm. Assignment reaches the copy
+    // constructor only through its cross-arm path, and a mutation that made
+    // the copy constructor always build the civil arm survived the rest of
+    // this case -- reading the wrong union member is undefined behaviour and
+    // happened to produce the right text. So each arm is copied on its own
+    // here, and the assertions check the arm and the ownership, not only the
+    // rendered string.
+    const std::string long_text = "2024-01-15T13:45:30.1234+05:30";  // past SSO, so heap
+    const DateTime owned_src(long_text);
+    const DateTime owned_copy(owned_src);
+    CHECK(owned_copy.is_text(), "copying an owned text value keeps the text arm");
+    CHECK(owned_copy.text().owns(), "and keeps it owned, so the copy has its own buffer");
+    CHECK_EQ(owned_copy.to_string(), long_text, "and reproduces the text exactly");
+    CHECK_EQ(owned_src.to_string(), long_text, "leaving the source intact");
+
+    const DateTime borrowed_src(UNPACKABLE);
+    const DateTime borrowed_copy(borrowed_src);
+    CHECK(borrowed_copy.is_text(), "copying a borrowed text value keeps the text arm");
+    CHECK(!borrowed_copy.text().owns(), "and copies as a borrow, so nothing allocates");
+    CHECK_EQ(borrowed_copy.to_string(), std::string(UNPACKABLE), "and reads back the same");
+
+    const DateTime civil_src(*parsed, RECOVER_FF_INSTANT);
+    const DateTime civil_copy(civil_src);
+    CHECK(civil_copy.is_civil(), "copying components keeps the components arm");
+    CHECK_EQ(civil_copy.tag(), RECOVER_FF_INSTANT, "and the tag");
+    CHECK_EQ(civil_copy.parts().days, parsed->days, "and every component");
+    CHECK_EQ(civil_copy.to_string(), civil_src.to_string(), "and renders identically");
+
+    // Same-arm copy: text to text, which must not re-activate the union.
+    DateTime a(std::string("2024-01-15T13:45:30.1234+05:30"));
+    DateTime b(std::string("1999-12-31T23:59:60Z"));
+    b = a;
+    CHECK(b.is_text() && b.to_string() == a.to_string(), "text copies onto text");
+
+    // Cross-arm: text onto components and back, the case that must tear down
+    // the String arm exactly once and construct the other exactly once.
+    DateTime c(*parsed, RECOVER_FF_INSTANT);
+    c = a;
+    CHECK(c.is_text(), "assigning text over components switches the arm");
+    CHECK_EQ(c.to_string(), a.to_string(), "and carries the text across");
+    c = DateTime(*parsed, RECOVER_FF_INSTANT);
+    CHECK(c.is_civil(), "assigning components over text switches back");
+    CHECK_EQ(c.tag(), RECOVER_FF_INSTANT, "and brings the tag with it");
+
+    // Self-assignment must not free what it is about to read.
+    a = a;
+    CHECK_EQ(a.to_string(), std::string("2024-01-15T13:45:30.1234+05:30"),
+             "self-assignment leaves the value intact");
+
+    DateTime moved(std::move(a));
+    CHECK(moved.is_text(), "move keeps the arm");
+    CHECK_EQ(moved.to_string(), std::string("2024-01-15T13:45:30.1234+05:30"), "and the text");
+
+    DateTime target(*parsed, RECOVER_FF_INSTANT);
+    target = std::move(moved);
+    CHECK(target.is_text(), "move-assignment across arms switches");
+    CHECK_EQ(target.to_string(), std::string("2024-01-15T13:45:30.1234+05:30"),
+             "and carries the text");
+
+    // A vector forces reallocation, which exercises move construction in bulk
+    // -- a wrong arm teardown shows up here as a crash or as garbage text.
+    std::vector<DateTime> many;
+    for (int i = 0; i < 64; ++i)
+        many.emplace_back(std::string("2024-01-15T13:45:30.123") + std::to_string(i % 10) + "+05:30");
+    std::size_t intact = 0;
+    for (std::size_t i = 0; i < many.size(); ++i)
+        if (many[i].to_string() == std::string("2024-01-15T13:45:30.123") + std::to_string(i % 10) + "+05:30")
+            ++intact;
+    CHECK_EQ(intact, many.size(), "64 owned values survive vector reallocation");
+}
+
+static void test_datetime_value_refuses_the_wrong_arm()
+{
+    // Reading the wrong arm of a union is undefined behaviour rather than a
+    // wrong answer, so the accessors check instead of trusting the caller.
+    const DateTime text(UNPACKABLE);
+    bool threw = false;
+    std::string message;
+    try { (void)text.parts(); } catch (const std::runtime_error &e) { threw = true; message = e.what(); }
+    CHECK(threw, "parts() on a text value throws");
+    CHECK(message.rfind("FastFHIR: ", 0) == 0, "and carries the prefix: " << message);
+
+    const auto parsed = FF_PARSE_DATETIME("2024-01-15", RECOVER_FF_DATE);
+    REQUIRE(parsed.has_value(), "probe date must parse");
+    const DateTime civil(*parsed, RECOVER_FF_DATE);
+    threw = false;
+    try { (void)civil.text(); } catch (const std::runtime_error &) { threw = true; }
+    CHECK(threw, "text() on a components value throws");
+
+    const DateTime absent;
+    threw = false;
+    try { (void)absent.parts(); } catch (const std::runtime_error &) { threw = true; }
+    CHECK(threw, "and an absent value answers neither");
+}
+
+/// The tag is the field's schema, not the value's, so a producer writing text
+/// leaves it undefined and the encoder supplies it.
+static void test_datetime_value_tag_is_schema()
+{
+    DateTime field(std::string("2024-01-15"));
+    CHECK_EQ(field.tag(), FF_RECOVER_UNDEFINED,
+             "a producer assigning text does not have to know the FHIR type");
+    field.set_tag(RECOVER_FF_DATE);
+    CHECK_EQ(field.tag(), RECOVER_FF_DATE, "and the encoder can supply it");
+
+    // One layout, four tags: the tag decides how much is rendered, which is
+    // why it has to travel with the value on the read path.
+    const auto parsed = FF_PARSE_DATETIME("2024-01-15T13:45:30Z", RECOVER_FF_INSTANT);
+    REQUIRE(parsed.has_value(), "probe instant must parse");
+    const DateTime as_instant(*parsed, RECOVER_FF_INSTANT);
+    CHECK_EQ(as_instant.to_string(), FF_FORMAT_DATETIME(*parsed, RECOVER_FF_INSTANT),
+             "rendering agrees with FF_FORMAT_DATETIME for the same tag");
+}
+
+/// End to end against the real parser: whatever the slot turns out to hold, a
+/// DateTime carrying it renders the original text back.
+static void test_datetime_value_round_trips_both_arms()
+{
+    struct Probe { const char *text; RECOVERY_TAG tag; bool expect_packed; };
+    const Probe probes[] = {
+        {"2024", RECOVER_FF_DATE, true},
+        {"2024-01-15", RECOVER_FF_DATE, true},
+        {"2024-01-15T13:45:30Z", RECOVER_FF_DATETIME, true},
+        {"2024-01-15T13:45:30.500+05:30", RECOVER_FF_DATETIME, true},
+        {UNPACKABLE, RECOVER_FF_DATETIME, false},  // 4 fractional digits
+    };
+
+    std::size_t checked = 0;
+    for (const Probe &p : probes)
+    {
+        const auto parsed = FF_PARSE_DATETIME(p.text, p.tag);
+        const bool packed = parsed.has_value() && ff_datetime_fits(*parsed);
+        CHECK_EQ(packed, p.expect_packed, "probe packs as expected: " << p.text);
+
+        // Build the DateTime the way a reader would: components when the slot
+        // packed, the arena's text when it did not.
+        const DateTime value = packed ? DateTime(*parsed, p.tag)
+                                      : DateTime(std::string_view(p.text), p.tag);
+        CHECK_EQ(value.to_string(), std::string(p.text),
+                 "renders back to the original text: " << p.text);
+        ++checked;
+    }
+    // P0-2: a loop that ran zero times satisfies every assertion above it.
+    REQUIRE(checked == sizeof(probes) / sizeof(probes[0]),
+            "every probe examined, got " << checked);
+}
+
+// ── Entry::as<FF_DateTime>() : the reader, through the real pipeline ────────
+//
+// COV-1: these build a stream with the real Builder and read it back with the
+// real Parser. A hand-assembled buffer would prove the reader agrees with my
+// idea of the layout rather than with what the writer actually emits, and the
+// fallback arm in particular is a relative offset the writer computes.
+
+static constexpr Size DTR_ARENA = 1u << 20;
+
+/// Seal a Patient whose birthDate is `text`, and hand back the arena.
+static Memory seal_patient_with_birthdate(std::string_view text)
+{
+    Memory mem = Memory::create(DTR_ARENA);
+    FF_BuilderCreateInfo info;
+    info.arena   = mem;
+    info.version = FHIR_VERSION_R5;
+    FF_Builder builder;
+    if (!FF_CreateBuilder(info, builder)) throw std::runtime_error("FF_CreateBuilder failed");
+
+    PatientData patient;
+    patient.id        = "dt-reader";
+    patient.birthdate = text;   // a string_view into the caller's literal
+
+    const Reflective::ObjectHandle root = builder->append_obj(patient);
+    FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root});
+    Memory::View view;
+    if (!FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view))
+        throw std::runtime_error("seal failed");
+    return mem;
+}
+
+/// Seal an Observation whose effective[x] is a dateTime carrying `text`.
+static Memory seal_observation_with_effective(std::string_view text)
+{
+    Memory mem = Memory::create(DTR_ARENA);
+    FF_BuilderCreateInfo info;
+    info.arena   = mem;
+    info.version = FHIR_VERSION_R5;
+    FF_Builder builder;
+    if (!FF_CreateBuilder(info, builder)) throw std::runtime_error("FF_CreateBuilder failed");
+
+    ObservationData obs;
+    obs.id     = "dt-choice";
+    obs.status = FF_ObservationStatus::Final;
+    obs.effective.tag   = RECOVER_FF_DATETIME;
+    obs.effective.value = text;
+
+    const Reflective::ObjectHandle root = builder->append_obj(obs);
+    FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root});
+    Memory::View view;
+    if (!FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view))
+        throw std::runtime_error("seal failed");
+    return mem;
+}
+
+static void test_datetime_reader_packed_scalar_slot()
+{
+    Memory mem = seal_patient_with_birthdate("1990-05-15");
+    Parser parser(mem);
+    const auto entry = parser.root()[Fields::PATIENT::BIRTH_DATE];
+    REQUIRE(static_cast<bool>(entry), "the birthDate slot is present");
+
+    const DateTime when = entry.as<DateTime>();
+    CHECK(static_cast<bool>(when), "a written date reads back present");
+    CHECK(when.is_civil(), "text that fits packs, so the reader gets components");
+    CHECK_EQ(when.to_string(), std::string("1990-05-15"), "which render to the original text");
+
+    // THE TAG IS NOT RECOVERABLE ON A SCALAR SLOT, and that is by design, not
+    // a gap in the reader. All 70 FF_FIELD_DATETIME field keys carry
+    // FF_RECOVER_UNDEFINED, and nothing on the wire records which of the four
+    // FHIR types the slot was -- CLAUDE.md says Kind_to_Recovery maps the kind
+    // back to nothing deliberately, because one kind naming four tags is not a
+    // function and guessing exports a `date` as `valueDateTime`. The tag does
+    // its work at WRITE time, where it decides that a `date` may not carry a
+    // timezone. At read time the precision field carries the shape, which is
+    // why rendering is still exact. A CHOICE variant is the case that does
+    // keep its tag on the wire; see the choice cases below.
+    CHECK_EQ(when.tag(), FF_RECOVER_UNDEFINED,
+             "a scalar slot has no tag to recover, so the reader reports none");
+    // Cast because CHECK_EQ streams both operands and a scoped enum has no
+    // operator<<; the comparison itself is on the enum.
+    CHECK_EQ(static_cast<int>(when.parts().precision),
+             static_cast<int>(FF_DateTimePrecision::DATE), "at DATE precision");
+}
+
+static void test_datetime_reader_fallback_scalar_slot()
+{
+    // Four fractional digits: legal FHIR the 63 bits cannot hold, so the
+    // writer spills it to an FF_STRING and the slot becomes a relative offset.
+    // This is the case a reader typed to FF_DateTimeParts could not answer.
+    Memory mem = seal_patient_with_birthdate(UNPACKABLE);
+    Parser parser(mem);
+    const auto entry = parser.root()[Fields::PATIENT::BIRTH_DATE];
+    REQUIRE(static_cast<bool>(entry), "the birthDate slot is present");
+
+    const DateTime when = entry.as<DateTime>();
+    CHECK(static_cast<bool>(when), "an unpackable date still reads back present");
+    CHECK(when.is_text(), "and arrives as text, because it never became components");
+    CHECK_EQ(when.to_string(), std::string(UNPACKABLE), "byte-exact, which is the point");
+    CHECK(!when.text().owns(), "borrowed from the arena, so materializing allocates nothing");
+}
+
+static void test_datetime_reader_choice_variant()
+{
+    Memory mem = seal_observation_with_effective("2024-01-15T13:45:30Z");
+    Parser parser(mem);
+    const auto entry = parser.root()[Fields::OBSERVATION::EFFECTIVE];
+    REQUIRE(static_cast<bool>(entry), "the effective[x] slot is present");
+
+    const DateTime when = entry.as<DateTime>();
+    CHECK(when.is_civil(), "a packed choice variant reads as components");
+    CHECK_EQ(when.tag(), RECOVER_FF_DATETIME,
+             "and the tag comes off the WIRE here, not the schema -- a choice's "
+             "live variant is only known at runtime");
+    CHECK_EQ(when.to_string(), std::string("2024-01-15T13:45:30Z"), "rendering round-trips");
+}
+
+static void test_datetime_reader_choice_fallback_is_parent_relative()
+{
+    // The regression this guards: a fallback offset inside a CHOICE is
+    // measured from the containing block, not from the slot. Resolving it
+    // against the slot reads one V-Table width away and returns nothing.
+    Memory mem = seal_observation_with_effective(UNPACKABLE);
+    Parser parser(mem);
+    const auto entry = parser.root()[Fields::OBSERVATION::EFFECTIVE];
+    REQUIRE(static_cast<bool>(entry), "the effective[x] slot is present");
+
+    const DateTime when = entry.as<DateTime>();
+    CHECK(when.is_text(), "an unpackable choice variant reads as text");
+    CHECK_EQ(when.to_string(), std::string(UNPACKABLE),
+             "resolved against the containing block, so the text is found");
+}
+
+/// print_json already renders every date/time slot correctly. It is therefore
+/// the oracle: the reader must agree with it for the same field, or one of
+/// them is wrong and this test does not care which.
+static void test_datetime_reader_agrees_with_print_json()
+{
+    const char *probes[] = {
+        "2024",
+        "2024-01",
+        "1990-05-15",
+        UNPACKABLE,
+    };
+
+    std::size_t compared = 0;
+    for (const char *text : probes)
+    {
+        Memory mem = seal_patient_with_birthdate(text);
+        Parser parser(mem);
+
+        std::ostringstream json;
+        parser.print_json(json);
+        const std::string rendered = json.str();
+
+        const DateTime when = parser.root()[Fields::PATIENT::BIRTH_DATE].as<DateTime>();
+        const std::string quoted = "\"" + when.to_string() + "\"";
+        CHECK(rendered.find(quoted) != std::string::npos,
+              "as<DateTime>() renders '" << when.to_string()
+                                         << "' and print_json agrees for input: " << text);
+        ++compared;
+    }
+    // P0-2: a loop that never ran satisfies every assertion above it.
+    REQUIRE(compared == sizeof(probes) / sizeof(probes[0]),
+            "every probe compared, got " << compared);
+}
+
+/// A Patient with NO birthDate and a deceasedBoolean. Both halves matter:
+/// the empty scalar slot is the FF_DATETIME_NULL case, and deceased[x] is a
+/// choice whose live variant is a bool rather than a dateTime.
+static Memory seal_patient_without_birthdate()
+{
+    Memory mem = Memory::create(DTR_ARENA);
+    FF_BuilderCreateInfo info;
+    info.arena   = mem;
+    info.version = FHIR_VERSION_R5;
+    FF_Builder builder;
+    if (!FF_CreateBuilder(info, builder)) throw std::runtime_error("FF_CreateBuilder failed");
+
+    PatientData patient;
+    patient.id       = "dt-absent";
+    // The explicit two-line form: T5's inferring assignment covers the BLOCK
+    // alternatives (the variant's type list is FHIR datatypes), and a scalar
+    // variant like boolean still names its own tag.
+    patient.deceased.tag   = RECOVER_FF_BOOL;
+    patient.deceased.value = true;
+
+    const Reflective::ObjectHandle root = builder->append_obj(patient);
+    FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root});
+    Memory::View view;
+    if (!FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view))
+        throw std::runtime_error("seal failed");
+    return mem;
+}
+
+/// An Observation whose value[x] is a DECIMAL. The variant has to be eight
+/// bytes wide and positive: the writer pads a NARROW variant (bool, int32)
+/// with 0xff, which sets bit 63, and the reader then takes the fallback branch
+/// and rejects the nonsense offset -- a right answer for the wrong reason. A
+/// positive double has bit 63 clear, so the tag check is the only thing
+/// standing between it and being unpacked as a civil date. Both facts were
+/// found by dumping the slot bytes after two mutations survived.
+static Memory seal_observation_with_decimal_value(double n)
+{
+    Memory mem = Memory::create(DTR_ARENA);
+    FF_BuilderCreateInfo info;
+    info.arena   = mem;
+    info.version = FHIR_VERSION_R5;
+    FF_Builder builder;
+    if (!FF_CreateBuilder(info, builder)) throw std::runtime_error("FF_CreateBuilder failed");
+
+    ObservationData obs;
+    obs.id           = "dt-decimal";
+    obs.status       = FF_ObservationStatus::Final;
+    obs.value.tag    = RECOVER_FF_FLOAT64;
+    obs.value.value  = n;
+
+    const Reflective::ObjectHandle root = builder->append_obj(obs);
+    FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root});
+    Memory::View view;
+    if (!FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view))
+        throw std::runtime_error("seal failed");
+    return mem;
+}
+
+static void test_datetime_reader_degrades_rather_than_throws()
+{
+    // Invariant 10: the read path returns falsy for what it cannot answer.
+    Memory mem = seal_patient_with_birthdate("1990-05-15");
+    Parser parser(mem);
+    const auto root = parser.root();
+
+    // A slot that is not a date/time at all -- asking for the wrong type is a
+    // caller mistake, and on the read path that degrades rather than throwing.
+    const DateTime wrong = root[Fields::PATIENT::ID].as<DateTime>();
+    CHECK(wrong.absent(), "a string slot read as a date/time is absent, not a throw");
+
+    // A default-constructed Entry has no base at all.
+    const Reflective::Entry nowhere;
+    CHECK(nowhere.as<DateTime>().absent(), "an empty Entry answers absent");
+
+    // An UNSET scalar date/time slot. This does NOT reach the reader's null
+    // test: FF_IsFieldEmpty rejects the slot inside operator[] and hands back
+    // a null Entry, which the reader's first guard answers. Verified by probe,
+    // so the case is kept for the contract it states rather than for the line
+    // of the reader it was first written to cover.
+    Memory empty_mem = seal_patient_without_birthdate();
+    Parser empty_parser(empty_mem);
+    const auto empty_root = empty_parser.root();
+    const DateTime never_set = empty_root[Fields::PATIENT::BIRTH_DATE].as<DateTime>();
+    CHECK(never_set.absent(), "a scalar date/time slot that was never written is absent");
+    CHECK(!static_cast<bool>(never_set), "and falsy");
+    CHECK_EQ(never_set.to_string(), std::string(), "and has no text");
+
+    // A CHOICE whose live variant is not a date/time. The variant has to be
+    // eight bytes wide and positive, or the test passes for the wrong reason:
+    // the writer pads a narrower variant with 0xff, which sets bit 63, so the
+    // reader takes the fallback branch and FF_BLOCK_SELF_VALIDATES rejects the
+    // nonsense offset without the tag check ever running. A boolean and an
+    // int32 were both tried here and both let a mutation of the tag check
+    // survive. A positive double has bit 63 clear and reaches the unpack.
+    Memory int_mem = seal_observation_with_decimal_value(42.0);
+    Parser int_parser(int_mem);
+    const auto value_entry = int_parser.root()[Fields::OBSERVATION::VALUE];
+    REQUIRE(static_cast<bool>(value_entry),
+            "the value[x] slot is populated, so this is not a vacuous pass");
+    const DateTime wrong_variant = value_entry.as<DateTime>();
+    CHECK(wrong_variant.absent(),
+          "a choice variant that is not a date/time reads as absent");
+
+    // The bool case is kept too: it exercises the fallback branch's validation
+    // gate on a slot that is not a date/time at all.
+    const DateTime bool_variant = empty_root[Fields::PATIENT::DECEASED].as<DateTime>();
+    CHECK(bool_variant.absent(), "and so does a boolean variant");
+    CHECK_EQ(static_cast<bool>(empty_root[Fields::PATIENT::DECEASED]), true,
+             "with that slot populated as well");
+}
+
+/// A fallback slot is an OFFSET, so damage to it aims the reader somewhere it
+/// does not own. The gate is FF_BLOCK_SELF_VALIDATES: the target must carry
+/// its own offset in its VALIDATION word. Invariant 10 says the read path
+/// degrades, so a broken edge is a falsy value rather than a throw or a read
+/// of whatever happens to be there.
+static void test_datetime_reader_refuses_a_damaged_fallback_offset()
+{
+    Memory mem = seal_patient_with_birthdate(UNPACKABLE);
+    Parser parser(mem);
+    const auto entry = parser.root()[Fields::PATIENT::BIRTH_DATE];
+    REQUIRE(static_cast<bool>(entry), "the birthDate slot is present");
+    REQUIRE(entry.as<DateTime>().is_text(), "and took the fallback arm before damage");
+
+    // Walk the relative offset off its target while keeping bit 63 set, so
+    // the slot still reads as a fallback and only the witness can reject it.
+    BYTE *slot = const_cast<BYTE *>(parser.data()) + entry.absolute_offset();
+    uint64_t raw = 0;
+    for (int i = 7; i >= 0; --i) raw = (raw << 8) | slot[i];
+    const uint64_t damaged = raw ^ 0x40ull;                 // move the target, keep bit 63
+    for (int i = 0; i < 8; ++i) slot[i] = static_cast<BYTE>((damaged >> (i * 8)) & 0xFF);
+
+    const DateTime broken = entry.as<DateTime>();
+    CHECK(broken.absent(), "a fallback offset that does not land on a self-validating "
+                           "block reads as absent");
+    CHECK_EQ(broken.to_string(), std::string(), "and yields no text");
+}
+
 int main(int argc, char **argv)
 {
     const char *filter = "";
@@ -860,6 +1386,23 @@ int main(int argc, char **argv)
     TEST_GROUP("ChoiceText");
     ff_test::run("test_choice_datetime_to_string", test_choice_datetime_to_string);
     ff_test::run("test_choice_to_string_generic", test_choice_to_string_generic);
+
+    TEST_GROUP("DateTimeValue");
+    ff_test::run("test_datetime_value_forms", test_datetime_value_forms);
+    ff_test::run("test_datetime_value_owns_a_runtime_string", test_datetime_value_owns_a_runtime_string);
+    ff_test::run("test_datetime_value_copy_and_move", test_datetime_value_copy_and_move);
+    ff_test::run("test_datetime_value_refuses_the_wrong_arm", test_datetime_value_refuses_the_wrong_arm);
+    ff_test::run("test_datetime_value_tag_is_schema", test_datetime_value_tag_is_schema);
+    ff_test::run("test_datetime_value_round_trips_both_arms", test_datetime_value_round_trips_both_arms);
+
+    TEST_GROUP("DateTimeReader");
+    ff_test::run("test_datetime_reader_packed_scalar_slot", test_datetime_reader_packed_scalar_slot);
+    ff_test::run("test_datetime_reader_fallback_scalar_slot", test_datetime_reader_fallback_scalar_slot);
+    ff_test::run("test_datetime_reader_choice_variant", test_datetime_reader_choice_variant);
+    ff_test::run("test_datetime_reader_choice_fallback_is_parent_relative", test_datetime_reader_choice_fallback_is_parent_relative);
+    ff_test::run("test_datetime_reader_agrees_with_print_json", test_datetime_reader_agrees_with_print_json);
+    ff_test::run("test_datetime_reader_degrades_rather_than_throws", test_datetime_reader_degrades_rather_than_throws);
+    ff_test::run("test_datetime_reader_refuses_a_damaged_fallback_offset", test_datetime_reader_refuses_a_damaged_fallback_offset);
 
     std::cout << "\n────────────────────────────────────────────────\n"
               << ::ff_test::g_checks << " tests, " << ::ff_test::g_failures << " failures\n";
