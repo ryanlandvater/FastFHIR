@@ -235,19 +235,17 @@ void walk(const Node& node, Scan& scan) noexcept
 
 }  // namespace
 
-Status check_stream_references(const void* arena, uint64_t arena_size, uint32_t fhir_version,
-                               uint64_t root_offset, uint64_t root_recovery,
-                               const ValidationHooks* self)
+Status check_stream_references(const StreamCheckInfo& info)
 {
     // References resolve WITHIN a Bundle, against its entry set. A stream rooted
     // at anything else has no such set, so a "unresolved" verdict here would be
     // a false positive on every reference it holds. Nothing to say: return OK.
-    if (root_recovery != RECOVER_FF_BUNDLE) return {};
-    if (arena == nullptr || root_offset == FF_NULL_OFFSET) return {};
+    if (info.root_recovery != RECOVER_FF_BUNDLE) return {};
+    if (info.arena == nullptr || info.root_offset == FF_NULL_OFFSET) return {};
 
-    const Node root(static_cast<const BYTE*>(arena), static_cast<Size>(arena_size), fhir_version,
-                    static_cast<Offset>(root_offset), static_cast<RECOVERY_TAG>(root_recovery),
-                    FF_FIELD_BLOCK);
+    const Node root(static_cast<const BYTE*>(info.arena), static_cast<Size>(info.arena_size),
+                    info.fhir_version, static_cast<Offset>(info.root_offset),
+                    static_cast<RECOVERY_TAG>(info.root_recovery), FF_FIELD_BLOCK);
     if (!root) return {};
 
     // The check's one allocation, and the reason it may allocate at all:
@@ -256,7 +254,7 @@ Status check_stream_references(const void* arena, uint64_t arena_size, uint32_t 
     const BundleIndex index(root);
 
     Scan scan;
-    scan.self  = self;
+    scan.self  = info.self;
     scan.index = &index;
     walk(root, scan);
     return scan.first_hard;

@@ -20,6 +20,10 @@
  *   - explicit operator Offset() returns FF_NULL_OFFSET for every non-GENERATED
  *     arm, INCLUDING RAW_STRING, whose payload is itself a plausible offset and
  *     is the one that would otherwise hand back a real-but-wrong address.
+ *   - The seven-byte offset field's bound. store_offset7 truncates silently, so
+ *     write_slot refuses an offset it cannot represent -- FF_NULL_OFFSET, the
+ *     shape a failed append produces, would otherwise encode as a GENERATED id
+ *     pointing at a real, in-bounds, self-validating WRONG block.
  *   - FF_IsFieldEmpty reads a 16-byte all-ones slot as empty.
  *
  * Run: ff_test_identity
@@ -210,6 +214,53 @@ static void test_roundtrip_all_wire_arms() {
              "an absent slot is all-ones, not a UUID");
 }
 
+// ── The seven-byte offset field's bound ───────────────────────────────────
+static void test_offset_wider_than_seven_bytes_is_refused() {
+    CHECK_EQ(FF_IdSlot::MAX_OFFSET, Offset{0x00FFFFFFFFFFFFFF},
+             "seven bytes of offset");
+
+    // The bound is INCLUSIVE: the widest representable offset still round-trips.
+    {
+        BYTE slot[16];
+        FF_Id::generated(FF_IdSlot::MAX_OFFSET).write_slot(slot);
+        CHECK_EQ(static_cast<Offset>(FF_Id::read_slot(slot)), FF_IdSlot::MAX_OFFSET,
+                 "the widest representable offset round-trips");
+    }
+
+    const auto refuses = [](const FF_Id& id) {
+        // Poison the slot, so a throw that happened AFTER a partial write is
+        // visible: the check is a precondition precisely so the caller's bytes
+        // are left alone.
+        BYTE slot[16], poison[16];
+        fill(slot, 0x5A);
+        fill(poison, 0x5A);
+        try { id.write_slot(slot); return false; }
+        catch (const std::runtime_error&) {
+            CHECK(std::memcmp(slot, poison, 16) == 0,
+                  "a refused encode leaves the slot untouched");
+            return true;
+        }
+    };
+
+    // The realistic one: a failed append hands back FF_NULL_OFFSET, and
+    // store_offset7 used to truncate it into a GENERATED id pointing at
+    // 0x00FFFFFFFFFFFFFF -- in bounds, self-validating, and the wrong block.
+    CHECK(refuses(FF_Id::generated(FF_NULL_OFFSET)),
+          "generated(FF_NULL_OFFSET) is refused rather than truncated");
+    CHECK(refuses(FF_Id::generated(FF_IdSlot::MAX_OFFSET + 1)),
+          "the first unrepresentable offset is refused");
+    CHECK(refuses(FF_Id::raw_string(FF_IdSlot::MAX_OFFSET + 1)),
+          "RAW_STRING is bounded by the same field");
+    CHECK(refuses(FF_Id::raw_string((Offset{1} << 56) | 0x40)),
+          "an offset that would alias a real block at 0x40 is refused");
+
+    // The non-offset arms are unaffected: their payload does not live there.
+    BYTE slot[16];
+    FF_Id::interned(FF_NULL_UINT32).write_slot(slot);
+    CHECK(FF_Id::read_slot(slot).form() == FF_Id::Form::INTERNED,
+          "an INTERNED index is not bounded by the offset field");
+}
+
 // ── Conversions ───────────────────────────────────────────────────────────
 static void test_offset_conversion_is_partial() {
     const FF_Id gen = FF_Id::generated(0x00AABBCC);
@@ -260,6 +311,38 @@ static void test_wrong_arm_access_throws() {
     CHECK(throws([] { (void)FF_Id{}.uuid(); }), "uuid() on an absent id throws");
 }
 
+// ── The inline-scalar / emptiness coupling (§17.18 R2a) ───────────────────
+static void test_every_inline_scalar_kind_has_an_emptiness_case() {
+    // Node::is_empty() now routes every inline-scalar kind straight to
+    // FF_IsFieldEmpty instead of re-listing the kinds, so the two are coupled:
+    // a kind that ff_kind_is_inline_scalar calls inline but FF_IsFieldEmpty does
+    // not handle falls to THAT function's `default: return true` and reports the
+    // field ABSENT -- the silently-dropped-field shape the coupling exists to
+    // close. -Wswitch protects ff_kind_is_inline_scalar because it has no
+    // default; nothing protects FF_IsFieldEmpty, so this does.
+    //
+    // The second CHECK is the load-bearing one: a kind reaching the `default`
+    // returns true for ANY bytes, so a zeroed slot reported empty is exactly
+    // the signature of a missing case.
+    BYTE ones[16], zeros[16];
+    std::memset(ones, 0xFF, sizeof(ones));
+    std::memset(zeros, 0x00, sizeof(zeros));
+
+    int inline_kinds = 0;
+    for (int k = 0; k <= static_cast<int>(FF_FIELD_ID); ++k) {
+        const auto kind = static_cast<FF_FieldKind>(k);
+        if (!ff_kind_is_inline_scalar(kind)) continue;
+        ++inline_kinds;
+        CHECK(FF_IsFieldEmpty(ones, 0, kind),
+              "kind " << k << ": an all-ones slot reads empty");
+        CHECK(!FF_IsFieldEmpty(zeros, 0, kind),
+              "kind " << k << ": a zeroed slot reads PRESENT, so the kind has a real case");
+    }
+    CHECK_EQ(inline_kinds, 10, "ten inline-scalar kinds, FF_FIELD_ID among them");
+    CHECK(ff_kind_is_inline_scalar(FF_FIELD_ID),
+          "an identity slot renders one JSON token, so it is an inline scalar");
+}
+
 // ── Absence at the field level ────────────────────────────────────────────
 static void test_field_empty_reads_sixteen_bytes() {
     BYTE slot[16];
@@ -281,9 +364,13 @@ int main() {
     ff_test::run("test_pointer_arms_from_hand_built_slots", test_pointer_arms_from_hand_built_slots);
     ff_test::run("test_pointer_test_needs_both_bytes", test_pointer_test_needs_both_bytes);
     ff_test::run("test_roundtrip_all_wire_arms", test_roundtrip_all_wire_arms);
+    ff_test::run("test_offset_wider_than_seven_bytes_is_refused",
+                 test_offset_wider_than_seven_bytes_is_refused);
     ff_test::run("test_offset_conversion_is_partial", test_offset_conversion_is_partial);
     ff_test::run("test_no_implicit_integer_conversion", test_no_implicit_integer_conversion);
     ff_test::run("test_wrong_arm_access_throws", test_wrong_arm_access_throws);
+    ff_test::run("test_every_inline_scalar_kind_has_an_emptiness_case",
+                 test_every_inline_scalar_kind_has_an_emptiness_case);
     ff_test::run("test_field_empty_reads_sixteen_bytes", test_field_empty_reads_sixteen_bytes);
 
     return ff_test::report("all identity-slot checks pass");

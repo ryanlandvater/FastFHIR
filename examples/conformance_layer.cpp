@@ -20,8 +20,8 @@
  * shipped product links `fastfhir_conformance` only when it wants it, and a
  * detached append costs one null check.
  *
- * Attaching is three lines: copy conformance_layer(), point it at your sink,
- * hand it to the Builder.
+ * Attaching is two lines: copy conformance_layer(), point it at your sink,
+ * then hand it over with FF_BuilderAttachLayer().
  *
  * Build: -DFASTFHIR_BUILD_CONFORMANCE=ON, then link fastfhir_conformance.
  *
@@ -92,7 +92,7 @@ int main()
         {
             FF_Builder      builder = new_builder();
             ValidationHooks hooks   = conformance_layer();  // copy, then customise
-            builder->attach_layer(&hooks);
+            FF_BuilderAttachLayer(FF_BuilderAttachLayerInfo{.builder = builder, .hooks = &hooks});
 
             std::string why;
             try
@@ -122,7 +122,7 @@ int main()
             hooks.policy     = LayerPolicy::Report;
             hooks.diagnostic = &logger;
             hooks.failures   = &failures;
-            builder->attach_layer(&hooks);
+            FF_BuilderAttachLayer(FF_BuilderAttachLayerInfo{.builder = builder, .hooks = &hooks});
 
             builder->append_obj(incomplete_observation());
             expect(failures.load() == 1, "the failure was counted");
@@ -138,7 +138,7 @@ int main()
         {
             FF_Builder      builder = new_builder();
             ValidationHooks hooks   = conformance_layer();
-            builder->attach_layer(&hooks);
+            FF_BuilderAttachLayer(FF_BuilderAttachLayerInfo{.builder = builder, .hooks = &hooks});
 
             BundleData bundle;
             bundle.type = FF_BundleType::Collection;
@@ -193,7 +193,7 @@ int main()
                 FF_Builder      builder = new_builder();
                 ValidationHooks hooks   = conformance_layer();
                 if (attach)
-                    builder->attach_layer(&hooks);
+                    FF_BuilderAttachLayer(FF_BuilderAttachLayerInfo{.builder = builder, .hooks = &hooks});
                 auto root = builder->append_obj(good);
                 expect(static_cast<bool>(
                            FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root})),

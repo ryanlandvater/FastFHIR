@@ -74,4 +74,4 @@ def test_gate_is_not_vacuous():
     """P0-2: a sweep that parses nothing must not pass."""
     cpp = parse_struct_fields(_read("FastFHIR.hpp"))
     assert len(cpp) >= len(C_STRUCTS), "the C++ struct parser found nothing"
-    assert parse_enumerator_values(_read("FF_Primitives.hpp")), "enum parser found nothing"
+    assert parse_enumerator_values(_read("FF_Constants.hpp")), "enum parser found nothing"

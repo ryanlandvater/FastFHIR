@@ -1040,12 +1040,17 @@ int hex_nibble(char c) noexcept {
 // The 7-byte little-endian offset at bytes 9..15. FastFHIR is strictly little-
 // endian on the wire (FF_Ops.hpp), so these assemble bytes the same way
 // FF_GET_VALIDATION does in the header.
+//
+// PRECONDITION on the store: `v <= FF_IdSlot::MAX_OFFSET`. It cannot signal a
+// wider value -- it would truncate -- so write_slot is the single gate that
+// enforces the bound, before this is reached.
 void store_offset7(BYTE* dst, uint64_t v) noexcept {
-    for (int i = 0; i < 7; ++i) dst[i] = static_cast<BYTE>((v >> (8 * i)) & 0xFF);
+    for (Size i = 0; i < FF_IdSlot::OFFSET_WIDTH; ++i)
+        dst[i] = static_cast<BYTE>((v >> (8 * i)) & 0xFF);
 }
 uint64_t load_offset7(const BYTE* src) noexcept {
     uint64_t v = 0;
-    for (int i = 6; i >= 0; --i) v = (v << 8) | src[i];
+    for (Size i = FF_IdSlot::OFFSET_WIDTH; i-- > 0;) v = (v << 8) | src[i];
     return v;
 }
 }  // namespace
@@ -1171,6 +1176,27 @@ FF_Id FF_Id::read_slot(const BYTE* slot) noexcept {
 }
 
 void FF_Id::write_slot(BYTE* slot) const {
+    // PRECONDITION, checked before a single byte is written: an offset arm must
+    // fit the slot's seven offset bytes. Checked HERE rather than inside the
+    // case so a refused encode leaves the caller's slot untouched -- throwing
+    // after the memset would leave sixteen zero bytes, which read back as the
+    // nil UUID rather than as the failure they are.
+    //
+    // WHY THIS IS NOT A THEORETICAL BOUND. store_offset7 truncates silently, so
+    // FF_Id::generated(FF_NULL_OFFSET) -- the shape a failed append produces --
+    // encoded as a GENERATED id pointing at 0x00FFFFFFFFFFFFFF, and any offset
+    // at or above 2^56 aliased a DIFFERENT block that is real, in bounds and
+    // self-validating. That is the plausible-wrong-address class the explicit
+    // operator Offset exists to prevent, arriving through the writer instead of
+    // the reader, so the write path refuses it (invariant 5).
+    if ((m_form == Form::GENERATED || m_form == Form::RAW_STRING) &&
+        m_offset > FF_IdSlot::MAX_OFFSET)
+        throw std::runtime_error(
+            "FastFHIR: FF_Id::write_slot() offset " + std::to_string(m_offset) +
+            " exceeds the identity slot's " + std::to_string(FF_IdSlot::OFFSET_WIDTH) +
+            "-byte offset field (max " + std::to_string(FF_IdSlot::MAX_OFFSET) +
+            "); an absent or unresolved id must not be spelled as a block offset");
+
     switch (m_form) {
     case Form::ABSENT:
         std::memset(slot, 0xFF, FF_IdSlot::WIDTH);

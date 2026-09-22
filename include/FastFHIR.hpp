@@ -295,6 +295,27 @@ struct FF_BuilderQueryInfo {
 /** @brief Returns a read-only Parser over the stream's current state (nearly zero-cost). */
 FF_EXPORT FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo& info, Parser& out_parser) noexcept;
 
+/** @brief Parameters for attaching the optional conformance layer to a builder.
+ *
+ * The layer is FHIR-level conformance — cardinality, required elements, bound
+ * ValueSets — not structure, which the builder checks unconditionally. It
+ * OBSERVES ONLY: the check runs before arena space is claimed, so a stream
+ * written with a layer attached is byte-identical to one written without it,
+ * including on the failing path. Attach before the first append.
+ */
+struct FF_BuilderAttachLayerInfo {
+    FF_Builder builder = nullptr;  ///< The builder to attach to.
+    /// Borrowed, and it must outlive the builder. Null detaches. Copy
+    /// FastFHIR::Conformance::conformance_layer()'s struct before setting
+    /// policy/next/diagnostic/failures on it — the one it returns is shared and
+    /// immutable. Every layer in the chain must speak this release's
+    /// FastFHIR::Conformance::CONFORMANCE_ABI.
+    const FastFHIR::Conformance::ValidationHooks* hooks = nullptr;
+};
+
+/** @brief Attaches the conformance layer; a null handle or an ABI mismatch is an FF_Result. */
+FF_EXPORT FF_Result FF_BuilderAttachLayer(const FF_BuilderAttachLayerInfo& info) noexcept;
+
 // =====================================================================
 // PARSE API
 // =====================================================================

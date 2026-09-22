@@ -45,12 +45,14 @@ _ff_run("install" ${CMAKE_COMMAND} --install "${BUILD_DIR}" --prefix "${_prefix}
 # The package must carry the public surface and must NOT carry the internal
 # byte-arithmetic header (CLAUDE.md invariant 9).
 foreach(_public FastFHIR.hpp FastFHIR.h FF_Export.h FF_Conformance.hpp FF_DataTypes.hpp
+                FF_Constants.hpp FF_Values.hpp
                 FF_Observation.hpp FF_Bundle.hpp FF_String.hpp FF_BundleIndex.hpp)
     if(NOT EXISTS "${_prefix}/include/${_public}")
         message(FATAL_ERROR "install_smoke: public header missing from the package: ${_public}")
     endif()
 endforeach()
-foreach(_internal FF_Ops.hpp FF_AllTypes.hpp FF_Observation_internal.hpp FF_UrlDirectory.hpp)
+foreach(_internal FF_Ops.hpp FF_AllTypes.hpp FF_Observation_internal.hpp FF_UrlDirectory.hpp
+                  FF_Conformance_internal.hpp)
     if(EXISTS "${_prefix}/include/${_internal}")
         message(FATAL_ERROR "install_smoke: internal header shipped in the package: ${_internal}")
     endif()

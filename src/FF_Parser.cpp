@@ -1649,6 +1649,30 @@ Node Node::resolve_choice(const BYTE* base, Size size, uint32_t version,
 bool Node::is_empty() const {
     if (!*this) return true;
 
+    // EVERY inline-scalar kind answers this the same way -- the slot is empty
+    // when it holds its all-ones sentinel -- so ASK the predicate rather than
+    // re-listing the kinds. This was a hand-maintained copy of
+    // ff_kind_is_inline_scalar's list, and the copy drifted: FF_FIELD_DATETIME
+    // and FF_FIELD_URL were both missing. It stayed invisible only because
+    // nothing produced a Node of either kind, and the day resolve_choice first
+    // returned a real FF_FIELD_DATETIME node all 536 date/time choice variants
+    // vanished from the export. The `default` below returns true, so a missing
+    // kind reports the field ABSENT and print_json drops it -- silent, and
+    // invisible until something first produces that node.
+    //
+    // ff_kind_is_inline_scalar carries NO `default`, so a new kind is a
+    // -Wswitch compile error there instead of a dropped field here. That is the
+    // whole reason to route through it: one list, compiler-enforced, rather
+    // than two that have to be remembered in step (§17.18 R2a).
+    //
+    // FF_FIELD_CODE is in that list and belongs here with the rest. A code is
+    // empty only on the explicit FF_CODE_NULL sentinel, and an unresolved
+    // dictionary code is NOT empty -- reporting it empty makes print_json emit
+    // an invalid pair like `"type":,`. FF_IsFieldEmpty already answers exactly
+    // that for the kind, which is what this called before.
+    if (ff_kind_is_inline_scalar(m_kind))
+        return FF_IsFieldEmpty(m_base, m_node_offset, m_kind);
+
     switch (m_kind) {
         case FF_FIELD_ARRAY:
             return size() == 0;
@@ -1656,34 +1680,6 @@ bool Node::is_empty() const {
         case FF_FIELD_STRING:
             // Strings are empty when their decoded view is empty.
             return as<std::string_view>().empty();
-
-        case FF_FIELD_CODE:
-            // Codes are empty only when the raw slot is the explicit FF_CODE_NULL sentinel.
-            // Do not treat unresolved dictionary codes as empty, otherwise print_json can emit
-            // invalid key/value pairs like "type":,
-            return FF_IsFieldEmpty(m_base, m_node_offset, FF_FIELD_CODE);
-
-        // Every inline-scalar kind must be listed. The `default` below returns
-        // true, so an omission does not fail loudly -- it silently reports the
-        // field absent and print_json drops it. FF_IsFieldEmpty carries the
-        // same warning about the same two kinds; this switch is its mirror and
-        // has to stay in step with it.
-        //
-        // FF_FIELD_DATETIME and FF_FIELD_URL were missing here. It stayed
-        // invisible only because nothing produced a Node of either kind: URL
-        // slots print through Entry, and date/time choice variants were still
-        // mis-tagged RECOVER_FF_STRING, so resolve_choice handed back a STRING
-        // node. Tagging them correctly (DT-2) made resolve_choice return a real
-        // FF_FIELD_DATETIME node, and all 536 of them vanished from the export.
-        case FF_FIELD_BOOL:
-        case FF_FIELD_INT32:
-        case FF_FIELD_UINT32:
-        case FF_FIELD_INT64:
-        case FF_FIELD_UINT64:
-        case FF_FIELD_FLOAT64:
-        case FF_FIELD_DATETIME:
-        case FF_FIELD_URL:
-            return FF_IsFieldEmpty(m_base, m_node_offset, m_kind);
 
         case FF_FIELD_BLOCK: {
             auto f_list = fields();

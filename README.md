@@ -7,63 +7,147 @@ FastFHIR
 ![FHIR R4/R5](https://img.shields.io/badge/FHIR-R4%20%7C%20R5-blueviolet)
 ![License](https://img.shields.io/badge/license-MPL--2.0-brightgreen)
 
-### We need to Divorce Semantics and Syntatactics from a Single Stream within Healthcare Serialization
-__Perpetuating these unsafe legacy standards is unsafe, irresponsible patching, and limits our growth in the domain of clinical informatics.__
+### Clinical meaning should not be tied to text syntax
 
-Healthcare interoperability has historically relied on formats that are **inherently unsafe**, **computationally expensive**, and **structurally brittle**. FastFHIR replaces traditional parsing with a strict, offset-based binary layout that redundantly guarantees type safety, adds data recovery, allows for in-stream HL7 enrichment, and does so while unlocking blistering speed - which directly translates into reduced hardware cost. 
+Healthcare's high-reliability aspirations call for less implementation variation,
+less unnecessary data conversion, and better ways to detect and recover from
+structural damage. Clinical software should not have to rebuild the same
+serialization machinery at every interface.
 
-**FastFHIR** is a **wildly fast binary HL7 format**. This library generates strongly-typed C++ structs and a strict, zero-copy  architecture directly from the official HL7 FHIR Structure Definitions - We rely on HL7 international to develop the clinical standard, we just **turn that standard into a fast, safe, escape-character-free, and immediately drop-in-deployable** binary library for your entire healthcare stack from the granular lab instruments through your preferred heath information exchange (HIE) by way of your EHR.
+**FastFHIR is a freely available, schema-generated binary representation and
+shared implementation for FHIR-defined clinical data.** It generates typed APIs
+and an offset-based layout from HL7 FHIR StructureDefinitions. Applications can
+access fields directly in the serialized buffer, without first unpacking the
+whole message into a second object graph. Redundant location and type information
+supports structural checking and recovery; the same native core serves C/C++
+and Python consumers.
 
+The goal is to make valid fields discoverable in the IDE, put serialization in
+one reusable library, and support efficient reads and updates throughout clinical
+middleware and exchange. This brings the established benefits of generated binary
+formats to FHIR while adding deliberate structural redundancy. Technical merit
+should be evaluated through fidelity, developer effort, performance, compatibility,
+and failure behavior, not the installed base of a competing representation.
+
+**Evidence and scope.** [Published benchmarks](https://github.com/ryanlandvater/FastFHIR-benchmark/releases)
+compare selected operations and controlled structural-corruption recovery against
+HL7v2, FHIR JSON, and Google FHIR protobuf. Results are implementation- and
+workload-specific; they do not establish clinical error reduction, hardware-cost
+savings, achieved Six Sigma reliability, or guaranteed integrity. FastFHIR is a
+serialization library, not a complete FHIR server or a claim of HL7 endorsement
+of its binary wire format.
 
 ## FAQ
+
 ### Does FastFHIR replace FHIR?
-__A: **No** it is FHIR just without relying on escape characters, without needing a JSON parser, or requiring 'Connectathon' tests. It is built directly from the FHIR standard and pulls it directly from HL7 International while building the library__
 
-### Can I convert a FastFHIR stream back into standard FHIR JSON document?
-__**A**: **Yes** the library **can directly and rapidly translate the binary langauge** into human readable JSON at any level of granularity (ie you can output the whole bundle, a single resource, or any sub-element of that resource)__
+_**A**: **No.** It is FHIR-derived clinical data without relying on text escape characters or needing a JSON parser for direct binary reads. It is built directly from the FHIR definitions and pulls them from HL7 International while building the library._
 
-### Why do you say that Connectatons are no-longer needed?
-**A: I (Ryan, who originally wrote FastFHIR) am both an MD and a programmer. I do not like hunting for information -- I like it to be presented to me. As a result I added intellisense type definitions for all supported languages so that you/your programmers will be presented with valid FHIR data elements within the hierarchical / nested ontology as they attempt to access those fields.**
-```json
-// JSON
-FHIR["Patient"]["Name"]["MyFakeMadeUpField"] = ... // This is allowed normally; JSON doesn't know FHIR
+### Can I convert a FastFHIR stream back into a standard FHIR JSON document?
+
+_**A**: **Yes**, the library can translate the binary representation into human-readable JSON at different levels of granularity: the whole bundle, a single resource, or a supported sub-element of that resource._
+
+The supported field surface and extension policy matter. Unknown extension URL
+retention alone does not preserve its complete payload; see
+[Extensions and modifierExtensions](#extensions-and-modifierextensions).
+
+### Why do you want to reduce the need for connectathons?
+
+_**A**: I (Ryan, who originally wrote FastFHIR) am both an MD and a programmer. I do not like hunting for information -- I like it to be presented to me. As a result, I added generated field definitions so that your programmers can be presented with valid FHIR data elements within the hierarchical / nested ontology as they attempt to access those fields._
+
+With a generic dictionary, a made-up field name is just another string:
+
+```text
+patient["myFakeMadeUpField"] = ...
 ```
-<!-- ff-compile: skip reason="illustrative: mid-typing IDE completion, not a compilable expression" -->
+
+With generated keys, the IDE can present the field names to you:
+
+<!-- ff-compile: expressions -->
 ```cpp
-// C++
-#include <FastFHIR.hpp>
-#include <FF_FieldKeys.hpp>
-FastFHIR[::Fields::Patient::Na...] // Your IDE will present you with ::Fields::Patient::Name as an option
-```
-```py
-#Python
-from fastfhir.fields import Patient
-FastFHIR[Patient.ID] # Your IDE will TELL you any subtype of Patient
+FastFHIR::Fields::PATIENT::ID
+FastFHIR::Fields::PATIENT::NAME
 ```
 
-**Additionally FastFHIR is a **freely available open-source reference implementation.** This is huge. It provides both an API and ABI - so that your vendors and researches do not need to check that the code they write all wires up. In fact, it saves different compaties from paying programmers to write near identical code and then spend time at connectathons to make sure it is nearly identical.**
+<!-- readme-test: skip -- field-discovery illustration; executable examples are in python/README.md -->
+```py
+from fastfhir.fields import Patient
+
+Patient.ID
+Patient.NAME
+```
+
+**Additionally, FastFHIR is a freely available open-source implementation. This is huge. It provides both an API and a C-facing ABI, so your vendors and researchers can use the same core instead of paying programmers to write near-identical serialization code and then spending time at connectathons making sure it is nearly identical.**
+
+Sharing the implementation does not eliminate clinical mapping, profile, or
+workflow testing. It is intended to reduce the structural implementation work
+that gets repeated before those questions can even be addressed. Typed libraries
+also exist for HL7v2 and FHIR JSON; FastFHIR combines that developer experience
+with direct binary access and structural redundancy.
 
 ### What programming languages are supported?
-**A: Right now I support C/C++ and Python wiht additional languages being added in the future starting with JavaScript via WASM. All will be supported as full first class langugaes. You will get the same performance regardless (for example the python library is compiled).**
-<!-- readme-test: skip — illustrative FAQ snippet; the executed Python examples live in python/README.md -->
-```py
-import fastfhir as ff
-from fastfhir.fields import Patient
 
-memory = ff.Memory.create_from_file("patient.ffhr")
-with ff.Builder(memory, ff.FhirVersion.R5) as builder:
-    print(builder.root[Patient.ID].value())  # "patient-1"  — no parse step
-```
+**A: Right now I support C/C++ and Python, with additional languages planned, starting with JavaScript via WASM. The goal is to support them as first-class languages. The Python library is compiled from the same native core, rather than being a separate Python implementation of the serializer.**
 
-### How does this work with FHIR Extensions?
-__A: I am stricter than normal FHIR when it comes to extensions. We are adding an online extension repository that takes JSON extension definitions and compiles them into binary code. This provides two benefits:__
-1. We now can guarantee that the extension is structually correct and peristant forever. It is guaranteed to plug into a FastFHIR stream and be understood or it cannot be released by the repository / hub.
-2. There is official governance and persistance of any extension encoded data. The Z-segment / 'when you've seen one HL7, you've seen just one HL7' stream issue needs to be put to bed.
+The [Python API guide](python/README.md) and
+[C API example](#8--calling-from-c-fastfhirh) show the current interfaces.
+Language wrappers and value conversions can still affect end-to-end performance;
+sharing a core is not a promise of identical timings in every language.
+
+### How does this work with FHIR extensions?
+
+_**A**: I want to be stricter about extension registration and governance. We are planning an online extension repository that takes registered JSON extension definitions and compiles them into WASM modules. This has two goals:_
+
+1. Make the extension's structure a shared, checked implementation that consumers can load, rather than something each company has to interpret and rebuild independently.
+2. Provide versioned definitions and modules that remain available for reading historical data. The Z-segment / "when you've seen one HL7, you've seen just one HL7" stream issue needs to be put to bed.
+
+FHIR already has a formal mechanism for defining extensions. The added goal here
+is to connect registration and governance to compiled implementations. The public
+upload/compilation service is planned; it is distinct from the optional codec
+host and from JavaScript/WASM language bindings. Compilation cannot by itself
+guarantee clinical meaning, permanent availability, or compatibility with every
+reader. See the [extension details](#extensions-and-modifierextensions).
+
+## Binary Encoding and Reliability
+
+Direct-access binary formats avoid unpacking an entire message just to read a
+few fields. This is the motivation behind [FlatBuffers](https://flatbuffers.dev/);
+[Protobuf](https://protobuf.dev/overview/) also provides compact encoding and
+generated APIs, but normally parses messages into a separate representation.
+FastFHIR applies direct buffer access to FHIR-defined clinical data and adds
+structural recovery metadata. "Zero-copy" describes the direct read path, not
+network transport, JSON conversion, validation, or owning-value materialization.
+
+### Binary payloads and text encoding
+
+Arbitrary binary can contain HL7v2 delimiters such as pipes, carets, or segment
+terminators. Valid HL7v2 ED Base64 avoids these collisions with the usual
+delimiters, at approximately one-third expansion before compression plus
+encoding/decoding work. FHIR JSON `Attachment.data` also uses Base64; external
+references and native FHIR Binary HTTP responses are alternatives.
+
+A length-delimited binary representation can avoid that text-encoding step,
+but a binary container alone does not establish an end-to-end raw-payload API.
+FastFHIR's current FHIR `base64Binary` ingestion is string-like. Native BAM/DICOM
+insertion, extraction, and byte-identical round trips need explicit validation
+before claiming that workflow avoids Base64. Structural recovery is not repair
+of a damaged compressed genomic or image payload.
+
+### Structural redundancy
+
+Location and type information provide structural evidence for checking and
+recovering a damaged stream. Like the redundancy in a 2D barcode, the purpose
+is to retain useful information despite damage. The mechanism is different:
+FastFHIR does not provide a general payload error-correcting code. Recovery can
+fail or produce incorrect or extra values. Recovered content needs independent
+validation before clinical use; correct-field yield is not whole-record integrity.
 
 ---
 
 ## Table of Contents
 
+- [FAQ](#faq)
+- [Binary Encoding and Reliability](#binary-encoding-and-reliability)
 - [Why FastFHIR?](#why-fastfhir)
 - [Quick Start](#quick-start)
 - [Getting Started](#getting-started)
@@ -78,6 +162,7 @@ __A: I am stricter than normal FHIR when it comes to extensions. We are adding a
   - [5 — Surgically edit one patient in a 5 GB bundle and reseal](#5--surgically-edit-one-patient-in-a-5-gb-bundle-and-reseal)
   - [6 — Lock-Free Concurrent Generation](#6--lock-free-concurrent-generation)
   - [7 — Compact Archives](#7--compact-archives)
+    - [8 — Calling from C](#8--calling-from-c-fastfhirh)
 - [CLI Tools](#command-line-interface-tools)
   - [ff\_ingest](#ff_ingest)
   - [ff\_export](#ff_export)
@@ -98,39 +183,39 @@ __A: I am stricter than normal FHIR when it comes to extensions. We are adding a
 
 ## Why FastFHIR?
 
-### 1. Extreme Performance & Compact Size
-FastFHIR turns data traversal into pointer arithmetic.
-* **O(1) Random Access:** Jump straight to any nested FHIR field. HL7v2 and JSON have to scan for it; FastFHIR does not.
-* **Zero Heap Allocation:** Navigation and reflection allocate nothing. Field metadata is zero-copy `std::span` views over static tables, and a `Node` is a lens directly over the raw buffer — reads are nanosecond-scale the moment the bytes are in RAM. (One exception: `entries()` returns an owning `std::vector<Node>`, one allocation per call.)
-* **Zero-Copy Engine:** No deserialization phase, no varint unpacking, no C++ message objects — the receiver reads the bytes it was sent. For measured throughput, see [FastFHIR-benchmark](https://github.com/ryanlandvater/FastFHIR-benchmark).
-* **Small on Disk:** Optional compact archives strip absent fields with presence bitmasks and dense packing; the savings are largest on sparse resources (see [Compact Archives](#7--compact-archives)).
+### 1. Direct Access and Compact Archives
+FastFHIR turns field navigation into offset-based buffer access.
+* **Direct Field Access:** Follow known field offsets without a whole-message parse. Nested paths still require traversal, and finding a matching resource can require a scan or index. Parsed or indexed JSON/HL7v2 readers are distinct comparison cases.
+* **Non-Owning Views:** Field metadata uses `std::span` views over static tables; a `Node` views the encoded buffer. Owning strings, materialized objects, and `entries()` vectors can allocate.
+* **No Unpacking for Direct Reads:** Access supported fields without constructing a second message object graph. Conversion and validation have their own costs. See [FastFHIR-benchmark](https://github.com/ryanlandvater/FastFHIR-benchmark) for measured workloads and timing boundaries.
+* **Optional Compaction:** Compact archives strip absent fields with presence bitmasks and dense packing. Size savings depend on sparsity and workload; see [Compact Archives](#7--compact-archives).
 
 ### 2. Type Safety & Validated FHIR Format
-* **Strict Schema Validation:** Every object carries an explicit `RECOVERY_TAG` in its binary layout, so polymorphic resolution and C++ type checks are enforced at runtime — no mistyped reads, no garbage, no buffer overruns. Every resource is validated against the official FHIR Structure Definitions at generation time.
+* **Generated Types and Structural Checks:** APIs and layouts derive from HL7 StructureDefinitions. Runtime offset, bounds, and recovery-tag checks support typed access. Schema-derived code does not by itself establish that every resource satisfies its clinical profile or that arbitrary hostile input is safe.
 * **Native Polymorphic Types:** FastFHIR handles FHIR's polymorphic fields as the spec defines them — choice elements such as `valueQuantity` and `valueString`, and resource-bearing slots such as `Bundle.entry.resource`. Concrete payload types keep their identity through ingest, traversal, mutation, and re-export.
-* **Structured Codes & Extensions:** Extensions are routed at ingest time. Registered extensions decode into typed binary fields (WASM codecs); unknown ones keep their URL. Codes come from official FHIR CodeSystems.
+* **Structured Codes & Extensions:** Codes derive from FHIR CodeSystems; extension URLs are classified during ingestion. The optional WASM codec path and planned registry are described below. Unknown-URL retention does not guarantee preservation of unknown extension content.
 * **Primitive Extensions:** FHIR's underscore-prefixed primitive extension model works end to end — extensions on scalar primitives survive ingest, validation, traversal, and re-export. Generic protobuf JSON tools do not implement this.
-* **Conformance Checking Is Opt-In:** Structural validation (a block sits at its own offset, carries its tag, fits in the arena) always runs. *Conformance* is a separate, attachable layer generated from the HL7 StructureDefinitions: required elements like `Observation.status`, cardinality, and a queryable record of every FHIRPath invariant it does not evaluate. Build with `-DFASTFHIR_BUILD_CONFORMANCE=ON` and attach it with `Builder::attach_layer`. Attached, it writes a byte-identical stream; detached, it costs one null check. See `examples/conformance_layer.cpp`.
+* **Conformance Checking Is Opt-In:** Structural validation (a block sits at its own offset, carries its tag, fits in the arena) always runs. *Conformance* is a separate, attachable layer generated from the HL7 StructureDefinitions: required elements like `Observation.status`, cardinality, and a queryable record of every FHIRPath invariant it does not evaluate. Build with `-DFASTFHIR_BUILD_CONFORMANCE=ON` and attach it with `FF_BuilderAttachLayer`. Attached, it writes a byte-identical stream; detached, it costs one null check. See `examples/conformance_layer.cpp`.
 
 > **Scope.** FastFHIR is a serialization library, not a FHIR server. No REST API, no SMART on FHIR, no OAuth. The conformance layer checks *resources*, not *interactions* — it will tell you an `Observation` is missing its required `status`, and nothing about `$validate`, search parameters, or capability statements.
 
-### 3. Memory Safety & Integrity
-* **OS-Protected Memory:** Virtual Memory Arenas (POSIX `mmap` or Win32 `VirtualAlloc`) keep pointers stable and put access under the OS kernel. JSON's heap-fragmentation and injection surface is gone.
-* **Strict Polymorphic Type Checking:** The `RECOVERY_TAG` catches type confusion at runtime, so a field is never silently read as the wrong type. This guards against *malformed* data; the parser has not yet been fuzzed against *hostile* data (TASKS.md G1).
-* **Integrity Footers:** Optional checksum footers (CRC32/MD5/SHA-256) detect corruption and accidental modification. This is *integrity*, not *authenticity* — anyone who can rewrite the payload can recompute the footer. Signed archives are tracked in TASKS.md G4.
-* **Deterministic Layout:** Every byte position is predetermined. No dynamic allocation, no reallocation surprises — what safety-critical workflows need.
+### 3. Structural Checking and Recovery
+* **Arena-Based Storage:** Virtual memory arenas keep buffer addresses stable within their documented lifetime and capacity rules. OS mapping does not replace bounds checks or establish immunity to injection or memory-safety defects.
+* **Location and Type Evidence:** Self-offsets, references, and recovery tags support structural validation and recovery. Their redundancy is not a guarantee that every damaged edge can be reconstructed correctly.
+* **Integrity Footers:** Optional CRC32/MD5/SHA-256 footers support corruption detection. An unkeyed checksum is not authenticity: a writer can alter the data and recompute it. MD5 is not suitable for adversarial integrity claims. Signed archives remain roadmap work.
+* **Explicit Safety Boundary:** Malformed-input checks and structural-recovery tests are not hostile-input fuzzing or clinical validation. Reject, quarantine, or independently validate damaged/recovered data as appropriate; do not infer safe clinical use from a high recovery percentage.
 
 ### 4. Clinical Informatics: Lock-Free Enrichment & Custom Profiles
-* **Lazy Enrichment:** Read a `Patient.id` or route a payload without parsing the other 9,999 fields in a `Bundle` — you pay only for the bytes you traverse. Add a lab result without touching any other byte: append it and reseal.
-* **Mutex-Free Concurrency:** Fill one contiguous stream from thousands of threads. Atomic pointer patching means surgical appends (NLP annotations, for instance) need no locks.
+* **Selective Reads and Updates:** Read a field without unpacking unrelated resources. Append an observation without reserializing every resource; entry arrays, links, headers, and checksums can still need rewriting. Constant stream growth does not imply constant write traffic.
+* **Concurrent Construction:** The builder provides atomic allocation/publication mechanisms for the supported construction patterns below. This does not make arbitrary concurrent mutation, readers during mutation, or application-level coordination automatically safe.
 * **Custom Implementation Guides:** The generator composes profiles at build time from official HL7 bundles — US Core, UK Core, claims, or your own. A resource outside your profile still round-trips intact (see [Resource groupings](#resource-groupings)).
 
 ### 5. Developer Ergonomics & Cross-Language Support
-Native C++ and Python, no API tax for the speed.
+Native C++ with a C-facing API and compiled Python bindings share core implementation code.
 * **Static Keys:** Compiled O(1) typed keys such as `FastFHIR::Fields::PATIENT::ACTIVE` replace runtime string hashing.
 * **Assign to C++ Types:** Implicit conversion works directly (`std::string_view id = node[FastFHIR::Fields::PATIENT::ID]`), or materialize a whole struct (`PatientData patient = parser.root()`).
 * **JSON-Style Traversal:** `root[FastFHIR::Fields::PATIENT::NAME][0]` walks the tree.
-* **FHIR-Accurate JSON:** `ff_ingest`, `ff_export`, and the C++/Python APIs round-trip official FHIR JSON, including choice fields, resource slots, and primitive extensions. Generic protobuf JSON helpers like `google::protobuf::util::MessageToJsonString` do not implement the FHIR JSON spec.
+* **FHIR-Aware JSON:** `ff_ingest`, `ff_export`, and the APIs handle FHIR-specific choices, resource slots, and primitive extensions. Check profile coverage and extension policy for the required round trip. Generic protobuf JSON helpers like `google::protobuf::util::MessageToJsonString` are not substitutes for FHIR-aware conversion; Google FHIR provides its own utilities.
 
 ---
 
@@ -141,9 +226,9 @@ Native C++ and Python, no API tax for the speed.
 >
 > #### **→ [Read the Python API guide](python/README.md)**
 >
-> The cross-language bindings give you the whole library — the same memory-mapped
-> arena, the same O(1) typed field keys, the same zero-copy reads and lock-free
-> in-stream enrichment — driven from Python.
+> Python's compiled module reuses the native core and exposes generated field
+> keys, buffer access, and construction APIs. Python values and conversions can
+> still allocate; consult the guide for supported operations and lifetime rules.
 > 
 
 ## Build From Source Prerequisites
@@ -233,9 +318,10 @@ payer-side, use `us-core,billing`.
 
 > [!NOTE]
 > **The profile decides which resources this build can *binary-encode* — not what a stream can carry.**
-> Data is never dropped. A resource outside your profile keeps its JSON verbatim in
-> the stream and is re-emitted byte-for-byte on export, so any FHIR document
-> round-trips losslessly whatever you compiled. What you lose is *typed access*:
+> A resource outside your compiled profile uses an opaque JSON fallback rather
+> than generated typed storage. This resource-level fallback is not a guarantee
+> of lossless round trips for all content; extension policies still matter for
+> typed resources. What the opaque fallback does not provide is *typed access*:
 > with no V-Table there is no `Node` navigation, no query, and no interior compaction — it behaves like ordinary FHIR. Pick a profile for the resources you
 > want FastFHIR-native; you do not have to enumerate every type in existence.
 
@@ -661,10 +747,11 @@ Two slot kinds need care:
 
 ## 3 — Re-open a `.ffhr` file and enrich it in place
 
-FastFHIR's arena is append-only and memory-mapped. Writing new fields appends new bytes
-to the tail and amends only the field pointers in the header — the original record bytes
-are never touched. The OS page cache flushes only the dirty pages (new tail + updated
-pointers). The file grows solely by the delta; no copy of existing data is ever made.
+FastFHIR's arena is memory-mapped. Variable-size updates can append new blocks
+and redirect field slots rather than reserialize the whole resource. Existing
+slots, entry arrays, headers, and checksum metadata may still be modified.
+The OS writes dirty pages; stream growth and total bytes written are different
+costs. Resealing can also read the existing stream to calculate its checksum.
 
 <!-- ff-compile: fragment run=example_3_enrich -->
 ```cpp
@@ -799,9 +886,9 @@ asio::write(conn, asio::buffer(view.data(), view.size())); // zero-copy egress
 
 ## 5 — Surgically edit one patient in a 5 GB bundle and reseal
 
-The bundle is memory-mapped — the OS pages only the entries you actually touch.
-Finding one patient, appending a lab result, and resealing never loads the other
-5 GB into RAM. The resources already in the bundle are never rewritten:
+The bundle is memory-mapped, so field access need not materialize every resource.
+Finding a patient can scan entries, and recalculating the stream checksum can
+read the full mapped range. Appending does not require reserializing existing resources:
 `FF_BundleAppendEntries` writes the new Observation, then writes the
 `Bundle.entry` array (one 84-byte entry per resource) after it.
 - **Array at the end of the stream** (built collect-then-serialize, Example 6a):
@@ -1642,8 +1729,8 @@ Subsequent reads pay no URL-lookup cost at all.
 
 | Condition | `EXT_REF` value | Stored as |
 |---|---|---|
-| URL resolves to a **registered WASM module** | `MSB = 1` → `MODULE_IDX` | Decoded at near-native speed; module indexed in `FF_MODULE_REGISTRY` |
-| URL is **unknown** at ingest time | `MSB = 0` → `URL_IDX` | Raw opaque JSON blob; URL indexed in `FF_URL_DIRECTORY` |
+| URL resolves to a **registered WASM module** | `MSB = 1` → `MODULE_IDX` | Codec module indexed in `FF_MODULE_REGISTRY`; encoding depends on the module |
+| URL is **unknown** at ingest time | `MSB = 0` → `URL_IDX` | URL indexed in `FF_URL_DIRECTORY`; full unknown payload preservation is not guaranteed |
 | URL is a **known/filtered** native extension | `FF_NULL_UINT32` (`0xFFFFFFFF`) | Block is suppressed — no arena bytes written |
 
 ### EXT_REF bit layout
@@ -1666,44 +1753,43 @@ ff_ext_ref_index(ref)       // extract the lower 31-bit index
 
 ---
 
-### Condition 1 — Registered WASM modules — binary-speed extension codecs
+### Condition 1 — Registered WASM modules — extension codecs
 
-FastFHIR's most distinctive capability is its open **extension module registry** — by default
-pointing to `https://registry.fastfhir.org` but configurable via the `FF_ExtensionRegistry`
-interface to point to any registry server. Any well-known custom extension — US Core
-race/ethnicity, clinical trial identifiers, organisation-specific profile extensions, and more —
-can have a published **WebAssembly codec module** that fully decodes the extension into typed
-binary fields, stored directly in the FastFHIR arena alongside natively generated resource data.
+The optional WASM host registers codec modules against extension URLs. A codec
+provides sizing, encoding, and decoding operations for the extension. Enable
+`FASTFHIR_ENABLE_EXTENSIONS` to build this subsystem and its runtime dependencies.
 
-When a module is registered for an extension URL, FastFHIR treats that extension with exactly the
-same performance and zero-copy access as a first-class built-in FHIR field. The ecosystem of
-available codecs grows over time as organisations and implementers publish modules to one or
-more registries.
+The **public extension registry is planned**. The intended workflow registers
+uploaded JSON extension definitions, compiles versioned WASM modules, and makes
+the definitions and modules available to consumers. This can reduce the private
+schema interpretation and repeated codec implementation associated with custom
+interfaces. Registration must also address canonical identifiers, terminology,
+review, compatibility, deprecation, and historical readability.
+
+The current remote-fetch functions in `src/FF_Extensions.cpp` are stubs; the
+`registry.fastfhir.org` address in the source is not evidence of a deployed
+service. Local registration and cache logic should not be confused with a
+completed upload, compilation, and distribution workflow.
 
 #### Why WebAssembly?
 
-Compiled WASM modules execute at **near-native speed** inside the FastFHIR runtime. A registered
-module replaces the generic JSON-blob fallback with a structured binary representation that is
-zero-copy readable — the same flat-buffer access pattern used by all first-class FHIR fields.
-Hot paths that access a registered extension field are indistinguishable in performance from
-accessing a built-in field like `Patient.birthDate`.
+WASM provides a portable target for generated extension codecs, allowing a
+shared host interface rather than a separately rewritten codec in every client
+language. The codec representation and host boundary determine allocation,
+copying, and execution costs. Performance parity with built-in fields must be
+measured; it does not follow merely from compiling a module to WASM.
 
-#### Safe sandboxing
+#### Sandbox and trust boundaries
 
-WASM's linear-memory model provides **hard memory isolation** between the host FastFHIR runtime
-and any loaded codec module:
+The host uses guest linear memory and explicit codec calls to constrain data
+exchange. This is a useful isolation mechanism, not a guarantee that arbitrary
+community modules are safe. Host/runtime defects, exposed imports, resource
+exhaustion, and incorrect codec output remain relevant risks.
 
-- Each module operates exclusively within its own bounded linear memory region.
-  It cannot read or write FastFHIR's arena, stack, or other modules' memory.
-- There are no native pointers shared across the boundary — all data exchange goes through
-  explicitly typed host-import/export function calls.
-- A misbehaving or malicious codec module cannot corrupt the host process, escalate privileges,
-  or access patient data outside its own sandbox.
-- Modules may be loaded, unloaded, and replaced at runtime without restarting the host.
-
-This makes it safe to consume community-published modules from a configured registry server
-(e.g. `https://registry.fastfhir.org`) — or a partner organisation's proprietary
-profile codec — without trusting their compiled binary with direct memory access.
+Treat module provenance, allowed imports, memory/execution limits, version
+pinning, output validation, and runtime security maintenance as deployment
+requirements. A content hash can detect a mismatch with expected bytes; it does
+not by itself authenticate the publisher or validate clinical meaning.
 
 #### Module registration
 
@@ -1724,8 +1810,10 @@ FastFHIR::Extensions::FF_WasmExtensionHost::get().register_module(
 );
 ```
 
-Modules can also be pulled directly from a registry at runtime. The registry base URL is
-configurable through `FF_ExtensionRegistry`; the example below uses the default public registry:
+The resolution API checks registration/cache state and contains a remote-fetch
+path. Remote retrieval is currently stubbed, so this example must not be read as
+a working public-registry download. Check its return value and apply an explicit
+policy when the required codec is unavailable:
 
 <!-- ff-compile: fragment requires=extensions -->
 ```cpp
@@ -1778,9 +1866,11 @@ if (parser.has_url_directory()) {
 
 ### Condition 3 — Filtered / suppressed extensions
 
-Some extensions carry no clinical payload of interest (e.g. HL7-defined rendering hints,
-US Core race narrative text, data-absent-reason flags that are already captured natively).
-For these, FastFHIR writes `FF_NULL_UINT32` into `EXT_REF` at predigestion time and skips the
+Configured extension filters can suppress selected content, including fields
+intended to be represented natively. Whether suppression preserves the required
+clinical information must be verified for the profile and workflow; a
+data-absent-reason or modifier extension is not generically disposable.
+For filtered extensions, FastFHIR writes `FF_NULL_UINT32` into `EXT_REF` at predigestion time and skips the
 block entirely during the ingest pass. No memory is allocated, no bytes are written to the arena,
 and no pointer appears in the binary record.
 
@@ -1797,9 +1887,12 @@ At ingest time `FF_PredigestExtensionURLs()` runs before any resource data is wr
 the full payload, classifies each URL against the filter table, and builds the intern state
 consumed by all subsequent worker threads.
 
-`modifierExtension` elements follow **exactly the same** three-path routing as `extension`. A
-modifier extension with a registered module is decoded at full binary speed; one with an unknown
-URL is preserved as raw JSON with full fidelity.
+`modifierExtension` elements use the same routing machinery as `extension`, but
+their clinical meaning is not interchangeable: a modifier can change how the
+containing element must be interpreted. Unknown-URL retention does not guarantee
+payload preservation or understanding. Applications must detect unsupported
+modifier extensions before relying on the affected data; reject or quarantine
+when the required interpretation cannot be established.
 
 ---
 

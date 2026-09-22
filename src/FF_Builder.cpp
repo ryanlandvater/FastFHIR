@@ -13,6 +13,7 @@
 #include "FF_Ops.hpp"
 #include "FF_Logger.hpp"
 #include "FF_UrlDirectory.hpp"
+#include "FF_Conformance_internal.hpp"
 #include <atomic>
 #include <stdexcept>
 #include <thread>
@@ -251,12 +252,12 @@ void Builder_t::attach_layer(const Conformance::ValidationHooks* hooks)
     // loud, and before any damage; at dispatch it would be neither.
     for (const Conformance::ValidationHooks* l = hooks; l != nullptr; l = l->next)
     {
-        if (l->abi_version == Conformance::FF_CONFORMANCE_ABI)
+        if (l->abi_version == Conformance::CONFORMANCE_ABI)
             continue;
         throw std::runtime_error(
             "FastFHIR: conformance layer ABI mismatch: the layer reports version " +
             std::to_string(l->abi_version) + ", this build speaks " +
-            std::to_string(Conformance::FF_CONFORMANCE_ABI) +
+            std::to_string(Conformance::CONFORMANCE_ABI) +
             ". Rebuild the layer against this release.");
     }
     m_layer = hooks;
@@ -583,9 +584,14 @@ Memory::View Builder_t::finalize(FF_Checksum_Algorithm algo, const HashCallback 
             }
         } latch{m_finalizing};
 
-        const Conformance::Status status = Conformance::dispatch_stream(
-            m_layer, m_memory->base(), m_memory->capacity(), m_fhir_rev,
-            m_root_offset, m_root_recovery);
+        Conformance::StreamCheckInfo info;
+        info.arena         = m_memory->base();
+        info.arena_size    = m_memory->capacity();
+        info.fhir_version  = static_cast<uint32_t>(m_fhir_rev);
+        info.root_offset   = static_cast<uint64_t>(m_root_offset);
+        info.root_recovery = static_cast<uint64_t>(m_root_recovery);
+        // info.self is stamped per layer inside dispatch_stream().
+        const Conformance::Status status = Conformance::dispatch_stream(m_layer, info);
         if (!status && status.policy != Conformance::LayerPolicy::Report)
             throw std::runtime_error(conformance_message(status));
         latch.passed = true;

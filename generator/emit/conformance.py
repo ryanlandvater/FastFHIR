@@ -53,7 +53,7 @@ import os
 
 from generator.emit.header import auto_header, write_if_changed
 
-# Version mask bits. These mirror FF_CONF_VERSION_* in include/FF_Conformance.hpp;
+# Version mask bits. These mirror CONF_VERSION_* in include/FF_Conformance.hpp;
 # FHIR_VERSION's own values (0x0400, 0x0500) are ordinals and cannot express
 # "both", which is what a rule that holds for R4 and R5 alike needs to say.
 _VERSION_BITS: dict[str, int] = {"R4": 1, "R5": 2}
@@ -405,7 +405,7 @@ def generate_conformance_layer(
         "//     hooks.policy     = FastFHIR::Conformance::LayerPolicy::Report;\n"
         "//     hooks.diagnostic = &logger;\n"
         "//     hooks.failures   = &failures;\n"
-        "//     builder.attach_layer(&hooks);\n"
+        "//     FF_BuilderAttachLayer({.builder = builder, .hooks = &hooks});\n"
         "//\n"
         "// Copy the struct before touching it, as above: the one this returns is\n"
         "// shared and immutable.\n"

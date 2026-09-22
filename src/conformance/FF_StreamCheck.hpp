@@ -31,7 +31,7 @@
  */
 #pragma once
 
-#include "FF_Conformance.hpp"
+#include "FF_Conformance_internal.hpp"
 
 #include <cstdint>
 
@@ -52,20 +52,16 @@ namespace Conformance
  * set to resolve against, so it returns OK rather than reporting every reference
  * as unresolved.
  *
- * @param arena         Base of the arena the stream lives in.
- * @param arena_size    Mapped length of @p arena.
- * @param fhir_version  The revision the stream was written as.
- * @param root_offset   Offset of the document root block.
- * @param root_recovery RECOVERY_TAG of the document root block.
- * @param self          The layer, for its sink and failure counter.
+ * @param info  The whole-stream arguments: the arena and its length, the FHIR
+ *              revision, the root block's offset and tag, and `self` — the layer
+ *              that owns this check, for its sink and failure counter. Stamped
+ *              by dispatch_stream(); see FF_Conformance.hpp.
  * @return The FIRST unresolved `urn:` reference, or OK when there is none. A
  *         `urn:` that does not resolve is an error; a relative reference that
  *         does not resolve is reported through `self` and counted, but is not
  *         returned — a warning must not stop a finalize that is otherwise fine.
  */
-[[nodiscard]] Status check_stream_references(const void* arena, uint64_t arena_size,
-                                             uint32_t fhir_version, uint64_t root_offset,
-                                             uint64_t root_recovery, const ValidationHooks* self);
+[[nodiscard]] Status check_stream_references(const StreamCheckInfo& info);
 
 } // namespace Conformance
 } // namespace FastFHIR

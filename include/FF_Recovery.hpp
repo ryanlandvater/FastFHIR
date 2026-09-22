@@ -231,6 +231,71 @@ struct BlockVerdict {
     std::vector<Offset>     candidates;    ///< populated for Ambiguous
 };
 
+// ---------------------------------------------------------------------------
+// The FF_HEADER — the one structure with no self-offset of its own (REC-24)
+// ---------------------------------------------------------------------------
+
+/// Which FF_HEADER field a verdict concerns.
+///
+/// Every other structure in the arena proves its own location: a block's
+/// VALIDATION word holds its own offset, so a reader can ask the bytes whether
+/// they are what they claim. The header has no such word. It sits at offset 0
+/// by definition, so a self-offset would carry no information, and the four
+/// bytes at position 0 are the MAGIC stamp instead.
+///
+/// That leaves the header's fields with a different kind of witness, and there
+/// is one for each of them somewhere else in the arena:
+///
+///   * a COMPILE-TIME CONSTANT the writer always stores (MAGIC, RECOVERY);
+///   * a CLOSED SET of legal values the writer chooses from (the FHIR
+///     revision, the two-bit stream layout);
+///   * an EXACT ARITHMETIC IDENTITY with another header field — the checksum
+///     footer is the last block in a sealed stream, so STREAM_SIZE always
+///     equals CHECKSUM_OFFSET + FF_CHECKSUM::HEADER_SIZE;
+///   * the ONE SELF-VALIDATING BLOCK in the census that the field is required
+///     to name (the root, the checksum footer, the URL directory, the module
+///     registry).
+///
+/// A single flipped bit in any of the offset fields made the Parser refuse the
+/// entire stream, so the loss was total rather than local: 54 of 495,882
+/// corruptible byte positions, which is 20% of trials at 2,048 flips, and the
+/// whole distance between a 76.7% mean and a 95.6% median.
+enum class HeaderField : uint8_t {
+    Magic = 0,             ///< the fixed constant FF_MAGIC_BYTES
+    Recovery,              ///< the fixed constant RECOVER_FF_HEADER
+    FhirRevision,          ///< FHIR_VERSION_R4 or FHIR_VERSION_R5
+    StreamSize,            ///< CHECKSUM_OFFSET + FF_CHECKSUM::HEADER_SIZE
+    RootOffset,            ///< a census block whose tag is ROOT_RECOVERY
+    RootRecovery,          ///< the wire tag of the block at ROOT_OFFSET
+    ChecksumOffset,        ///< the census block tagged RECOVER_FF_CHECKSUM
+    UrlDirectoryOffset,    ///< the census block tagged RECOVER_FF_URL_DIRECTORY
+    ModuleRegistryOffset,  ///< the census block tagged RECOVER_FF_MODULE_REGISTRY
+    StreamLayout,          ///< the 2-bit layout field packed into VERSION
+};
+
+/// One header field and what the evidence says about it.
+///
+/// The repair classes are the block classes, read for a field rather than for
+/// a reference: `Intact` when the stored value already agrees with its witness,
+/// `Corroborated` when a witness elsewhere in the arena determined the true
+/// value, `Ambiguous` when more than one value remains supported, and
+/// `Unrecovered` when the witness this field depends on is itself gone.
+/// `TagRepaired`, `PositionRepaired` and `ExtentDerived` never appear here —
+/// they name repairs to a block's own header, which the FF_HEADER does not have.
+struct HeaderVerdict {
+    HeaderField           field    = HeaderField::Magic;
+    RepairClass           class_   = RepairClass::Unrecovered;
+    uint64_t              stored   = 0;  ///< the value on the wire right now
+    uint64_t              restored = 0;  ///< the value the evidence supports
+    uint32_t              bit_cost = 0;  ///< Hamming distance between the two
+    /// Why the verdict reads as it does, in one phrase, for a driver's log.
+    /// Static storage: these are literals chosen from a fixed set.
+    const char*           why      = "";
+    /// Populated for Ambiguous — every value still supported by the evidence,
+    /// so a caller can see what the engine declined to choose between.
+    std::vector<uint64_t> candidates;
+};
+
 /// The P0-3 reconciliation result. Counts are precomputed so a driver can
 /// report "blocks recovered / total blocks" without re-walking the vectors.
 struct FF_RecoveryReport {
@@ -247,6 +312,14 @@ struct FF_RecoveryReport {
     /// benchmark fingerprint is built from (F3: parent identity makes
     /// misattachment fail the subset check).
     std::vector<BlockVerdict> blocks;
+
+    /// REC-24 — one verdict per FF_HEADER field, in HeaderField order. The
+    /// header is reconciled BEFORE the reference walk, because the walk starts
+    /// at the root the header names: a damaged ROOT_OFFSET used to cost the
+    /// whole document, and restoring it here is what lets the rest of this
+    /// report exist at all. `header_repaired` counts the Corroborated ones.
+    std::vector<HeaderVerdict> header;
+    std::size_t                header_repaired = 0;
 
     /// REC-19.2 — the merged producer failure lists (scan tag audit +
     /// hierarchical reference judgment). Audit only; the verdicts are the
@@ -423,13 +496,44 @@ private:
     TagCopy adjudicate_tag(Offset child, RECOVERY_TAG slot_tag,
                            RECOVERY_TAG child_tag) const;
 
-    /// The ONE offset-chain walk: DFS from the root through intact references,
+    /// Where the walk starts, and what type it starts under.
+    ///
+    /// The raw form comes off the wire (`wire_root()`); the reconciled form
+    /// comes out of reconcile_header(), which may have restored either half
+    /// from the census. Carrying them in one struct is what lets every walk
+    /// take the SAME root: reading the header again inside a callee is how a
+    /// restored root silently stops being used.
+    struct RootAnchor {
+        Offset       offset = FF_NULL_OFFSET;
+        RECOVERY_TAG tag    = FF_RECOVER_UNDEFINED;
+        /// False when the MAGIC stamp does not hold and no evidence restored
+        /// it, which means nothing here may be believed.
+        bool         usable = false;
+    };
+
+    /// The root exactly as the bytes state it, with no reconciliation at all.
+    /// The clean-stream baseline path uses this: a caller vouching for its
+    /// bytes has no damaged header to repair and must not pay for a census.
+    RootAnchor wire_root() const noexcept;
+
+    /// REC-24 — reconcile every FF_HEADER field against its witness and return
+    /// the root the rest of recover() should walk from. Read-only, like the
+    /// rest of recover(): the verdicts say what the bytes ought to be and
+    /// apply() is still the only path that writes them.
+    RootAnchor reconcile_header(const StreamMap& census,
+                                std::vector<HeaderVerdict>& out) const;
+
+    /// The offset-chain walk over a NAMED root, so a restored root is walked
+    /// exactly like an intact one.
+    StreamMap reachable_blocks_map(const RootAnchor& root) const;
+
+    /// The ONE offset-chain walk: DFS from `root` through intact references,
     /// depth- and cycle-bounded. Returns every reachable block offset (the
     /// orphan test's other half); when `out` is non-null, also appends each
     /// visited block's references (the clean-stream baseline enumeration); when
     /// `failures` is non-null, also records each damaged reference it meets
     /// (REC-19.3, the hierarchical producer's audit).
-    std::vector<Offset> walk_chain(std::vector<BlockRef>* out,
+    std::vector<Offset> walk_chain(const RootAnchor& root, std::vector<BlockRef>* out,
                                    std::vector<ProducerFailure>* failures = nullptr) const;
 
     const BYTE* m_base = nullptr;

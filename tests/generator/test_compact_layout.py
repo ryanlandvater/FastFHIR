@@ -28,7 +28,11 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GENERATED = _REPO_ROOT / "generated_src"
-_PRIMITIVES = _REPO_ROOT / "include" / "FF_Primitives.hpp"
+# The slot contract lives in the bottom layer: FF_Primitives.hpp was split
+# into FF_Constants.hpp (vocabulary) / FF_Values.hpp (consumer types) /
+# FF_Primitives.hpp (wire blocks). ff_slot_width and FF_FieldKind are
+# vocabulary, so this gate reads FF_Constants.hpp.
+_PRIMITIVES = _REPO_ROOT / "include" / "FF_Constants.hpp"
 _COMPACTOR = _REPO_ROOT / "src" / "FF_Compactor.cpp"
 
 
@@ -39,8 +43,8 @@ def test_slot_width_is_defined_exactly_once():
         for p in list(_REPO_ROOT.glob("include/*.hpp")) + list(_REPO_ROOT.glob("src/*.cpp"))
         if re.search(r"constexpr\s+uint8_t\s+ff_slot_width\s*\(", p.read_text(encoding="utf-8"))
     ]
-    assert [p.name for p in defs] == ["FF_Primitives.hpp"], (
-        "ff_slot_width must be defined once, in FF_Primitives.hpp; "
+    assert [p.name for p in defs] == ["FF_Constants.hpp"], (
+        "ff_slot_width must be defined once, in FF_Constants.hpp; "
         f"found in {[p.name for p in defs]}"
     )
 

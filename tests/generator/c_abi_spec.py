@@ -77,7 +77,9 @@ class EnumValue:
 class Enum:
     cpp_type: str  # C++ enum type name, for messages
     values: tuple[EnumValue, ...]
-    cpp_header: str = "FF_Primitives.hpp"
+    # FHIR_VERSION and FF_Checksum_Algorithm are vocabulary, so they moved to
+    # FF_Constants.hpp when FF_Primitives.hpp was split into three layers.
+    cpp_header: str = "FF_Constants.hpp"
 
 
 # Every C++ `Info` struct that has a C twin. The order here is the order the

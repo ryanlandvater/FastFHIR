@@ -313,13 +313,23 @@ FF_RecoveryReport Recovery::recover() const {
     // std::terminate the process, so each worker captures its failure and it
     // is rethrown on the calling thread after join. Specific catch, not
     // `...`: anything that is not a std::exception is a bug worth crashing on.
+    //
+    // The walk is launched SPECULATIVELY, on the root exactly as the wire
+    // states it, before the header has been reconciled. That is deliberate and
+    // it costs nothing either way: when the root is intact -- four trials in
+    // five -- the speculative walk is already the right one and nothing is
+    // repeated; when it is damaged the walk bails on its first test and
+    // returns an empty map, so re-running it against the restored root below
+    // is as cheap as running it once. Reconciling first instead would
+    // serialise the census behind a decision the census has to supply.
+    RootAnchor root = wire_root();
     StreamMap chain_map;  // hierarchical producer: reachable blocks, sized
     StreamMap scan_map;   // scanned producer: the byte census
     std::exception_ptr chain_error;
     std::exception_ptr census_error;
-    std::thread hierarchical([this, &chain_map, &chain_error] {
+    std::thread hierarchical([this, &chain_map, &chain_error, root] {
         try {
-            chain_map = reachable_blocks_map();
+            chain_map = reachable_blocks_map(root);
         } catch (const std::exception&) {
             chain_error = std::current_exception();
         }
@@ -337,6 +347,24 @@ FF_RecoveryReport Recovery::recover() const {
         std::rethrow_exception(chain_error);
     if (census_error)
         std::rethrow_exception(census_error);
+
+    // REC-24 — THE HEADER FIRST, BECAUSE EVERYTHING BELOW STARTS AT ITS ROOT.
+    //
+    // Every pass after this one walks from the root the header names, so a
+    // header that cannot be read is not a local loss but a total one. The
+    // census is in hand now, which is what the reconciliation needs: the block
+    // the root names, and the singleton blocks the metadata fields name, are
+    // all in it. Re-walk only when the reconciliation actually moved the root,
+    // so an intact header pays nothing at all.
+    const RootAnchor reconciled = reconcile_header(scan_map, rep.header);
+    for (const HeaderVerdict& v : rep.header)
+        if (v.class_ == RepairClass::Corroborated)
+            ++rep.header_repaired;
+    if (reconciled.usable &&
+        (reconciled.offset != root.offset || reconciled.tag != root.tag || !root.usable)) {
+        root = reconciled;
+        chain_map = reachable_blocks_map(root);
+    }
 
     // ADMIT PARENT-ATTESTED BLOCKS BEFORE ENUMERATING, AND ENUMERATE UNDER
     // THE CORROBORATED TYPE.
@@ -397,14 +425,14 @@ FF_RecoveryReport Recovery::recover() const {
     for (const auto& [off, entry] : chain_map)
         reached.insert(off);
 
+    // The admission frontier starts at the RECONCILED root, like every other
+    // walk in this function — reading the header again here is how a restored
+    // root stops being the one the pass actually uses.
     std::vector<std::pair<Offset, RECOVERY_TAG>> frontier;
-    if (header_is_readable(m_base, m_size)) {
-        const Offset root = FF_HEADER(m_size).get_root(m_base);
-        if (root != FF_NULL_OFFSET && root >= 0 &&
-            static_cast<size_t>(root) + DATA_BLOCK::HEADER_SIZE <= m_size &&
-            plausible_tag(tag_at(m_base, m_size, root)))
-            frontier.emplace_back(root, tag_at(m_base, m_size, root));
-    }
+    if (root.usable && root.offset != FF_NULL_OFFSET && root.offset >= 0 &&
+        static_cast<size_t>(root.offset) + DATA_BLOCK::HEADER_SIZE <= m_size &&
+        plausible_tag(root.tag))
+        frontier.emplace_back(root.offset, root.tag);
     while (!frontier.empty()) {
         std::vector<std::pair<Offset, RECOVERY_TAG>> next;
         for (const auto& [off, use] : frontier) {
@@ -1390,15 +1418,17 @@ FF_RecoveryReport Recovery::recover() const {
 // PRODUCERS — the two maps, in call order (REC-19.1)
 // =====================================================================
 
-StreamMap Recovery::reachable_blocks_map() const {
+StreamMap Recovery::reachable_blocks_map() const { return reachable_blocks_map(wire_root()); }
+
+StreamMap Recovery::reachable_blocks_map(const RootAnchor& root) const {
     // The HIERARCHICAL producer (REC-19.4): the offset-chain walk, sized per
     // visited block. Sizes are the delta over the bare-offset walk — without
     // them the map cannot tile, and offset + entry.size is what maps holes.
     StreamMap map;
     map.file_size = static_cast<Size>(m_size);
-    if (header_is_readable(m_base, m_size))
+    if (root.usable || header_is_readable(m_base, m_size))
         map[0] = {StreamMapEntryType::Header, 0, FF_HEADER::HEADER_SIZE};
-    for (const Offset off : walk_chain(nullptr, &map.failures)) {
+    for (const Offset off : walk_chain(root, nullptr, &map.failures)) {
         if (map.contains(off))
             continue;
         map[off] = classify_block(m_base, m_size, off);
@@ -1485,19 +1515,352 @@ StreamMap Recovery::scan() const {
 }
 
 // =====================================================================
+// REC-24 — THE HEADER, RECONCILED AGAINST THE CENSUS
+// =====================================================================
+// Fifty-four bytes with no self-offset of their own, and until this pass no
+// repair at all: a single flipped bit in ROOT_OFFSET made the Parser refuse
+// the whole stream, so a document whose 60,000 blocks were otherwise perfect
+// scored nothing. Measured on a 3.3 MB Synthea artifact, the header is 54 of
+// 495,882 corruptible positions, so at 2,048 flips it is hit in 1 - e^(-0.223)
+// = 20% of trials -- which is exactly the 4-in-20 zero-scoring rate the
+// benchmark recorded, and the whole distance between its 76.7% mean and its
+// 95.6% median.
+//
+// Nothing here searches. Each field is compared against a witness that already
+// exists elsewhere, and the rules differ because the witnesses do:
+//
+//   A CONSTANT the writer always stores. MAGIC and RECOVERY are compiled in,
+//   so the true value is known outright and the only question is whether these
+//   bytes are a FastFHIR stream at all. The census answers that: a position
+//   whose eight bytes equal its own offset occurs by chance at 2^-64, so a
+//   handful of them is proof, and a file that is not one produces none.
+//
+//   A CLOSED SET the writer chooses from. The FHIR revision is R4 or R5; the
+//   stream layout is standard or compact. A value outside the set is damage,
+//   and the unique member within the flip budget is the repair. When two
+//   members are equally close the field stays Ambiguous -- R5 with bit 8
+//   flipped IS R4, and no evidence in the header separates them.
+//
+//   AN IDENTITY WITH ANOTHER FIELD. The checksum footer is the last block a
+//   sealed stream contains, so STREAM_SIZE equals CHECKSUM_OFFSET plus that
+//   block's size on every stream the writer produces. Two fields, one fact,
+//   each one a witness for the other.
+//
+//   A SINGLETON IN THE CENSUS. The checksum footer, the URL directory and the
+//   module registry occur at most once per stream, so a field required to name
+//   one has exactly one candidate whenever the block itself survived. That
+//   candidate is not reached by proximity, so the flip budget does not govern
+//   it: the budget bounds a SEARCH, and there is no search when the arena
+//   contains one block of the type and no other. The Hamming distance is
+//   recorded as a diagnostic.
+//
+//   THE BLOCK THE FIELD NAMES. ROOT_OFFSET and ROOT_RECOVERY witness each
+//   other the way a resource tuple's two halves do: the header states the
+//   root's address and its type, and the block at that address states its own
+//   address and its own type. Whichever half survived identifies the other.
+//
+// Where a rule leaves more than one value supported, the verdict is Ambiguous
+// and carries the alternatives. apply() writes the Corroborated ones and
+// nothing else, so an ambiguity stays declared rather than becoming a silent
+// choice.
+Recovery::RootAnchor Recovery::wire_root() const noexcept {
+    RootAnchor anchor;
+    if (!header_is_readable(m_base, m_size))
+        return anchor;
+    anchor.offset = FF_HEADER(m_size).get_root(m_base);
+    anchor.tag    = tag_at(m_base, m_size, anchor.offset);
+    anchor.usable = true;
+    return anchor;
+}
+
+Recovery::RootAnchor Recovery::reconcile_header(const StreamMap& census,
+                                                std::vector<HeaderVerdict>& out) const {
+    RootAnchor anchor;
+    if (m_base == nullptr || m_size < FF_HEADER::HEADER_SIZE)
+        return anchor;
+
+    const auto record = [&out](HeaderField field, RepairClass cls, uint64_t stored,
+                               uint64_t restored, uint32_t cost, const char* why) {
+        out.push_back({field, cls, stored, restored, cost, why, {}});
+    };
+
+    // THE SUPPORT TEST, ONCE, FOR EVERY CONSTANT BELOW.
+    //
+    // Stamping a known constant over damaged bytes is only a repair when the
+    // bytes are the thing the constant belongs to. A position holding its own
+    // offset arises by chance at 2^-64 per position, so a file that is not a
+    // FastFHIR arena produces none of them; requiring several is conclusive
+    // without being a judgement call. This is what stops recovery declaring a
+    // JPEG to be a damaged FastFHIR stream and writing a magic number into it.
+    constexpr std::size_t kSupportingBlocks = 8;
+    std::size_t anchored = 0;
+    for (const auto& [off, entry] : census)
+        if (entry.type != StreamMapEntryType::Header && ++anchored >= kSupportingBlocks)
+            break;
+    const bool supported = anchored >= kSupportingBlocks;
+
+    // --- MAGIC and RECOVERY: compiled constants ---------------------------
+    const auto reconcile_constant = [&](HeaderField field, uint64_t stored, uint64_t want,
+                                        const char* name) {
+        if (stored == want) {
+            record(field, RepairClass::Intact, stored, want, 0, name);
+            return;
+        }
+        const uint32_t cost = hamming_cost(stored, want);
+        if (!supported)
+            record(field, RepairClass::Unrecovered, stored, want, cost,
+                   "no self-validating block corroborates a FastFHIR arena");
+        else if (cost > FF_RECOVERY_MAX_FLIPS)
+            record(field, RepairClass::Unrecovered, stored, want, cost,
+                   "beyond the flip budget: these bytes were not this constant");
+        else
+            record(field, RepairClass::Corroborated, stored, want, cost, name);
+    };
+    reconcile_constant(HeaderField::Magic, LOAD_U32(m_base + FF_HEADER::MAGIC),
+                       FF_MAGIC_BYTES, "compiled constant, corroborated by the census");
+    reconcile_constant(HeaderField::Recovery, LOAD_U16(m_base + FF_HEADER::RECOVERY),
+                       static_cast<uint64_t>(RECOVER_FF_HEADER),
+                       "compiled constant, corroborated by the census");
+
+    // --- FHIR_REV: a closed set of two ------------------------------------
+    {
+        constexpr uint16_t kRevisions[] = {FHIR_VERSION_R4, FHIR_VERSION_R5};
+        const uint16_t stored = LOAD_U16(m_base + FF_HEADER::FHIR_REV);
+        HeaderVerdict v{HeaderField::FhirRevision, RepairClass::Unrecovered, stored, stored,
+                        0, "no legal revision within the flip budget", {}};
+        uint32_t best = UINT32_MAX;
+        for (const uint16_t rev : kRevisions) {
+            const uint32_t cost = hamming_cost(stored, rev);
+            if (cost < best) {
+                best = cost;
+                v.restored = rev;
+                v.bit_cost = cost;
+                v.candidates.assign(1, rev);
+            } else if (cost == best) {
+                v.candidates.push_back(rev);
+            }
+        }
+        if (best == 0) {
+            v.class_ = RepairClass::Intact;
+            v.why    = "a revision this build knows";
+            v.candidates.clear();
+        } else if (v.candidates.size() > 1) {
+            v.class_ = RepairClass::Ambiguous;
+            v.why    = "equidistant from two legal revisions — nothing here separates them";
+        } else if (best <= FF_RECOVERY_MAX_FLIPS) {
+            v.class_ = RepairClass::Corroborated;
+            v.why    = "the one legal revision within the flip budget";
+            v.candidates.clear();
+        }
+        out.push_back(std::move(v));
+    }
+
+    // --- The three census singletons, and the root ------------------------
+    //
+    // A field required to name a block of type T has exactly one candidate
+    // when the census holds one block of type T, and none when that block's
+    // own header was destroyed. Absence is a legitimate value for all three of
+    // the optional ones, so FF_NULL_OFFSET with an empty census reads Intact.
+    const auto singletons_of = [&census](RECOVERY_TAG tag) {
+        std::vector<Offset> found;
+        for (const auto& [off, entry] : census)
+            if (entry.type != StreamMapEntryType::Header && entry.recovery == tag)
+                found.push_back(off);
+        return found;
+    };
+    const auto reconcile_singleton = [&](HeaderField field, Size slot, RECOVERY_TAG tag,
+                                         const char* name) -> Offset {
+        const uint64_t stored = LOAD_U64(m_base + slot);
+        const std::vector<Offset> found = singletons_of(tag);
+        if (found.size() == 1 && stored == static_cast<uint64_t>(found.front())) {
+            record(field, RepairClass::Intact, stored, stored, 0, name);
+            return found.front();
+        }
+        if (found.empty()) {
+            // Nothing of this type survives. An absent field is correct as it
+            // stands; a present one names a block whose header is gone, and
+            // rewriting it to "absent" would destroy the last record that the
+            // block ever existed.
+            record(field,
+                   stored == static_cast<uint64_t>(FF_NULL_OFFSET) ? RepairClass::Intact
+                                                                   : RepairClass::Unrecovered,
+                   stored, stored, 0,
+                   stored == static_cast<uint64_t>(FF_NULL_OFFSET)
+                       ? "absent, and the census holds no such block"
+                       : "the block this names no longer vouches for itself");
+            return FF_NULL_OFFSET;
+        }
+        if (found.size() > 1) {
+            HeaderVerdict v{field, RepairClass::Ambiguous, stored, stored, 0,
+                            "more than one block of this type — the field names no unique block",
+                            {}};
+            for (const Offset o : found)
+                v.candidates.push_back(static_cast<uint64_t>(o));
+            out.push_back(std::move(v));
+            return FF_NULL_OFFSET;
+        }
+        record(field, RepairClass::Corroborated, stored, static_cast<uint64_t>(found.front()),
+               hamming_cost(stored, static_cast<uint64_t>(found.front())), name);
+        return found.front();
+    };
+
+    const Offset checksum = reconcile_singleton(
+        HeaderField::ChecksumOffset, FF_HEADER::CHECKSUM_OFFSET, RECOVER_FF_CHECKSUM,
+        "the one self-validating checksum footer in the arena");
+    reconcile_singleton(HeaderField::UrlDirectoryOffset, FF_HEADER::URL_DIR_OFFSET,
+                        RECOVER_FF_URL_DIRECTORY,
+                        "the one self-validating URL directory in the arena");
+    reconcile_singleton(HeaderField::ModuleRegistryOffset, FF_HEADER::MODULE_REG_OFFSET,
+                        RECOVER_FF_MODULE_REGISTRY,
+                        "the one self-validating module registry in the arena");
+
+    // --- STREAM_SIZE: the checksum footer is the last block ---------------
+    {
+        const uint64_t stored = LOAD_U64(m_base + FF_HEADER::STREAM_SIZE);
+        if (checksum == FF_NULL_OFFSET) {
+            record(HeaderField::StreamSize, RepairClass::Unrecovered, stored, stored, 0,
+                   "no checksum footer to measure the end of the payload against");
+        } else {
+            const uint64_t sealed =
+                static_cast<uint64_t>(checksum) + FF_CHECKSUM::HEADER_SIZE;
+            record(HeaderField::StreamSize,
+                   stored == sealed ? RepairClass::Intact : RepairClass::Corroborated, stored,
+                   sealed, hamming_cost(stored, sealed),
+                   "the checksum footer is the last block a sealed stream contains");
+        }
+    }
+
+    // --- ROOT_OFFSET and ROOT_RECOVERY: two halves of one reference -------
+    //
+    // The same shape as a resource tuple. The header holds the root's address
+    // and its type; the block holds its own address and its own type. A flip
+    // in one half leaves the other standing, and which half moved is decided
+    // by which one still agrees with the block.
+    {
+        const uint64_t     stored_off = LOAD_U64(m_base + FF_HEADER::ROOT_OFFSET);
+        const RECOVERY_TAG stored_tag =
+            static_cast<RECOVERY_TAG>(LOAD_U16(m_base + FF_HEADER::ROOT_RECOVERY));
+        const bool         seat_ok = valid_validation(m_base, m_size,
+                                                      static_cast<Offset>(stored_off));
+        const RECOVERY_TAG seat_tag =
+            seat_ok ? tag_at(m_base, m_size, static_cast<Offset>(stored_off))
+                    : FF_RECOVER_UNDEFINED;
+
+        if (seat_ok && seat_tag == stored_tag && plausible_tag(stored_tag)) {
+            // Both halves agree with the block they describe.
+            record(HeaderField::RootOffset, RepairClass::Intact, stored_off, stored_off, 0,
+                   "the block here vouches for itself and for the stated type");
+            record(HeaderField::RootRecovery, RepairClass::Intact, stored_tag, stored_tag, 0,
+                   "the block here vouches for itself and for the stated type");
+            anchor = {static_cast<Offset>(stored_off), stored_tag, true};
+        } else if (seat_ok && plausible_tag(seat_tag)) {
+            // The address lands on a real block, so the address survived and
+            // the TYPE is the damaged half: the block's own tag is the witness.
+            record(HeaderField::RootOffset, RepairClass::Intact, stored_off, stored_off, 0,
+                   "the block here vouches for itself");
+            record(HeaderField::RootRecovery, RepairClass::Corroborated, stored_tag, seat_tag,
+                   hamming_cost(stored_tag, seat_tag),
+                   "the root block's own tag, which the address still reaches");
+            anchor = {static_cast<Offset>(stored_off), seat_tag, true};
+        } else {
+            // The address reaches no block. Search the census for the root the
+            // header's surviving type half describes, then widen to any
+            // resource if that half is gone too. Candidates must be within the
+            // flip budget of the stored address: a block merely being of the
+            // right type says nothing about it being THIS reference's target.
+            std::vector<Offset> typed, resources;
+            for (const auto& [off, entry] : census) {
+                if (entry.type == StreamMapEntryType::Header)
+                    continue;
+                if (hamming_cost(stored_off, static_cast<uint64_t>(off)) > FF_RECOVERY_MAX_FLIPS)
+                    continue;
+                if (plausible_tag(stored_tag) && entry.recovery == stored_tag)
+                    typed.push_back(off);
+                else if (FF_IsResourceTag(entry.recovery))
+                    resources.push_back(off);
+            }
+            const std::vector<Offset>& pool = !typed.empty() ? typed : resources;
+            const char* why = !typed.empty()
+                                  ? "the one block within the flip budget carrying the "
+                                    "root type the header still states"
+                                  : "both halves damaged — the one resource block within "
+                                    "the flip budget of the stored address";
+            if (pool.size() == 1) {
+                const Offset found = pool.front();
+                const RECOVERY_TAG found_tag = tag_at(m_base, m_size, found);
+                record(HeaderField::RootOffset, RepairClass::Corroborated, stored_off,
+                       static_cast<uint64_t>(found),
+                       hamming_cost(stored_off, static_cast<uint64_t>(found)), why);
+                record(HeaderField::RootRecovery,
+                       found_tag == stored_tag ? RepairClass::Intact : RepairClass::Corroborated,
+                       stored_tag, found_tag, hamming_cost(stored_tag, found_tag),
+                       "the tag of the block the restored address reaches");
+                anchor = {found, found_tag, true};
+            } else {
+                HeaderVerdict v{HeaderField::RootOffset, RepairClass::Unrecovered, stored_off,
+                                stored_off, 0,
+                                pool.empty()
+                                    ? "no block within the flip budget of the stored address"
+                                    : "several blocks within the flip budget — no unique root",
+                                {}};
+                if (pool.size() > 1)
+                    v.class_ = RepairClass::Ambiguous;
+                for (const Offset o : pool)
+                    v.candidates.push_back(static_cast<uint64_t>(o));
+                out.push_back(std::move(v));
+                record(HeaderField::RootRecovery, RepairClass::Unrecovered, stored_tag,
+                       stored_tag, 0, "no restored address to read a tag from");
+            }
+        }
+    }
+
+    // --- The 2-bit stream layout packed into VERSION ----------------------
+    //
+    // Only the layout bits are reconciled. The engine version beside them is a
+    // free 30-bit word whose true value this reader cannot know: a stream may
+    // legitimately have been written by an engine newer than this one, which
+    // is precisely what find_gaps() uses to tell benign version skew from
+    // damage. Guessing it would destroy that distinction, so it is left alone
+    // and reported nowhere.
+    {
+        const uint32_t            encoded = LOAD_U32(m_base + FF_HEADER::VERSION);
+        const FF_StreamCompaction layout  = FF_HEADER_STREAM_LAYOUT(encoded);
+        const bool legal = layout == FF_STREAM_COMPACTION_NONE || layout == FF_STREAM_COMPACTED;
+        record(HeaderField::StreamLayout, legal ? RepairClass::Intact : RepairClass::Corroborated,
+               static_cast<uint64_t>(layout),
+               legal ? static_cast<uint64_t>(layout)
+                     : static_cast<uint64_t>(FF_STREAM_COMPACTION_NONE),
+               legal ? 0u : hamming_cost(static_cast<uint64_t>(layout), FF_STREAM_COMPACTION_NONE),
+               legal ? "one of the two layouts the writer emits"
+                     : "a layout the writer never emits; the census tiles as a standard stream");
+    }
+
+    // The magic may have been restored above, and every field below it was
+    // reconciled regardless — so a stream whose only damage was its magic
+    // stamp still yields a usable root.
+    if (!anchor.usable)
+        return anchor;
+    for (const HeaderVerdict& v : out)
+        if (v.field == HeaderField::Magic && v.class_ != RepairClass::Intact &&
+            v.class_ != RepairClass::Corroborated)
+            anchor.usable = false;
+    return anchor;
+}
+
+// =====================================================================
 // The walk — the hierarchical producer's engine, then its enumerators
 // =====================================================================
 
-std::vector<Offset> Recovery::walk_chain(std::vector<BlockRef>* out,
+// The root arrives as an argument rather than being read here, and that is the
+// whole point of the RootAnchor type: reconcile_header() may have restored one
+// or both halves out of the census, and a callee that re-reads the wire would
+// walk the damaged value while the report says the good one. One root per
+// recover(), decided once (REC-24).
+std::vector<Offset> Recovery::walk_chain(const RootAnchor& root, std::vector<BlockRef>* out,
                                          std::vector<ProducerFailure>* failures) const {
     std::vector<Offset> reachable;
-    if (!header_is_readable(m_base, m_size))
-        return reachable;
-    const Offset root = FF_HEADER(m_size).get_root(m_base);
-    if (!valid_validation(m_base, m_size, root))
-        return reachable;
-    const RECOVERY_TAG root_tag = tag_at(m_base, m_size, root);
-    if (!plausible_tag(root_tag))
+    if (!root.usable || !valid_validation(m_base, m_size, root.offset) ||
+        !plausible_tag(root.tag))
         return reachable;
 
     // DFS through INTACT references only, depth- and cycle-bounded. Marking on
@@ -1505,7 +1868,7 @@ std::vector<Offset> Recovery::walk_chain(std::vector<BlockRef>* out,
     // depend on how it was reached), so a simple visited set bounds the work.
     struct Pending { Offset off; std::size_t depth; RECOVERY_TAG tag; };
     std::unordered_set<Offset> visited;
-    std::vector<Pending> stack{{root, 0, root_tag}};
+    std::vector<Pending> stack{{root.offset, 0, root.tag}};
     std::vector<BlockRef> scratch;
     while (!stack.empty()) {
         const auto [off, depth, tag] = stack.back();
@@ -2067,8 +2430,15 @@ void Recovery::find_gaps(StreamMap& map) const {
 
     // REC-18.7 — the compact layout is a presence-bitmask rewrite with entirely
     // different geometry. Refuse rather than emit nonsense.
+    //
+    // The test names the compact layout exactly, because the field is two bits
+    // wide and half its values are ones the writer never emits. Refusing on
+    // "anything other than standard" meant one flipped bit in those two bits
+    // disabled the whole hole analysis, so a damaged stream silently reported
+    // no holes at all — a total loss of the evidence, caused by the damage the
+    // evidence exists to find (REC-24).
     if (header_is_readable(m_base, m_size)) {
-        if (FF_HEADER(m_size).get_stream_layout(m_base) != FF_STREAM_COMPACTION_NONE)
+        if (FF_HEADER(m_size).get_stream_layout(m_base) == FF_STREAM_COMPACTED)
             return;  // compact archive: gap analysis does not apply
     }
 
@@ -2148,7 +2518,7 @@ void Recovery::find_gaps(StreamMap& map) const {
 // a baseline must never run the byte scan (TASKS.md REC-10).
 std::vector<BlockRef> Recovery::reachable_blocks() const {
     std::vector<BlockRef> out;
-    walk_chain(&out);
+    walk_chain(wire_root(), &out);
     return out;
 }
 
@@ -2203,6 +2573,73 @@ FF_ApplyReport Recovery::apply(const FF_RecoveryReport& report, std::vector<BYTE
     const auto in_bounds = [n](uint64_t off, size_t width) {
         return off + width <= n;
     };
+
+    // REC-24 — THE HEADER FIRST, AND IT IS NOT SUBJECT TO THE FILTER.
+    //
+    // The ApplyFilter takes a BlockVerdict, so it has nothing to say about a
+    // header field; passing header fields through a predicate that cannot see
+    // them would silently apply or skip them on the strength of whichever
+    // BlockVerdict happened to be fabricated for the call. A header repair is
+    // the precondition for the stream opening at all, so a caller filtering
+    // block repairs still wants it.
+    //
+    // Only Corroborated is written. Ambiguous carries alternatives the engine
+    // declined to choose between, and writing one of them would convert a
+    // declared uncertainty into a silent one — the same rule the block classes
+    // follow, for the same reason.
+    for (const HeaderVerdict& v : report.header) {
+        if (v.class_ != RepairClass::Corroborated) {
+            ++out.declined;
+            continue;
+        }
+        Size     slot  = 0;
+        unsigned width = 0;
+        uint64_t value = v.restored;
+        switch (v.field) {
+            case HeaderField::Magic:        slot = FF_HEADER::MAGIC;         width = 4; break;
+            case HeaderField::Recovery:     slot = FF_HEADER::RECOVERY;      width = 2; break;
+            case HeaderField::FhirRevision: slot = FF_HEADER::FHIR_REV;      width = 2; break;
+            case HeaderField::StreamSize:   slot = FF_HEADER::STREAM_SIZE;   width = 8; break;
+            case HeaderField::RootOffset:   slot = FF_HEADER::ROOT_OFFSET;   width = 8; break;
+            case HeaderField::RootRecovery: slot = FF_HEADER::ROOT_RECOVERY; width = 2; break;
+            case HeaderField::ChecksumOffset:
+                slot = FF_HEADER::CHECKSUM_OFFSET; width = 8; break;
+            case HeaderField::UrlDirectoryOffset:
+                slot = FF_HEADER::URL_DIR_OFFSET;  width = 8; break;
+            case HeaderField::ModuleRegistryOffset:
+                slot = FF_HEADER::MODULE_REG_OFFSET; width = 8; break;
+            case HeaderField::StreamLayout:
+                // The layout shares its 32-bit word with the engine version,
+                // which this pass has no evidence about and must not disturb.
+                // Re-encode rather than store: the two fields are packed.
+                slot  = FF_HEADER::VERSION;
+                width = 4;
+                value = FF_ENCODE_HEADER_VERSION(
+                    FF_HEADER_ENGINE_VERSION(LOAD_U32(dst + FF_HEADER::VERSION)),
+                    static_cast<FF_StreamCompaction>(v.restored));
+                break;
+        }
+        if (!in_bounds(slot, width)) {
+            ++out.declined;
+            continue;
+        }
+        switch (width) {
+            case 2: STORE_U16(dst + slot, static_cast<uint16_t>(value)); break;
+            case 4: STORE_U32(dst + slot, static_cast<uint32_t>(value)); break;
+            default: STORE_U64(dst + slot, value); break;
+        }
+        // Read it back from the copy, exactly as the block classes do. A write
+        // that does not hold is not a repair.
+        const uint64_t after = width == 2   ? LOAD_U16(dst + slot)
+                               : width == 4 ? LOAD_U32(dst + slot)
+                                            : LOAD_U64(dst + slot);
+        if (after == value) {
+            ++out.applied;
+        } else {
+            ++out.failed;
+            out.failed_edges.push_back(static_cast<Offset>(slot));
+        }
+    }
 
     for (const BlockVerdict& v : report.blocks) {
         const bool confident = v.class_ == RepairClass::Corroborated ||
@@ -2359,6 +2796,56 @@ FF_ApplyReport Recovery::apply(const FF_RecoveryReport& report, std::vector<BYTE
     return out;
 }
 
+namespace {
+
+// THE EXTENT, BOOTSTRAPPED FROM THE ONE IDENTITY THE HEADER CARRIES TWICE.
+//
+// `ceiling` is the furthest byte the arena itself vouches for, and nothing in
+// the stream can influence it. Inside that ceiling there are two wire words
+// that both claim to say where the payload ends:
+//
+//   STREAM_SIZE                              (FF_HEADER, bytes 8-15)
+//   CHECKSUM_OFFSET + FF_CHECKSUM::HEADER_SIZE   (FF_HEADER, bytes 26-33)
+//
+// They agree on every sealed stream, because the checksum footer is the last
+// block the writer lays down. That makes them two independent copies of one
+// fact, so a flip in either is detectable, and the one that still lands on a
+// block vouching for itself as a checksum footer is the one that survived.
+//
+// The test is decisive rather than merely suggestive: a candidate extent E is
+// accepted only when the eight bytes at E - FF_CHECKSUM::HEADER_SIZE hold
+// exactly that address and the two bytes after them read RECOVER_FF_CHECKSUM.
+// Random bytes satisfy the address half with probability 2^-64.
+//
+// Without this, a single flipped bit in STREAM_SIZE set the extent to the
+// arena's 4 GiB sparse reservation (an anonymous arena has no disk size to
+// fall back on), and the byte census then swept 4 GiB looking for a 3 MB
+// document. A flip the other way truncated the extent and hid every block past
+// it. Neither failure could be repaired afterwards, because both happen before
+// any of the repair machinery runs.
+inline size_t trusted_extent(const BYTE* base, uint64_t claimed, uint64_t ceiling) noexcept {
+    if (base != nullptr && ceiling >= FF_HEADER::HEADER_SIZE) {
+        const auto seals_at = [base, ceiling](uint64_t end) {
+            if (end < FF_HEADER::HEADER_SIZE + FF_CHECKSUM::HEADER_SIZE || end > ceiling)
+                return false;
+            const Offset seat = static_cast<Offset>(end - FF_CHECKSUM::HEADER_SIZE);
+            return LOAD_U64(base + seat) == static_cast<uint64_t>(seat) &&
+                   FF_GET_RECOVERY_TAG(base, seat) == RECOVER_FF_CHECKSUM;
+        };
+        if (seals_at(claimed))
+            return static_cast<size_t>(claimed);
+        const uint64_t implied =
+            LOAD_U64(base + FF_HEADER::CHECKSUM_OFFSET) + FF_CHECKSUM::HEADER_SIZE;
+        if (seals_at(implied))
+            return static_cast<size_t>(implied);
+    }
+    // No checksum footer to corroborate either word — an unsealed stream has
+    // none by design. Fall back to the ceiling, which is still never a wire value.
+    return static_cast<size_t>(std::min(claimed, ceiling));
+}
+
+}  // namespace
+
 Recovery::Recovery(const Memory& memory) noexcept
     : m_base(memory->base()),
       // THE DECLARED SIZE IS A WIRE VALUE, AND THIS CLASS TRUSTS NO WIRE VALUE.
@@ -2382,8 +2869,14 @@ Recovery::Recovery(const Memory& memory) noexcept
       // there is one; capacity() is only the sparse RESERVATION (4 GiB by
       // default), so it is the weaker fallback used for an anonymous arena.
       // Neither is read from the stream, which is the whole point.
-      m_size(std::min<uint64_t>(memory->size(),
-                                memory->disk_size() != 0 ? memory->disk_size()
-                                                        : memory->capacity())) {}
+      //
+      // That ceiling keeps every read inside mapped memory, and on an anonymous
+      // arena it is 4 GiB wide, so it is a safety floor rather than an answer.
+      // trusted_extent() narrows it to the payload by checking which of the
+      // header's two claims about the end of the stream still lands on the
+      // checksum footer (REC-24).
+      m_size(trusted_extent(memory->base(), memory->size(),
+                            memory->disk_size() != 0 ? memory->disk_size()
+                                                     : memory->capacity())) {}
 
 }  // namespace FastFHIR

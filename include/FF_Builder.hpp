@@ -222,26 +222,6 @@ class UrlDirectory;   // the URL intern table (FF_UrlDirectory.hpp); pimpl membe
         Offset module_reg_offset() const { return m_module_reg_offset; }
 
         /**
-         * @brief Attaches an optional conformance layer to every subsequent append.
-         *
-         * Structural validation is unconditional and is not what this is: a layer
-         * checks FHIR-level conformance — cardinality, required elements, bound
-         * ValueSets — and it OBSERVES ONLY. The check runs before any arena space
-         * is claimed, so a stream written with a layer attached is byte-identical
-         * to one written without it, including on the failing path.
-         *
-         * @param hooks Borrowed, and must outlive this Builder_t. Null detaches.
-         *              Copy Conformance::conformance_layer()'s struct before
-         *              setting policy/next/diagnostic/failures on it — the layer
-         *              it returns is shared and immutable.
-         *
-         * @throws std::runtime_error if any layer in the chain reports an ABI
-         *         version this build does not speak.
-         *
-         * Attach before the first append. Attaching concurrently with appends is
-         * a data race, exactly as the amend/finalize paths are (TASKS.md Q9).
-         */
-        /**
          * @brief Mount @p filepath as a writable arena for appending, refusing
          *        a file that is not appendable WITHOUT touching it.
          *
@@ -257,6 +237,27 @@ class UrlDirectory;   // the URL intern table (FF_UrlDirectory.hpp); pimpl membe
          */
         static Memory mount_for_append(const std::filesystem::path& filepath, Size capacity);
 
+        /**
+         * @brief Attaches an optional conformance layer to every subsequent append.
+         *
+         * Structural validation is unconditional and is not what this is: a layer
+         * checks FHIR-level conformance — cardinality, required elements, bound
+         * ValueSets — and it OBSERVES ONLY. The check runs before any arena space
+         * is claimed, so a stream written with a layer attached is byte-identical
+         * to one written without it, including on the failing path.
+         *
+         * @param hooks Borrowed, and must outlive this Builder_t. Null detaches.
+         *              Copy Conformance::conformance_layer()'s struct before
+         *              setting policy/next/diagnostic/failures on it — the layer
+         *              it returns is shared and immutable.
+         *
+         * @throws std::runtime_error if any layer in the chain reports an ABI
+         *         version this build does not speak. The FF_ boundary
+         *         (FF_BuilderAttachLayer) turns that throw into an FF_Result.
+         *
+         * Attach before the first append. Attaching concurrently with appends is
+         * a data race, exactly as the amend/finalize paths are (TASKS.md Q9).
+         */
         void attach_layer(const Conformance::ValidationHooks* hooks);
 
         /// The attached layer, or null.

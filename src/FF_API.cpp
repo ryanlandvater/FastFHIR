@@ -130,6 +130,18 @@ FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo& info, Parser& out_parser) n
     return FF_Guard("FF_BuilderQuery", [&] { out_parser = info.builder->query(); });
 }
 
+FF_Result FF_BuilderAttachLayer(const FF_BuilderAttachLayerInfo& info) noexcept
+{
+    if (!info.builder)
+        return FF_Invalid("FF_BuilderAttachLayer", "null builder handle");
+    // Builder_t::attach_layer refuses an ABI mismatch by throwing, deliberately
+    // and loudly (TASKS.md J1.2). Here, at the API boundary, that throw becomes
+    // the Result the rest of the FF_* surface returns. A null handle is the one
+    // case that never reaches the engine: it detaches, which is how a caller
+    // turns the layer off.
+    return FF_Guard("FF_BuilderAttachLayer", [&] { info.builder->attach_layer(info.hooks); });
+}
+
 // =====================================================================
 // PARSE API
 // =====================================================================

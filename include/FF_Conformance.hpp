@@ -60,16 +60,16 @@ namespace Conformance
 /// Still 1 while nothing outside this tree speaks it. The version exists for a
 /// layer built by another toolchain, and there is no such layer yet, so growing
 /// the struct (stream_check, UNRESOLVED_REFERENCE) does not move it.
-inline constexpr uint32_t FF_CONFORMANCE_ABI = 1;
+inline constexpr uint32_t CONFORMANCE_ABI = 1;
 
 /// Which FHIR revisions a Rule applies to. FHIR_VERSION's own values (0x0400,
 /// 0x0500) are ordinals, not flags, so a rule that holds for both revisions
 /// could not be spelled with them. R4 and R5 genuinely disagree about some
 /// cardinalities, and a rule emitted from one revision must not be enforced
 /// against a document written as the other.
-inline constexpr uint8_t FF_CONF_VERSION_R4  = 1u << 0;
-inline constexpr uint8_t FF_CONF_VERSION_R5  = 1u << 1;
-inline constexpr uint8_t FF_CONF_VERSION_ALL = FF_CONF_VERSION_R4 | FF_CONF_VERSION_R5;
+inline constexpr uint8_t CONF_VERSION_R4  = 1u << 0;
+inline constexpr uint8_t CONF_VERSION_R5  = 1u << 1;
+inline constexpr uint8_t CONF_VERSION_ALL = CONF_VERSION_R4 | CONF_VERSION_R5;
 
 /// Maps a FHIR_VERSION value onto its Rule bit.
 ///
@@ -79,9 +79,9 @@ inline constexpr uint8_t FF_CONF_VERSION_ALL = FF_CONF_VERSION_R4 | FF_CONF_VERS
 /// for repeatedly.
 [[nodiscard]] inline constexpr uint8_t version_bit(uint32_t fhir_version) noexcept
 {
-    if (fhir_version == 0x0400) return FF_CONF_VERSION_R4;
-    if (fhir_version == 0x0500) return FF_CONF_VERSION_R5;
-    return FF_CONF_VERSION_ALL;
+    if (fhir_version == 0x0400) return CONF_VERSION_R4;
+    if (fhir_version == 0x0500) return CONF_VERSION_R5;
+    return CONF_VERSION_ALL;
 }
 
 /// What went wrong. Structural codes are deliberately absent: those failures
@@ -90,7 +90,7 @@ inline constexpr uint8_t FF_CONF_VERSION_ALL = FF_CONF_VERSION_R4 | FF_CONF_VERS
 ///
 /// This vocabulary lists only what something actually produces — an enumerator
 /// nobody emits is indistinguishable from one that is broken. Adding a code is
-/// an ordinary in-tree change; it moves FF_CONFORMANCE_ABI only when a layer
+/// an ordinary in-tree change; it moves CONFORMANCE_ABI only when a layer
 /// built by another toolchain must agree on the value, which is the whole
 /// reason that field exists.
 enum class Check : uint8_t
@@ -154,7 +154,7 @@ struct Rule
     uint32_t max        = 0;   ///< MAX_CARDINALITY: the declared maximum
     uint16_t ordinal    = 0;   ///< visit_fields() position of the field
     RuleKind kind       = RuleKind::UNIMPLEMENTED;
-    uint8_t  versions   = FF_CONF_VERSION_ALL;
+    uint8_t  versions   = CONF_VERSION_ALL;
 };
 
 /// Everything needed to describe a failure, unformatted.
@@ -186,6 +186,21 @@ struct Status
 
 struct ValidationHooks;
 
+/// The whole-stream check's arguments. INTERNAL — defined in the non-installed
+/// FF_Conformance_internal.hpp, and incomplete here on purpose.
+///
+/// The arena base, its length, the FHIR revision, the root offset and the root
+/// tag are how the library CALLS a stream check. They are not how a consumer
+/// asks for one: a consumer has a finished stream and nothing else, which is
+/// what `FastFHIR::Conformance::validate_stream(const Memory&)` takes
+/// (FF_Validate.hpp). Naming the struct here would publish the internal calling
+/// convention as though it were the entry point.
+///
+/// Declaring it incomplete costs nothing that matters. StreamCheckFn below is a
+/// pointer to a function TAKING a reference to it, which needs no definition;
+/// only the code that builds or reads one does, and that code is the library's.
+struct StreamCheckInfo;
+
 /// One block type's check. Type-erased at exactly this one point: the caller
 /// resolves the tag from TypeTraits<T>::recovery and the callee casts back to
 /// the same T, and both halves are emitted by the same generator run.
@@ -208,9 +223,7 @@ using CheckFn = Status (*)(const void* data, uint32_t fhir_version,
 /// Byte identity still holds. The check reads the arena and never writes it, so
 /// a stream with a layer attached is byte-for-byte the stream without one, even
 /// when the check reports.
-using StreamCheckFn = Status (*)(const void* arena, uint64_t arena_size, uint32_t fhir_version,
-                                 uint64_t root_offset, uint64_t root_recovery,
-                                 const ValidationHooks* self);
+using StreamCheckFn = Status (*)(const StreamCheckInfo& info);
 
 /// A tag and its check. Tables are sorted by tag so find() is a binary search.
 struct Entry
@@ -231,7 +244,7 @@ struct ValidationHooks
 {
     /// First, and first for a reason: a runtime-loaded layer's ABI is checked
     /// before any other field is trusted.
-    uint32_t abi_version = FF_CONFORMANCE_ABI;
+    uint32_t abi_version = CONFORMANCE_ABI;
 
     const Entry* entries = nullptr;  ///< sorted by tag, ascending
     uint32_t     count   = 0;
@@ -297,31 +310,10 @@ struct ValidationHooks
     return {};
 }
 
-/// Runs the whole-stream check through every layer in the chain, stopping at the
-/// first failure. The stream-level counterpart of dispatch(), with the same
-/// chain walk, the same "a layer reports its own failures" rule, and the same
-/// policy carried back on the verdict.
-///
-/// A layer that offers no stream check is skipped rather than treated as a
-/// pass, so a chain of block-only layers runs nothing here -- which is right:
-/// there is no stream-level question they have an opinion about.
-[[nodiscard]] inline Status dispatch_stream(const ValidationHooks* head, const void* arena,
-                                            uint64_t arena_size, uint32_t fhir_version,
-                                            uint64_t root_offset, uint64_t root_recovery)
-{
-    for (const ValidationHooks* layer = head; layer != nullptr; layer = layer->next)
-    {
-        if (layer->stream_check == nullptr) continue;
-        Status status = layer->stream_check(arena, arena_size, fhir_version,
-                                            root_offset, root_recovery, layer);
-        if (!status)
-        {
-            status.policy = layer->policy;
-            return status;
-        }
-    }
-    return {};
-}
+// dispatch_stream() is the stream-level counterpart of dispatch() and lives in
+// FF_Conformance_internal.hpp, because it has to COPY an StreamCheckInfo to
+// stamp each layer's `self`, and that needs the complete type. Consumers reach
+// the same walk through validate_stream() in FF_Validate.hpp.
 
 // The boundary is data: it crosses a library seam, and a runtime-loaded layer
 // may be compiled by another toolchain entirely. Anything with a non-trivial

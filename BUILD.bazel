@@ -52,8 +52,18 @@ cc_library(
 # about whether the bytes parse.
 cc_library(
     name = "fastfhir_conformance",
-    srcs = ["generated_src/FF_Conformance_Layer.cpp"],
-    hdrs = ["src/conformance/FF_ConformanceEngine.hpp"],
+    srcs = [
+        "generated_src/FF_Conformance_Layer.cpp",
+        # The whole-stream half. FF_StreamCheck.cpp was in the CMake target and
+        # not here, so a Bazel build linked a layer that offered no stream check
+        # and silently answered OK to every reference question.
+        "src/conformance/FF_StreamCheck.cpp",
+        "src/conformance/FF_Validate.cpp",
+    ],
+    hdrs = [
+        "src/conformance/FF_ConformanceEngine.hpp",
+        "src/conformance/FF_StreamCheck.hpp",
+    ],
     copts = _COPTS,
     includes = ["src/conformance"],
     deps = [":fastfhir"],

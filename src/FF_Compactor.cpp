@@ -566,6 +566,43 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
             case FF_FIELD_CHOICE:
                 write_choice_slot(entry, context, object_off, dense_off, depth);
                 break;
+            // A FOURTH POLYMORPHIC SLOT, and two of its arms carry a source-
+            // arena offset. The `default` below treats a slot as an 8-byte node
+            // pointer, which for these sixteen SELF-DESCRIBING bytes reads a
+            // trie index and a kind word as an address: a silent wrong answer,
+            // and `-Wswitch` cannot report it because that `default` exists.
+            //
+            // What each arm needs, recorded so it is not re-derived:
+            //   ABSENT, UUID   verbatim. The bytes ARE the value and there is
+            //                  no interior offset, so a 16-byte copy is right.
+            //   INTERNED       verbatim. The payload indexes the stream-level
+            //                  URL directory, which archive_url_directory
+            //                  copies with its entry order intact -- the same
+            //                  reason an FF_FIELD_URL ref copies unchanged.
+            //   GENERATED      RE-MEASURE. An absolute offset into the SOURCE
+            //                  arena. A compacted stream may legitimately mint
+            //                  its own stream-local id, so this is a re-mint
+            //                  and not only a re-point.
+            //   RAW_STRING     RE-MEASURE. An FF_STRING offset: copy the
+            //                  string, re-encode the offset against the new
+            //                  parent -- PendingWriteKind::StringPointer's
+            //                  shape, one width up.
+            //   PENDING        a placeholder that survived a seal: a failure.
+            //
+            // REFUSED RATHER THAN HALF-IMPLEMENTED. No field carries this kind
+            // yet, so none of the above can be driven through the real writer,
+            // and the one compactor defect this file records came from exactly
+            // that -- a polymorphic arm no fixture exercised, carrying an
+            // offset measured from the block's OLD address into the compact
+            // stream. The arms and their round-trip coverage land together with
+            // the first field that uses the kind.
+            case FF_FIELD_ID:
+                throw std::runtime_error(
+                    std::string("FastFHIR Compactor Error: field '") +
+                    (field.name ? field.name : "?") +
+                    "' is an FF_FIELD_ID slot, which is not archivable yet: its GENERATED "
+                    "and RAW_STRING arms hold source-arena offsets that must be re-measured "
+                    "into the compact stream.");
             default: {
                 write_pending_slot(context, base, dense_off);
                 enqueue_pending_write(context, PendingWrite{

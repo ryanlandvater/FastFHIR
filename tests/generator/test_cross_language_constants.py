@@ -15,7 +15,9 @@ import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_PRIMITIVES = (_REPO_ROOT / "include" / "FF_Primitives.hpp").read_text(encoding="utf-8")
+# TYPE_SIZE_*, FF_FieldKind and the small wire enums are vocabulary, so they
+# live in FF_Constants.hpp since the three-layer split of FF_Primitives.hpp.
+_PRIMITIVES = (_REPO_ROOT / "include" / "FF_Constants.hpp").read_text(encoding="utf-8")
 
 # TYPE_SIZE_* enumerator values, read straight out of the C++ header.
 _TYPE_SIZES = {

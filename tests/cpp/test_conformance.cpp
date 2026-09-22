@@ -24,6 +24,9 @@
 #include "FF_Conformance_Layer.hpp"
 #include "FF_ConformanceEngine.hpp"
 #include "FF_Logger.hpp"
+#include "FF_Validate.hpp"
+
+#include <filesystem>
 
 #include <atomic>
 #include <cstring>
@@ -347,7 +350,7 @@ void a_numeric_max_is_enforced()
     static Rule max_rules[] = {
         {"Observation.identifier", "", "Observation.identifier admits at most 2 element(s).",
          "http://hl7.org/fhir/StructureDefinition/Observation", "", 0, 2, 0,
-         RuleKind::MAX_CARDINALITY, FF_CONF_VERSION_ALL},
+         RuleKind::MAX_CARDINALITY, CONF_VERSION_ALL},
     };
     max_rules[0].ordinal = identifier_ordinal;
 
@@ -388,13 +391,36 @@ void an_abi_mismatch_is_refused()
     REQUIRE(FF_CreateBuilder(builder_info, builder), "create stream");
 
     ValidationHooks stale = conformance_layer();
-    stale.abi_version = FF_CONFORMANCE_ABI + 1;
+    stale.abi_version = CONFORMANCE_ABI + 1;
     std::string what;
     try { builder->attach_layer(&stale); }
     catch (const std::runtime_error& e) { what = e.what(); }
     CHECK(what.find("ABI mismatch") != std::string::npos,
           "a layer from another release is refused at attach: " << what);
     CHECK(builder->layer() == nullptr, "the refused layer was not attached");
+
+    // The FF_ boundary reports the SAME refusal as an FF_Result, and attaches a
+    // matching layer without throwing. Both routes reach one engine call.
+    FF_Builder      good;
+    REQUIRE(FF_CreateBuilder(FF_BuilderCreateInfo{}, good), "create stream");
+    ValidationHooks fresh = conformance_layer();
+    CHECK(static_cast<bool>(FF_BuilderAttachLayer(
+              FF_BuilderAttachLayerInfo{.builder = good, .hooks = &fresh})),
+          "FF_BuilderAttachLayer attaches a matching layer");
+    CHECK(good->layer() == &fresh, "and the builder holds it");
+
+    FF_Builder refused;
+    REQUIRE(FF_CreateBuilder(FF_BuilderCreateInfo{}, refused), "create stream");
+    const FF_Result attach =
+        FF_BuilderAttachLayer(FF_BuilderAttachLayerInfo{.builder = refused, .hooks = &stale});
+    CHECK(!attach, "FF_BuilderAttachLayer returns a failure for an ABI mismatch");
+    CHECK(attach.message.find("ABI mismatch") != std::string::npos,
+          "and the message says so: " << attach.message);
+    CHECK(refused->layer() == nullptr, "the refused layer was not attached");
+
+    // A null builder is refused rather than dereferenced; a null layer detaches.
+    CHECK(!FF_BuilderAttachLayer(FF_BuilderAttachLayerInfo{}),
+          "a null builder handle is an FF_Result, not a crash");
 }
 
 // ── 11. Version masking: R4 and R5 disagree, and the layer knows ──────────
@@ -782,6 +808,183 @@ void a_stream_refusal_leaves_the_builder_usable()
     CHECK(append_ok, "the Builder is still mutable after a stream-check refusal");
 }
 
+// ── 19. The CONSUMER entry point: validate_stream(const Memory&) ──────────
+//
+// Every case above drives the layer on the WRITE path, where the Builder holds
+// the arena, the revision and the root and hands them to the hook. These drive
+// the READ path, which is the other half of the same layer: a finished stream
+// arrived from somewhere, and the five values the hook wants have to come back
+// out of its header. That translation is the only thing FF_Validate.cpp does,
+// so what these pin is that it agrees with the write path on the same document.
+
+/// A stream on disk, written with NO layer attached -- the external tool's
+/// premise. Returns the path.
+std::string sealed_bundle_file(
+    const char* name, const std::vector<std::pair<std::string, std::string>>& entries)
+{
+    namespace fs = std::filesystem;
+    const fs::path path = fs::path(FF_TEST_ARTIFACT_DIR) / "conformance" / name;
+    fs::create_directories(path.parent_path());
+    std::error_code ignored;
+    fs::remove(path, ignored);
+
+    const std::string path_str = path.string();
+    FF_BuilderCreateInfo create;
+    create.filepath = path_str.c_str();
+    FF_Builder builder;
+    const bool created = FF_CreateBuilder(create, builder).succeeded();
+    CHECK(created, "create a file-backed builder");
+    if (!created) return {};
+
+    BundleData bundle;
+    bundle.type = FF_BundleType::Collection;
+    for (const auto& [url, subject] : entries)
+    {
+        ObservationData observation;
+        observation.status = FF_ObservationStatus::Final;
+        observation.code   = CodeableConceptData{};
+        if (!subject.empty())
+            observation.subject = ReferenceData{.reference = subject};
+
+        BundleentryData entry;
+        entry.fullurl  = url;
+        entry.resource = static_cast<ResourceReference>(builder->append_obj(observation));
+        bundle.entry.push_back(std::move(entry));
+    }
+    const Reflective::ObjectHandle root = builder->append_obj(bundle);
+    const bool rooted =
+        FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root}).succeeded();
+    CHECK(rooted, "set root");
+    if (!rooted) return {};
+
+    Memory::View view;
+    // No layer attached, so nothing is checked here. That is the point: the
+    // defect has to survive to disk for the reader to be the one that finds it.
+    const bool sealed =
+        FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view).succeeded();
+    CHECK(sealed, "seal");
+    return sealed ? path_str : std::string{};
+}
+
+/// The headline case. A Bundle whose reference names no entry was written
+/// WITHOUT the layer, so nothing objected at finalize; opening it read-only and
+/// asking validate_stream() finds the same defect the write path finds, with the
+/// same wording. One Memory in, one Status out -- no revision, no root offset.
+void validate_stream_finds_what_the_write_path_would_have()
+{
+    TEST_GROUP("validate_stream");
+    const std::string path =
+        sealed_bundle_file("unresolved.ffhr", {{"urn:uuid:a", "urn:uuid:missing"}});
+
+    const Memory stream = Memory::openReadOnly(path);
+    REQUIRE(static_cast<bool>(stream), "the sealed stream opens read-only");
+
+    const Status status = validate_stream(stream);
+    CHECK(!status, "an unresolved urn: reference is reported on the read path");
+    CHECK(status.code == Check::UNRESOLVED_REFERENCE, "and it is the reference check that said so");
+    // `path` stays empty by design here and the FHIR path is carried inside
+    // `human`, because the reference check's whole message IS the locator plus
+    // the reference; see record() in FF_StreamCheck.cpp.
+    const std::string reported = status.human;
+    CHECK(reported.find("Observation.subject") != std::string::npos,
+          "the FHIR path locates it: " << reported);
+    CHECK(reported.find("urn:uuid:missing") != std::string::npos,
+          "and names the reference: " << reported);
+    CHECK(reported.find("not an entry in this Bundle") != std::string::npos,
+          "with the same wording the write path uses: " << reported);
+}
+
+/// A document whose references all resolve returns OK. Silence on healthy input
+/// is worth a case of its own: a checker that reports everything reports nothing.
+void validate_stream_is_silent_on_a_sound_document()
+{
+    TEST_GROUP("validate_stream ok");
+    const std::string path =
+        sealed_bundle_file("resolved.ffhr", {{"urn:uuid:a", ""}, {"urn:uuid:b", "urn:uuid:a"}});
+
+    const Memory stream = Memory::openReadOnly(path);
+    REQUIRE(static_cast<bool>(stream), "open");
+    CHECK(static_cast<bool>(validate_stream(stream)), "a resolvable Bundle validates clean");
+}
+
+/// The overload carries a caller's policy and sink, which is how every finding
+/// is collected rather than only the first. Also the read-only proof: the arena
+/// is mapped PROT_READ, so a check that wrote anything would fault here.
+void validate_stream_reports_through_a_caller_supplied_layer()
+{
+    TEST_GROUP("validate_stream layer");
+    const std::string path = sealed_bundle_file(
+        "reported.ffhr", {{"urn:uuid:a", "urn:uuid:x"}, {"urn:uuid:b", "Patient/123"}});
+
+    const Memory stream = Memory::openReadOnly(path);
+    REQUIRE(static_cast<bool>(stream), "open");
+
+    ConcurrentLogger      logger;
+    std::atomic<uint64_t> failures{0};
+    ValidationHooks       hooks = conformance_layer();
+    hooks.policy     = LayerPolicy::Report;
+    hooks.diagnostic = &logger;
+    hooks.failures   = &failures;
+
+    const Status status = validate_stream(stream, hooks);
+    CHECK(!status, "the hard failure is still returned under Report");
+    CHECK(failures.load() >= 2u,
+          "both the unresolved urn: and the relative reference were counted: " << failures.load());
+    const std::string logged = logger.to_string();
+    CHECK(logged.find("urn:uuid:x") != std::string::npos, "the urn: reached the sink: " << logged);
+    CHECK(logged.find("Patient/123") != std::string::npos,
+          "and so did the relative reference the return value cannot carry: " << logged);
+}
+
+/// A stream rooted at something other than a Bundle has no entry set, so there
+/// is nothing to resolve against and OK is the honest answer. This is the case
+/// that would otherwise report every reference in the document as broken.
+void validate_stream_passes_a_non_bundle_root()
+{
+    TEST_GROUP("validate_stream non-bundle");
+    namespace fs = std::filesystem;
+    const fs::path path = fs::path(FF_TEST_ARTIFACT_DIR) / "conformance" / "single.ffhr";
+    fs::create_directories(path.parent_path());
+    std::error_code ignored;
+    fs::remove(path, ignored);
+    const std::string path_str = path.string();
+
+    FF_BuilderCreateInfo create;
+    create.filepath = path_str.c_str();
+    FF_Builder builder;
+    REQUIRE(FF_CreateBuilder(create, builder), "create");
+    ObservationData observation;
+    observation.status = FF_ObservationStatus::Final;
+    observation.code   = CodeableConceptData{};
+    observation.subject = ReferenceData{.reference = "urn:uuid:nowhere"};
+    const Reflective::ObjectHandle root = builder->append_obj(observation);
+    REQUIRE(FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root}), "set root");
+    Memory::View view;
+    REQUIRE(FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view), "seal");
+
+    const Memory stream = Memory::openReadOnly(path_str);
+    REQUIRE(static_cast<bool>(stream), "open");
+    CHECK(static_cast<bool>(validate_stream(stream)),
+          "a non-Bundle root has no entry set, so its references are not this check's subject");
+}
+
+/// Garbage in is a STRUCTURAL fault and is spelled as one -- a throw, never a
+/// conformance Status. Invariant 5a: the two verdicts mean different things, and
+/// a caller that cannot tell them apart cannot act on either.
+void validate_stream_refuses_bytes_that_are_not_a_stream()
+{
+    TEST_GROUP("validate_stream garbage");
+    Memory arena = Memory::create(1 << 16);
+    REQUIRE(static_cast<bool>(arena), "an arena with no header written");
+
+    bool        threw = false;
+    std::string what;
+    try { (void)validate_stream(arena); }
+    catch (const std::runtime_error& e) { threw = true; what = e.what(); }
+    CHECK(threw, "an unwritten arena is refused rather than reported as non-conformant");
+    CHECK(what.find("FastFHIR") != std::string::npos, "and the message says who refused: " << what);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -805,5 +1008,10 @@ int main(int argc, char** argv)
     ff_test::run("stream_relative", a_relative_reference_only_warns);
     ff_test::run("stream_absolute", an_absolute_reference_is_not_checked);
     ff_test::run("stream_latch", a_stream_refusal_leaves_the_builder_usable);
+    ff_test::run("validate_stream", validate_stream_finds_what_the_write_path_would_have);
+    ff_test::run("validate_stream_ok", validate_stream_is_silent_on_a_sound_document);
+    ff_test::run("validate_stream_layer", validate_stream_reports_through_a_caller_supplied_layer);
+    ff_test::run("validate_stream_non_bundle", validate_stream_passes_a_non_bundle_root);
+    ff_test::run("validate_stream_garbage", validate_stream_refuses_bytes_that_are_not_a_stream);
     return ff_test::report("conformance layer");
 }

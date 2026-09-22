@@ -367,6 +367,7 @@ if(FASTFHIR_BUILD_CONFORMANCE)
         src/conformance/FF_ConformanceEngine.hpp
         src/conformance/FF_StreamCheck.cpp
         src/conformance/FF_StreamCheck.hpp
+        src/conformance/FF_Validate.cpp
     )
     add_library(FastFHIR::conformance ALIAS fastfhir_conformance)
     target_include_directories(fastfhir_conformance PUBLIC
@@ -477,6 +478,8 @@ set(FASTFHIR_PUBLIC_HEADERS
     ${FASTFHIR_INCLUDE_DIR}/FF_Export.h
     ${FASTFHIR_INCLUDE_DIR}/FF_String.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Primitives.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Constants.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Values.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_TypeTraits.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Utilities.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Dictionary.hpp
@@ -503,7 +506,12 @@ if(FASTFHIR_BUILD_INGESTOR)
 endif()
 if(FASTFHIR_BUILD_CONFORMANCE)
     install(TARGETS fastfhir_conformance EXPORT FastFHIRTargets ARCHIVE DESTINATION lib)
-    install(FILES ${FASTFHIR_GENERATED_DIR}/FF_Conformance_Layer.hpp DESTINATION include)
+    # FF_Validate.hpp declares validate_stream(), which only fastfhir_conformance
+    # defines, so it ships exactly where that library does. FF_Conformance_internal.hpp
+    # ships NOWHERE -- it is absent from FASTFHIR_PUBLIC_HEADERS above and
+    # install_smoke asserts it stays that way.
+    install(FILES ${FASTFHIR_GENERATED_DIR}/FF_Conformance_Layer.hpp
+                  ${FASTFHIR_INCLUDE_DIR}/FF_Validate.hpp DESTINATION include)
 endif()
 install(EXPORT FastFHIRTargets
     FILE FastFHIRTargets.cmake NAMESPACE FastFHIR::

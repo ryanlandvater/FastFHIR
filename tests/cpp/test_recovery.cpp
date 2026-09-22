@@ -23,13 +23,18 @@
 #include "FFHR_tests.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <random>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace FastFHIR;
@@ -768,8 +773,11 @@ static void test_apply_repairs_a_copy_and_improves_it()
     std::vector<BYTE> fixed;
     const FF_ApplyReport ar = rec.apply(dmg, fixed);
 
-    // 1. Every verdict is accounted for — nothing silently ignored.
-    CHECK_EQ(ar.applied + ar.declined + ar.failed, dmg.blocks.size(),
+    // 1. Every verdict is accounted for — nothing silently ignored. Both
+    //    populations count: apply() walks the header verdicts (REC-24) and the
+    //    block verdicts, and an outcome missing from the totals is exactly the
+    //    silent skip this assertion exists to catch.
+    CHECK_EQ(ar.applied + ar.declined + ar.failed, dmg.blocks.size() + dmg.header.size(),
              "apply accounts for every verdict");
     // 2. A failed write is reverted, never counted as applied.
     CHECK_EQ(ar.failed_edges.size(), ar.failed, "each failure names its edge");
@@ -1142,34 +1150,912 @@ static void test_interior_entry_damage_does_not_truncate_array()
                 block_elems);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// WP1 — THE GATES (../FastFHIR-benchmark/recovery_handoff.md §6)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Everything above this line picks an edge, flips a known bit, and asserts the
+// verdict. That shape proves the classifier agrees with whoever wrote the case,
+// and it is how a green suite coexisted with a recovery pass that overwrote
+// intact tags, could not enact its own hole matches, and dropped whole edges
+// without reporting anything.
+//
+// These gates ask a different question over EVERY eligible byte rather than a
+// chosen one, and they judge the BYTES rather than the verdict:
+//
+//   1. popcount(introduced) == 0, where
+//          damage     = clean XOR damaged
+//          remaining  = clean XOR repaired
+//          introduced = remaining AND NOT damage
+//      A repair may only move a damaged bit back toward clean. Writing onto a
+//      byte the damage never touched is wrong by construction under the
+//      single-flip model, whatever the verdict says about it.
+//
+//   2. Either the repair is exact, or the report SAYS SO. Every flipped byte
+//      still differing from clean must carry an Ambiguous or Unrecovered
+//      verdict naming an edge that byte witnesses, or a header verdict naming
+//      the field that owns it. "No verdict" and "no damage" must not look
+//      alike -- that resemblance IS the silent failure.
+//
+// Assertion 1 catches wrong writes; assertion 2 catches silent loss. Neither
+// can be satisfied by making the ranker bolder, which is the point.
+//
+// MEASURED RED LIST, 2026-09-22, against FastFHIR 4adcfcc plus the uncommitted
+// REC-24 header work (benchmark 3bfb498). These gates are RED ON PURPOSE. Each
+// number below came from the run that introduced them, and the list is the
+// progress measure: it shrinks as recovery_handoff.md's work packages land. A
+// gate going green before its package lands means the gate was weakened, not
+// that the defect was fixed -- do not delete an entry without the commit that
+// closes it.
+//
+//   gate                     ingest      out-of-order   header(432 bits)
+//   wrong writes             11          9              0
+//   damage left silent       292         180            32
+//   confident-but-declined   218         140            0
+//   unaccounted verdicts     0           0              0
+//   repaired length drift    0           0 (1 paired)   0
+//   idempotence drift        0           0              --
+//   clean-stream writes      0           0              --
+//
+// The ingest fixture's counts move by a few between runs, because the Ingestor
+// pool places resources in worker-completion order and that layout is not a
+// guarantee (COV-3). Every ASSERTION here is "== 0", which holds on any layout,
+// so nothing is pinned to a schedule. The out-of-order fixture goes through the
+// Builder directly and is byte-stable run to run.
+//
+// Where the failures cluster, and which mode owns each cluster. Seat names are
+// gate_blame()'s: "X" means a verdict of class X writes that byte; "no-write/X"
+// means no repair class covers it and the edge it witnesses has verdict X.
+//
+//   [TagRepaired x216/x140]  F30, NEW. apply()'s TagRepaired arm breaks without
+//        writing when plausible_tag() says the child's wire tag could be an
+//        innocent block. The CLASSIFIER never applies that guard, so the verdict
+//        stays TagRepaired and rep.tag_repaired still counts it: the damage
+//        stays and the report says it was repaired. The guard itself is
+//        defensible -- it is the F01 "innocent block" worry -- but it is taken
+//        in the writer, so the decision never reaches the report. It belongs in
+//        classify_one, where the honest answer is Ambiguous.             [WP2]
+//   [header StreamLayout/Intact x31]  F04b, predicted. The 30 engine-version
+//        bits packed into VERSION are neither reconciled nor reported, and the
+//        layout verdict beside them reads Intact.                        [WP5]
+//   [no-write/Intact x38/x5]  damage the classifier reads as Intact: no repair
+//        seat covers the byte and the edge it witnesses is called undamaged.
+//        Spans F01, F02b and F05; needs triage before assignment.    [WP3/WP4]
+//   [no-verdict-at-all x4/x3]  F02, predicted. The edge vanished before
+//        classification, so nothing in the report mentions it.           [WP3]
+//   [header FhirRevision/Intact x1]  F31, NEW. FHIR_VERSION_R4 (0x0400) and
+//        FHIR_VERSION_R5 (0x0500) are ONE BIT apart, so a flip lands exactly on
+//        the other legal revision. The closed-set check scores that at cost 0
+//        and calls it Intact. Deterministic, both fixtures, one bit.      [WP5]
+//   [header UrlDirectoryOffset / ModuleRegistryOffset Corroborated x10/x9]
+//        F29, NEW, and the only cluster that WRITES a wrong byte.
+//        reconcile_singleton records Corroborated whenever the census holds
+//        exactly one block carrying the field's tag, with NO flip-budget check
+//        -- unlike the root reconciliation directly below it, which has one.
+//        The singleton tags are 0x0004/0x0005/0x0006, within a bit or two of
+//        each other and of other low tags, so one flipped tag byte ANYWHERE in
+//        the stream can fabricate a singleton. The field was FF_NULL_OFFSET
+//        (absent) in the clean stream and becomes a pointer: ~60 invented bits,
+//        a URL directory the document never had. Note the header-only gate
+//        reports wrong=0, so this is reached by damage OUTSIDE the header.[WP5]
+//   [ExtentDerived x1]  an array extent rewrite landing on an undamaged byte.
+//        F11/F19 family, one occurrence, not yet minimised.              [WP3]
+//
+// Predicted but NOT separated by these fixtures, because neither builds the
+// shape: F03a (a hole match writes only the parent slot and then verifies a
+// self-offset the hole candidate cannot have), F03b (a tuple's priced tag
+// repair goes unwritten), F10 (an inline element repointed as a pointer). WP2
+// adds the fixtures that isolate them.
+//
+// Two gates are GREEN and must stay that way: idempotence (a second pass over a
+// repaired stream writes nothing) and clean-stream (apply on undamaged bytes
+// changes none of them).
+//
+// A note on what these fixtures CANNOT show. copy_of() sizes each arena to the
+// payload exactly, so trusted_extent's ceiling is already the true length and
+// an inflating STREAM_SIZE flip is clamped for free. The 4 GiB sweep F09
+// describes needs an arena reserved wider than its payload, which is what the
+// benchmark uses. Read a green StreamSize result here as "not reproduced on
+// this fixture", never as "F09 is fixed".
+
+// Gate tunables, set once from main so a gate widens without a rebuild. A
+// randomised gate PINS its seed and prints it: a suite that flakes is a suite
+// that gets ignored, and a red log has to name the command that reproduces it.
+static uint64_t    g_gate_seed   = 20260922;
+static std::size_t g_gate_probes = 4096;  ///< single-bit probes per fixture
+static std::size_t g_gate_pairs  = 384;   ///< paired-bit probes per fixture
+
+// Which half of this binary runs. Three of the gates are RED on purpose, so
+// ctest registers them as their own entries and runs the legacy cases with
+// `--gates off`: one red gate must not drown the 251 checks that guard
+// everything else. `--gates only` is the gates alone, which is what each gate's
+// own ctest entry runs. No argument at all runs both, because a developer
+// invoking the binary by hand should see the whole picture.
+enum class GateMode { All, Off, Only };
+static GateMode g_gate_mode = GateMode::All;
+
+static void gate_set_options(int argc, char **argv)
+{
+    for (int i = 1; i + 1 < argc; ++i) {
+        const std::string_view flag(argv[i]);
+        if (flag == "--seed")
+            g_gate_seed = std::strtoull(argv[i + 1], nullptr, 10);
+        else if (flag == "--probes")
+            g_gate_probes = std::strtoull(argv[i + 1], nullptr, 10);
+        else if (flag == "--pairs")
+            g_gate_pairs = std::strtoull(argv[i + 1], nullptr, 10);
+        else if (flag == "--gates")
+            g_gate_mode = std::string_view(argv[i + 1]) == "off"    ? GateMode::Off
+                          : std::string_view(argv[i + 1]) == "only" ? GateMode::Only
+                                                                    : GateMode::All;
+    }
+}
+
+// Dispatch that honours --gates. Both kinds of case are registered through one
+// of these two, so a case added later cannot forget the switch.
+template <class Fn>
+static void run_case(const char *name, Fn fn)
+{
+    if (g_gate_mode != GateMode::Only)
+        ff_test::run(name, fn);
+}
+
+template <class Fn>
+static void run_gate(const char *name, Fn fn)
+{
+    if (g_gate_mode != GateMode::Off)
+        ff_test::run(name, fn);
+}
+
+// A (byte, bit) site the gate flips. One bit per byte is the benchmark's
+// damage model exactly (bench_test_5 selects distinct bytes, then XORs one bit
+// in each), so a gate built on anything else would be measuring a threat the
+// recovery pass was never designed against.
+using GateSite = std::pair<std::size_t, int>;
+
+// THE ELIGIBLE SET, mirroring the benchmark's structural_positions().
+//
+// These are the bytes carrying a structural witness, and they are exactly the
+// ones bench_test_5 corrupts: the stream header, every parent slot naming a
+// child, and every child's own 10-byte block header. Scalar payloads, string
+// bytes and leaf-data references are excluded -- a broken leaf reference has no
+// second witness, so no repair is owed for it and damaging one would measure
+// the format's design rather than the recovery pass.
+//
+// Kept in step with the benchmark BY HAND, deliberately: linking the benchmark
+// in would drag Bazel and its corpus behind it. If structural_positions()
+// changes, this changes with it.
+static std::vector<std::size_t> gate_eligible_positions(const Memory &clean,
+                                                        const std::vector<BlockRef> &refs)
+{
+    const std::size_t n = clean->size();
+    std::vector<std::size_t> pos;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(FF_HEADER::HEADER_SIZE) && i < n; ++i)
+        pos.push_back(i);
+    for (const BlockRef &r : refs) {
+        if (r.child == FF_NULL_OFFSET || static_cast<std::size_t>(r.child) >= n)
+            continue;
+        const bool tuple = r.kind == FF_FIELD_CHOICE || r.kind == FF_FIELD_RESOURCE;
+        const std::size_t slot =
+            static_cast<std::size_t>(r.parent) + static_cast<std::size_t>(r.field);
+        for (std::size_t j = 0; j < (tuple ? 10u : 8u) && slot + j < n; ++j)
+            pos.push_back(slot + j);
+        for (std::size_t j = 0;
+             j < static_cast<std::size_t>(DATA_BLOCK::HEADER_SIZE) &&
+             static_cast<std::size_t>(r.child) + j < n;
+             ++j)
+            pos.push_back(static_cast<std::size_t>(r.child) + j);
+    }
+    std::sort(pos.begin(), pos.end());
+    pos.erase(std::unique(pos.begin(), pos.end()), pos.end());
+    return pos;
+}
+
+// Which FF_HEADER field owns a byte. The VERSION word holds the engine version
+// AND the 2-bit stream layout, and only the layout is reconciled, so a flip in
+// the other 30 bits maps to StreamLayout and finds an Intact verdict -- that is
+// F04b, and this mapping is what makes it visible instead of invisible.
+static bool gate_header_field(std::size_t at, HeaderField &out)
+{
+    struct Span { std::size_t begin, end; HeaderField field; };
+    static const Span spans[] = {
+        {FF_HEADER::MAGIC,             FF_HEADER::RECOVERY,          HeaderField::Magic},
+        {FF_HEADER::RECOVERY,          FF_HEADER::FHIR_REV,          HeaderField::Recovery},
+        {FF_HEADER::FHIR_REV,          FF_HEADER::STREAM_SIZE,       HeaderField::FhirRevision},
+        {FF_HEADER::STREAM_SIZE,       FF_HEADER::ROOT_OFFSET,       HeaderField::StreamSize},
+        {FF_HEADER::ROOT_OFFSET,       FF_HEADER::ROOT_RECOVERY,     HeaderField::RootOffset},
+        {FF_HEADER::ROOT_RECOVERY,     FF_HEADER::CHECKSUM_OFFSET,   HeaderField::RootRecovery},
+        {FF_HEADER::CHECKSUM_OFFSET,   FF_HEADER::URL_DIR_OFFSET,    HeaderField::ChecksumOffset},
+        {FF_HEADER::URL_DIR_OFFSET,    FF_HEADER::MODULE_REG_OFFSET, HeaderField::UrlDirectoryOffset},
+        {FF_HEADER::MODULE_REG_OFFSET, FF_HEADER::VERSION,           HeaderField::ModuleRegistryOffset},
+        {FF_HEADER::VERSION,           FF_HEADER::HEADER_SIZE,       HeaderField::StreamLayout},
+    };
+    for (const Span &s : spans)
+        if (at >= s.begin && at < s.end) { out = s.field; return true; }
+    return false;
+}
+
+static const char *gate_header_name(HeaderField f)
+{
+    switch (f) {
+        case HeaderField::Magic:                return "Magic";
+        case HeaderField::Recovery:             return "Recovery";
+        case HeaderField::FhirRevision:         return "FhirRevision";
+        case HeaderField::StreamSize:           return "StreamSize";
+        case HeaderField::RootOffset:           return "RootOffset";
+        case HeaderField::RootRecovery:         return "RootRecovery";
+        case HeaderField::ChecksumOffset:       return "ChecksumOffset";
+        case HeaderField::UrlDirectoryOffset:   return "UrlDirectoryOffset";
+        case HeaderField::ModuleRegistryOffset: return "ModuleRegistryOffset";
+        case HeaderField::StreamLayout:         return "StreamLayout";
+    }
+    return "?";
+}
+
+static const char *gate_class_name(RepairClass c)
+{
+    switch (c) {
+        case RepairClass::Intact:           return "Intact";
+        case RepairClass::Corroborated:     return "Corroborated";
+        case RepairClass::TagRepaired:      return "TagRepaired";
+        case RepairClass::PositionRepaired: return "PositionRepaired";
+        case RepairClass::ExtentDerived:    return "ExtentDerived";
+        case RepairClass::Ambiguous:        return "Ambiguous";
+        case RepairClass::Unrecovered:      return "Unrecovered";
+    }
+    return "?";
+}
+
+// One damage trial end to end: flip the sites in a private copy, recover,
+// apply, and measure the repaired bytes against the clean ones.
+struct GateProbe {
+    FF_RecoveryReport report;
+    FF_ApplyReport    written;
+    std::vector<BYTE> repaired;
+    std::size_t       introduced = 0;  ///< bits changed that the damage never touched
+    std::size_t       residual   = 0;  ///< damaged bits still wrong after the repair
+    bool              exact      = false;
+    bool              same_size  = true;
+};
+
+static std::size_t gate_popcount(BYTE b)
+{
+    return static_cast<std::size_t>(std::popcount(static_cast<unsigned>(b)));
+}
+
+static GateProbe gate_probe(const Memory &clean, const std::vector<GateSite> &sites)
+{
+    GateProbe p;
+    Memory damaged = copy_of(clean);
+    for (const auto &[at, bit] : sites)
+        damaged->base()[at] ^= static_cast<BYTE>(1u << bit);
+
+    Recovery rec(damaged);
+    p.report  = rec.recover();
+    p.written = rec.apply(p.report, p.repaired);
+
+    const BYTE *const c = clean->base();
+    const BYTE *const d = damaged->base();
+    const std::size_t n = clean->size();
+    p.same_size = p.repaired.size() == n;
+    p.exact     = p.same_size;
+    for (std::size_t i = 0; i < n && i < p.repaired.size(); ++i) {
+        const BYTE damage    = static_cast<BYTE>(c[i] ^ d[i]);
+        const BYTE remaining = static_cast<BYTE>(c[i] ^ p.repaired[i]);
+        p.introduced += gate_popcount(static_cast<BYTE>(remaining & ~damage));
+        p.residual   += gate_popcount(static_cast<BYTE>(remaining & damage));
+        if (remaining)
+            p.exact = false;
+    }
+    return p;
+}
+
+// Assertion 2's predicate. Every flipped byte the repair did not restore must
+// be named by the report: an Ambiguous or Unrecovered verdict on an edge that
+// byte witnesses, or a header verdict on the field that owns it. That is the
+// report saying "I could not fix this", which is the whole contract. Intact --
+// or no verdict at all -- is the silent loss these gates exist to end.
+static bool gate_explains(const GateProbe &p, const Memory &clean,
+                          const std::vector<BlockRef> &refs,
+                          const std::vector<GateSite> &sites, std::size_t &unexplained_at)
+{
+    const BYTE *const c = clean->base();
+    for (const auto &[at, bit] : sites) {
+        (void)bit;
+        if (at < p.repaired.size() && p.repaired[at] == c[at])
+            continue;  // restored — nothing to explain
+
+        HeaderField field{};
+        bool explained = false;
+        if (gate_header_field(at, field)) {
+            for (const HeaderVerdict &v : p.report.header)
+                if (v.field == field && (v.class_ == RepairClass::Ambiguous ||
+                                         v.class_ == RepairClass::Unrecovered))
+                    explained = true;
+        }
+        // A byte can witness more than one edge -- an inline array element is
+        // its own slot -- so any edge it belongs to may carry the report.
+        for (const BlockRef &r : refs) {
+            if (explained)
+                break;
+            if (r.child == FF_NULL_OFFSET)
+                continue;
+            const bool tuple = r.kind == FF_FIELD_CHOICE || r.kind == FF_FIELD_RESOURCE;
+            const std::size_t slot =
+                static_cast<std::size_t>(r.parent) + static_cast<std::size_t>(r.field);
+            const std::size_t child = static_cast<std::size_t>(r.child);
+            const bool in_slot  = at >= slot && at < slot + (tuple ? 10u : 8u);
+            const bool in_child = at >= child &&
+                                  at < child + static_cast<std::size_t>(DATA_BLOCK::HEADER_SIZE);
+            if (!in_slot && !in_child)
+                continue;
+            for (const BlockVerdict &v : p.report.blocks)
+                if (v.block.parent == r.parent && v.block.field == r.field &&
+                    (v.class_ == RepairClass::Ambiguous || v.class_ == RepairClass::Unrecovered))
+                    explained = true;
+        }
+        if (!explained) {
+            unexplained_at = at;
+            return false;
+        }
+    }
+    return true;
+}
+
+// DIAGNOSTIC ONLY -- which verdict's seat covers a byte apply() changed.
+//
+// This mirrors the seat arithmetic inside Recovery::apply so a failure can name
+// the culprit instead of printing a bare address. It is deliberately NOT an
+// assertion: if apply's seats move, this annotation goes stale and gets less
+// useful, and nothing silently starts passing because of it.
+static std::string gate_blame(const FF_RecoveryReport &rep, std::size_t at,
+                              std::string *key = nullptr)
+{
+    char buf[192];
+    HeaderField hf{};
+    if (gate_header_field(at, hf)) {
+        for (const HeaderVerdict &v : rep.header)
+            if (v.field == hf) {
+                std::snprintf(buf, sizeof buf, "header %s/%s", gate_header_name(hf),
+                              gate_class_name(v.class_));
+                if (key) *key = buf;
+                return buf;
+            }
+    }
+    for (const BlockVerdict &v : rep.blocks) {
+        const std::size_t parent = static_cast<std::size_t>(v.block.parent);
+        const std::size_t field  = static_cast<std::size_t>(v.block.field);
+        const std::size_t child  = static_cast<std::size_t>(v.block.child);
+        std::size_t seat = 0, width = 0;
+        switch (v.class_) {
+            case RepairClass::Corroborated:
+                seat = parent + field; width = 8; break;
+            case RepairClass::TagRepaired:
+                seat = (v.damaged_copy == TagCopy::ParentSlot ? parent + field : child) +
+                       static_cast<std::size_t>(DATA_BLOCK::RECOVERY);
+                width = 2; break;
+            case RepairClass::PositionRepaired:
+                seat = child + static_cast<std::size_t>(DATA_BLOCK::VALIDATION);
+                width = 8; break;
+            case RepairClass::ExtentDerived:
+                seat = child + static_cast<std::size_t>(FF_ARRAY::ENTRY_COUNT);
+                width = 4; break;
+            default:
+                continue;
+        }
+        if (at >= seat && at < seat + width) {
+            std::snprintf(buf, sizeof buf, "%s parent=%zu field=%zu child=%zu",
+                          gate_class_name(v.class_), parent, field, child);
+            if (key) *key = gate_class_name(v.class_);
+            return buf;
+        }
+    }
+    // Not a seat any repair class writes. Say which edge the byte witnesses
+    // instead, because "nothing wrote here" is the interesting half of a
+    // silent loss: the edge exists and no verdict claims it.
+    for (const BlockVerdict &v : rep.blocks) {
+        const std::size_t parent = static_cast<std::size_t>(v.block.parent);
+        const std::size_t field  = static_cast<std::size_t>(v.block.field);
+        const std::size_t child  = static_cast<std::size_t>(v.block.child);
+        const bool tuple = v.block.kind == FF_FIELD_CHOICE || v.block.kind == FF_FIELD_RESOURCE;
+        const bool here  = (at >= parent + field && at < parent + field + (tuple ? 10u : 8u)) ||
+                          (at >= child &&
+                           at < child + static_cast<std::size_t>(DATA_BLOCK::HEADER_SIZE));
+        if (!here)
+            continue;
+        std::snprintf(buf, sizeof buf, "no-write/%s parent=%zu field=%zu child=%zu",
+                      gate_class_name(v.class_), parent, field, child);
+        if (key) *key = std::string("no-write/") + gate_class_name(v.class_);
+        return buf;
+    }
+    if (key) *key = "no-verdict-at-all";
+    return "no-verdict-at-all";
+}
+
+// The running tally one oracle sweep produces. Counts, plus the first example
+// of each kind: a count says how bad, an example says what to go and look at.
+struct GateTally {
+    std::size_t probes = 0, wrong_writes = 0, silent = 0, size_drift = 0, unaccounted = 0;
+    /// Verdicts in a CONFIDENT repair class that apply() then declined to
+    /// write. recover() and apply() disagreeing about what is repairable is
+    /// the one disagreement a driver cannot see: the report still counts the
+    /// verdict under tag_repaired or corroborated, so the summary claims a
+    /// repair that never reached a byte.
+    std::size_t declined_confident = 0;
+    std::string first_declined;
+    std::string first_wrong, first_silent, first_unaccounted;
+    /// Where the failures cluster. A count tells you how bad, an example tells
+    /// you what to look at, and this tells you which defect you are looking at
+    /// -- 292 silent probes is one bug or fifteen, and only this says which.
+    std::map<std::string, std::size_t> silent_by, wrong_by;
+};
+
+static void gate_histogram(const char *label, const std::map<std::string, std::size_t> &h)
+{
+    if (h.empty())
+        return;
+    std::vector<std::pair<std::size_t, std::string>> rows;
+    for (const auto &[k, n] : h)
+        rows.push_back({n, k});
+    std::sort(rows.rbegin(), rows.rend());
+    std::printf("      %s by seat:", label);
+    for (std::size_t i = 0; i < rows.size() && i < 6; ++i)
+        std::printf(" [%s x%zu]", rows[i].second.c_str(), rows[i].first);
+    std::printf("\n");
+}
+
+static void gate_score(const Memory &clean, const std::vector<BlockRef> &refs,
+                       const std::vector<GateSite> &sites, GateTally &t)
+{
+    const GateProbe p = gate_probe(clean, sites);
+    ++t.probes;
+    char buf[512];
+    const std::size_t at  = sites.front().first;
+    const int         bit = sites.front().second;
+
+    if (!p.same_size)
+        ++t.size_drift;
+
+    if (p.introduced != 0) {
+        ++t.wrong_writes;
+        if (t.first_wrong.empty()) {
+            // Name the first byte the repair invented, not merely the one that
+            // was damaged: they are usually different addresses, and the
+            // invented one is where the wrong decision landed.
+            std::size_t culprit = at;
+            for (std::size_t i = 0; i < clean->size() && i < p.repaired.size(); ++i) {
+                const BYTE damage    = static_cast<BYTE>(clean->base()[i] ^ p.repaired[i]);
+                bool       flipped   = false;
+                for (const auto &[site_at, site_bit] : sites)
+                    if (site_at == i) flipped = true;
+                if (damage && !flipped) { culprit = i; break; }
+            }
+            std::snprintf(buf, sizeof buf,
+                          "flip byte=%zu bit=%d introduced %zu bit(s); first invented byte=%zu "
+                          "clean=%02x repaired=%02x by %s",
+                          at, bit, p.introduced, culprit,
+                          culprit < clean->size() ? clean->base()[culprit] : 0,
+                          culprit < p.repaired.size() ? p.repaired[culprit] : 0,
+                          gate_blame(p.report, culprit).c_str());
+            t.first_wrong = buf;
+        }
+        std::size_t culprit = at;
+        for (std::size_t i = 0; i < clean->size() && i < p.repaired.size(); ++i) {
+            bool flipped = false;
+            for (const auto &[site_at, site_bit] : sites)
+                if (site_at == i) flipped = true;
+            if ((clean->base()[i] ^ p.repaired[i]) && !flipped) { culprit = i; break; }
+        }
+        std::string key;
+        gate_blame(p.report, culprit, &key);
+        ++t.wrong_by[key];
+    }
+
+    std::size_t unexplained = 0;
+    if (!p.exact && !gate_explains(p, clean, refs, sites, unexplained)) {
+        ++t.silent;
+        if (t.first_silent.empty()) {
+            std::snprintf(buf, sizeof buf,
+                          "flip byte=%zu bit=%d left byte %zu damaged (clean=%02x repaired=%02x) "
+                          "with no Ambiguous/Unrecovered verdict naming it; nearest seat: %s",
+                          at, bit, unexplained,
+                          unexplained < clean->size() ? clean->base()[unexplained] : 0,
+                          unexplained < p.repaired.size() ? p.repaired[unexplained] : 0,
+                          gate_blame(p.report, unexplained).c_str());
+            t.first_silent = buf;
+        }
+        std::string key;
+        gate_blame(p.report, unexplained, &key);
+        ++t.silent_by[key];
+    }
+
+    // Expected declines are exactly the verdicts that are not a repair:
+    // Intact, Ambiguous and Unrecovered among the blocks, and every header
+    // verdict apply does not write. Anything declined beyond that population
+    // is a confident class apply refused on a guard the classifier never ran.
+    std::size_t confident = 0;
+    for (const BlockVerdict &v : p.report.blocks)
+        if (v.class_ == RepairClass::Corroborated || v.class_ == RepairClass::TagRepaired ||
+            v.class_ == RepairClass::PositionRepaired || v.class_ == RepairClass::ExtentDerived)
+            ++confident;
+    for (const HeaderVerdict &v : p.report.header)
+        if (v.class_ == RepairClass::Corroborated)
+            ++confident;
+    if (p.written.applied + p.written.failed < confident) {
+        const std::size_t missed = confident - p.written.applied - p.written.failed;
+        t.declined_confident += missed;
+        if (t.first_declined.empty()) {
+            std::snprintf(buf, sizeof buf,
+                          "flip byte=%zu bit=%d: %zu of %zu confident verdicts were declined by "
+                          "apply (applied=%zu failed=%zu declined=%zu) -- the report still "
+                          "counts them as repairs",
+                          at, bit, missed, confident, p.written.applied, p.written.failed,
+                          p.written.declined);
+            t.first_declined = buf;
+        }
+    }
+
+    const std::size_t accounted = p.written.applied + p.written.declined + p.written.failed;
+    const std::size_t verdicts  = p.report.blocks.size() + p.report.header.size();
+    if (accounted != verdicts) {
+        ++t.unaccounted;
+        if (t.first_unaccounted.empty()) {
+            std::snprintf(buf, sizeof buf,
+                          "flip byte=%zu bit=%d: apply accounted for %zu of %zu verdicts "
+                          "(applied=%zu declined=%zu failed=%zu)",
+                          at, bit, accounted, verdicts, p.written.applied, p.written.declined,
+                          p.written.failed);
+            t.first_unaccounted = buf;
+        }
+    }
+}
+
+static void gate_report(const GateTally &t, const char *gate, const char *fixture)
+{
+    CHECK_EQ(t.wrong_writes, static_cast<std::size_t>(0),
+             gate << " [" << fixture << "]: repairs that changed an undamaged byte, over "
+                  << t.probes << " probes -- " << t.first_wrong);
+    CHECK_EQ(t.silent, static_cast<std::size_t>(0),
+             gate << " [" << fixture << "]: damage left unrepaired AND unreported, over "
+                  << t.probes << " probes -- " << t.first_silent);
+    CHECK_EQ(t.unaccounted, static_cast<std::size_t>(0),
+             gate << " [" << fixture << "]: applies whose outcomes do not sum to the verdict "
+                  << "count, over " << t.probes << " probes -- " << t.first_unaccounted);
+    CHECK_EQ(t.size_drift, static_cast<std::size_t>(0),
+             gate << " [" << fixture << "]: repaired copies whose length differs from the "
+                  << "clean stream, over " << t.probes << " probes");
+    CHECK_EQ(t.declined_confident, static_cast<std::size_t>(0),
+             gate << " [" << fixture << "]: confident verdicts apply() declined to write, over "
+                  << t.probes << " probes -- " << t.first_declined);
+}
+
+// ── Gate: a clean stream is never written to (F26) ────────────────────────
+static void gate_clean_zero_writes(const Memory &clean, const char *fixture)
+{
+    Recovery rec(clean);
+    const FF_RecoveryReport rep = rec.recover();
+    std::vector<BYTE> out;
+    const FF_ApplyReport ar = rec.apply(rep, out);
+
+    CHECK_EQ(ar.applied, static_cast<std::size_t>(0),
+             fixture << ": apply writes nothing to an undamaged stream");
+    CHECK_EQ(ar.failed, static_cast<std::size_t>(0),
+             fixture << ": an undamaged stream produces no failed write");
+    CHECK_EQ(ar.applied + ar.declined + ar.failed, rep.blocks.size() + rep.header.size(),
+             fixture << ": every verdict is accounted for");
+    const std::vector<BYTE> before(clean->base(), clean->base() + clean->size());
+    CHECK_EQ(out.size(), before.size(), fixture << ": the copy is the same length");
+    CHECK(out == before, fixture << ": apply on a clean stream changes no byte");
+}
+
+static void test_clean_stream_zero_writes()
+{
+    const auto ingested = build_bundle();
+    REQUIRE(ingested != nullptr, "bundle build failed");
+    gate_clean_zero_writes(ingested, "ingest");
+
+    const auto ordered = build_out_of_order_contained();
+    REQUIRE(ordered != nullptr, "out-of-order fixture build failed");
+    gate_clean_zero_writes(ordered, "out-of-order");
+}
+
+// ── Gate: the single-flip oracle ──────────────────────────────────────────
+//
+// The central gate. Every eligible structural byte, every bit, both fixtures.
+// Enumerated completely while the space fits the budget; sampled from a printed
+// seed when it does not, so a larger fixture degrades to a reproducible subset
+// rather than to a twenty-minute test.
+static void gate_single_flip(const Memory &clean, const char *fixture)
+{
+    const std::vector<BlockRef>    refs = Recovery(clean).reachable_blocks();
+    const std::vector<std::size_t> pos  = gate_eligible_positions(clean, refs);
+    REQUIRE(!pos.empty(), fixture << ": the fixture has eligible structural bytes");
+
+    std::vector<GateSite> all;
+    all.reserve(pos.size() * 8);
+    for (const std::size_t at : pos)
+        for (int bit = 0; bit < 8; ++bit)
+            all.push_back({at, bit});
+    const bool sampled = all.size() > g_gate_probes;
+    if (sampled) {
+        std::mt19937_64 rng(g_gate_seed);
+        std::shuffle(all.begin(), all.end(), rng);
+        all.resize(g_gate_probes);
+    }
+
+    GateTally t;
+    for (const GateSite &s : all)
+        gate_score(clean, refs, {s}, t);
+
+    std::printf("    single-flip [%s]: %zu refs, %zu eligible bytes, %zu probes (%s seed=%llu)"
+                " -> wrong=%zu silent=%zu declined=%zu unaccounted=%zu\n",
+                fixture, refs.size(), pos.size(), t.probes,
+                sampled ? "sampled" : "exhaustive",
+                static_cast<unsigned long long>(g_gate_seed),
+                t.wrong_writes, t.silent, t.declined_confident, t.unaccounted);
+    gate_histogram("wrong", t.wrong_by);
+    gate_histogram("silent", t.silent_by);
+    gate_report(t, "single-flip oracle", fixture);
+}
+
+static void test_single_flip_oracle()
+{
+    const auto ingested = build_bundle();
+    REQUIRE(ingested != nullptr, "bundle build failed");
+    gate_single_flip(ingested, "ingest");
+
+    const auto ordered = build_out_of_order_contained();
+    REQUIRE(ordered != nullptr, "out-of-order fixture build failed");
+    gate_single_flip(ordered, "out-of-order");
+}
+
+// ── Gate: the paired-flip oracle ──────────────────────────────────────────
+//
+// Two flips, and the pairs that matter are BUILT rather than drawn: both
+// witnesses of one edge (the classic hole), and a parent slot with its
+// grandchild's header (the cascade). Random pairs alone would reach those
+// shapes only by luck, and they are precisely where a repair has to stage more
+// than one write or decline.
+static std::vector<std::vector<GateSite>> gate_pairs(const Memory &clean,
+                                                     const std::vector<BlockRef> &refs)
+{
+    const std::size_t n = clean->size();
+    std::mt19937_64 rng(g_gate_seed);
+    std::vector<std::vector<GateSite>> pairs;
+
+    const auto slot_of = [](const BlockRef &r) {
+        return static_cast<std::size_t>(r.parent) + static_cast<std::size_t>(r.field);
+    };
+    const auto bit = [&rng] { return static_cast<int>(rng() & 7u); };
+
+    // Same edge: the parent's offset word and the child's self-offset word.
+    for (const BlockRef &r : refs) {
+        if (r.child == FF_NULL_OFFSET || static_cast<std::size_t>(r.child) >= n)
+            continue;
+        if (slot_of(r) + 8 > n)
+            continue;
+        pairs.push_back({{slot_of(r) + (rng() & 7u), bit()},
+                         {static_cast<std::size_t>(r.child) + (rng() & 7u), bit()}});
+    }
+    // Cascade: a slot naming a block that is itself a parent, damaged together
+    // with one of its own children's headers.
+    for (const BlockRef &a : refs) {
+        if (a.child == FF_NULL_OFFSET)
+            continue;
+        for (const BlockRef &b : refs) {
+            if (b.parent != a.child || b.child == FF_NULL_OFFSET ||
+                static_cast<std::size_t>(b.child) >= n)
+                continue;
+            if (slot_of(a) + 8 > n)
+                continue;
+            pairs.push_back({{slot_of(a) + (rng() & 7u), bit()},
+                             {static_cast<std::size_t>(b.child) + (rng() & 7u), bit()}});
+            break;  // one cascade per parent edge is enough to cover the shape
+        }
+    }
+    // The rest drawn at random over the eligible set, so shapes nobody thought
+    // of still get hit.
+    const std::vector<std::size_t> pos = gate_eligible_positions(clean, refs);
+    while (pairs.size() < g_gate_pairs && pos.size() >= 2) {
+        const std::size_t i = pos[rng() % pos.size()];
+        const std::size_t j = pos[rng() % pos.size()];
+        if (i != j)
+            pairs.push_back({{i, bit()}, {j, bit()}});
+    }
+    if (pairs.size() > g_gate_pairs) {
+        std::shuffle(pairs.begin(), pairs.end(), rng);
+        pairs.resize(g_gate_pairs);
+    }
+    return pairs;
+}
+
+static void gate_paired_flip(const Memory &clean, const char *fixture)
+{
+    const std::vector<BlockRef> refs = Recovery(clean).reachable_blocks();
+    const auto pairs = gate_pairs(clean, refs);
+    REQUIRE(!pairs.empty(), fixture << ": the fixture yields damage pairs");
+
+    GateTally t;
+    for (const auto &sites : pairs)
+        gate_score(clean, refs, sites, t);
+
+    std::printf("    paired-flip [%s]: %zu probes (seed=%llu) -> wrong=%zu silent=%zu "
+                "declined=%zu unaccounted=%zu\n",
+                fixture, t.probes, static_cast<unsigned long long>(g_gate_seed),
+                t.wrong_writes, t.silent, t.declined_confident, t.unaccounted);
+    gate_histogram("wrong", t.wrong_by);
+    gate_histogram("silent", t.silent_by);
+    gate_report(t, "paired-flip oracle", fixture);
+}
+
+static void test_paired_flip_oracle()
+{
+    const auto ingested = build_bundle();
+    REQUIRE(ingested != nullptr, "bundle build failed");
+    gate_paired_flip(ingested, "ingest");
+
+    const auto ordered = build_out_of_order_contained();
+    REQUIRE(ordered != nullptr, "out-of-order fixture build failed");
+    gate_paired_flip(ordered, "out-of-order");
+}
+
+// ── Gate: every header bit, and the stream still opens (F04, F04b, F09) ───
+//
+// The header is the one structure with no self-offset of its own, and a single
+// flip in it used to cost the WHOLE document: four of twenty benchmark trials
+// scored zero, which is the entire distance between the 76.7% mean and the
+// 95.6% median. 54 bytes is small enough to enumerate completely, so it is.
+static Memory gate_wrap(const std::vector<BYTE> &bytes)
+{
+    Memory m = Memory::create(std::max<std::size_t>(bytes.size(), 1));
+    m->claim_space(bytes.size());
+    std::memcpy(m->base(), bytes.data(), bytes.size());
+    return m;
+}
+
+static void test_header_single_bit_enumeration()
+{
+    const auto clean = build_bundle();
+    REQUIRE(clean != nullptr, "bundle build failed");
+    const std::vector<BlockRef> refs = Recovery(clean).reachable_blocks();
+
+    GateTally   t;
+    std::size_t unopenable = 0;
+    std::string first_unopenable;
+    for (std::size_t at = 0; at < static_cast<std::size_t>(FF_HEADER::HEADER_SIZE); ++at) {
+        for (int bit = 0; bit < 8; ++bit) {
+            const std::vector<GateSite> sites{{at, bit}};
+            gate_score(clean, refs, sites, t);
+
+            // The header's own gate: a repaired stream that will not open has
+            // recovered nothing, whatever its block verdicts say.
+            const GateProbe p = gate_probe(clean, sites);
+            HeaderField     field{};
+            gate_header_field(at, field);
+            try {
+                Parser parser(gate_wrap(p.repaired));
+                (void)parser.root();
+            } catch (const std::exception &e) {
+                ++unopenable;
+                if (first_unopenable.empty()) {
+                    char buf[512];
+                    std::snprintf(buf, sizeof buf, "byte=%zu bit=%d field=%s: %s", at, bit,
+                                  gate_header_name(field), e.what());
+                    first_unopenable = buf;
+                }
+            }
+        }
+    }
+    std::printf("    header bits: %zu probes -> wrong=%zu silent=%zu declined=%zu "
+                "unopenable=%zu\n",
+                t.probes, t.wrong_writes, t.silent, t.declined_confident, unopenable);
+    gate_histogram("wrong", t.wrong_by);
+    gate_histogram("silent", t.silent_by);
+    gate_report(t, "header enumeration", "ingest");
+    CHECK_EQ(unopenable, static_cast<std::size_t>(0),
+             "header enumeration: repaired streams the Parser refuses to open, over "
+                 << t.probes << " probes -- " << first_unopenable);
+}
+
+// ── Gate: repair is idempotent (F25) ──────────────────────────────────────
+//
+// A second recovery over an already-repaired stream must write nothing. Any
+// byte it changes is structure the first pass invented and the second believed,
+// which is how a repair loop drifts away from the original document while every
+// individual write verifies.
+static void gate_idempotent(const Memory &clean, const char *fixture)
+{
+    const std::vector<BlockRef>    refs = Recovery(clean).reachable_blocks();
+    const std::vector<std::size_t> pos  = gate_eligible_positions(clean, refs);
+    REQUIRE(!pos.empty(), fixture << ": the fixture has eligible structural bytes");
+
+    std::mt19937_64 rng(g_gate_seed);
+    std::size_t     drifted = 0, probes = 0;
+    std::string     first;
+    for (std::size_t i = 0; i < pos.size() && probes < g_gate_pairs; ++i) {
+        const std::size_t at  = pos[rng() % pos.size()];
+        const int         bit = static_cast<int>(rng() & 7u);
+        const GateProbe   p   = gate_probe(clean, {{at, bit}});
+        ++probes;
+
+        const Memory      once = gate_wrap(p.repaired);
+        Recovery          rec(once);
+        std::vector<BYTE> twice;
+        const FF_ApplyReport ar = rec.apply(rec.recover(), twice);
+        if (twice != p.repaired) {
+            ++drifted;
+            if (first.empty()) {
+                std::size_t where = 0;
+                for (std::size_t k = 0; k < twice.size() && k < p.repaired.size(); ++k)
+                    if (twice[k] != p.repaired[k]) { where = k; break; }
+                char buf[512];
+                std::snprintf(buf, sizeof buf,
+                              "flip byte=%zu bit=%d: the second pass rewrote byte %zu "
+                              "(%02x -> %02x), applied=%zu",
+                              at, bit, where,
+                              where < p.repaired.size() ? p.repaired[where] : 0,
+                              where < twice.size() ? twice[where] : 0, ar.applied);
+                first = buf;
+            }
+        }
+    }
+    std::printf("    idempotence [%s]: %zu probes (seed=%llu) -> drifted=%zu\n", fixture, probes,
+                static_cast<unsigned long long>(g_gate_seed), drifted);
+    CHECK_EQ(drifted, static_cast<std::size_t>(0),
+             "idempotence [" << fixture << "]: repaired streams a second pass changed again, over "
+                             << probes << " probes -- " << first);
+}
+
+static void test_repair_is_idempotent()
+{
+    const auto ingested = build_bundle();
+    REQUIRE(ingested != nullptr, "bundle build failed");
+    gate_idempotent(ingested, "ingest");
+
+    const auto ordered = build_out_of_order_contained();
+    REQUIRE(ordered != nullptr, "out-of-order fixture build failed");
+    gate_idempotent(ordered, "out-of-order");
+}
+
 int main(int argc, char **argv)
 {
     ff_test::set_filter(argc, argv);
+    gate_set_options(argc, argv);
 
 
     TEST_GROUP("Recovery");
-    ff_test::run("clean_stream_zero_false_positives", test_clean_stream_zero_false_positives);
-    ff_test::run("validation_flip_position_repaired", test_validation_flip_position_repaired);
-    ff_test::run("offset_flip_corroborated", test_offset_flip_corroborated);
-    ff_test::run("both_halves_never_silent", test_both_halves_never_silent);
-    ff_test::run("clean_stream_tiles_with_no_gaps", test_clean_stream_tiles_with_no_gaps);
-    ff_test::run("broken_validation_leaves_a_hole", test_broken_validation_leaves_a_hole);
-    ff_test::run("both_witnesses_broken_is_still_found", test_both_witnesses_broken_is_still_found);
-    ff_test::run("same_version_stream_never_reports_skew", test_same_version_stream_never_reports_skew);
-    ff_test::run("compact_archive_is_refused", test_compact_archive_is_refused);
-    ff_test::run("holes_locate_and_size_every_entry_shape", test_holes_locate_and_size_every_entry_shape);
-    ff_test::run("broken_blockref_still_locates_and_sizes_the_orphan",
+    run_case("clean_stream_zero_false_positives", test_clean_stream_zero_false_positives);
+    run_case("validation_flip_position_repaired", test_validation_flip_position_repaired);
+    run_case("offset_flip_corroborated", test_offset_flip_corroborated);
+    run_case("both_halves_never_silent", test_both_halves_never_silent);
+    run_case("clean_stream_tiles_with_no_gaps", test_clean_stream_tiles_with_no_gaps);
+    run_case("broken_validation_leaves_a_hole", test_broken_validation_leaves_a_hole);
+    run_case("both_witnesses_broken_is_still_found", test_both_witnesses_broken_is_still_found);
+    run_case("same_version_stream_never_reports_skew", test_same_version_stream_never_reports_skew);
+    run_case("compact_archive_is_refused", test_compact_archive_is_refused);
+    run_case("holes_locate_and_size_every_entry_shape", test_holes_locate_and_size_every_entry_shape);
+    run_case("broken_blockref_still_locates_and_sizes_the_orphan",
         test_broken_blockref_still_locates_and_sizes_the_orphan);
-    ff_test::run("one_damaged_witness_costs_nothing", test_one_damaged_witness_costs_nothing);
-    ff_test::run("apply_repairs_a_copy_and_improves_it", test_apply_repairs_a_copy_and_improves_it);
-    ff_test::run("generational_holes_recover_from_the_root",
+    run_case("one_damaged_witness_costs_nothing", test_one_damaged_witness_costs_nothing);
+    run_case("apply_repairs_a_copy_and_improves_it", test_apply_repairs_a_copy_and_improves_it);
+    run_case("generational_holes_recover_from_the_root",
         test_generational_holes_recover_from_the_root);
-    ff_test::run("resource_tuple_repoint_independent_of_layout",
+    run_case("resource_tuple_repoint_independent_of_layout",
         test_resource_tuple_repoint_independent_of_layout);
-    ff_test::run("interior_entry_damage_does_not_truncate_array",
+    run_case("interior_entry_damage_does_not_truncate_array",
         test_interior_entry_damage_does_not_truncate_array);
-    ff_test::run("tag_consensus_resolves_either_damaged_copy",
+    run_case("tag_consensus_resolves_either_damaged_copy",
         test_tag_consensus_resolves_either_damaged_copy);
+
+    // WP1 gates (recovery_handoff.md §6) -- byte-level oracles over every
+    // eligible structural byte, not a hand-picked edge. Several are expected
+    // RED until their work package lands; the list is in the block comment
+    // above gate_set_options().
+    run_gate("clean_stream_zero_writes", test_clean_stream_zero_writes);
+    run_gate("single_flip_oracle", test_single_flip_oracle);
+    run_gate("paired_flip_oracle", test_paired_flip_oracle);
+    run_gate("header_single_bit_enumeration", test_header_single_bit_enumeration);
+    run_gate("repair_is_idempotent", test_repair_is_idempotent);
 
     std::cout << "\n" << ::ff_test::g_checks << " test(s), " << ::ff_test::g_failures << " failure(s)\n";
     if (::ff_test::g_checks == 0)

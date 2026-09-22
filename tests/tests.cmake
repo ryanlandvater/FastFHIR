@@ -241,12 +241,39 @@ if(FASTFHIR_BUILD_TESTS)
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_identity ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes ff_test_poco_values ff_test_bundle_index)
+    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_identity ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger ff_test_abstraction_parity ff_test_views ff_test_bundle_append ff_test_file_modes ff_test_poco_values ff_test_bundle_index)
     if(FASTFHIR_BUILD_CONFORMANCE)
         list(APPEND _FF_STANDALONE_TESTS ff_test_conformance ff_example_conformance)
     endif()
     foreach(_standalone ${_FF_STANDALONE_TESTS})
         add_test(NAME "cpp_${_standalone}" COMMAND ${_standalone})
+    endforeach()
+
+    # RECOVERY: the legacy cases and the WP1 gates are registered SEPARATELY,
+    # and the gates one at a time.
+    #
+    # The gates (../FastFHIR-benchmark/recovery_handoff.md §6) assert that a
+    # repair never writes onto an undamaged byte and that damage it cannot fix
+    # is REPORTED rather than dropped. Three of them are red today on purpose:
+    # they are the progress meter for the repair work packages, and the measured
+    # red list lives in the block comment above gate_set_options() in
+    # tests/cpp/test_recovery.cpp.
+    #
+    # WILL_FAIL is what keeps that honest in BOTH directions. A red gate does
+    # not drown the 251 checks guarding everything else, and the moment a work
+    # package fixes one, its entry FLIPS TO FAILING -- so whoever fixed it has
+    # to come back, clear the property and update the red list. A known-failing
+    # test nobody is forced to revisit is how a suite starts lying, which is the
+    # failure these gates exist to end.
+    add_test(NAME cpp_ff_test_recovery COMMAND ff_test_recovery --gates off)
+    foreach(_gate clean_stream_zero_writes repair_is_idempotent)
+        add_test(NAME "cpp_recovery_gate_${_gate}"
+                 COMMAND ff_test_recovery --gates only --filter ${_gate})
+    endforeach()
+    foreach(_gate single_flip_oracle paired_flip_oracle header_single_bit_enumeration)
+        add_test(NAME "cpp_recovery_gate_${_gate}"
+                 COMMAND ff_test_recovery --gates only --filter ${_gate})
+        set_tests_properties("cpp_recovery_gate_${_gate}" PROPERTIES WILL_FAIL TRUE)
     endforeach()
 
     # XP-1.3: without the visited set the heavy-sharing case does not fail, it
