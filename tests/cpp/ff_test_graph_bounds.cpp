@@ -640,5 +640,138 @@ int main() {
         }
     }
 
+    // ── 8. URL directory hardening (P2, Finding 3) ──────────────────────────
+    // The directory hangs off the HEADER, so the root walk never reached it.
+    // These drive the two things P2 added: the validator visits it, and the
+    // read path bounds its indices and cycle-guards the prior chain instead of
+    // indexing/galloping off a forged table.
+    {
+        Memory mem = Memory::create(1ull << 22);
+        FF_BuilderCreateInfo info;
+        info.arena = mem;
+        FF_Builder builder;
+        CHECK(FF_CreateBuilder(info, builder), "create stream");
+
+        // A Patient with one Extension whose `url` is a directory index — the
+        // direct-POCO path P1 made usable. The URL splits on '/', so the table
+        // holds several entries (one per segment), enough for a cycle.
+        PatientData patient;
+        patient.id = "p2";
+        ExtensionData ext;
+        ext.url = builder->intern_url("http://example.org/fhir/StructureDefinition/p2-ext");
+        patient.extension.push_back(std::move(ext));
+        const Reflective::ObjectHandle root = builder->append_obj(patient);
+        CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root}), "set root");
+        Memory::View view;
+        CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view), "finalize");
+
+        const BYTE* const base = reinterpret_cast<const BYTE*>(view.data());
+        const Size        size = view.size();
+        const Offset      dir_off = FF_HEADER(size).get_url_dir_offset(base);
+        CHECK(dir_off != FF_NULL_OFFSET, "the stream carries a URL directory");
+        const Offset table = dir_off + FF_URL_DIRECTORY::HEADER_SIZE;
+        auto entry = [&](std::vector<BYTE>& b, uint32_t i) {
+            return b.data() + table + static_cast<Offset>(i) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
+        };
+        const uint32_t entries = FF_URL_DIRECTORY(dir_off, size, 0).entry_count(base);
+        CHECK(entries >= 2, "the URL splits into at least two segments: " << entries);
+
+        // Clean: the directory validates as part of the stream walk.
+        {
+            FastFHIR::Parser p(base, size);
+            CHECK(static_cast<bool>(p.validate_FFHR_stream()), "clean directory validates");
+        }
+
+        // (a) forged entry_count larger than the stream can hold.
+        {
+            std::vector<BYTE> bytes(base, base + size);
+            STORE_U32(bytes.data() + dir_off + FF_URL_DIRECTORY::ENTRY_COUNT, 1000000u);
+            FastFHIR::Parser p(bytes.data(), bytes.size());
+            auto r = p.validate_FFHR_stream();
+            CHECK(!r, "a forged entry_count is rejected");
+            CHECK(r.message.find("fit in the stream") != std::string::npos,
+                  "message names the count bound: " << r.message);
+        }
+
+        // (b) forged prior_idx past the end of the table.
+        {
+            std::vector<BYTE> bytes(base, base + size);
+            STORE_U32(entry(bytes, 0) + FF_URL_DIRECTORY::URL_ENTRY_PRIOR_IDX, 999999u);
+            FastFHIR::Parser p(bytes.data(), bytes.size());
+            auto r = p.validate_FFHR_stream();
+            CHECK(!r, "a prior_idx outside the table is rejected");
+            CHECK(r.message.find("prior_idx") != std::string::npos,
+                  "message names the prior link: " << r.message);
+        }
+
+        // (c) a segment offset below the block floor. Offset 0 is the stream
+        //     header, so the bounds test catches it before any tag read.
+        {
+            std::vector<BYTE> bytes(base, base + size);
+            STORE_U64(entry(bytes, 0) + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET, 0);
+            FastFHIR::Parser p(bytes.data(), bytes.size());
+            auto r = p.validate_FFHR_stream();
+            CHECK(!r, "a segment offset of 0 (the header) is rejected");
+            CHECK(r.message.find("overruns the stream") != std::string::npos,
+                  "message names the bounds failure: " << r.message);
+        }
+
+        // (c2) a segment offset that fits but no longer vouches for itself. A
+        //      block's witness is its own offset; overwriting it is the forgery
+        //      the vouch check exists to catch. The URL slot is an inline index
+        //      only the directory walk follows, so the root walk cannot see it.
+        {
+            std::vector<BYTE> bytes(base, base + size);
+            const FF_URL_DIRECTORY d(dir_off, size, 0);
+            Offset seg = FF_NULL_OFFSET;
+            for (uint32_t i = 0; i < entries && seg == FF_NULL_OFFSET; ++i)
+                seg = d.seg_offset(bytes.data(), i);
+            CHECK(seg != FF_NULL_OFFSET, "found a concrete segment to corrupt");
+            STORE_U64(bytes.data() + seg, 0xDEADBEEFull);   // clobber the witness
+            FastFHIR::Parser p(bytes.data(), bytes.size());
+            auto r = p.validate_FFHR_stream();
+            CHECK(!r, "a segment that does not vouch for itself is rejected");
+            CHECK(r.message.find("vouch") != std::string::npos,
+                  "message names the self-validation failure: " << r.message);
+        }
+
+        // (d) READ PATH: an out-of-range index degrades to a falsy read. Setting
+        //     the declared count to zero makes the field's ref (0) out of range;
+        //     the reader must answer "" rather than index the table. This also
+        //     pins the unified URL print site — an unresolvable ref is "", not
+        //     null (Finding 3's second half).
+        {
+            std::vector<BYTE> bytes(base, base + size);
+            STORE_U32(bytes.data() + dir_off + FF_URL_DIRECTORY::ENTRY_COUNT, 0);
+            FastFHIR::Parser p(bytes.data(), bytes.size());
+            std::ostringstream json;
+            p.root().print_json(json);
+            const std::string out = json.str();
+            CHECK(out.find("\"url\":\"\"") != std::string::npos,
+                  "an out-of-range URL index reads as an empty string: " << out);
+            CHECK(out.find("\"url\":null") == std::string::npos,
+                  "and never as null — the two print sites agree");
+        }
+
+        // (e) READ PATH: a forged prior_idx that closes a loop must terminate
+        //     rather than spin. A self-referential root entry is the tightest
+        //     form of the cycle get_url's guard exists for.
+        {
+            std::vector<BYTE> bytes(base, base + size);
+            STORE_U32(entry(bytes, 0) + FF_URL_DIRECTORY::URL_ENTRY_PRIOR_IDX, 0);
+            FastFHIR::Parser p(bytes.data(), bytes.size());
+            std::ostringstream json;
+            p.root().print_json(json);   // must return; a hang fails the suite by timeout
+            CHECK(json.str().find("\"url\":\"\"") != std::string::npos,
+                  "a cyclic prior chain terminates and degrades to an empty string");
+
+            // The unit under test, called directly: the same call the reader makes.
+            const FF_URL_DIRECTORY dir(dir_off, size, 0);
+            CHECK(dir.get_url(bytes.data(), 0).empty(), "get_url on a cycle returns empty");
+            CHECK(dir.get_url(bytes.data(), entries + 4096).empty(),
+                  "get_url on an out-of-range index returns empty, never reads out of bounds");
+        }
+    }
+
     return ff_test::report("all graph-bounds checks pass");
 }

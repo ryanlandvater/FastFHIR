@@ -576,6 +576,14 @@ struct DeepValidator {
                           FF_Result& out);
     bool check_datetime_value(Offset block, uint64_t raw, std::size_t depth, const char* via,
                               FF_Result& out);
+
+    // The URL directory hangs off the HEADER, not the root, so the root walk
+    // never reaches it -- the class of block Finding 3 recorded as unvalidated.
+    // This is the second entry point: given the header's directory offset, it
+    // checks the block, bounds the declared entry count against the stream, and
+    // walks every entry's segment and prior link. It shares fits()/fail() with
+    // the root walk, so a failure reads the same way.
+    bool walk_directory(Offset dir_off, FF_Result& out);
 };
 
 bool DeepValidator::check_code_value(Offset block, uint32_t raw, std::size_t depth,
@@ -684,6 +692,67 @@ bool DeepValidator::walk(Offset off, RECOVERY_TAG expected, std::size_t depth,
     path.pop_back();
     if (r) mark(off);   // on completion only
     return r;
+}
+
+bool DeepValidator::walk_directory(Offset dir_off, FF_Result& out) {
+    if (dir_off == FF_NULL_OFFSET) return true;   // no directory: nothing to check
+
+    if (!fits(dir_off, FF_URL_DIRECTORY::HEADER_SIZE)) {
+        return fail(out, "URL directory at offset " + std::to_string(dir_off) +
+                    " overruns the " + std::to_string(size) + "-byte stream");
+    }
+    // The block's own witness, the same self-offset test walk() applies to every
+    // other block -- and the tag, so a non-directory aimed here is caught.
+    if (static_cast<Offset>(FF_GET_VALIDATION(base, dir_off)) != dir_off) {
+        return fail(out, "URL directory at offset " + std::to_string(dir_off) +
+                    " does not vouch for itself");
+    }
+    if (FF_GET_RECOVERY_TAG(base, dir_off) != RECOVER_FF_URL_DIRECTORY) {
+        return fail(out, "URL directory at offset " + std::to_string(dir_off) +
+                    " carries recovery tag " +
+                    std::to_string(FF_GET_RECOVERY_TAG(base, dir_off)) +
+                    ", expected FF_URL_DIRECTORY");
+    }
+
+    const FF_URL_DIRECTORY dir(dir_off, size, version);
+    const uint32_t declared = dir.entry_count(base);
+    // Bound the COUNT before trusting it. entry_count is a 4-byte read a forged
+    // stream controls, so a declared count with no bytes behind it is how a
+    // later per-entry read gets walked off the end.
+    const Offset table = dir_off + FF_URL_DIRECTORY::HEADER_SIZE;
+    const uint64_t room =
+        (table <= size && size - table >= FF_URL_DIRECTORY::URL_ENTRY_SIZE)
+            ? (size - table) / FF_URL_DIRECTORY::URL_ENTRY_SIZE
+            : 0;
+    if (declared > room) {
+        return fail(out, "URL directory at offset " + std::to_string(dir_off) +
+                    " declares " + std::to_string(declared) + " entries but only " +
+                    std::to_string(room) + " fit in the stream");
+    }
+
+    for (uint32_t i = 0; i < declared; ++i) {
+        const uint32_t prior = dir.prior_idx(base, i);
+        if (prior != FF_URL_DIRECTORY::NO_PRIOR && prior >= declared) {
+            return fail(out, "URL directory entry " + std::to_string(i) +
+                        " has prior_idx " + std::to_string(prior) +
+                        " outside the " + std::to_string(declared) + "-entry table");
+        }
+        const Offset seg = dir.seg_offset(base, i);
+        if (seg == FF_NULL_OFFSET) continue;   // the empty segment ("//"), no FF_STRING
+        // A segment must land on a block that vouches for itself, and the string
+        // walk() would apply to any other FF_STRING block -- the same check, at
+        // the one offset that has no referring slot to carry it.
+        if (!fits(seg, FF_STRING::HEADER_SIZE)) {
+            return fail(out, "URL directory entry " + std::to_string(i) +
+                        " segment offset " + std::to_string(seg) + " overruns the stream");
+        }
+        if (static_cast<Offset>(FF_GET_VALIDATION(base, seg)) != seg) {
+            return fail(out, "URL directory entry " + std::to_string(i) +
+                        " segment at offset " + std::to_string(seg) +
+                        " does not vouch for itself");
+        }
+    }
+    return true;
 }
 
 bool DeepValidator::walk_array(Offset off, RECOVERY_TAG array_tag,
@@ -859,18 +928,21 @@ bool DeepValidator::walk_fields(Offset off, RECOVERY_TAG tag,
 } // namespace
 
 FF_Result Parser::validate_FFHR_stream() const {
-    if (m_root_offset == FF_NULL_OFFSET) return {FF_SUCCESS};   // rootless stream
     DeepValidator v;
     v.base = m_base;
     v.size = m_size;
     v.init_visited(m_size);
     FF_Result out{FF_SUCCESS};
-    v.walk(m_root_offset, m_root_recovery, 0, "root", out);
+    if (m_root_offset != FF_NULL_OFFSET)
+        v.walk(m_root_offset, m_root_recovery, 0, "root", out);
+    // The directory hangs off the HEADER, not the root, so the walk above never
+    // reaches it. Checked here too, rootless streams included. (P2, Finding 3.)
+    if (out)
+        v.walk_directory(m_url_dir_offset, out);
     return out;
 }
 
 FF_Result Parser::validate_FFHR_stream_deep() const {
-    if (m_root_offset == FF_NULL_OFFSET) return {FF_SUCCESS};
     DeepValidator v;
     v.base = m_base;
     v.size = m_size;
@@ -878,7 +950,10 @@ FF_Result Parser::validate_FFHR_stream_deep() const {
     v.version = m_version;
     v.init_visited(m_size);
     FF_Result out{FF_SUCCESS};
-    v.walk(m_root_offset, m_root_recovery, 0, "root", out);
+    if (m_root_offset != FF_NULL_OFFSET)
+        v.walk(m_root_offset, m_root_recovery, 0, "root", out);
+    if (out)
+        v.walk_directory(m_url_dir_offset, out);
     return out;
 }
 
@@ -999,6 +1074,18 @@ static std::string resolve_url_ref(const BYTE* base, Size size, uint32_t version
     return FF_URL_DIRECTORY(dir_off, size, version).get_url(base, ref);
 }
 
+// The ONE spelling of a URL slot's JSON, so the two FF_FIELD_URL print sites
+// cannot disagree -- and they did: one emitted `null` for an unresolvable ref
+// and the other `""`. An unresolvable URL ref (an all-ones / unknown / forged
+// index) is rendered as the EMPTY STRING, not null: a `url`/`uri` field is a
+// JSON string, and "" is the one form that keeps the token's TYPE stable for a
+// consumer, where `null` would change it. Finding 3, P2.
+static void print_url_json(std::ostream& out, std::string_view url) {
+    out << '"';
+    escape_json_string(out, url);
+    out << '"';
+}
+
 void Reflective::Node::print_json(std::ostream& out) const {
     if (is_empty()) return;
 
@@ -1115,9 +1202,7 @@ void Reflective::Node::print_json(std::ostream& out) const {
         }
         case FF_FIELD_URL: {
             const uint32_t ref = LOAD_U32(m_base + m_node_offset);
-            out << "\"";
-            escape_json_string(out, resolve_url_ref(m_base, m_size, m_version, ref));
-            out << "\"";
+            print_url_json(out, resolve_url_ref(m_base, m_size, m_version, ref));
             break;
         }
         default: break;
@@ -1388,11 +1473,8 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
         }
         case FF_FIELD_URL: {
             const uint32_t ref = LOAD_U32(base + slot);
-            const std::string url = resolve_url_ref(base, m_size, version, ref);
-            if (url.empty()) { out << "null"; break; }
-            out << '"';
-            escape_json_string(out, url);
-            out << '"';
+            // Same emitter as Node::print_json's URL case, so the two agree.
+            print_url_json(out, resolve_url_ref(base, m_size, version, ref));
             break;
         }
         default:

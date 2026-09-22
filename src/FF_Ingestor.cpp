@@ -10,7 +10,6 @@
 #include "FF_Ops.hpp"
 #include "FastFHIR.hpp"
 #include "FF_Queue.hpp"
-#include "FF_SIMD.hpp"
 #include "FF_Utilities.hpp"
 #include "FF_Bundle.hpp"
 #include "FF_IngestMappings.hpp"
@@ -95,66 +94,28 @@ namespace FastFHIR::Ingest
     //           path — producers own only stack-allocated state.
     //
     //  Phase 3  One consumer thread starts *before* the producers and drains the
-    //           queue concurrently.  For each URL it:
-    //             a) checks Builder's URL retrieve table (dedup),
-    //             b) applies the FF_ExtensionFilterMode filter,
-    //             c) inserts the URL into a per-'/' radix trie whose nodes live
-    //                in a bump-allocated vector (scratch, not the FF arena),
-    //             d) claims arena space for each new segment via claim_space
-    //                (lock-free) and writes an FF_STRING block,
-    //             e) appends a TrieEntry{prior_idx, seg_off} to the entries vector.
-    //           All trie mutations happen on the single consumer thread — no
-    //           locking needed.
+    //           queue concurrently.  For each URL it checks the URL directory
+    //           for dedup, applies the FF_ExtensionFilterMode filter, and hands
+    //           the URL to Builder_t::intern_url.  The RADIX TRIE and the
+    //           directory entries now live in FastFHIR::UrlDirectory
+    //           (FF_UrlDirectory.hpp), owned by the Builder: the trie claims the
+    //           FF_STRING for each new segment, but the directory BLOCK is
+    //           written LATER, at finalize, so the table can grow past what a
+    //           fixed up-front size allowed.  All intern-table mutation is on
+    //           this one consumer thread — no locking needed.
     //
     //  Barrier  Main thread joins all producers, stores COMPLETE (waking any
-    //           parked consumer), joins it.  At this point `entries` is complete.
+    //           parked consumer), joins it.  At this point the directory is
+    //           complete; the block write happens in Builder_t::finalize.
     //
-    //  Phase 4  Main thread writes the FF_URL_DIRECTORY block from `entries`
-    //           (identical to the old Phase 5), records the offset, and returns.
+    //  Phase 4  Main thread promotes any URL whose WASM codec is already cached
+    //           to a module reference (EXT_REF MSB=1).  Nothing is written to
+    //           the arena here.
     //
-    // Trie node layout
-    // ────────────────
-    //  Each TrieNode represents one '/'-delimited URL segment.  The virtual root
-    //  (index 0) is the common ancestor of all segments; it carries no URL of its
-    //  own.  Each real node has an entry_idx in the `entries` vector (the row in
-    //  FF_URL_DIRECTORY for that segment) and a seg_arena_off pointing to the
-    //  FF_STRING already written in the arena.
-    //
-    //  Children are stored inline (TRIE_FANOUT = 8 slots per node).  When a node
-    //  overflows, a chain of overflow TrieNodes is allocated — the last non-empty
-    //  slot of the original node is linked via `overflow_idx`.  Overflow nodes
-    //  carry no segment themselves; they just extend the child array.
-    //
-    //  SIMD-accelerated child lookup: ff_match_mask_u64x8 compares all 8 child
-    //  hashes in parallel (AVX2 / SSE4.1 / NEON / scalar) and returns a bitmask.
-    //  Each matching slot is then verified with memcmp to guard against the
-    //  (astronomically rare) 64-bit FNV-1a collision.
-    //
-    // Prior-chain reconstruction
-    // ──────────────────────────
-    //  FF_URL_DIRECTORY::get_url() collects segments from leaf to root, reverses,
-    //  and joins with '/'.  With the per-'/' trie:
-    //
-    //    "http://hl7.org/fhir/test" splits into segments:
-    //      ["http:", "", "hl7.org", "fhir", "test"]
-    //    Entries: 0→"http:", 1→"" (prior=0), 2→"hl7.org" (prior=1),
-    //             3→"fhir" (prior=2), 4→"test" (prior=3)
-    //    get_url(4) → "http:" + "/" + "" + "/" + "hl7.org" + "/" + "fhir"
-    //                        + "/" + "test" = "http://hl7.org/fhir/test" ✓
-    //
-    //  Interior nodes (shared URL prefixes not themselves complete URLs) are
-    //  included in `entries` so prior chains are always well-formed.  They are
-    //  *not* added to Builder's URL retrieve table.
-    //
-    // ─────────────────────────────────────────────────────────────────────────────
 
     // ─── FNV-1a 64-bit hash (ingestor-local) ─────────────────────────────────────
-    // Used only for:
-    //  1) producer-side tiny dedup cache (hash bucket check), and
-    //  2) trie segment hashing in insert/find child operations.
-    // Full URL -> ext_ref routing remains keyed by full URL string in
-    // Builder_t::m_url_retrieve (see consumer_process_batch and ingest
-    // mapping lookup path).
+    // Used for the producer-side tiny dedup cache (hash-bucket check). Trie
+    // segment hashing uses its own copy inside FF_UrlDirectory.cpp.
     static constexpr uint64_t FNV1A_OFFSET = 14695981039346656037ULL;
     static constexpr uint64_t FNV1A_PRIME = 1099511628211ULL;
 
@@ -391,246 +352,40 @@ namespace FastFHIR::Ingest
         collect_extension_urls_pipeline(obj, ctx);
     }
 
-    // ─── Consumer-side trie types ─────────────────────────────────────────────────
+    // ─── Consumer-side intern ───────────────────────────────────────────────────
+    // The radix trie and its entry table moved into FastFHIR::UrlDirectory
+    // (FF_UrlDirectory.hpp), owned by the Builder, so the directory can GROW —
+    // the block is written at finalize rather than fixed up front. This consumer
+    // now only decides WHAT to register: an already-seen URL is skipped, a
+    // filtered one is registered without a block, everything else is interned.
+    // The producer threads still funnel through this one consumer, which is why
+    // the intern table needs no lock.
 
-    static constexpr uint32_t TRIE_FANOUT = 8;
-    static constexpr uint32_t TRIE_NULL = 0xFFFFFFFFu;
-
-    // One node in the arena-backed radix trie.  FANOUT=8 inline child slots;
-    // overflow nodes (overflow_idx != TRIE_NULL) extend the child array.
-    struct TrieNode
+    static void consumer_process_url(Builder_t &builder, FF_ExtensionFilterMode mode,
+                                     std::string_view url)
     {
-        uint32_t entry_idx = TRIE_NULL;          // row in `entries`; TRIE_NULL = interior
-        Offset seg_arena_off = FF_NULL_OFFSET;   // arena offset of FF_STRING for this segment
-        uint32_t overflow_idx = TRIE_NULL;       // index of overflow TrieNode; TRIE_NULL = none
-        uint16_t child_count = 0;                // populated children in THIS node (≤ FANOUT)
-        uint64_t child_hashes[TRIE_FANOUT] = {}; // FNV-1a hash of each child's segment
-        uint32_t child_idx[TRIE_FANOUT] = {};    // index in trie_nodes vector; TRIE_NULL = unused
-    };
+        if (url.empty() || builder.has_extension_url(url))
+            return;
 
-    // Flat entry appended for every trie node (interior or leaf) — provides the
-    // prior-chain data written into FF_URL_DIRECTORY.
-    struct TrieEntry
-    {
-        uint32_t prior; // parent's entry_idx, or FF_URL_DIRECTORY::NO_PRIOR for roots
-        Offset seg_off; // arena offset of this segment's FF_STRING (FF_NULL_OFFSET for "")
-    };
-
-    // ─── Trie helper: find child ─────────────────────────────────────────────────
-    // Searches node `start_idx` and its overflow chain for a child whose hash
-    // matches `seg_hash` AND whose stored segment bytes match `seg`.
-    // Returns the child node index, or TRIE_NULL if not found.
-    static uint32_t trie_find_child(
-        const std::vector<TrieNode> &nodes,
-        uint32_t start_idx,
-        uint64_t seg_hash,
-        std::string_view seg,
-        const uint8_t *base) noexcept
-    {
-        uint32_t nidx = start_idx;
-        while (nidx != TRIE_NULL)
+        bool suppress = false;
+        switch (mode)
         {
-            const TrieNode &n = nodes[nidx];
-
-            // SIMD match mask restricted to valid children.
-            // All 8 lanes are always compared regardless of child_count: the SIMD
-            // path has fixed latency (no branch, no loop) which is faster than
-            // branching on child_count in the common case where FANOUT >= child_count.
-            // valid_mask zeroes out uninitialised slots so spurious matches never
-            // propagate to the memcmp verification.
-            const uint8_t valid_mask = (n.child_count >= TRIE_FANOUT)
-                                           ? static_cast<uint8_t>(0xFFu)
-                                           : static_cast<uint8_t>((1u << n.child_count) - 1u);
-            uint8_t mask = ff_match_mask_u64x8(n.child_hashes, seg_hash) & valid_mask;
-
-            while (mask != 0)
-            {
-                const uint32_t i = static_cast<uint32_t>(__builtin_ctz(mask));
-                mask &= mask - 1u;
-                const uint32_t cid = n.child_idx[i];
-                const TrieNode &child = nodes[cid];
-
-                // Verify: handle empty segment (stored as FF_NULL_OFFSET)
-                if (child.seg_arena_off == FF_NULL_OFFSET)
-                {
-                    if (seg.empty())
-                        return cid;
-                    continue;
-                }
-                const uint32_t slen = FF_GET_STRING_LENGTH(base, child.seg_arena_off);
-                if (slen == static_cast<uint32_t>(seg.size()))
-                {
-                    const char *sdata = reinterpret_cast<const char *>(
-                        base + child.seg_arena_off + FF_STRING::STRING_DATA);
-                    if (std::memcmp(sdata, seg.data(), slen) == 0)
-                        return cid;
-                }
-            }
-            nidx = n.overflow_idx;
+        case FF_ExtensionFilterMode::FILTER_ALL_KNOWN:   suppress = FF_IsKnownExtension(url);  break;
+        case FF_ExtensionFilterMode::FILTER_NATIVE_ONLY: suppress = FF_IsNativeExtension(url); break;
+        case FF_ExtensionFilterMode::FILTER_NONE:        break;
         }
-        return TRIE_NULL;
+        // The return is the index the directory assigned; this consumer wants
+        // the SIDE EFFECT (the entry exists), not the value. Ingestion resolves
+        // a URL to an index later, through resolve_extension_url.
+        (void)builder.intern_url(url, suppress);
     }
-
-    // ─── Trie helper: add child ───────────────────────────────────────────────────
-    // Appends (seg_hash, child_node_idx) to the node's child list, creating
-    // overflow nodes as needed.  Safe to call after nodes.push_back() since
-    // all access is by index (not pointer/reference).
-    static void trie_add_child(std::vector<TrieNode> &nodes,
-                               uint32_t node_idx,
-                               uint64_t seg_hash,
-                               uint32_t child_node_idx)
-    {
-        while (true)
-        {
-            if (nodes[node_idx].child_count < TRIE_FANOUT)
-            {
-                const uint16_t cnt = nodes[node_idx].child_count;
-                nodes[node_idx].child_hashes[cnt] = seg_hash;
-                nodes[node_idx].child_idx[cnt] = child_node_idx;
-                nodes[node_idx].child_count++;
-                return;
-            }
-            if (nodes[node_idx].overflow_idx == TRIE_NULL)
-            {
-                const uint32_t ov_idx = static_cast<uint32_t>(nodes.size());
-                nodes.push_back({});                   // new overflow node (no segment, no entry)
-                nodes[node_idx].overflow_idx = ov_idx; // re-index after push_back is safe
-            }
-            node_idx = nodes[node_idx].overflow_idx;
-        }
-    }
-
-    // ─── Trie helper: get or create child ────────────────────────────────────────
-    // Finds an existing child for `seg` under `parent_node_idx`, or creates one.
-    // `parent_entry_idx` is the prior_idx to record for any newly-created entry.
-    // Returns the (possibly new) child node index.
-    static uint32_t trie_get_or_create_child(
-        std::vector<TrieNode> &nodes,
-        std::vector<TrieEntry> &entries,
-        const Memory &mem,
-        uint8_t *base,
-        uint32_t parent_node_idx,
-        uint32_t parent_entry_idx, // TRIE_NULL == NO_PRIOR for root children
-        std::string_view seg,
-        uint64_t seg_hash)
-    {
-        // Fast path: existing child.
-        const uint32_t found = trie_find_child(nodes, parent_node_idx, seg_hash, seg, base);
-        if (found != TRIE_NULL)
-            return found;
-
-        // Allocate FF_STRING for this segment.  Empty segments (from "http://…")
-        // use FF_NULL_OFFSET so no bytes are written — seg_string() returns "" for them.
-        Offset seg_off = FF_NULL_OFFSET;
-        if (!seg.empty())
-        {
-            seg_off = mem->claim_space(SIZE_FF_STRING(seg));
-            STORE_FF_STRING(base, seg_off, seg);
-        }
-
-        // Allocate an entry (prior chain).
-        const uint32_t new_entry_idx = static_cast<uint32_t>(entries.size());
-        entries.push_back({parent_entry_idx, seg_off});
-
-        // Create and register the trie node.
-        TrieNode new_node;
-        new_node.entry_idx = new_entry_idx;
-        new_node.seg_arena_off = seg_off;
-        const uint32_t new_node_idx = static_cast<uint32_t>(nodes.size());
-        nodes.push_back(new_node); // may reallocate; index-based access remains valid
-
-        trie_add_child(nodes, parent_node_idx, seg_hash, new_node_idx);
-        return new_node_idx;
-    }
-
-    // ─── Trie helper: insert URL ─────────────────────────────────────────────────
-    // Traverse/insert all '/' segments of `url` into the trie.
-    // Returns the entry_idx of the leaf node corresponding to the full URL.
-    static uint32_t insert_url_to_trie(
-        std::vector<TrieNode> &nodes,
-        std::vector<TrieEntry> &entries,
-        const Memory &mem,
-        uint8_t *base,
-        std::string_view url)
-    {
-        uint32_t node_idx = 0;          // virtual root (no segment, no entry)
-        uint32_t entry_idx = TRIE_NULL; // NO_PRIOR for root-level children
-
-        size_t pos = 0;
-        while (true)
-        {
-            const size_t next = url.find('/', pos);
-            const bool last = (next == std::string_view::npos);
-            std::string_view seg = url.substr(pos, last ? std::string_view::npos : next - pos);
-
-            node_idx = trie_get_or_create_child(nodes, entries, mem, base,
-                                                node_idx, entry_idx, seg, fnv1a(seg));
-            entry_idx = nodes[node_idx].entry_idx;
-
-            if (last)
-                break;
-            pos = next + 1;
-        }
-        return nodes[node_idx].entry_idx;
-    }
-
-    // ─── Consumer state ───────────────────────────────────────────────────────────
-    struct ConsumerState
-    {
-        std::vector<TrieNode> trie_nodes; // scratch trie (not FF arena)
-        std::vector<TrieEntry> entries;   // parallel to FF_URL_DIRECTORY ENTRY_TABLE
-        Builder_t &builder;
-        const Memory &mem;
-        uint8_t *base;
-        FF_ExtensionFilterMode mode;
-
-        ConsumerState(Builder_t &b, const Memory &m, FF_ExtensionFilterMode md)
-            : builder(b), mem(m), base(m->base()), mode(md)
-        {
-            trie_nodes.reserve(256);
-            trie_nodes.push_back({}); // virtual root at index 0
-            entries.reserve(64);
-        }
-    };
 
     // Process one batch of URL entries on the consumer thread.
-    static void consumer_process_batch(ConsumerState &cs, const UrlBatch &batch)
+    static void consumer_process_batch(Builder_t &builder, FF_ExtensionFilterMode mode,
+                                       const UrlBatch &batch)
     {
         for (uint32_t i = 0; i < batch.count; ++i)
-        {
-            const UrlBatchEntry &e = batch.entries[i];
-            if (e.url.empty())
-                continue;
-
-            // Dedup: skip URLs already seen (active or suppressed).
-            if (cs.builder.has_extension_url(e.url))
-                continue;
-
-            // Apply extension filter.
-            bool suppress = false;
-            switch (cs.mode)
-            {
-            case FF_ExtensionFilterMode::FILTER_ALL_KNOWN:
-                suppress = FF_IsKnownExtension(e.url);
-                break;
-            case FF_ExtensionFilterMode::FILTER_NATIVE_ONLY:
-                suppress = FF_IsNativeExtension(e.url);
-                break;
-            case FF_ExtensionFilterMode::FILTER_NONE:
-                break;
-            }
-
-            if (suppress)
-            {
-                cs.builder.intern_extension_url(e.url, FF_NULL_UINT32);
-                continue;
-            }
-
-            // Insert into trie and record in Builder's URL retrieve table.
-            const uint32_t idx = insert_url_to_trie(cs.trie_nodes, cs.entries,
-                                                    cs.mem, cs.base, e.url);
-            cs.builder.intern_extension_url(e.url, idx);
-        }
+            consumer_process_url(builder, mode, batch.entries[i].url);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -700,18 +455,17 @@ namespace FastFHIR::Ingest
         Builder_t &builder,
         FF_ExtensionFilterMode mode)
     {
-        const Memory &mem = builder.memory();
-        uint8_t *base = mem->base();
-
         // Chunks are required and owned by the caller for the full predigest call.
         if (prechunked_entries.empty())
             return;
         const size_t num_chunks = prechunked_entries.size();
 
-        // ── Phase 2 + 3: Pipeline — producers scan, consumer builds trie ─────────
+        // ── Phase 2 + 3: Pipeline — producers scan, consumer interns ─────────────
         // The consumer thread starts *before* the producers to begin draining as
         // soon as the first batch arrives.  Producers push UrlBatch items to the
-        // shared MPSC queue; the consumer pops and inserts into the radix trie.
+        // shared MPSC queue; the consumer pops and interns into the Builder's
+        // URL directory.  The directory BLOCK is not written here — it is laid
+        // down at finalize, when the entry set is complete (see FF_Builder.cpp).
 
         UrlBatchQueue batch_queue;
         // Pool lifecycle (see the shared machinery above): the consumer parks
@@ -719,20 +473,19 @@ namespace FastFHIR::Ingest
         // producers store COMPLETE.
         std::atomic<PoolStatus> status{PoolStatus::RUNNING};
         std::atomic<uint32_t> waiters{0};
-        ConsumerState cs(builder, mem, mode);
 
         // Acquire Consumer before any Injectors (gets head node reference).
         auto consumer_handle = batch_queue.get_consumer();
 
         std::thread consumer_thread(
-            [c = std::move(consumer_handle), &status, &waiters, &cs]() mutable
+            [c = std::move(consumer_handle), &status, &waiters, &builder, mode]() mutable
             {
                 UrlBatch batch;
                 for (;;)
                 {
                     if (c.pop(batch))
                     {
-                        consumer_process_batch(cs, batch);
+                        consumer_process_batch(builder, mode, batch);
                         continue;
                     }
                     // Drained once the producers are done: a pop fails only at
@@ -770,36 +523,7 @@ namespace FastFHIR::Ingest
         status.notify_all();
         consumer_thread.join();
 
-        // ── Phase 4: Early-exit if no URLs were interned ──────────────────────────
-        if (cs.entries.empty())
-            return;
-
-        // ── Phase 5: Write FF_URL_DIRECTORY block ─────────────────────────────────
-        const uint32_t n_entries = static_cast<uint32_t>(cs.entries.size());
-        const Size dir_total = FF_URL_DIRECTORY::HEADER_SIZE +
-                               static_cast<Size>(n_entries) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
-        const Offset dir_off = mem->claim_space(dir_total);
-        BYTE *dir_ptr = base + dir_off;
-
-        STORE_U64(dir_ptr + FF_URL_DIRECTORY::VALIDATION, dir_off);
-        STORE_U16(dir_ptr + FF_URL_DIRECTORY::RECOVERY, RECOVER_FF_URL_DIRECTORY);
-        STORE_U16(dir_ptr + FF_URL_DIRECTORY::PAD, 0);
-        STORE_U32(dir_ptr + FF_URL_DIRECTORY::ENTRY_COUNT, n_entries);
-
-        BYTE *et = dir_ptr + FF_URL_DIRECTORY::HEADER_SIZE;
-        for (uint32_t i = 0; i < n_entries; ++i)
-        {
-            BYTE *ep = et + static_cast<Size>(i) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
-            STORE_U32(ep + FF_URL_DIRECTORY::URL_ENTRY_PRIOR_IDX, cs.entries[i].prior);
-            STORE_U32(ep + FF_URL_DIRECTORY::URL_ENTRY_PAD, 0);
-            STORE_U64(ep + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET, cs.entries[i].seg_off);
-        }
-
-        // ── Phase 6: Record URL directory offset in builder ───────────────────────
-        STORE_U64(base + FF_HEADER::URL_DIR_OFFSET, dir_off);
-        builder.set_url_dir_offset(dir_off);
-
-        // ── Phase 7: Promote cached URLs to MODULE_IDX (EXT_REF MSB=1) ───────────
+        // ── Phase 4: Promote cached URLs to MODULE_IDX (EXT_REF MSB=1) ───────────
 #ifdef FASTFHIR_ENABLE_EXTENSIONS
         {
             auto &host = FF_WasmExtensionHost::instance();

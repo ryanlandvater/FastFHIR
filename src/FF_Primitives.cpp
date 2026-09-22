@@ -916,7 +916,19 @@ Offset FF_URL_DIRECTORY::seg_offset(const BYTE* base, uint32_t entry_idx) const 
     return LOAD_U64(base + ep + URL_ENTRY_SEG_OFFSET);
 }
 std::string_view FF_URL_DIRECTORY::seg_string(const BYTE* base, uint32_t entry_idx) const {
-    Offset ep      = __offset + HEADER_SIZE + static_cast<Offset>(entry_idx) * URL_ENTRY_SIZE;
+    // BOUND FIRST (P2). `entry_idx` is a 4-byte ref lifted from a V-Table slot a
+    // hostile stream can forge, and entry_count() is itself a 4-byte read from a
+    // block that stream can forge -- so neither the index nor the declared count
+    // is a bound. The count is clamped to what the STREAM can hold and an index
+    // past that is refused, not indexed. The read path degrades rather than
+    // throwing (CLAUDE.md invariant 10): an out-of-range ref reads as an absent
+    // URL, the same as an all-ones ref.
+    const Offset table = __offset + HEADER_SIZE;
+    if (table > __size) return {};   // the 16-byte header itself does not fit
+    const uint64_t room = (__size - table) / URL_ENTRY_SIZE;
+    if (entry_idx >= entry_count(base) || entry_idx >= room) return {};
+
+    Offset ep      = table + static_cast<Offset>(entry_idx) * URL_ENTRY_SIZE;
     Offset seg_off = LOAD_U64(base + ep + URL_ENTRY_SEG_OFFSET);
     if (seg_off == FF_NULL_OFFSET) return {};
     // __size, not 0. This block knows the stream extent -- it is a member --
@@ -926,11 +938,24 @@ std::string_view FF_URL_DIRECTORY::seg_string(const BYTE* base, uint32_t entry_i
     return FF_STRING(seg_off, __size, __version).read_view(base);
 }
 std::string FF_URL_DIRECTORY::get_url(const BYTE* base, uint32_t entry_idx) const {
+    const Offset table = __offset + HEADER_SIZE;
+    if (table > __size) return {};
+    const uint64_t room = (__size - table) / URL_ENTRY_SIZE;
+    const uint32_t bound =
+        (entry_count(base) < room) ? entry_count(base) : static_cast<uint32_t>(room);
+    if (entry_idx >= bound) return {};
+
     // Walk the prior chain, collecting segments from leaf → root.
     // Reverse them and join with "/" between entries.
+    //
+    // CYCLE-GUARDED (P2). A well-formed chain has at most `bound` links, one per
+    // entry; a longer walk means a forged `prior_idx` closed a loop, which the
+    // unguarded `while (cur != NO_PRIOR)` spun on forever -- a hang, not a wrong
+    // answer. Finding 3. The step count and the per-link index are both bounded.
     std::vector<std::string_view> segs;
     uint32_t cur = entry_idx;
-    while (cur != NO_PRIOR) {
+    for (uint32_t steps = 0; cur != NO_PRIOR; ++steps) {
+        if (steps >= bound || cur >= bound) return {};   // cycle or over-long chain
         segs.push_back(seg_string(base, cur));
         cur = prior_idx(base, cur);
     }

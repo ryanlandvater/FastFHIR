@@ -26,6 +26,7 @@
 
 #include <FastFHIR.hpp>
 #include <FF_FieldKeys.hpp>
+#include <FF_BundleAppend.hpp>
 #include "FF_AllTypes.hpp"
 
 #include <filesystem>
@@ -300,7 +301,11 @@ void url_directory_survives_reopen()
         REQUIRE(FF_CreateBuilder(FF_BuilderCreateInfo{.capacity = 1 << 20, .filepath = path.c_str()}, builder)
                     .succeeded(),
                 "re-open with the default mode");
-        CHECK(builder->url_dir_offset() != FF_NULL_OFFSET, "the Builder restored the URL directory offset");
+        // The property, not the mechanism. The directory is re-written at
+        // finalize (it can grow until then), so url_dir_offset() is null on a
+        // re-opened Builder by design; what must hold is that the existing URLs
+        // were loaded into the intern table, which is what keeps them exporting.
+        CHECK(builder->has_extension_url(url), "the re-opened Builder loaded the existing URL directory");
         builder->root_handle()[Fields::PATIENT::ACTIVE] = true;
         Memory::View sealed;
         REQUIRE(FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, sealed).succeeded(), "re-finalize");
@@ -310,6 +315,92 @@ void url_directory_survives_reopen()
     CHECK(after.find(url) != std::string::npos, "the extension URL survives amend-and-reseal: " << after);
     CHECK(after.find("\"url\":null") == std::string::npos, "no extension URL exports as null");
     CHECK(after.find("\"active\":true") != std::string::npos, "and the amendment itself landed");
+}
+
+/// P1: the directory must be able to GROW. Before the block moved to finalize,
+/// it was a fixed-size block written up front, so a re-opened Builder could not
+/// register a URL at all — and a producer building in C++ could not obtain a
+/// valid Extension.url index. This drives the path the CAP scenario is built on:
+/// a streaming append that registers a URL the original build never saw.
+void a_reopened_builder_can_add_a_url()
+{
+    TEST_GROUP("url_grow");
+    const std::string path = scratch("url_grow.ffhr");
+    const char *url_a = "http://example.org/fhir/StructureDefinition/url-a";
+    const char *url_b = "http://example.org/fhir/StructureDefinition/url-b";
+
+    // A Patient carrying one Extension whose `url` is a directory index. `url`
+    // is set through the DIRECT POCO path, which is the capability Finding 1
+    // says was missing.
+    auto patient_carrying = [](Builder_t &b, const char *url, const char *id) {
+        PatientData patient;
+        patient.id = std::string(id);
+        ExtensionData ext;
+        ext.url = b.intern_url(url);
+        patient.extension.push_back(std::move(ext));
+        return patient;
+    };
+
+    // Build: a collection Bundle with one entry whose Patient carries url-a.
+    {
+        FF_Builder builder;
+        REQUIRE(FF_CreateBuilder(FF_BuilderCreateInfo{.capacity = 1 << 20, .filepath = path.c_str()},
+                                 builder).succeeded(),
+                "create builder");
+        BundleData bundle;
+        bundle.type = FF_BundleType::Collection;
+        BundleentryData entry;
+        entry.resource = static_cast<ResourceReference>(
+            builder->append_obj(patient_carrying(*builder, url_a, "p1")));
+        bundle.entry.push_back(std::move(entry));
+        REQUIRE(FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = builder->append_obj(bundle)})
+                    .succeeded(),
+                "set root");
+        Memory::View sealed;
+        REQUIRE(FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, sealed).succeeded(), "finalize");
+    }
+
+    auto exported = [&]() -> std::string {
+        Parser parser;
+        CHECK(parse_file(path, parser).succeeded(), "parse " << path);
+        std::ostringstream json;
+        if (parser) parser.root().print_json(json);
+        return json.str();
+    };
+    REQUIRE(exported().find(url_a) != std::string::npos, "url-a exports from the first build");
+
+    // Re-open and append a second entry carrying a URL the first build never saw.
+    {
+        FF_Builder builder;
+        REQUIRE(FF_CreateBuilder(FF_BuilderCreateInfo{.capacity = 1 << 20, .filepath = path.c_str()},
+                                 builder).succeeded(),
+                "re-open");
+        CHECK(builder->has_extension_url(url_a), "the existing URL loaded on re-open");
+        CHECK(!builder->has_extension_url(url_b), "and url-b is not present yet");
+
+        FF_BundleAppendResult result;
+        REQUIRE(FF_BundleAppendEntries(
+                    FF_BundleAppendInfo{
+                        .builder = builder,
+                        .append =
+                            [&](Builder_t &b, std::vector<BundleentryData> &new_entries) {
+                                BundleentryData entry;
+                                entry.resource = static_cast<ResourceReference>(
+                                    b.append_obj(patient_carrying(b, url_b, "p2")));
+                                new_entries.push_back(std::move(entry));
+                            },
+                    },
+                    result)
+                    .succeeded(),
+                "append a second entry on the re-opened Builder");
+        Memory::View sealed;
+        REQUIRE(FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, sealed).succeeded(), "re-finalize");
+    }
+
+    const std::string after = exported();
+    CHECK(after.find(url_a) != std::string::npos, "url-a survives the reseal: " << after);
+    CHECK(after.find(url_b) != std::string::npos, "url-b interned on the re-opened Builder survives: " << after);
+    CHECK(after.find("\"url\":null") == std::string::npos, "no extension URL exports as null");
 }
 
 void attaching_to_a_live_shared_arena_disturbs_nothing()
@@ -385,6 +476,7 @@ int main(int argc, char **argv)
     ff_test::run("amend", amend_appends_by_default);
     ff_test::run("damaged", damaged_stream_is_refused_untouched);
     ff_test::run("url_directory", url_directory_survives_reopen);
+    ff_test::run("url_grow", a_reopened_builder_can_add_a_url);
     ff_test::run("attach", attaching_to_a_live_shared_arena_disturbs_nothing);
     return ff_test::report("arena access: every mount did exactly what it promises to what was already there");
 }

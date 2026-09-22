@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -24,6 +25,8 @@ struct PyMutableEntry;
 
 namespace FastFHIR
 {
+
+class UrlDirectory;   // the URL intern table (FF_UrlDirectory.hpp); pimpl member below
     class AdvancedBuilderAccess;
     namespace Reflective
     {
@@ -110,22 +113,11 @@ namespace FastFHIR
         std::atomic<bool> m_finalizing;
         std::atomic<uint64_t> m_active_mutators;
 
-        // Transparent hash/equal for the URL retrieve table.
-        struct _UrlHash {
-            using is_transparent = void;
-            size_t operator()(std::string_view sv) const noexcept {
-                return std::hash<std::string_view>{}(sv);
-            }
-        };
-        struct _UrlEqual {
-            using is_transparent = void;
-            bool operator()(std::string_view a, std::string_view b) const noexcept { return a == b; }
-        };
-
-        // Extension URL directory — owned for stream lifetime.
-        // Populated by FF_PredigestExtensionURLs(); read by parse workers after predigestion.
-        // Full URL → ext_ref: O(1) lookup with owned std::string keys.
-        std::unordered_map<std::string, uint32_t, _UrlHash, _UrlEqual> m_url_retrieve;
+        // The extension-URL intern table — owned for the stream's lifetime.
+        // A pimpl (unique_ptr to an incomplete type) so the trie and its
+        // lookups stay out of this public header. Written into the arena at
+        // finalize(), not here; see FF_UrlDirectory.hpp.
+        std::unique_ptr<UrlDirectory> m_url_directory;
 
         bool try_begin_mutation();
         void end_mutation();
@@ -193,29 +185,35 @@ namespace FastFHIR
 
         // Resolves a full extension URL to its pre-computed ext_ref word.
         // Returns FF_EXT_REF_NULL if the URL is unknown or suppressed.
-        // Safe to call from concurrent parse workers (read-only after predigestion).
-        inline uint32_t resolve_extension_url(std::string_view url) const noexcept {
-            const auto it = m_url_retrieve.find(url);
-            return it != m_url_retrieve.end() ? it->second : FF_EXT_REF_NULL;
-        }
-        // Returns true if the URL has already been seen (active or suppressed).
-        // Used by the predigestion consumer for deduplication.
-        inline bool has_extension_url(std::string_view url) const noexcept {
-            return m_url_retrieve.contains(url);
-        }
-        // Records a URL → ext_ref mapping. Called from the single consumer thread
-        // during FF_PredigestExtensionURLs(); uses insert_or_assign for Phase 7 promotion.
-        inline void intern_extension_url(std::string_view url, uint32_t ext_ref) {
-            m_url_retrieve.insert_or_assign(std::string(url), ext_ref);
-        }
-        // Iterates all interned URL entries. Used by Phase 7 WASM module promotion.
-        template<typename Fn>
-        inline void for_each_extension_url(Fn&& fn) const {
-            for (const auto& [url, ref] : m_url_retrieve)
-                fn(static_cast<std::string_view>(url), ref);
-        }
+        // Safe to call from concurrent parse workers (read-only once sealed).
+        [[nodiscard]] uint32_t resolve_extension_url(std::string_view url) const noexcept;
 
-        // Recorded by FF_PredigestExtensionURLs after writing the URL directory; consumed by finalize().
+        // True if the URL has already been interned (active or suppressed).
+        // Used by the ingest consumer for deduplication.
+        [[nodiscard]] bool has_extension_url(std::string_view url) const noexcept;
+
+        /**
+         * @brief Intern @p url and return its URL index (an ext_ref, MSB clear).
+         *
+         * The ONE way any path registers a URL: the ingest consumer, and now a
+         * producer building resources in C++ that needs a valid `Extension.url`
+         * index. Idempotent. Call from ONE thread — the ingest consumer, or a
+         * single-threaded direct build (see FF_UrlDirectory.hpp).
+         *
+         * @param suppress Record the URL without giving it a block, so a later
+         *                 `has_extension_url` still sees it. FF_NULL_UINT32 is
+         *                 returned. The filtered/known-url case.
+         */
+        [[nodiscard]] uint32_t intern_url(std::string_view url, bool suppress = false);
+
+        // Records a URL → ext_ref mapping without minting an index. Used to
+        // promote a URL to a module reference once its WASM codec is cached.
+        void intern_extension_url(std::string_view url, uint32_t ext_ref);
+
+        // Iterates all interned URL entries. Used by Phase 7 WASM module promotion.
+        void for_each_extension_url(const std::function<void(std::string_view, uint32_t)> &fn) const;
+
+        // Recorded by finalize() after writing the URL directory block.
         void set_url_dir_offset(Offset off) { m_url_dir_offset = off; }
         Offset url_dir_offset() const { return m_url_dir_offset; }
 

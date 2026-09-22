@@ -12,6 +12,7 @@
 #include "FF_Builder.hpp"
 #include "FF_Ops.hpp"
 #include "FF_Logger.hpp"
+#include "FF_UrlDirectory.hpp"
 #include <atomic>
 #include <stdexcept>
 #include <thread>
@@ -78,6 +79,8 @@ m_active_mutators(0)
     if (!m_memory) {
         throw std::invalid_argument("FastFHIR: Cannot initialize Builder with a null FF_Memory handle.");
     }
+
+    m_url_directory = std::make_unique<UrlDirectory>();
     if (m_memory->read_only()) {
         throw std::invalid_argument("FastFHIR: Cannot build into a read-only arena (Memory::openReadOnly): " +
                                     m_memory->name());
@@ -144,6 +147,18 @@ m_active_mutators(0)
     m_url_dir_offset    = p.m_url_dir_offset;
     m_module_reg_offset = p.m_module_reg_offset;
 
+    // Load the existing URL directory into the intern table so this session
+    // keeps the stream's URLs AND can add more. The block is re-written from
+    // the table at finalize, so its old address is dropped here and the old
+    // block is left orphaned in the arena — append-only, exactly like the
+    // checksum footer. Without this a re-opened Builder could not register a
+    // new URL, which is what made Extension.url unusable on this path.
+    if (p.m_url_dir_offset != FF_NULL_OFFSET)
+        m_url_directory->load(FF_URL_DIRECTORY(p.m_url_dir_offset, p.size_bytes(),
+                                               static_cast<uint32_t>(p.version())),
+                              m_base);
+    m_url_dir_offset = FF_NULL_OFFSET;
+
     // Re-open for append: reclaim the old checksum footer so new writes
     // extend from the payload tail rather than accumulating stale checksum
     // blocks in the middle of the stream.
@@ -161,6 +176,35 @@ m_active_mutators(0)
 }
 
 Builder_t::~Builder_t() = default; // m_memory handles its own OS cleanup
+
+// =====================================================================
+// The URL intern table — thin forwarding to the owned UrlDirectory
+// =====================================================================
+uint32_t Builder_t::resolve_extension_url(std::string_view url) const noexcept
+{
+    return m_url_directory != nullptr ? m_url_directory->lookup(url) : FF_EXT_REF_NULL;
+}
+
+bool Builder_t::has_extension_url(std::string_view url) const noexcept
+{
+    return m_url_directory != nullptr && m_url_directory->contains(url);
+}
+
+uint32_t Builder_t::intern_url(std::string_view url, bool suppress)
+{
+    return m_url_directory->intern(url, m_memory, m_base, suppress);
+}
+
+void Builder_t::intern_extension_url(std::string_view url, uint32_t ext_ref)
+{
+    m_url_directory->assign(url, ext_ref);
+}
+
+void Builder_t::for_each_extension_url(
+    const std::function<void(std::string_view, uint32_t)> &fn) const
+{
+    m_url_directory->for_each(fn);
+}
 
 Memory Builder_t::mount_for_append(const std::filesystem::path& filepath, Size capacity)
 {
@@ -545,6 +589,17 @@ Memory::View Builder_t::finalize(FF_Checksum_Algorithm algo, const HashCallback 
         if (!status && status.policy != Conformance::LayerPolicy::Report)
             throw std::runtime_error(conformance_message(status));
         latch.passed = true;
+    }
+
+    // Write the URL directory block NOW, the way the checksum footer is written,
+    // rather than up front during predigest. The entry set is complete, so this
+    // is the one place it can be laid down at its final size; claiming it here
+    // is what lets the table grow until the last intern. After the stream check
+    // so a refused finalize does not leave a second block orphaned. Empty table
+    // (no extension URLs, or a fresh stream with none) writes nothing.
+    if (m_url_directory != nullptr && !m_url_directory->empty())
+    {
+        m_url_dir_offset = m_url_directory->write(m_memory, m_base);
     }
 
     // If no hasher or algorithm is provided, default to FF_CHECKSUM_NONE and emit a warning. 

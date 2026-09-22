@@ -50,7 +50,7 @@ foreach(_public FastFHIR.hpp FastFHIR.h FF_Export.h FF_Conformance.hpp FF_DataTy
         message(FATAL_ERROR "install_smoke: public header missing from the package: ${_public}")
     endif()
 endforeach()
-foreach(_internal FF_Ops.hpp FF_AllTypes.hpp FF_Observation_internal.hpp)
+foreach(_internal FF_Ops.hpp FF_AllTypes.hpp FF_Observation_internal.hpp FF_UrlDirectory.hpp)
     if(EXISTS "${_prefix}/include/${_internal}")
         message(FATAL_ERROR "install_smoke: internal header shipped in the package: ${_internal}")
     endif()
