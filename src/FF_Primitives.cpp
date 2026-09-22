@@ -1022,3 +1022,185 @@ uint32_t FF_MODULE_REGISTRY::find_entry(const BYTE* base, uint32_t search_url_id
     }
     return FF_NULL_UINT32;
 }
+
+// =====================================================================
+// FF_UUID / FF_Id — the identity value types (§17)
+// =====================================================================
+namespace {
+// A hex digit's value, or -1. LOWERCASE ONLY: the wire stores raw bytes and
+// the renderer always emits lowercase, so accepting an uppercase spelling
+// here would let a value be packed that does not render back byte-identically
+// -- the one thing §17.4 forbids. Uppercase text routes to RAW_STRING instead.
+int hex_nibble(char c) noexcept {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+// The 7-byte little-endian offset at bytes 9..15. FastFHIR is strictly little-
+// endian on the wire (FF_Ops.hpp), so these assemble bytes the same way
+// FF_GET_VALIDATION does in the header.
+void store_offset7(BYTE* dst, uint64_t v) noexcept {
+    for (int i = 0; i < 7; ++i) dst[i] = static_cast<BYTE>((v >> (8 * i)) & 0xFF);
+}
+uint64_t load_offset7(const BYTE* src) noexcept {
+    uint64_t v = 0;
+    for (int i = 6; i >= 0; --i) v = (v << 8) | src[i];
+    return v;
+}
+}  // namespace
+
+FF_UUID::FF_UUID() noexcept {
+    std::memset(bytes, 0xFF, sizeof(bytes));
+}
+
+FF_UUID::FF_UUID(std::string_view hex) {
+    // Canonical form only: an optional `urn:uuid:` prefix, then 8-4-4-4-12.
+    constexpr std::string_view PREFIX = "urn:uuid:";
+    if (hex.size() >= PREFIX.size() && hex.substr(0, PREFIX.size()) == PREFIX)
+        hex.remove_prefix(PREFIX.size());
+    // 36 characters: 32 lowercase hex digits with hyphens at 8, 13, 18, 23.
+    if (hex.size() != 36 ||
+        hex[8] != '-' || hex[13] != '-' || hex[18] != '-' || hex[23] != '-')
+        throw std::invalid_argument(
+            "FF_UUID: not a canonical 8-4-4-4-12 UUID: " + std::string(hex));
+    std::size_t out = 0;
+    for (std::size_t i = 0; i < 36; ) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) { ++i; continue; }
+        const int hi = hex_nibble(hex[i]);
+        const int lo = hex_nibble(hex[i + 1]);
+        if (hi < 0 || lo < 0)
+            throw std::invalid_argument(
+                "FF_UUID: non-lowercase-hex digit in: " + std::string(hex));
+        bytes[out++] = static_cast<BYTE>((hi << 4) | lo);
+        i += 2;
+    }
+}
+
+bool FF_UUID::operator==(const FF_UUID& other) const noexcept {
+    return std::memcmp(bytes, other.bytes, sizeof(bytes)) == 0;
+}
+
+FF_Id FF_Id::generated(Offset block_offset) noexcept {
+    FF_Id id;
+    id.m_offset = block_offset;
+    id.m_form   = Form::GENERATED;
+    return id;
+}
+FF_Id FF_Id::interned(uint32_t trie_index) noexcept {
+    FF_Id id;
+    id.m_index = trie_index;
+    id.m_form  = Form::INTERNED;
+    return id;
+}
+FF_Id FF_Id::raw_string(Offset string_offset) noexcept {
+    FF_Id id;
+    id.m_offset = string_offset;
+    id.m_form   = Form::RAW_STRING;
+    return id;
+}
+FF_Id FF_Id::pending() noexcept {
+    FF_Id id;
+    id.m_form = Form::PENDING;
+    return id;
+}
+
+const FF_UUID& FF_Id::uuid() const {
+    if (m_form != Form::UUID)
+        throw std::runtime_error("FastFHIR: FF_Id::uuid() on a value that is not a UUID; "
+                                 "test form() first");
+    return m_uuid;
+}
+uint32_t FF_Id::index() const {
+    if (m_form != Form::INTERNED)
+        throw std::runtime_error("FastFHIR: FF_Id::index() on a value that is not INTERNED; "
+                                 "test form() first");
+    return m_index;
+}
+Offset FF_Id::raw_string_offset() const {
+    if (m_form != Form::RAW_STRING)
+        throw std::runtime_error("FastFHIR: FF_Id::raw_string_offset() on a value that is not "
+                                 "RAW_STRING; test form() first");
+    return m_offset;
+}
+
+FF_Id FF_Id::read_slot(const BYTE* slot) noexcept {
+    // Test 1 FIRST. All-ones is the absence convention every sentinel follows,
+    // and an all-ones slot would otherwise pass test 3 and read as a UUID whose
+    // version nibble is 15 and whose variant bits are 11. The sentinel and the
+    // test for it are spelled in the same domain -- here, raw bytes (§17.2).
+    bool all_ones = true;
+    for (Size i = 0; i < FF_IdSlot::WIDTH; ++i)
+        if (slot[i] != 0xFF) { all_ones = false; break; }
+    if (all_ones) return FF_Id{};   // ABSENT
+
+    // Test 2: the check byte, AND a zero version byte. A kind value below 256
+    // written little-endian leaves byte 6 zero, while an RFC 9562 UUID's
+    // version nibble (byte 6's high nibble, values 1..8) never is; and the check
+    // byte 0x01 sits outside a conformant UUID's variant range (0x80..0xBF).
+    // Both would have to be wrong at once, which the write-side classifier
+    // guarantees can never happen to text it packs.
+    if (slot[FF_IdSlot::CHECK_BYTE] == FF_IdSlot::CHECK_VALUE && slot[6] == 0x00) {
+        const uint32_t kind = static_cast<uint32_t>(slot[4])
+                            | (static_cast<uint32_t>(slot[5]) << 8)
+                            | (static_cast<uint32_t>(slot[6]) << 16)
+                            | (static_cast<uint32_t>(slot[7]) << 24);
+        switch (kind) {
+        case FF_IdSlot::KIND_GENERATED:
+            return FF_Id::generated(load_offset7(slot + FF_IdSlot::OFFSET_BYTES));
+        case FF_IdSlot::KIND_INTERNED:
+            return FF_Id::interned(static_cast<uint32_t>(slot[0])
+                                 | (static_cast<uint32_t>(slot[1]) << 8)
+                                 | (static_cast<uint32_t>(slot[2]) << 16)
+                                 | (static_cast<uint32_t>(slot[3]) << 24));
+        case FF_IdSlot::KIND_RAW_STRING:
+            return FF_Id::raw_string(load_offset7(slot + FF_IdSlot::OFFSET_BYTES));
+        case FF_IdSlot::KIND_PENDING:
+        default:
+            // A placeholder that survived a seal, or a kind this build does not
+            // know. Both are PENDING: distinct from absent, so a caller can see
+            // it and fail loudly rather than treating it as a dropped field.
+            return FF_Id::pending();
+        }
+    }
+
+    // Test 3: sixteen inline UUID bytes.
+    FF_UUID u;
+    std::memcpy(u.bytes, slot, FF_IdSlot::WIDTH);
+    return FF_Id(u);
+}
+
+void FF_Id::write_slot(BYTE* slot) const {
+    switch (m_form) {
+    case Form::ABSENT:
+        std::memset(slot, 0xFF, FF_IdSlot::WIDTH);
+        return;
+    case Form::UUID:
+        std::memcpy(slot, m_uuid.bytes, FF_IdSlot::WIDTH);
+        return;
+    case Form::INTERNED:
+        std::memset(slot, 0, FF_IdSlot::WIDTH);
+        STORE_U32(slot, m_index);                                          // bytes 0..3
+        STORE_U32(slot + FF_IdSlot::KIND_WORD, FF_IdSlot::KIND_INTERNED);  // bytes 4..7
+        slot[FF_IdSlot::CHECK_BYTE] = FF_IdSlot::CHECK_VALUE;
+        return;
+    case Form::GENERATED:
+    case Form::RAW_STRING:
+        std::memset(slot, 0, FF_IdSlot::WIDTH);
+        STORE_U32(slot + FF_IdSlot::KIND_WORD,
+                  m_form == Form::GENERATED ? FF_IdSlot::KIND_GENERATED
+                                            : FF_IdSlot::KIND_RAW_STRING);
+        slot[FF_IdSlot::CHECK_BYTE] = FF_IdSlot::CHECK_VALUE;
+        store_offset7(slot + FF_IdSlot::OFFSET_BYTES, m_offset);
+        return;
+    case Form::PENDING:
+        // Kind 0, the reserved placeholder. The check byte still marks it a
+        // pointer form, so a reader sees a placeholder rather than a UUID.
+        std::memset(slot, 0, FF_IdSlot::WIDTH);
+        slot[FF_IdSlot::CHECK_BYTE] = FF_IdSlot::CHECK_VALUE;
+        return;
+    case Form::POINTER:
+        throw std::logic_error("FastFHIR: FF_Id::write_slot() on a POINTER form; resolve it "
+                               "at append before encoding (§17.11)");
+    }
+}

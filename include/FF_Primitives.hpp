@@ -712,6 +712,14 @@ enum FF_FieldKind : uint16_t
     // reader resolves the ref back to the full URL string via get_url();
     // FF_EXT_REF_NULL (all ones) is the absent marker.
     FF_FIELD_URL,
+    // A 16-byte identity slot (§17): wide enough to hold a UUID INLINE, so a
+    // reference compare or a resolve against a fullUrl is a plain 16-byte
+    // compare with no directory hop and no text reconstruction. Four arms, all
+    // discriminated by the slot's own bytes -- an inline UUID, a block offset
+    // we minted (GENERATED), a URL-directory index (INTERNED), or an FF_STRING
+    // offset holding the text verbatim (RAW_STRING). FF_Id is the value type;
+    // FF_Id::read_slot is the ONE place the discrimination is written.
+    FF_FIELD_ID,
 };
 
 // =====================================================================
@@ -745,6 +753,7 @@ constexpr uint8_t ff_slot_width(const FF_FieldKind kind)
     case FF_FIELD_CODE:     return TYPE_SIZE_UINT32;
     case FF_FIELD_URL:      return TYPE_SIZE_UINT32;
     case FF_FIELD_DATETIME: return TYPE_SIZE_UINT64;
+    case FF_FIELD_ID:       return 16;  
     case FF_FIELD_RESOURCE: return TYPE_SIZE_RESOURCE;
     case FF_FIELD_CHOICE:   return TYPE_SIZE_CHOICE;
     // STRING, ARRAY, BLOCK and UNKNOWN hold an arena offset.
@@ -855,7 +864,9 @@ constexpr bool ff_kind_is_inline_scalar(const FF_FieldKind kind)
     case FF_FIELD_CODE:
     case FF_FIELD_DATETIME:
     case FF_FIELD_URL:
+    case FF_FIELD_ID:
         return true;
+
     // STRING, ARRAY, BLOCK, RESOURCE, CHOICE and UNKNOWN all resolve through
     // an offset to a block.
     case FF_FIELD_STRING:
@@ -2440,6 +2451,134 @@ inline std::string DateTime::to_string() const
     }
 }
 }  // namespace FastFHIR
+
+// =====================================================================
+// FF_UUID — sixteen raw identity bytes (§17)
+// =====================================================================
+// Global, not FastFHIR:: — the FF_-named types in this header (FF_DateTimeParts,
+// FF_HEADER, FF_URL_DIRECTORY) are the wire-level carriers and keep their FF_
+// spelling at global scope; the unprefixed value types (DateTime, UcumUnit)
+// live in the namespace behind an FF_ alias. FF_UUID is a carrier like
+// FF_DateTimeParts, and §17.10 defines it as `struct FF_UUID`, so it sits here.
+
+/// BYTE, never char: char's signedness is implementation-defined, and BYTE is
+/// the codebase's uint8_t everywhere else. The default value is all-ones, the
+/// absence convention shared with every other sentinel (FF_NULL_*); a UUID is
+/// never itself absent, but an FF_Id slot that was never set is.
+///
+/// The hex constructor accepts the canonical 8-4-4-4-12 spelling, with or
+/// without a `urn:uuid:` prefix, and throws on anything else. That strictness
+/// is §17.4's governing rule made structural: only text that renders back
+/// byte-identically may be packed into the inline arm, so a spelling this type
+/// cannot reproduce (an uppercase hex digit, a missing hyphen) is rejected
+/// here rather than silently normalised -- it routes to INTERNED or RAW_STRING
+/// upstream, where it is held verbatim.
+struct FF_EXPORT FF_UUID {
+    BYTE bytes[16];
+
+    FF_UUID() noexcept;                        // all-ones: the absent sentinel
+    explicit FF_UUID(std::string_view hex);    // "59bf0ef4-e89c-4628-9b51-12ae3fdbe22b"
+
+    bool operator==(const FF_UUID& other) const noexcept;
+    bool operator!=(const FF_UUID& other) const noexcept { return !(*this == other); }
+};
+
+// =====================================================================
+// FF_Id — the value an identity slot holds (§17.10)
+// =====================================================================
+// A form tag over the four wire arms (§17.2), plus two build-time-only forms
+// that can never reach the wire. Follows FastFHIR::DateTime (a form tag over a
+// union) and FastFHIR::String: the tag is almost the whole behaviour, because
+// three of the four wire arms carry a different payload and resolve to text a
+// different way.
+//
+// WHY A TAGGED TYPE AND NOT A BARE FF_UUID: all three fields that will carry
+// an id (§17.10) legitimately hold text that is NOT a UUID -- contained-
+// resource ids like `referral`, absolute `fullUrl`s in a searchset bundle, and
+// `Patient/123` or `#fragment` references -- so the value must hold text as
+// well as a UUID.
+//
+// THE SLOT LAYOUT the codec reads and writes is §17.2's, repeated here because
+// it is the one place the discrimination is defined:
+//   byte 0-3   idx      uint32, little-endian   (INTERNED arm only)
+//   byte 4-7   kind     uint32, little-endian, small
+//   byte 8     check    0x01
+//   byte 9-15  offset   7 bytes, block or FF_STRING offset
+// and an inline UUID (the third ordered test) is simply the sixteen bytes.
+namespace FF_IdSlot {
+constexpr Size WIDTH        = 16;
+constexpr Size KIND_WORD    = 4;    // bytes 4..7 hold the kind word
+constexpr Size CHECK_BYTE   = 8;    // byte 8 holds the check byte
+constexpr Size OFFSET_BYTES = 9;    // bytes 9..15 hold a 7-byte offset
+constexpr BYTE CHECK_VALUE  = 0x01;
+
+constexpr uint32_t KIND_PENDING    = 0;  // a deferred slot; must never reach the wire
+constexpr uint32_t KIND_GENERATED  = 1;  // the block offset we minted
+constexpr uint32_t KIND_INTERNED   = 2;  // a URL-directory (trie) index
+constexpr uint32_t KIND_RAW_STRING = 3;  // an FF_STRING offset
+}  // namespace FF_IdSlot
+
+class FF_EXPORT FF_Id {
+public:
+    enum class Form : uint8_t {
+        ABSENT = 0,      // never set; the all-ones slot
+        UUID = 1,        // an FF_UUID, inline in the slot
+        GENERATED = 2,   // the block offset we minted for this stream
+        INTERNED = 3,    // a URL-directory (trie) index
+        RAW_STRING = 4,  // an FF_STRING offset holding the text verbatim
+        POINTER = 5,     // build-time only: a POCO pointer awaiting append (§17.11)
+        PENDING = 6,     // build-time only: a deferred slot; a seal with one left is a throw
+    };
+
+    FF_Id() noexcept = default;                        // ABSENT (all-ones slot)
+    FF_Id(const FF_UUID& uuid) noexcept : m_uuid(uuid), m_form(Form::UUID) {}
+
+    /// TOTAL: every offset names a real block -- the one the id identifies.
+    static FF_Id generated(Offset block_offset) noexcept;
+    static FF_Id interned(uint32_t trie_index) noexcept;
+    static FF_Id raw_string(Offset string_offset) noexcept;
+    static FF_Id pending() noexcept;
+
+    [[nodiscard]] Form form() const noexcept { return m_form; }
+    [[nodiscard]] bool is_generated() const noexcept { return m_form == Form::GENERATED; }
+    [[nodiscard]] bool absent() const noexcept { return m_form == Form::ABSENT; }
+    explicit operator bool() const noexcept { return m_form != Form::ABSENT; }
+
+    /// PARTIAL, and deliberately so. Only GENERATED is a block offset; every
+    /// other form yields FF_NULL_OFFSET, which is all-ones and can never be a
+    /// real arena offset, so a caller who forgets to test degrades to a falsy
+    /// node rather than chasing a wrong address.
+    ///
+    /// RAW_STRING is the row that makes this explicit rather than a bare
+    /// reinterpretation: its payload IS an offset -- of the FF_STRING holding
+    /// the text, not of the resource -- so returning it would be a plausible,
+    /// in-bounds, self-validating WRONG answer (CLAUDE.md, wrong-answer class).
+    [[nodiscard]] explicit operator Offset() const noexcept {
+        return m_form == Form::GENERATED ? m_offset : FF_NULL_OFFSET;
+    }
+
+    /// PRECONDITION: the matching form. Checked and throwing, because reading
+    /// the wrong arm is not a wrong answer but undefined behaviour -- the same
+    /// contract DateTime::parts()/text() state one type up.
+    [[nodiscard]] const FF_UUID& uuid() const;
+    [[nodiscard]] uint32_t       index() const;
+    [[nodiscard]] Offset         raw_string_offset() const;
+
+    /// The three ordered tests (§17.2), the ONE place the slot's discrimination
+    /// is written. Never throws: the read path degrades (invariant 10).
+    [[nodiscard]] static FF_Id read_slot(const BYTE* slot) noexcept;
+
+    /// Encode into the slot's 16 wire bytes. Throws on POINTER, which is build-
+    /// time only and must be resolved at append (§17.11) before anything is
+    /// written.
+    void write_slot(BYTE* slot) const;
+
+private:
+    FF_UUID  m_uuid{};                    // UUID arm
+    Offset   m_offset = FF_NULL_OFFSET;   // GENERATED, RAW_STRING
+    uint32_t m_index  = FF_NULL_UINT32;   // INTERNED
+    Form     m_form   = Form::ABSENT;
+};
 
 // Defined out of class so FF_FORMAT_DATETIME (declared above) is visible; the
 // body is inline so every TU sees the same definition.

@@ -1857,6 +1857,15 @@ void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
                         out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
                                                static_cast<Offset>(raw), stored, FF_RECOVER_UNDEFINED});
                         break;
+                    // An identity slot is 16 SELF-DESCRIBING bytes, not the bare
+                    // 8-byte offset this group reads -- bytes 0-7 may be a trie
+                    // index and a kind word, which read as an offset would be a
+                    // plausible wrong answer. Recovery_to_Kind never yields it
+                    // (no tag maps to it yet); the case exists so -Wswitch stays
+                    // live, and when a tag does map to it the arm must be decoded
+                    // via FF_Id::read_slot, never read as `raw`.
+                    case FF_FIELD_ID:
+                        continue;
                 }
                 break;  // end of the CHOICE/RESOURCE case
             }

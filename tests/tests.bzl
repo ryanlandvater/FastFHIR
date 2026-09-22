@@ -41,6 +41,7 @@ def fastfhir_tests(copts = []):
         ("test_compactor", "test_compactor.cpp"),
         ("test_graph_bounds", "ff_test_graph_bounds.cpp"),
         ("test_datetime", "test_datetime.cpp"),
+        ("test_identity", "test_identity.cpp"),
         # UCUM/dictionary regression suite (68 enumerated checks, no seed).
         ("test_dictionary", "test_dictionary.cpp"),
         # AR-4.4: the first direct FIFO::Queue test. Header-only, no ingestor.

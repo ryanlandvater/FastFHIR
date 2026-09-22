@@ -536,7 +536,7 @@ if(FASTFHIR_BUILD_TESTS)
     list(APPEND _BUILD_ALL ff_test_readme ff_test_readme_examples ff_roundtrip
          ff_test_primitives ff_test_memory ff_test_simd
          ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor
-         ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary
+         ff_test_graph_bounds ff_test_datetime ff_test_identity ff_test_api ff_test_dictionary
          ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
          ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append
          ff_test_file_modes ff_test_poco_values ff_test_bundle_index ff_test_c_api
@@ -615,7 +615,7 @@ if(FASTFHIR_BUILD_TESTS)
     foreach(_t ff_test_readme ff_test_readme_examples ff_roundtrip
                ff_test_primitives ff_test_memory
                ff_test_simd ff_test_amend ff_test_cc ff_test_bundle
-               ff_test_compactor ff_test_graph_bounds ff_test_datetime
+               ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_identity
                ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
                ff_test_api ff_test_dictionary ff_test_abstraction_parity
                ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes
@@ -666,7 +666,7 @@ foreach(_t build_all fastfhir fastfhir_ingestor ff_ingest ff_export ff_compact f
            ff_test_primitives ff_test_memory ff_test_simd ff_test_amend
            ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds
            ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger
-           ff_test_datetime ff_test_api ff_test_dictionary ff_test_abstraction_parity
+           ff_test_datetime ff_test_identity ff_test_api ff_test_dictionary ff_test_abstraction_parity
            ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes
            fastfhir_conformance ff_test_conformance ff_example_conformance)
     if(TARGET ${_t})

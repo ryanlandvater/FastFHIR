@@ -151,6 +151,7 @@ if(FASTFHIR_BUILD_TESTS)
     add_ff_cpp_test(ff_test_compactor  tests/cpp/test_compactor.cpp)
     add_ff_cpp_test(ff_test_graph_bounds tests/cpp/ff_test_graph_bounds.cpp)
     add_ff_cpp_test(ff_test_datetime   tests/cpp/test_datetime.cpp)
+    add_ff_cpp_test(ff_test_identity   tests/cpp/test_identity.cpp)
     add_ff_cpp_test(ff_test_api        tests/cpp/test_api.cpp)
     add_ff_cpp_test(ff_test_dictionary tests/cpp/test_dictionary.cpp)
     # AR-4.4: FIFO::Queue had no direct test until a lock-free defect in it
@@ -240,7 +241,7 @@ if(FASTFHIR_BUILD_TESTS)
     # ── CTest entries ──────────────────────────────────────────────
     # Standalone self-contained suites. These were built but never registered,
     # so they compiled and never ran; add_ff_cpp_test only creates the target.
-    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes ff_test_poco_values ff_test_bundle_index)
+    set(_FF_STANDALONE_TESTS ff_test_primitives ff_test_memory ff_test_simd ff_test_amend ff_test_cc ff_test_bundle ff_test_compactor ff_test_graph_bounds ff_test_datetime ff_test_identity ff_test_api ff_test_dictionary ff_test_roundtrip_validate ff_test_compact_roundtrip ff_test_queue ff_test_logger ff_test_abstraction_parity ff_test_recovery ff_test_views ff_test_bundle_append ff_test_file_modes ff_test_poco_values ff_test_bundle_index)
     if(FASTFHIR_BUILD_CONFORMANCE)
         list(APPEND _FF_STANDALONE_TESTS ff_test_conformance ff_example_conformance)
     endif()

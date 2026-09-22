@@ -1243,6 +1243,7 @@ static const char* ff_kind_name(FF_FieldKind k) {
         case FF_FIELD_CHOICE:   return "FF_FIELD_CHOICE";
         case FF_FIELD_DATETIME: return "FF_FIELD_DATETIME";
         case FF_FIELD_URL:      return "FF_FIELD_URL";
+        case FF_FIELD_ID:       return "FF_FIELD_ID";
     }
     return "FF_FIELD_?";
 }

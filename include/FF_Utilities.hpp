@@ -132,6 +132,13 @@ inline constexpr bool FF_IsFieldEmpty(const BYTE* base, Offset field_absolute_of
         case FF_FIELD_UINT64:
             return slot_all_ones(8);
 
+        // A 16-byte identity slot: all-ones means ABSENT, the same convention
+        // every other sentinel follows (§17.2). Omitted, the `default` below
+        // would report every identity field absent and drop it on export --
+        // the trap FF_FIELD_DATETIME and FF_FIELD_INT32 fell into above.
+        case FF_FIELD_ID:
+            return slot_all_ones(16);
+
         case FF_FIELD_BOOL:
             return slot_all_ones(1);
 
