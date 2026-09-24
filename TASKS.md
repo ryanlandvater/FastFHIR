@@ -5139,15 +5139,16 @@ REC-19's file-layout contract still stands.
 (§2.5, 432/432 single-bit header flips recover) and transactional apply
 (§8, REC-FMEA WP2).
 
-**Progress.** The new engine is built BESIDE the old one in
-`src/FF_Recovery.cpp`; `recover()` keeps the old path until the new one's
-report beats it on the gates, and RA-7 deletes the old path.
-
-- **RA-1, the census — built 2026-09-24.** `Recovery::census()` (public,
-  read-only). Tests `census_clean_stream_is_one_attached_island` and
-  `census_single_flip_opens_exactly_its_point` (every bit of both fixtures,
-  30,472 flips), gate `census_single_flip_sample_synthea`. The sweep's five
-  findings are recorded in the algorithm document §6.3.
+**Progress.** `src/FF_Recovery.cpp` was REWRITTEN from scratch on 2026-09-24 (Ryan:
+"a full rewrite rather than amendments ... less code is more"): about 2,000 lines where
+the old file was 3,900, one pipeline where it had several. RA-1 to RA-5 and RA-7's
+deletion are done by the rewrite; RA-6 (calibration) and RA-8 (compact) are open. The
+algorithm document's §4–§13 describe the engine as built, and its appendix has the
+measurements: single flips wrong 0 / silent 1 (F31) on both fixtures, paired flips 0 / 0,
+and on a 3.3 MB Synthea bundle at 2,048 flips 89–95% of damaged bytes restored with zero
+wrong writes in 10 of 11 runs. Generator: `FF_FieldInfo::variants` lists each choice
+field's allowed tags (union over R4 and R5), from one `choice_variant_tag` shared with
+the ingest emitter.
 
 ---
 

@@ -392,20 +392,22 @@ exported document carried **20,057 fabricated leaf values**. `FF_BLOCK_SELF_VALI
 (`FF_Primitives.hpp`) is the single gate at all ten hops in `FF_Parser.cpp`, and it
 dropped those to 18. **Reference-level integrity is not content-level integrity**:
 a recovery benchmark measuring only references reports a number that is true and
-worthless. Measure the leaves. **A tag stored twice needs a third opinion, and coherence is it.** A resource/choice
-reference is a 10-byte tuple `{offset, tag}`, so its type is on the wire twice — beside
-the offset and in the target's header. A one-bit flip in either makes them disagree, and
-comparing them cannot say which moved: the ranker scores both hypotheses at 1 bit and
-breaks the tie by preferring the parent, which is right half the time. Believing the wrong
-copy is not a bad label but a **bad schema** — the V-Table is decoded under another
-resource's field map. The adjudicator asks the bytes instead: a type is a hypothesis about
-a V-Table, so enumerate the block's children under each candidate and require that they
-vouch for themselves (`Recovery::reads_as` over the existing `batch_passes`). Decisive only
-when exactly one reading is coherent; a block with no enumerable children answers neither
-way and reports `Undecided` rather than passing vacuously. The verdict carries
-`consensus_tag`/`damaged_copy` and `apply()` enacts it — including the tuple's own tag half,
-which nothing could repair before. **Only tuple kinds are adjudicated**: a plain block or
-string slot takes its expectation from the compiled schema, which damage cannot reach.
+worthless. Measure the leaves. **A tag stored twice needs a third opinion, and the block's own slots are it.** A
+resource/choice reference is a 10-byte tuple `{offset, tag}`, so its type is on the wire
+twice — beside the offset and in the target's header. A one-bit flip in either makes them
+disagree, and comparing them cannot say which moved: at the tuple the two readings tie.
+Believing the wrong copy is not a bad label but a **bad schema** — the V-Table is decoded
+under another resource's field map. Recovery (REC-25, `recovery_algorithm_handoff.md`)
+reads the block under every type the field allows near either copy and RANKS the readings
+by how many of their children's witnesses hold, so more corroborating children always
+outweigh fewer; the branch is decided only when one reading leads the next by
+`ACCEPT_MARGIN` bits, and the repair writes whichever copy disagrees with the decision,
+the tuple's own tag half included. An all-or-nothing coherence test, which the engine used
+before the rewrite, is biased toward the WRONG answer: a wrong resource type reads a prefix
+of the true V-Table and finds real children there, and one damaged child fails the true
+reading outright (F01). A plain block or string slot takes its type from the compiled
+schema, which damage cannot reach; a choice slot's allowed types come from the generated
+`FF_FieldInfo::variants`.
 
 **A flagged offset is an offset, whatever slot it lives in.** `validate_FFHR_stream()`
 skips inline scalars because they cannot aim the reader at memory it does not own — but a
@@ -620,7 +622,7 @@ decide whether a version gate is wanted.
 11. **Three block shapes, three recovery routines.** A DATABLOCK is a V-Table of slots;
     an ARRAY is a stride and a count over inline entries and has **no V-Table at all**; a
     BYTE ARRAY (`FF_STRING` and everything sharing its layout) is an extent with no
-    children. `enumerate_block_refs` dispatches on shape — walking an array with the
+    children. Recovery's `slots_of` dispatches on shape — walking an array with the
     V-Table walker silently returns nothing. Entries carry no witnesses of their own by
     design, so the array's VALIDATION and RECOVERY are the only ones for all of them:
     the blast radius of losing an array is its entire contents. And **emitting

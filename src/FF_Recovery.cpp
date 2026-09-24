@@ -3,24 +3,41 @@
  * @author Ryan Landvater (ryanlandvater[at]gmail[dot]com)
  * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @remark This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0 (MPL-2.0) — see LICENSE or http://mozilla.org/MPL/2.0/.
- * @version 0.1
+ * @version 0.2
  *
- * @brief FastFHIR Archive Recovery — implementation (TASKS.md REC-10…19)
+ * @brief FastFHIR Archive Recovery — census, branch solver, transactional apply (REC-25)
  *
- * The two-sided reconciliation of P0-3: every parent→child block reference is
- * encoded twice (parent slot {expected tag, stored offset} + child header
- * {VALIDATION, RECOVERY}), and recover() turns the surviving half into a
- * restored reference, classified by which witness supplied the fix.
+ * recovery_algorithm_handoff.md is the design of record. In brief:
  *
- * Threat model: bit-flip only (REC-17). Every read is bounds-checked; nothing
- * here dereferences a header field at construction (CAPI-15).
+ *   CENSUS    Every self-validating block and every slot of it are read, and
+ *             the FF_HEADER's root and metadata offsets are read as slots too.
+ *             A link whose every witness holds is decided on the spot; every
+ *             other slot the header can reach becomes an open question.
+ *   CYCLES    Each question's branch is ranked whole: every block its slot
+ *             could name, read as every type it could be, down to the leaves.
+ *             A branch is decided, in RAM, only when its best explanation
+ *             leads the next valid one by ACCEPT_MARGIN bits. Decisions shrink
+ *             the orphan pools, so later questions get easier, and cycles run
+ *             until one decides nothing. A decision is never revisited.
+ *   APPLY     Every decided link is planned as the writes it needs, and each
+ *             plan is enacted into a copy as one group that lands whole or
+ *             not at all.
  *
- * LAYOUT CONTRACT (REC-19.1): the call stack reads top→bottom. The inline
- * helpers are defined at the top so everything below can use them; the
- * entrance recover() sits at the top of the call stack; every callee is
- * defined below its caller; the leaf helpers end the file. Reading the file
- * top→bottom traces recover()'s execution, from entrance to the final
- * recovery of the stream.
+ * THE MODEL. Every witness is compared with the value a hypothesis says it
+ * should hold, never with another witness. A witness that matches is worth its
+ * width in bits -- a pointer or self-offset 64, a four-byte code pointer 32, a
+ * tag 16 -- less C_FLIP for each bit it is off by. A link is worth its
+ * witnesses plus the best explanation of its child's own slots, and a slot
+ * nothing explains costs U_UNEXPLAINED. The cheapest configuration of a branch
+ * is the explanation of the bytes that needs the least coincidence, and more
+ * corroborating children always outweigh fewer.
+ *
+ * HARD CONSTRAINTS eliminate a hypothesis; everything else only ranks it.
+ * H1 a tuple holds only a type its field allows. H2 a proposed position lies
+ * inside the trusted extent. H3 a data block's V-Table never reaches the next
+ * block. H5 every block has one parent.
+ *
+ * LAYOUT CONTRACT (REC-19.1): the file reads top to bottom as the call stack.
  */
 
 #include "FF_Recovery.hpp"
@@ -28,50 +45,83 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdint>
 #include <exception>
-#include <set>
+#include <map>
+#include <optional>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace FastFHIR {
 
 // =====================================================================
-// TOP — the inline helpers, predeclared and defined here (REC-19.1)
+// TOP — policy, leaf reads, and the board
 // =====================================================================
 namespace {
 
-// ---- leaf reads (free, not members: "what is at THIS offset" — the
-// ---- members became free functions so the inline helpers above them can
-// ---- call them; a member forces conjuring a block whose fabricated size
-// ---- and version change what validate_full checks) ----
+// The evidence weights are properties of the wire; the thresholds are
+// calibrated against the gates (recovery_algorithm_handoff.md §5.1).
+constexpr Offset   HEADER_PARENT = 0;           // the FF_HEADER parents the root and the metadata blocks
+constexpr uint32_t TAG_RADIUS    = 2;           // how far a type hypothesis may sit from a wire copy of it
+constexpr uint32_t SELF_RADIUS   = 2;           // how far a word may sit from a value it must hold (its own
+                                                // address, or null) and still be read as that value
+constexpr double   MAX_CHANCE    = 1.0 / 64;  // coincidental candidates a pointer search may expect to admit
+constexpr int64_t  C_FLIP        = 8;           // the evidence one disagreeing bit costs
+constexpr int64_t  U_UNEXPLAINED = 64;          // the cost of a slot nothing explains
+constexpr int64_t  ACCEPT_ABS    = 32;          // every decided link must be worth at least this
+constexpr int64_t  ACCEPT_MARGIN = 64;          // the best configuration's lead over the next valid one
+constexpr size_t   MAX_COMPONENT = 8;           // branches solved together
+constexpr size_t   K_BEST        = 256;         // configurations a node keeps
+constexpr uint32_t UNEXPLAINED   = UINT32_MAX;  // a slot's configuration that takes no candidate
 
-inline bool valid_validation(const BYTE* base, size_t size, Offset off) noexcept {
-    if (!FF_BLOCK_IN_BOUNDS(off, size))
-        return false;
-    return FF_GET_VALIDATION(base, off) == static_cast<uint64_t>(off);
+// ---- leaf reads ----
+
+bool in_extent(uint64_t off, uint64_t width, size_t size) noexcept {
+    return off <= size && width <= size - off;
 }
 
-inline RECOVERY_TAG tag_at(const BYTE* base, size_t size, Offset off) noexcept {
-    if (!FF_BLOCK_IN_BOUNDS(off, size))
-        return FF_RECOVER_UNDEFINED;
-    return FF_GET_RECOVERY_TAG(base, off);
+uint64_t load(const BYTE* base, uint64_t seat, uint8_t width) noexcept {
+    switch (width) {
+        case 2:  return LOAD_U16(base + seat);
+        case 4:  return LOAD_U32(base + seat);
+        default: return LOAD_U64(base + seat);
+    }
 }
 
-inline bool header_is_readable(const BYTE* base, size_t size) noexcept {
-    if (size < FF_HEADER::HEADER_SIZE)
-        return false;
-    return FF_HEADER(size).get_magic(base) == FF_MAGIC_BYTES;
+void store(BYTE* base, uint64_t seat, uint8_t width, uint64_t value) noexcept {
+    switch (width) {
+        case 2:  STORE_U16(base + seat, static_cast<uint16_t>(value)); break;
+        case 4:  STORE_U32(base + seat, static_cast<uint32_t>(value)); break;
+        default: STORE_U64(base + seat, value); break;
+    }
 }
 
-// Was this stream written by an engine newer than this reader? A newer writer
-// may append V-Table slots, assign dictionary IDs this build has never seen,
-// and emit encodings this build cannot read, all legitimately. So anything
-// that is merely UNFAMILIAR is evidence of damage only when this answers
-// false. FF_HEADER::VERSION carries the writer's version, composed below
+uint32_t hamming(uint64_t a, uint64_t b) noexcept {
+    return static_cast<uint32_t>(std::popcount(a ^ b));
+}
+
+bool self_validates(const BYTE* base, size_t size, uint64_t off) noexcept {
+    return in_extent(off, DATA_BLOCK::HEADER_SIZE, size) && LOAD_U64(base + off) == off;
+}
+
+RECOVERY_TAG tag_at(const BYTE* base, size_t size, uint64_t off) noexcept {
+    return in_extent(off, DATA_BLOCK::HEADER_SIZE, size)
+               ? static_cast<RECOVERY_TAG>(LOAD_U16(base + off + DATA_BLOCK::RECOVERY))
+               : FF_RECOVER_UNDEFINED;
+}
+
+bool has_magic(const BYTE* base, size_t size) noexcept {
+    return size >= FF_HEADER::HEADER_SIZE && FF_HEADER(size).get_magic(base) == FF_MAGIC_BYTES;
+}
+
+// A newer writer may append V-Table slots, assign dictionary IDs and emit
+// encodings this build has never seen, all legitimately, so the unfamiliar is
+// evidence of damage only when this answers false. The version is composed
 // exactly as the writer composes it (src/FF_Primitives.cpp).
-inline bool stream_is_newer(const BYTE* base, size_t size) noexcept {
-    if (!header_is_readable(base, size))
+bool stream_is_newer(const BYTE* base, size_t size) noexcept {
+    if (!has_magic(base, size))
         return false;
     constexpr uint32_t kThisEngine =
         ((static_cast<uint32_t>(FASTFHIR_VERSION_MAJOR) & 0x3FFFu) << 16) |
@@ -79,2470 +129,608 @@ inline bool stream_is_newer(const BYTE* base, size_t size) noexcept {
     return FF_HEADER(size).get_engine_version(base) > FF_HEADER_ENGINE_VERSION(kThisEngine);
 }
 
-// ---- slot-kind discriminators ----
+// ---- what a tag says about a block's layout ----
 
-// Loose "is this an array-shaped tag" test: the array bit means the block
-// carries ENTRY_COUNT/KIND_AND_STEP after the DATA_BLOCK header.
-inline constexpr bool IsArrayTagged(RECOVERY_TAG tag) {
-    return (tag & RECOVER_ARRAY_BIT) != 0;
-}
-
-// The slot kinds whose parent half stores {offset | tag} as a 10-byte tuple.
-inline constexpr bool IsTupleKind(FF_FieldKind kind) {
-    return kind == FF_FIELD_CHOICE || kind == FF_FIELD_RESOURCE;
-}
-
-// The slot kinds whose parent half stores a bare 8-byte offset with a
-// compile-time expected child type (1c is authoritative and uncorruptible).
-inline constexpr bool IsTypedOffsetKind(FF_FieldKind kind) {
-    return kind == FF_FIELD_BLOCK || kind == FF_FIELD_STRING ||
-           kind == FF_FIELD_ARRAY || kind == FF_FIELD_DATETIME;
-}
-
-// FF_ARRAY element shapes, discriminated by element tag + entry kind. The
-// discriminator matters: EntryKind alone cannot tell an inline scalar from an
-// inline block (CLAUDE.md), and the two pointer shapes need target-walking,
-// not entry-walking (TASKS.md F4).
-// How to READ one array element. This is NOT the storage kind: every value
-// below except OffsetPtr describes an array whose entries are stored INLINE
-// (contiguous, fixed stride, no offset table). FF_ARRAY::OFFSET exists only for
-// FF_STRING, which is the one variable-length element type -- 693 of the 693
-// OFFSET arrays in a Synthea bundle are strings, and store.py emits that kind
-// from exactly one branch. Do not read `InlineBlock` as "the array is inline";
-// it means "this element's own bytes are a self-describing DATA_BLOCK header".
+// How an array's entries are laid out, which the element tag alone decides:
+// measured over 70,000 arrays, the kind bits and the stride in KIND_AND_STEP
+// never say anything the element tag does not. They are a second copy, and
+// the census reads the layout from the tag.
 enum class ElementShape : uint8_t {
-    None,        // raw scalars — inline, no header, extent not derivable
-    InlineBlock, // inline, and +0 IS the element's own offset (walk in place)
-    Tuple,       // inline 10-byte {value|tag} — +0 is the TARGET's offset (follow it)
-    OffsetPtr,   // OFFSET table — 8-byte pointers to FF_STRING blocks (strings only)
+    Scalar,     // raw values, which name nothing
+    Block,      // each entry is itself a block: its first eight bytes are its own offset
+    Tuple,      // 10-byte {offset, tag}: the offset names the entry's block elsewhere
+    OffsetPtr,  // 8-byte offsets, each naming an FF_STRING, the one variable-length element
 };
 
-inline ElementShape element_shape_of(RECOVERY_TAG element_tag, FF_ARRAY::EntryKind kind) noexcept {
-    // The top two bits are the wire truth for the physical layout (FF_ARRAY
-    // EntryKind, already pre-shifted): OFFSET and SCALAR need no tag help.
-    if (kind == FF_ARRAY::EntryKind::OFFSET)
-        return ElementShape::OffsetPtr;
-    if (kind == FF_ARRAY::EntryKind::SCALAR)
-        return ElementShape::None;  // raw values — no headers, extent not derivable
-    // INLINE_BLOCK is stamped on scalars, block headers and resource tuples
-    // alike (CLAUDE.md): the element TAG is the discriminator (F4).
-    if (FF_IsScalarBlockTag(element_tag))
-        return ElementShape::None;
-    // RECOVER_FF_RESOURCE is the GENERIC polymorphic marker and lives in the
-    // PRIMITIVE band (0x0003), so FF_IsResourceTag -- a 0x1000..0x1FFF range
-    // test -- does not match it. Without this line a `contained[]` /
-    // `Bundle.entry[]` array fell through to InlineBlock and walk_array_extent
-    // asked a POINTER whether it equalled its own position; it never does, so
-    // the walk bailed at element 0 and reported a bogus ExtentDerived on 46
-    // arrays of every clean Synthea bundle. CLAUDE.md: "a resource tuple is
-    // {offset(8), tag(2)} ... +0 is the TARGET's offset, so it must be
-    // followed, never walked in place."
-    if (element_tag == RECOVER_FF_RESOURCE || FF_IsResourceTag(element_tag))
+ElementShape element_shape(RECOVERY_TAG element) noexcept {
+    if (element == RECOVER_FF_RESOURCE || FF_IsResourceTag(element))
         return ElementShape::Tuple;
-    return ElementShape::InlineBlock;
+    if (FF_IsStringLayoutTag(element))
+        return ElementShape::OffsetPtr;
+    if (FF_IsScalarBlockTag(element))
+        return ElementShape::Scalar;
+    return ElementShape::Block;
 }
 
-// ---- REC-19.3 — the one routine every reference is judged by ----
-
-// Judge one parent→child reference: does the child self-validate, and does its
-// wire RECOVERY tag match what the slot expects? The expectation is 1c — the
-// compiled V-Table child type, uncorruptible — for typed-offset kinds, and the
-// STORED tag half of the {value|recovery} 10-byte tuple for choice/resource
-// slots (F1: the compiled table is a decoy there, so the enumerator already
-// resolved `declared` to the stored half).
-//
-// Returns true when the reference is damaged — the child fails to
-// self-validate (the slot names a block whose VALIDATION word is not its own
-// address: `InvalidSelfRef`), or the wire tag does not match the expected
-// recovery (`VTableRecoveryMismatch`). Callers queue such refs for the
-// classifier; a coherent ref is followed deeper. `failures` may be null when
-// the caller only wants the verdict, not the audit record (the clean-stream
-// baseline walks with no audit).
-//
-// This is deliberately NOT the walk's descent gate: the walk descends into a
-// child whose self-offset is merely within the flip budget (one surviving
-// witness, defect 1), while this routine reports any self-validation failure
-// as damage. Recording and descent are different decisions with different
-// evidence; REC-19.7's reapply loop re-uses this exact judgment after a
-// repair to move deeper into the fixed block.
-// Wrong-turn-2's self-verification, in one place because two call sites need
-// it (the expansion and the REC-19.7 reapply).
-//
-// Re-reading a block under a corrected type is a HYPOTHESIS, and the ranker's
-// preference is evidence, not proof. When the hypothesis is wrong the V-Table
-// does not belong to that block, and every offset lifted through it is
-// nonsense. That is cheap to detect: read under the right type, a block's
-// slots yield children that are themselves well-formed; read under the wrong
-// one, they yield children with no surviving witness at all. So enumerate into
-// scratch, ask this, and discard the whole batch on a single incoherent child.
-//
-// Keeping garbage is strictly worse than dropping a subtree: a missing
-// reference is reported and therefore honest, a fabricated one is believed.
-// How strictly must a freshly enumerated batch of references hold up?
-//
-// Two questions, one predicate, because they differ only in strictness and a
-// family of near-identical functions is how a caller ends up picking by vibe.
-// Using the wrong strength does not fail loudly -- it silently disables the
-// caller, which is how the generational cascade stayed broken.
-enum class BatchTest : uint8_t {
-    /// Every child must corroborate. The type is a HYPOTHESIS here, so a wrong
-    /// V-Table -- which yields nothing but nonsense -- has to be thrown out
-    /// whole before any of it is believed.
-    EveryChildCorroborates,
-    /// No child may be a wild pointer, and damage is expected. The type is
-    /// already CORROBORATED by the tuple distance, so the V-Table is trusted
-    /// and the only remaining question is whether the read produced nonsense.
-    NoWildPointers,
-};
-
-// Demanding corroboration where only addressability is warranted is what
-// silenced the generational cascade: a block whose one child is itself damaged
-// has no corroborating child BY DEFINITION, so its batch was discarded and the
-// chain stopped at the first repair. Parent broken, child broken, grandchild
-// broken is exactly what that loop exists to unwind.
-//
-// A wrong V-Table still cannot survive NoWildPointers: it lifts offsets out of
-// positions that hold none, and those are overwhelmingly outside the stream.
-// One that happens to land in bounds yields references that classify as
-// Unrecovered -- reported, never believed -- and repairing them would demand
-// the same tuple evidence over again.
-inline bool batch_passes(const BYTE* base, size_t size,
-                         const std::vector<BlockRef>& refs, BatchTest test) noexcept {
-    for (const BlockRef& c : refs) {
-        if (c.child == FF_NULL_OFFSET)
-            continue;
-        if (!FF_BLOCK_IN_BOUNDS(c.child, static_cast<Size>(size)))
-            return false;  // a wild pointer fails both tests
-        if (test == BatchTest::NoWildPointers)
-            continue;
-        if (valid_validation(base, size, c.child))
-            continue;
-        const RECOVERY_TAG ct = tag_at(base, size, c.child);
-        const RECOVERY_TAG cb = (c.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(ct) : ct;
-        if (c.declared == FF_RECOVER_UNDEFINED || cb != c.declared)
-            return false;  // a child with no surviving witness — garbage
+// The stride the writer gives this element type. A newer writer's blocks may
+// be longer than this build's table says, and so its strides too.
+uint64_t element_stride(RECOVERY_TAG element) noexcept {
+    switch (element_shape(element)) {
+        case ElementShape::Scalar:    return ff_slot_width(Recovery_to_Kind(element));
+        case ElementShape::Block:     return Recovery::derived_block_size(element);
+        case ElementShape::Tuple:     return TYPE_SIZE_RESOURCE;
+        case ElementShape::OffsetPtr: return TYPE_SIZE_OFFSET;
     }
-    return true;
+    return 0;
 }
 
-// The address a repaired reference should be FOLLOWED to.
-//
-// Not always the one the slot names. Corroborated means the REPOINT hypothesis
-// won -- the ranker decided the parent's stored offset is the damaged half and
-// the real child is the candidate it found -- so following r.child there walks
-// the very address the ranker just rejected. TagRepaired and PositionRepaired
-// are in-place repairs and keep their address. Following the rejected offset
-// under the declared V-Table is what invented references in 5 of 40 single-bit
-// trials, every one of them a flip in the PARENT's slot.
-inline Offset repaired_target(const BlockVerdict& v) noexcept {
-    if (v.class_ == RepairClass::Corroborated)
-        return v.candidates.empty() ? FF_NULL_OFFSET : v.candidates.front();
-    return v.block.child;
-}
-
-inline bool recover_follow_ref_chain(const BYTE* base, size_t size, const BlockRef& r,
-                                     std::vector<ProducerFailure>* failures) noexcept {
-    if (!FF_BLOCK_IN_BOUNDS(r.child, size))
-        return false;  // absent or out of stream — no reference to judge
-    const bool self_ok = valid_validation(base, size, r.child);
-    if (self_ok) {
-        const RECOVERY_TAG actual = tag_at(base, size, r.child);
-        const RECOVERY_TAG actual_base =
-            (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(actual) : actual;
-        if (r.declared == FF_RECOVER_UNDEFINED || actual_base == r.declared)
-            return false;  // both witnesses agree — coherent
-        if (failures)
-            failures->push_back({ProducerFailureKind::VTableRecoveryMismatch, r.child,
-                                 r.declared, actual,
-                                 "wire tag does not match the slot's expected recovery"});
-    } else if (failures) {
-        failures->push_back({ProducerFailureKind::InvalidSelfRef, r.child, r.declared,
-                             FF_RECOVER_UNDEFINED,
-                             "slot names a block that does not self-validate"});
+// Does this build know the layout of a block carrying `tag`? plausible_tag()
+// cannot answer that: it maps every value from 0x0200 up to FF_FIELD_BLOCK, so
+// 0xFFFF passes it. A newer writer's tag fails this too, which only ever makes
+// recovery trust a position less.
+bool sizable_tag(RECOVERY_TAG tag) {
+    if (IsArrayTag(tag)) {
+        const RECOVERY_TAG element = GetTypeFromTag(tag);
+        if (element_shape(element) == ElementShape::Block)
+            return sizable_tag(element);
+        return element == RECOVER_FF_RESOURCE || FF_IsStringLayoutTag(element) ||
+               Recovery_to_Kind(element) != FF_FIELD_UNKNOWN;
     }
-    return true;
-}
-
-// The tag a walk should enumerate a child's V-Table under: the wire tag while
-// it corroborates the slot, otherwise the slot's declared type re-armed with
-// the array bit — the surviving witness when the child's tag is the damaged
-// half. `usable` is false when BOTH witnesses are gone (a hole, not a
-// reference) or the self-offset is beyond the flip budget (the parent's offset
-// is the damaged half — this is not the child at all).
-//
-// WHY THE TAG MUST CORROBORATE, even though a valid self-offset already proves
-// a block lives here: `self_ok && !tag_ok` is genuinely two situations wearing
-// the same face — the child's TAG was flipped (a real child, mislabelled), or
-// the PARENT's offset was flipped onto an innocent, perfectly valid block of
-// another type. Nothing local separates them. Guessing "the tag was flipped"
-// and enumerating that block under the slot's declared type measurably
-// invented 13 references and 15 unrecovered verdicts from a single flipped bit
-// (handoff wrong turn 1). The classifier below ranks those two hypotheses
-// under the flip budget; the walk does not get to pre-empt it.
-inline RECOVERY_TAG corroborated_tag(const BYTE* base, size_t size, const BlockRef& r,
-                                     bool& usable) noexcept {
-    usable = false;
-    if (!FF_BLOCK_IN_BOUNDS(r.child, size))
-        return FF_RECOVER_UNDEFINED;
-    const RECOVERY_TAG actual = tag_at(base, size, r.child);
-    const RECOVERY_TAG actual_base =
-        (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(actual) : actual;
-    const bool self_ok = valid_validation(base, size, r.child);
-    // Same budget as the walk: a self-offset that is not merely wrong but
-    // UNRELATED to this address means the parent's offset is the damaged half.
-    const bool self_repairable =
-        self_ok || Recovery::hamming_cost(FF_GET_VALIDATION(base, r.child),
-                                          static_cast<uint64_t>(r.child)) <= FF_RECOVERY_MAX_FLIPS;
-    const bool tag_ok = r.declared != FF_RECOVER_UNDEFINED && actual_base == r.declared;
-    if (!self_repairable || !tag_ok)
-        return FF_RECOVER_UNDEFINED;
-    usable = true;
-    // Same rule as the walk: the wire tag wins only while it corroborates the
-    // slot; otherwise it is the damaged half and the parent's declared type is
-    // the witness that survived (re-armed with the array bit).
-    return tag_ok ? actual
-                  : (r.declared != FF_RECOVER_UNDEFINED
-                         ? (r.kind == FF_FIELD_ARRAY ? ToArrayTag(r.declared) : r.declared)
-                         : actual);
-}
-
-// A position inside a hole whose residual VALIDATION word is a near-neighbour
-// of its own address — the y side of REC-20's assignment problem. Declared here
-// rather than inside recover() because plan_repair() below needs to name it:
-// the candidate's OWN residual damage is what the repair has to undo.
-struct HoleCandidate {
-    Offset   pos;
-    uint32_t self_cost;     ///< hamming(word, pos) — the ranking key
-    uint64_t word;          ///< the location's offset encoding — the block's
-                            ///< own (possibly damaged) record of the true offset
-    uint16_t tag;           ///< the 2 residual recovery bytes
-    bool     corroborated;  ///< both producers called this run a hole
-};
-
-// THE BYTES ONE VERDICT MUST WRITE, DECIDED WHERE THE EVIDENCE IS.
-//
-// apply() used to re-derive the seats from the RepairClass label, and a label
-// is not a plan. Deriving one loses everything the classifier knew that the
-// label does not spell, and three defects lived in that gap -- each of them
-// reporting a confident repair while leaving the damage on the wire:
-//
-//   * a Corroborated repoint onto a HOLE candidate wrote only the parent's
-//     slot and then demanded the target validate. A hole candidate is admitted
-//     precisely because its self-offset does NOT validate (self_cost is 1 or 2
-//     by construction), so that check could never pass: all 36 hole matches in
-//     the two fixtures verified false and reverted;
-//   * PositionRepaired on a tuple priced `val_cost + tag_cost` and then wrote
-//     only the VALIDATION word, so the tag it had charged for stayed damaged
-//     and the verdict verified anyway, because the check asked only whether the
-//     self-offset now held;
-//   * an inline array element has no pointer word at all -- its child IS its
-//     slot -- so a repoint writes an address over the element's own VALIDATION.
-//
-// So the classifier states the writes and apply() enacts exactly those. It is
-// the rule `derived_extent` already followed, generalised: one owner per fact.
-inline void plan_repair(BlockVerdict& v, const BYTE* base, size_t size,
-                        const HoleCandidate* hole) {
-    v.writes.clear();
-    const BlockRef& r = v.block;
-    if (r.child == FF_NULL_OFFSET)
-        return;
-    const RECOVERY_TAG want = (r.declared == FF_RECOVER_UNDEFINED) ? FF_RECOVER_UNDEFINED
-                              : (r.kind == FF_FIELD_ARRAY)        ? ToArrayTag(r.declared)
-                                                                  : r.declared;
-    const auto plan = [&v](uint64_t seat, uint8_t width, uint64_t value) {
-        v.writes.push_back({static_cast<Offset>(seat), width, value});
-    };
-    switch (v.class_) {
-        case RepairClass::Corroborated: {
-            if (v.candidates.empty())
-                return;
-            const Offset target = v.candidates.front();
-            plan(static_cast<uint64_t>(r.parent) + r.field, 8, static_cast<uint64_t>(target));
-            // THE TARGET'S OWN WITNESSES, when the winner was a hole candidate.
-            // The parent's surviving copies determine both of them, so neither
-            // is a guess: the address is the candidate's position, and the type
-            // is the slot's declared expectation.
-            if (hole != nullptr) {
-                if (hole->self_cost != 0)
-                    plan(static_cast<uint64_t>(target) + DATA_BLOCK::VALIDATION, 8,
-                         static_cast<uint64_t>(target));
-                if (want != FF_RECOVER_UNDEFINED && static_cast<RECOVERY_TAG>(hole->tag) != want)
-                    plan(static_cast<uint64_t>(target) + DATA_BLOCK::RECOVERY, 2,
-                         static_cast<uint64_t>(want));
-            }
-            break;
-        }
-        case RepairClass::TagRepaired: {
-            const bool adjudicated =
-                v.damaged_copy != TagCopy::Undecided && v.consensus_tag != FF_RECOVER_UNDEFINED;
-            const uint64_t seat = (adjudicated && v.damaged_copy == TagCopy::ParentSlot)
-                                      ? static_cast<uint64_t>(r.parent) + r.field
-                                      : static_cast<uint64_t>(r.child);
-            const RECOVERY_TAG value = adjudicated ? v.consensus_tag : want;
-            if (value != FF_RECOVER_UNDEFINED)
-                plan(seat + DATA_BLOCK::RECOVERY, 2, static_cast<uint64_t>(value));
-            break;
-        }
-        case RepairClass::PositionRepaired: {
-            plan(static_cast<uint64_t>(r.child) + DATA_BLOCK::VALIDATION, 8,
-                 static_cast<uint64_t>(r.child));
-            // The tag this verdict was PRICED for. A tuple's expected type lives
-            // in the parent's tag half, so its in-place cost is val + tag, and
-            // writing only the first half enacts half a verdict.
-            const RECOVERY_TAG actual = tag_at(base, size, r.child);
-            const RECOVERY_TAG actual_base =
-                (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(actual) : actual;
-            if (want != FF_RECOVER_UNDEFINED && actual_base != r.declared)
-                plan(static_cast<uint64_t>(r.child) + DATA_BLOCK::RECOVERY, 2,
-                     static_cast<uint64_t>(want));
-            break;
-        }
-        case RepairClass::ExtentDerived:
-            plan(static_cast<uint64_t>(r.child) + FF_ARRAY::ENTRY_COUNT, 4, v.derived_extent);
-            break;
-        default:
-            break;  // Intact, Ambiguous and Unrecovered are not repairs
-    }
-}
-
-// THE WHOLE EDGE, NOT THE BYTE THAT WAS JUST STORED.
-//
-// Each repair class used to verify its own write by reading it back, which
-// proves only that memory accepted a store. The question a repair has to answer
-// is whether the EDGE now holds: the slot names the target, the target vouches
-// for its own address, and its tag is the type the slot expects. One predicate
-// for every class, so a class cannot quietly check less than its neighbours.
-inline bool verify_edge(const BYTE* dst, size_t size, const BlockVerdict& v) noexcept {
-    for (const PlannedWrite& w : v.writes) {
-        const uint64_t got = w.width == 2   ? LOAD_U16(dst + w.seat)
-                             : w.width == 4 ? LOAD_U32(dst + w.seat)
-                                            : LOAD_U64(dst + w.seat);
-        if (got != w.value)
-            return false;
-    }
-    // An ENTRY_COUNT has no second witness anywhere on the wire (F4), so the
-    // stored value is the only thing there is to check.
-    if (v.class_ == RepairClass::ExtentDerived)
+    if (FF_IsStringLayoutTag(tag) || tag == RECOVER_FF_CODED_VALUE || tag == RECOVER_FF_CHECKSUM ||
+        tag == RECOVER_FF_URL_DIRECTORY || tag == RECOVER_FF_MODULE_REGISTRY)
         return true;
-    const BlockRef& r = v.block;
-    const Offset target = (v.class_ == RepairClass::Corroborated && !v.candidates.empty())
-                              ? v.candidates.front()
-                              : r.child;
-    if (!FF_BLOCK_IN_BOUNDS(target, static_cast<Size>(size)) ||
-        !valid_validation(dst, size, target))
-        return false;
-    if (r.declared == FF_RECOVER_UNDEFINED)
-        return true;
-    // An adjudicated tag repair may legitimately name a type the slot's own
-    // copy disagrees with -- that disagreement IS the repair -- so the
-    // consensus is what the target is checked against.
-    const RECOVERY_TAG want = (r.kind == FF_FIELD_ARRAY) ? ToArrayTag(r.declared) : r.declared;
-    const RECOVERY_TAG expect =
-        (v.class_ == RepairClass::TagRepaired && v.consensus_tag != FF_RECOVER_UNDEFINED)
-            ? v.consensus_tag
-            : want;
-    return tag_at(dst, size, target) == expect;
+    return !reflected_fields_view(static_cast<uint16_t>(tag)).empty();
 }
 
-// ---- forward declarations: non-inline free helpers, defined below their
-// ---- callers in call order (REC-19.1) ----
-
-StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off);
-uint32_t walk_array_extent(const BYTE* base, size_t size, Offset array_off,
-                           ElementShape shape, uint16_t stride, uint32_t stamped);
-
-}  // namespace
-
-// =====================================================================
-// ENTRANCE — recover(), the top of the call stack (REC-19.1)
-// =====================================================================
-
-FF_RecoveryReport Recovery::recover() const {
-    FF_RecoveryReport rep;
-
-    // The two producers on two threads (REC-19.4/.5): the hierarchical
-    // offset-chain walk and the parallel byte census share no state — scan()
-    // follows no pointers, the walk scans no bytes — so a damaged stream pays
-    // both costs concurrently. An uncaught exception in a std::thread would
-    // std::terminate the process, so each worker captures its failure and it
-    // is rethrown on the calling thread after join. Specific catch, not
-    // `...`: anything that is not a std::exception is a bug worth crashing on.
-    //
-    // The walk is launched SPECULATIVELY, on the root exactly as the wire
-    // states it, before the header has been reconciled. That is deliberate and
-    // it costs nothing either way: when the root is intact -- four trials in
-    // five -- the speculative walk is already the right one and nothing is
-    // repeated; when it is damaged the walk bails on its first test and
-    // returns an empty map, so re-running it against the restored root below
-    // is as cheap as running it once. Reconciling first instead would
-    // serialise the census behind a decision the census has to supply.
-    RootAnchor root = wire_root();
-    StreamMap chain_map;  // hierarchical producer: reachable blocks, sized
-    StreamMap scan_map;   // scanned producer: the byte census
-    std::exception_ptr chain_error;
-    std::exception_ptr census_error;
-    std::thread hierarchical([this, &chain_map, &chain_error, root] {
-        try {
-            chain_map = reachable_blocks_map(root);
-        } catch (const std::exception&) {
-            chain_error = std::current_exception();
-        }
-    });
-    std::thread scanned([this, &scan_map, &census_error] {
-        try {
-            scan_map = scan();
-        } catch (const std::exception&) {
-            census_error = std::current_exception();
-        }
-    });
-    hierarchical.join();
-    scanned.join();
-    if (chain_error)
-        std::rethrow_exception(chain_error);
-    if (census_error)
-        std::rethrow_exception(census_error);
-
-    // REC-24 — THE HEADER FIRST, BECAUSE EVERYTHING BELOW STARTS AT ITS ROOT.
-    //
-    // Every pass after this one walks from the root the header names, so a
-    // header that cannot be read is not a local loss but a total one. The
-    // census is in hand now, which is what the reconciliation needs: the block
-    // the root names, and the singleton blocks the metadata fields name, are
-    // all in it. Re-walk only when the reconciliation actually moved the root,
-    // so an intact header pays nothing at all.
-    const RootAnchor reconciled = reconcile_header(scan_map, rep.header);
-    for (const HeaderVerdict& v : rep.header)
-        if (v.class_ == RepairClass::Corroborated)
-            ++rep.header_repaired;
-    if (reconciled.usable &&
-        (reconciled.offset != root.offset || reconciled.tag != root.tag || !root.usable)) {
-        root = reconciled;
-        chain_map = reachable_blocks_map(root);
-    }
-
-    // ADMIT PARENT-ATTESTED BLOCKS BEFORE ENUMERATING, AND ENUMERATE UNDER
-    // THE CORROBORATED TYPE.
-    //
-    // This enumeration used to be driven by the scan census alone, with each
-    // block enumerated under whatever tag was on the wire. Both halves of that
-    // lose subtrees to a single bit flip:
-    //
-    //   * scan() finds a block by its self-offset, so a block whose VALIDATION
-    //     was the damaged half is ABSENT from the census. The reference TO it
-    //     was still classified and repaired -- which is why the report showed
-    //     no failure -- but every reference FROM it was never enumerated.
-    //   * a block whose TAG was the damaged half is present, but enumerating it
-    //     under that tag names the wrong V-Table (or none), so it yields no
-    //     children and the subtree leaves just as quietly.
-    //
-    // Measured on a 1.05 MB Synthea artifact: one flipped bit anywhere in a
-    // block's 10-byte header cost 3 block references while recover() reported
-    // zero ambiguous and zero unrecovered. Finding the hole and leaving it is
-    // not recovery -- the parent slot still names the child's address AND its
-    // type, and that second witness is the whole reason the format stores it.
-    //
-    // So walk from the root, carrying the corroborated type down: a child is
-    // admitted (and enumerated) while EITHER witness still agrees with the
-    // slot, and skipped only when both are gone -- the genuine no-witness hole
-    // REC-18 reports, where inventing a block would be a guess (P0-3: never
-    // guessed). Census blocks the walk never reaches are then enumerated under
-    // their own tag, exactly as before: an orphaned parent's outgoing
-    // references are still real.
-    // REC-20.1 — CROSS-REFERENCE THE TWO PRODUCERS' HOLES BEFORE MERGING.
-    //
-    // They fail in opposite directions, which is the whole reason for running
-    // both: the hierarchy walk cannot see a block nothing points at, and the
-    // scan cannot see a block whose VALIDATION is damaged. So a run of bytes
-    // that BOTH call unattributed is a hole on two independent grounds, while
-    // one only the walk reports may simply be an orphan the scan is holding.
-    // Capture the scan's list before the move takes it.
-    std::vector<Gap> scan_holes;
-    for (const Gap& g : scan_map.gaps)
-        if (g.class_ == GapClass::Hole)
-            scan_holes.push_back(g);
-    const auto corroborated_by_scan = [&scan_holes](Offset pos) {
-        for (const Gap& g : scan_holes)
-            if (pos >= g.start && pos < g.start + static_cast<Offset>(g.length))
-                return true;
-        return false;
+// The provisional extent of the block at `off` under the tag it carries: what
+// the census charges it when tiling the arena. An array of blocks is charged
+// only its header, because its entries are blocks the census finds on their
+// own. A stamped length that overruns the arena falls back to the header.
+StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off) {
+    const RECOVERY_TAG tag  = FF_GET_RECOVERY_TAG(base, off);
+    const uint64_t     room = size - off;
+    const auto sized = [&](StreamMapEntryType type, uint64_t header, uint64_t extent) {
+        return StreamMapEntry{type, off, static_cast<Size>(extent <= room ? extent : header), tag};
     };
-
-    StreamMap map = std::move(scan_map);
-    std::vector<BlockRef> all;
-    std::unordered_set<Offset> enumerated;
-    std::size_t admitted = 0;
-
-    // The reachable set comes from the hierarchical producer's map: the walk
-    // visited exactly these offsets. (The header entry at 0 rides along; the
-    // orphan test below skips Header entries, so it cannot mislead.)
-    std::unordered_set<Offset> reached;
-    for (const auto& [off, entry] : chain_map)
-        reached.insert(off);
-
-    // The admission frontier starts at the RECONCILED root, like every other
-    // walk in this function — reading the header again here is how a restored
-    // root stops being the one the pass actually uses.
-    std::vector<std::pair<Offset, RECOVERY_TAG>> frontier;
-    if (root.usable && root.offset != FF_NULL_OFFSET && root.offset >= 0 &&
-        static_cast<size_t>(root.offset) + DATA_BLOCK::HEADER_SIZE <= m_size &&
-        plausible_tag(root.tag))
-        frontier.emplace_back(root.offset, root.tag);
-    while (!frontier.empty()) {
-        std::vector<std::pair<Offset, RECOVERY_TAG>> next;
-        for (const auto& [off, use] : frontier) {
-            if (!enumerated.insert(off).second)
-                continue;
-            const auto existing = map.find(off);
-            if (existing == map.end()) {
-                StreamMapEntry e = classify_block(m_base, m_size, off);
-                e.offset = off;
-                if (e.type == StreamMapEntryType::Undefined)
-                    e.type = StreamMapEntryType::Block;
-                if (e.size == 0)
-                    e.size = derived_block_size(use);
-                e.recovery = tag_at(m_base, m_size, off);
-                map[off] = e;
-                ++admitted;
-            } else if (tag_at(m_base, m_size, off) != use) {
-                // The block IS in the census, but scan() sized it from the tag
-                // on the wire and that tag was the damaged half -- so its
-                // extent is wrong and its own bytes still tile as a hole. Now
-                // that the parent has supplied the real type, re-derive it.
-                const Size sized = derived_block_size(use);
-                if (sized != 0 && sized != existing->second.size) {
-                    existing->second.size = sized;
-                    ++admitted;
-                }
-            }
-            const std::size_t before = all.size();
-            enumerate_block_refs(off, use, all);
-            for (std::size_t i = before; i < all.size(); ++i) {
-                bool usable = false;
-                const RECOVERY_TAG child_tag = corroborated_tag(m_base, m_size, all[i], usable);
-                if (usable && !enumerated.contains(all[i].child))
-                    next.emplace_back(all[i].child, child_tag);
-            }
-        }
-        frontier.swap(next);
+    if (IsArrayTag(tag)) {
+        if (room < FF_ARRAY::HEADER_SIZE || element_shape(GetTypeFromTag(tag)) == ElementShape::Block)
+            return {StreamMapEntryType::Array, off, FF_ARRAY::HEADER_SIZE, tag};
+        const FF_ARRAY array(off, size, 0);
+        return sized(StreamMapEntryType::Array, FF_ARRAY::HEADER_SIZE,
+                     FF_ARRAY::HEADER_SIZE + uint64_t{array.entry_count(base)} * array.entry_step(base));
     }
-
-    // The tiling was computed over the pre-admission census, so every block the
-    // walk just recovered still reads as a hole in it. Re-run the sweep over
-    // the repaired map -- which is what find_gaps() is exposed for -- so `holes`
-    // counts what is still missing AFTER recovery, not what recovery found.
-    if (admitted != 0)
-        find_gaps(map);
-
-    // ORPHAN SET LAST, NOT FIRST — the ordering is load-bearing.
-    //
-    // Orphans are self-consistent ∧ ¬reachable (REC-11), bucketed by tag so a
-    // corrupt slot's search is one bucket lookup, not a per-reference arena
-    // sweep. The array bit is STRIPPED: an array block must land in the bucket
-    // of its element type, which is what the slot declares (an entry-array slot
-    // declaring BUNDLE_ENTRY must find its orphaned array, not just loose entry
-    // blocks).
-    //
-    // This used to be built straight off the raw census, BEFORE the admission
-    // pass above. That is the wrong order for the repair that consumes it: the
-    // repoint hypothesis (H_off, below) looks for a unique unclaimed orphan of
-    // the declared type, and a block whose VALIDATION was the damaged half is
-    // invisible to scan() -- so it was missing from the very pool meant to
-    // receive a re-pointed parent. A corrupt parent offset AND a corrupt child
-    // self-offset therefore failed to reconcile even though each had a witness
-    // the other side could supply. Closing the self-offset holes first makes
-    // the census complete, and only then is the pool the ranker searches the
-    // real one.
-    std::unordered_map<RECOVERY_TAG, std::vector<Offset>> orphans;
-    for (const auto& [off, entry] : map) {
-        if (entry.type == StreamMapEntryType::Header)
-            continue;
-        if (reached.contains(off))
-            continue;
-        const RECOVERY_TAG t = GetTypeFromTag(tag_at(m_base, m_size, off));
-        if (plausible_tag(t))
-            orphans[t].push_back(off);
+    if (FF_IsStringLayoutTag(tag)) {
+        if (room < FF_STRING::STRING_DATA)
+            return {StreamMapEntryType::String, off, 0, tag};
+        return sized(StreamMapEntryType::String, 0,
+                     FF_STRING::STRING_DATA + uint64_t{FF_GET_STRING_LENGTH(base, off)});
     }
-
-    // REC-20.2 — THE RANKED CANDIDATE LIST, BUILT ONCE.
-    //
-    // A hole is not an absence, it is an under-determined block. It opens when
-    // a block loses BOTH witnesses -- its own VALIDATION word and the parent
-    // slot that named it -- so neither survivor is clean, but neither is gone.
-    // What is left is two independently damaged copies of the same ten bytes:
-    // the parent still holds {offset|recovery}, and the block still holds
-    // {self-offset|recovery} where it sits. That is what makes this an
-    // assignment problem rather than a search.
-    //
-    // This pass supplies the y side and runs EXACTLY ONCE: every position
-    // inside a hole whose residual word is a near-neighbour of its own address.
-    // A block encodes its own offset, so a damaged VALIDATION word still reads
-    // close to where it sits, and the positions whose word most nearly encodes
-    // their own offset rank top -- that is the least likely thing to happen by
-    // accident.
-    std::vector<HoleCandidate> hole_candidates;
-    for (const Gap& g : map.gaps) {
-        if (g.class_ != GapClass::Hole || g.length < DATA_BLOCK::HEADER_SIZE)
-            continue;
-        const uint64_t last = static_cast<uint64_t>(g.start) + g.length - DATA_BLOCK::HEADER_SIZE;
-        for (uint64_t pos = static_cast<uint64_t>(g.start); pos <= last; ++pos) {
-            if (pos + DATA_BLOCK::HEADER_SIZE > m_size)
-                break;
-            // A TIGHT band, not the full flip budget. In random bytes even 8
-            // bits would be astronomically unlikely, but hole bytes are not
-            // random: the arena is full of 8-byte OFFSET words, and an offset
-            // naturally shares most of its high bits with its own position, so
-            // a loose threshold harvests structure rather than signal. Measured
-            // on a 512-flip artifact, the self-cost histogram over 12,227 hole
-            // bytes was 1:35  2:14  3:7  4:15  5:14  6:15  7:10  8:10 -- a
-            // sharp spike at 1-2 (the real lost blocks; a hole needs ~1 flip on
-            // its VALIDATION) on a flat coincidence floor from 3 up. Admitting
-            // that floor cost real repairs: it tied against correct orphan
-            // repoints and turned 11 clean verdicts Ambiguous.
-            constexpr uint32_t kHoleSignatureFlips = 2;
-            const uint64_t word = FF_GET_VALIDATION(m_base, static_cast<Offset>(pos));
-            const uint32_t self_cost = hamming_cost(word, pos);
-            if (self_cost > kHoleSignatureFlips)
-                continue;  // not a near-validation signature — just bytes
-            hole_candidates.push_back(
-                {static_cast<Offset>(pos), self_cost, word,
-                 static_cast<uint16_t>(tag_at(m_base, m_size, static_cast<Offset>(pos))),
-                 corroborated_by_scan(static_cast<Offset>(pos))});
-        }
-    }
-    // Ranked: strongest self-similarity first, and a position both producers
-    // agree on ahead of one only the walk reports (REC-20.1). The order is what
-    // makes the driver below cheap -- it can stop caring about the tail.
-    std::sort(hole_candidates.begin(), hole_candidates.end(),
-              [](const HoleCandidate& a, const HoleCandidate& b) {
-                  if (a.self_cost != b.self_cost) return a.self_cost < b.self_cost;
-                  if (a.corroborated != b.corroborated) return a.corroborated;
-                  return a.pos < b.pos;
-              });
-
-    // EXPANSION: a block whose TAG was the damaged half still owns its subtree.
-    //
-    // The walk above descends only when the child's tag CORROBORATES the slot,
-    // because `self-offset valid && tag disagrees` is two situations wearing
-    // one face: the child's tag was flipped, or the parent's offset was flipped
-    // onto an innocent valid block of another type. Guessing there invented 13
-    // references and 15 unrecovered verdicts from one flipped bit.
-    //
-    // But the choice is not the walk's to guess -- it is exactly what the
-    // ranker below decides, under the flip budget, with ties left Ambiguous.
-    // So ask it FIRST, and enumerate the child under the slot's declared type
-    // only where the in-place tag repair wins outright. That is deference to
-    // the ranker, not a second opinion: same inputs, same rule, and where it
-    // declines (a cheaper unique repoint exists, or a tie) nothing is walked.
-    //
-    // Without this, a single flipped tag byte silently cost the ~3 references
-    // hanging below that block, and 1-bit corruption could not be lossless.
-    const auto tag_flip_wins = [&](const BlockRef& r) {
-        if (r.declared == FF_RECOVER_UNDEFINED || r.child == FF_NULL_OFFSET)
-            return false;
-        if (!valid_validation(m_base, m_size, r.child))
-            return false;  // handled by the admission pass, not here
-        const RECOVERY_TAG actual = tag_at(m_base, m_size, r.child);
-        const RECOVERY_TAG actual_base =
-            (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(actual) : actual;
-        if (actual_base == r.declared)
-            return false;  // nothing to repair
-        const uint32_t h_inplace = hamming_cost(actual_base, r.declared);
-        if (h_inplace > FF_RECOVERY_MAX_FLIPS)
-            return false;
-        // Cheapest unique repoint, ranked exactly as the classifier ranks it.
-        uint32_t h_off = UINT32_MAX;
-        bool off_unique = false;
-        const auto consider = [&](Offset cand) {
-            const uint32_t c =
-                hamming_cost(static_cast<uint64_t>(r.child), static_cast<uint64_t>(cand));
-            if (c < h_off) { h_off = c; off_unique = true; }
-            else if (c == h_off) { off_unique = false; }
-        };
-        const auto it = orphans.find(r.declared);
-        if (it != orphans.end())
-            for (const Offset cand : it->second)
-                consider(cand);
-        const Size want = derived_block_size(r.declared);
-        for (const Gap& g : map.gaps)
-            if (g.class_ == GapClass::Hole && g.length == want)
-                consider(g.start);
-        const bool in_off = off_unique && h_off <= FF_RECOVERY_MAX_FLIPS;
-        return !in_off || h_inplace < h_off;  // strict: a tie stays Ambiguous
-    };
-
-    // THE EXPANSION VERIFIES ITSELF BEFORE IT IS KEPT.
-    //
-    // The ranker's preference is evidence, not proof. When it is wrong -- the
-    // parent's OFFSET was the damaged half and the child is an innocent block
-    // of another type -- enumerating that child under the slot's declared type
-    // reads a V-Table the block does not have, and every offset it lifts out is
-    // nonsense. Trusting the preference alone invented 13 references from one
-    // flipped bit, which is a worse failure than the loss it was avoiding: a
-    // missing reference is reported, a fabricated one is believed.
-    //
-    // But a wrong V-Table is CHEAP TO DETECT. Read under the correct type, a
-    // block's slots yield children that are themselves well-formed; read under
-    // the wrong one, they yield offsets with no witness at all. So enumerate
-    // into scratch, require every child it produces to still corroborate
-    // something, and discard the whole expansion otherwise. The block then
-    // simply keeps its reported TagRepaired verdict and its subtree waits for
-    // the reapply loop (REC-19.7) -- the honest outcome.
-    std::vector<BlockRef> probe;
-    for (std::size_t i = 0; i < all.size(); ++i) {
-        const BlockRef r = all[i];  // by value: `all` grows inside this loop
-        if (!tag_flip_wins(r) || enumerated.contains(r.child))
-            continue;
-        probe.clear();
-        enumerate_block_refs(r.child,
-                             r.kind == FF_FIELD_ARRAY ? ToArrayTag(r.declared) : r.declared,
-                             probe);
-        if (!batch_passes(m_base, m_size, probe, BatchTest::EveryChildCorroborates))
-            continue;
-        enumerated.insert(r.child);
-        all.insert(all.end(), probe.begin(), probe.end());
-    }
-
-    // ONLY NOW the census sweep: whatever neither the walk nor the expansion
-    // reached is enumerated under its own tag — unchanged behaviour for
-    // orphans. This runs LAST on purpose. It used to run before the expansion,
-    // which meant a tag-damaged block had already been enumerated under the
-    // damaged tag (yielding nothing) and was marked done, so the expansion
-    // skipped the very block it existed to rescue.
-    for (const auto& [off, entry] : map) {
-        if (entry.type == StreamMapEntryType::Header)
-            continue;
-        if (!enumerated.insert(off).second)
-            continue;
-        enumerate_block_refs(off, tag_at(m_base, m_size, off), all);
-    }
-
-    // THE CLASSIFIER — one reference, one verdict (REC-19.6 two-word rank).
-    //
-    // `classify_one` is shared by the main sweep and the reapply loop below so
-    // a repaired block's subtree is judged by exactly the same rule as the
-    // first pass. The ranker costs BOTH wire words when both are damaged (the
-    // self-offset word AND the recovery word); each must stay within the flip
-    // budget (D1/D2 discipline is per flip site) and the SUM orders the
-    // hypotheses, with ties left Ambiguous — never guessed (P0-3).
-    rep.blocks.reserve(all.size());
-    const auto classify_core = [&](const BlockRef& r, BlockVerdict& v,
-                                   const HoleCandidate*& chosen_hole) {
-        v.block = r;
-
-        if (r.declared == FF_RECOVER_UNDEFINED) {
-            // Choice/resource slot with BOTH halves corrupt — undecidable
-            // without a type to match. Never guessed (P0-3).
-            v.class_ = (valid_validation(m_base, m_size, r.child) &&
-                        plausible_tag(tag_at(m_base, m_size, r.child)))
-                           ? RepairClass::Ambiguous
-                           : RepairClass::Unrecovered;
-            return;
-        }
-        // The block at the parent-named address is self-consistent AND its tag
-        // corroborates the slot — nothing to repair. (The VALIDATION guard is
-        // load-bearing: a broken VALIDATION with an intact tag must NOT read
-        // as Intact.)
-        const RECOVERY_TAG actual = tag_at(m_base, m_size, r.child);
-        // Array children carry the array bit; the slot declares the element
-        // type — compare the stripped forms.
-        const RECOVERY_TAG actual_base =
-            (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(actual) : actual;
-        if (valid_validation(m_base, m_size, r.child) && actual_base == r.declared) {
-            v.class_ = RepairClass::Intact;
-            // Array extent: the stamped ENTRY_COUNT has no second witness
-            // (F4), so it can only be DISPROVEN by geometry -- the count must
-            // not conjure elements the buffer cannot hold. walk_array_extent
-            // is that bound; it never derives a count from element damage
-            // (a damaged element is repaired by its own reference verdict).
-            // Measured regression: a walk that stopped at the first damaged
-            // entry turned one flipped VALIDATION word in entry 28 into an
-            // ExtentDerived that rewrote an intact 1,473-entry count to 28
-            // and lost 97% of the reparse.
-            if (r.kind == FF_FIELD_ARRAY &&
-                static_cast<size_t>(r.child) + FF_ARRAY::HEADER_SIZE <= m_size) {
-                const FF_ARRAY array(r.child, m_size, 0);
-                const uint32_t stamped = array.entry_count(m_base);
-                const RECOVERY_TAG element_tag = GetTypeFromTag(actual);
-                const ElementShape shape = element_shape_of(element_tag, array.entry_kind(m_base));
-
-                const uint16_t step = array.entry_step(m_base);
-
-                if (shape == ElementShape::InlineBlock) {
-                    // Geometry bound only: walked == stamped unless the stamped
-                    // count overruns the buffer, which is the one case a
-                    // derived extent may replace it.
-                    const uint32_t walked =
-                        walk_array_extent(m_base, m_size, r.child, shape, step, stamped);
-                    if (walked != stamped) {
-                        v.class_ = RepairClass::ExtentDerived;
-                        v.bit_cost = hamming_cost(walked, stamped);
-                        v.derived_extent = walked;
-                    }
-                    return;
-                }
-
-                // IT MUST FIT IN THE HOLE, NOT MERELY IN THE ARENA.
-                //
-                // Every other shape stores offsets, 10-byte tuples, or raw
-                // scalars -- nothing inside the entry region is a block start.
-                // So the first block the census knows about after this header
-                // is a NEIGHBOUR, and the array may not reach it. That run of
-                // bytes is the hole this array has to fit inside; the size of
-                // the file has nothing to do with it.
-                //
-                // Measured: one flipped bit made an ABSENT `Observation.
-                // triggeredBy` read as a present OFFSET array of 29,303
-                // entries. Honouring that count needs 234,440 bytes -- which
-                // fits a 1 MB arena comfortably and overruns its neighbours
-                // immediately. The recovery report said zero invented
-                // REFERENCES while the document gained 29,303 fabricated leaf
-                // values, because reference integrity is not content integrity.
-                //
-                // For raw scalars (None) this is the ONLY bound there is:
-                // headerless elements leave nothing to walk, so before this
-                // their stamped count was accepted unconditionally.
-                const uint64_t entries_at =
-                    static_cast<uint64_t>(r.child) + FF_ARRAY::HEADER_SIZE;
-                const auto next = map.upper_bound(r.child);
-                const uint64_t boundary = (next != map.end())
-                                              ? static_cast<uint64_t>(next->first)
-                                              : static_cast<uint64_t>(m_size);
-                const uint64_t room =
-                    (step != 0 && boundary > entries_at) ? (boundary - entries_at) / step : 0;
-
-                if (static_cast<uint64_t>(stamped) > room) {
-                    v.class_ = RepairClass::ExtentDerived;
-                    v.bit_cost = hamming_cost(room, static_cast<uint64_t>(stamped));
-                    v.derived_extent = static_cast<uint32_t>(room);
-                }
-            }
-            return;
-        }
-        // TAG CONSENSUS (REC-22.2). For a TUPLE kind the type is on the wire
-        // twice, so a disagreement is damage to one copy -- and the ranker
-        // below cannot tell which. It costs the tag distance either way and
-        // resolves the tie by preferring the parent, which is right exactly
-        // half the time: a flip in the slot copy and a flip in the child's
-        // header are the same one bit seen from two sides.
-        //
-        // So do not decide it by cost. Ask whether the block READS as each
-        // candidate: a type is a hypothesis about a V-Table, and the wrong one
-        // pulls offsets out of positions holding something else. Exactly one
-        // coherent reading is an answer; anything else is Undecided and falls
-        // through to be reported rather than guessed.
-        if (IsTupleKind(r.kind) && valid_validation(m_base, m_size, r.child)) {
-            const TagCopy damaged = adjudicate_tag(r.child, r.declared, actual);
-            if (damaged != TagCopy::Undecided) {
-                v.class_ = RepairClass::TagRepaired;
-                v.damaged_copy = damaged;
-                v.consensus_tag = (damaged == TagCopy::ParentSlot) ? actual : r.declared;
-                v.bit_cost = hamming_cost(r.declared, actual);
-                return;
-            }
-        }
-        // Damaged reference: rank the repair hypotheses under the flip budget
-        // (D1/D2). H_inplace repairs the child in place — a tag mismatch
-        // (child validates) costs the recovery-word distance; a broken
-        // VALIDATION costs the self-offset distance, only when the target is
-        // otherwise coherent as the declared type, PLUS the recovery-word
-        // distance when an expectation exists (REC-19.6 — for typed-offset
-        // kinds coherence forces that second term to zero, so this is
-        // byte-identical to the old single-word rank; choice/resource tuples
-        // now pay it because their expected type lives in the stored tag half,
-        // F1). H_off repoints to a unique unclaimed orphan of the declared
-        // type — orphan candidates are bucketed BY the declared type, so their
-        // recovery-word distance is 0 by construction. Cheapest under budget
-        // wins; equal costs are ambiguous — never guessed. The repoint
-        // hypothesis was previously never computed on the child-validates
-        // path, so a 1-bit offset flip onto an innocent valid block was
-        // misrepaired as a tag rewrite.
-        uint32_t h_inplace = UINT32_MAX;
-        if (valid_validation(m_base, m_size, r.child)) {
-            h_inplace = hamming_cost(actual_base, r.declared);
-        } else {
-            const bool addressable = r.child >= 0 &&
-                                     static_cast<size_t>(r.child) + DATA_BLOCK::HEADER_SIZE <= m_size;
-            const RECOVERY_TAG target_tag =
-                addressable ? tag_at(m_base, m_size, r.child) : FF_RECOVER_UNDEFINED;
-            const RECOVERY_TAG target_base =
-                (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(target_tag) : target_tag;
-            const bool coherent = IsTupleKind(r.kind) ? plausible_tag(target_tag)
-                                                      : target_base == r.declared;
-            if (addressable && coherent) {
-                const uint32_t val_cost = hamming_cost(
-                    FF_GET_VALIDATION(m_base, r.child), static_cast<uint64_t>(r.child));
-                // No expectation (both tuple halves corrupt) carries no
-                // recovery-word cost — there is nothing to match it against.
-                const uint32_t tag_cost =
-                    (r.declared != FF_RECOVER_UNDEFINED) ? hamming_cost(target_base, r.declared)
-                                                         : 0;
-                if (val_cost <= FF_RECOVERY_MAX_FLIPS && tag_cost <= FF_RECOVERY_MAX_FLIPS)
-                    h_inplace = val_cost + tag_cost;
-            }
-        }
-
-        // The repoint cost: cheapest unique candidate (mode 1), if any.
-        uint32_t h_off = UINT32_MAX;
-        bool off_unique = false;
-        // `extra` is the candidate's OWN residual cost: 0 for an orphan, whose
-        // self-offset validates and whose tag is exact by bucket construction,
-        // and self+tag distance for a hole candidate, which validates neither.
-        // Adding it keeps a single comparable metric across both kinds, so a
-        // clean orphan always outranks a hole that needs the same offset
-        // correction — which is the right precedence.
-        // `hc` rides along because a hole candidate's OWN residual damage is
-        // part of the repair: the plan has to restore the target's witnesses,
-        // not only the parent's pointer at it. An orphan passes nullptr, having
-        // no residual damage by construction.
-        const auto consider_cost = [&](Offset p, uint32_t c, const HoleCandidate* hc = nullptr) {
-            if (c < h_off) {
-                h_off = c;
-                off_unique = true;
-                v.candidates.clear();
-                v.candidates.push_back(p);
-                chosen_hole = hc;
-            } else if (c == h_off) {
-                off_unique = false;
-                v.candidates.push_back(p);
-            }
-        };
-        // An orphan is scored on the offset distance alone: its self-offset
-        // validates and its tag is exact by bucket construction, so those two
-        // distances are zero and adding them would be theatre.
-        const auto consider = [&](Offset p) {
-            consider_cost(p, hamming_cost(static_cast<uint64_t>(r.child),
-                                          static_cast<uint64_t>(p)));
-        };
-        // AN INLINE ARRAY ELEMENT HAS NO POINTER WORD, SO IT CANNOT BE
-        // REPOINTED (F10). enumerate_array_entries emits such an element with
-        // child == parent + field, because its address comes from array
-        // geometry and nothing stores it. A repoint would write a target
-        // address over the element's own VALIDATION, relabelling it as living
-        // somewhere it does not. The only repair that means anything here is in
-        // place, so the repoint hypothesis is never even formed.
-        const bool inline_element = (r.parent + r.field == r.child);
-
-        // A REPOINT WRITES THE SLOT, SO THE SLOT HAS TO BE A POINTER.
-        //
-        // Two of the three polymorphic slots hold a SIGNED offset RELATIVE to
-        // the containing block, and one of those is only FOUR bytes wide
-        // (CLAUDE.md, the three-polymorphic-slots table). Storing an absolute
-        // 8-byte target into either one corrupts it and whatever follows it:
-        // measured, a repoint onto an FF_FIELD_CODE fallback slot overwrote the
-        // 4-byte code AND the 4 bytes after it, and the old applier did the
-        // same thing for every class.
-        //
-        // The wire answers this without a schema guess, which matters because
-        // the schema cannot: a choice variant carrying RECOVER_FF_STRING is a
-        // plain string variant (absolute) or a date/time fallback (relative),
-        // and the BlockRef records nothing that separates them.
-        // enumerate_block_refs sets r.child from the RAW WORD for an absolute
-        // arm and from a resolver for a relative one, so the stored word
-        // equalling r.child is exactly the test -- and it holds whether or not
-        // the slot is damaged, because r.child was read from those same bytes.
-        const bool absolute_slot =
-            (static_cast<uint64_t>(r.parent) + r.field + 8 <= m_size) &&
-            LOAD_U64(m_base + r.parent + r.field) == static_cast<uint64_t>(r.child);
-
-        if (r.declared != FF_RECOVER_UNDEFINED && !inline_element && absolute_slot) {
-            const auto it = orphans.find(r.declared);
-            if (it != orphans.end())
-                for (const Offset p : it->second)
-                    consider(p);
-
-            // REC-20.4 — THE HOLE MATCH, INSIDE THE CLASSIFIER, ON ONE METRIC.
-            //
-            // This loop IS the ref-driven driver: classify_one is called once
-            // per reference, and the ranked candidate list it walks was built
-            // once, outside. Refs are few and hole bytes are many, so this is
-            // O(refs x candidates), never O(bytes x refs).
-            //
-            // Each hole candidate is dual-indexed: `pos` is the location — the
-            // noise-free expected address — and `word` is the offset encoding
-            // actually stored there, the block's own (possibly damaged) record
-            // of the same true offset the parent's slot also holds; self_cost
-            // = hamming(word, pos) is the distance between the two indexes.
-            // The corrupted parent value is hammed against the LOCATION
-            // (item 14: comparing one noisy observation to a known value beats
-            // comparing two noisy observations — tuple-against-tuple measured
-            // strictly worse, 15,944 refs vs 15,946), while the location's own
-            // damage is carried as separate evidence and the tag term stays a
-            // direct comparison (neither side has a noise-free version).
-            // `word` rides along so a corroboration pass can still ask how
-            // well the two damaged copies of the one value agree.
-            //
-            // It must stay HERE, competing with the orphan repoint on one
-            // metric. Moved to a pass after classification it saw only the refs
-            // nothing else could fix -- 4 of them against 44 holes -- and
-            // closed one hole where competing inline closes 27.
-            for (const HoleCandidate& hc : hole_candidates) {
-                const RECOVERY_TAG cand_tag = static_cast<RECOVERY_TAG>(hc.tag);
-                const RECOVERY_TAG cand_base =
-                    (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(cand_tag) : cand_tag;
-                const uint32_t cost =
-                    hamming_cost(static_cast<uint64_t>(r.child),
-                                 static_cast<uint64_t>(hc.pos)) +
-                    hc.self_cost + hamming_cost(cand_base, r.declared);
-                if (cost > FF_RECOVERY_MAX_FLIPS)
-                    continue;  // the residue does not describe this reference
-                consider_cost(hc.pos, cost, &hc);
-            }
-        }
-
-        const bool in_place = h_inplace <= FF_RECOVERY_MAX_FLIPS;
-        const bool in_off = off_unique && h_off <= FF_RECOVERY_MAX_FLIPS;
-        if (in_place && in_off && h_inplace == h_off) {
-            v.class_ = RepairClass::Ambiguous;  // tie — never guess
-            v.bit_cost = h_inplace;
-        } else if (in_place && (!in_off || h_inplace < h_off)) {
-            // THE INNOCENT-BLOCK AMBIGUITY IS DECIDED HERE, NOT IN THE WRITER.
-            //
-            // `self_ok && !tag_ok` is two situations wearing one face: the
-            // child's TAG was flipped, or the parent's OFFSET was flipped onto
-            // an innocent, perfectly valid block of another type. Nothing local
-            // separates them, and relabelling an innocent block destroys the
-            // only surviving record of what it really was.
-            //
-            // apply() used to make that call, declining to write whenever the
-            // child's wire tag was still a plausible type. The classifier never
-            // applied the same test, so the verdict stayed TagRepaired,
-            // rep.tag_repaired counted it, and the damage stayed on the wire
-            // while the report claimed a repair -- 218 of 3,712 single-flip
-            // probes on the ingest fixture, the largest single cluster the WP1
-            // oracles found. The guard was right; its LOCATION was wrong.
-            //
-            // A tag that is not a plausible type cannot be an innocent block's
-            // real type, so there is nothing to destroy and the repair is safe.
-            // A plausible-but-different one is a genuine tie, and a tie is
-            // Ambiguous -- reported with its alternatives, never guessed.
-            if (!valid_validation(m_base, m_size, r.child))
-                v.class_ = RepairClass::PositionRepaired;
-            else
-                v.class_ = plausible_tag(actual) ? RepairClass::Ambiguous
-                                                 : RepairClass::TagRepaired;
-            v.bit_cost = h_inplace;
-        } else if (in_off) {
-            v.class_ = RepairClass::Corroborated;
-            v.bit_cost = h_off;
-        } else {
-            v.class_ = RepairClass::Unrecovered;
-            v.bit_cost = (h_off != UINT32_MAX && h_off < h_inplace) ? h_off : h_inplace;
-        }
-    };
-
-    // THE VERDICT, THEN ITS PLAN, IN THAT ORDER AND IN ONE PLACE.
-    //
-    // classify_core has several early returns -- the array extent cases settle
-    // inside the Intact branch -- so the plan is built by the wrapper every
-    // caller actually uses. That way a class decided on any path gets its
-    // writes, and a path added later cannot forget to plan one.
-    const auto classify_one = [&](const BlockRef& r, BlockVerdict& v) {
-        const HoleCandidate* chosen_hole = nullptr;
-        classify_core(r, v, chosen_hole);
-        plan_repair(v, m_base, m_size, chosen_hole);
-    };
-    const auto count = [&rep](const BlockVerdict& v) {
-        switch (v.class_) {
-            case RepairClass::Intact:            ++rep.intact; break;
-            case RepairClass::Corroborated:      ++rep.corroborated; break;
-            case RepairClass::TagRepaired:       ++rep.tag_repaired; break;
-            case RepairClass::PositionRepaired:  ++rep.position_repaired; break;
-            case RepairClass::ExtentDerived:     ++rep.extent_derived; break;
-            case RepairClass::Ambiguous:         ++rep.ambiguous; break;
-            case RepairClass::Unrecovered:       ++rep.unrecovered; break;
-        }
-    };
-
-    for (const BlockRef& r : all) {
-        BlockVerdict v;
-        classify_one(r, v);
-        count(v);
-        rep.blocks.push_back(std::move(v));
-    }
-
-    // REC-19.7 — REAPPLY: repair → follow the fixed block deeper.
-    //
-    // A repair restores the child's readability, but the subtree BELOW it was
-    // never enumerated under the corrected type: a tag-damaged block's
-    // V-Table was wrong (or absent), a position-repaired block's address was
-    // never the one the parent named. handoff §3.3: the report was incomplete
-    // until apply() wrote the repair back and the stream was re-scanned. This
-    // loop closes that gap on the report side — every repaired block is
-    // re-enumerated under the CORRECTED type, each ref judged by
-    // recover_follow_ref_chain: coherent ones descend, damaged ones are
-    // classified right here by the same rule as the first pass.
-    //
-    // This is also wrong-turn-2's self-verification made continuous: a wrong
-    // repair (the ranker preferred a repoint that is not the truth) yields
-    // children with no surviving witness, and they classify Unrecovered
-    // instead of being believed. The verdicts a repair produces are never
-    // trusted blindly — only the ones whose children corroborate something
-    // keep the walk alive. `enumerated` bounds total work (each block is
-    // enumerated at most once), so cycles and re-walks are impossible; the
-    // depth bound matches the walk's FF_RECOVERY_MAX_DEPTH discipline.
-    struct ReapplyStep { Offset off; RECOVERY_TAG tag; std::size_t depth; };
-    std::vector<ReapplyStep> repaired;
-    for (const BlockVerdict& v : rep.blocks) {
-        if (v.class_ != RepairClass::Corroborated &&
-            v.class_ != RepairClass::TagRepaired &&
-            v.class_ != RepairClass::PositionRepaired)
-            continue;
-        const RECOVERY_TAG corrected =
-            v.block.kind == FF_FIELD_ARRAY ? ToArrayTag(v.block.declared) : v.block.declared;
-        const Offset target = repaired_target(v);
-        if (corrected != FF_RECOVER_UNDEFINED && target != FF_NULL_OFFSET)
-            repaired.push_back({target, corrected, 0});
-    }
-    while (!repaired.empty()) {
-        std::vector<ReapplyStep> next;
-        for (const ReapplyStep& step : repaired) {
-            if (!enumerated.insert(step.off).second)
-                continue;  // already enumerated (walk/expansion/census) — no dupes
-            if (step.depth >= FF_RECOVERY_MAX_DEPTH)
-                continue;
-            // Admit it to the census. A block reconstructed out of a hole is
-            // not recovered until the map says it is there: the tiling is what
-            // reports holes, so leaving the map untouched means the hole this
-            // repair just filled is still counted as damage.
-            if (!map.contains(step.off)) {
-                StreamMapEntry e = classify_block(m_base, m_size, step.off);
-                e.offset = step.off;
-                if (e.type == StreamMapEntryType::Undefined)
-                    e.type = StreamMapEntryType::Block;
-                if (e.size == 0)
-                    e.size = derived_block_size(step.tag);
-                e.recovery = step.tag;
-                map[step.off] = e;
-                ++admitted;
-            }
-            std::vector<BlockRef> scratch;
-            enumerate_block_refs(step.off, step.tag, scratch);
-            // THE ADDRESSABLE TEST, NOT THE COHERENT ONE — and the difference
-            // is the whole generational cascade.
-            //
-            // This once kept whatever the corrected type produced, so a wrong
-            // repair became believed verdicts (handoff wrong-turn 2). The fix
-            // was to verify first. But verifying with EveryChildCorroborates,
-            // demands that EVERY child corroborate, over-corrects: a block whose
-            // one child is itself damaged has no corroborating child by
-            // definition, so its batch was discarded and the chain stopped dead
-            // at the first repair. Parent broken, child broken, grandchild
-            // broken is precisely what this loop exists to unwind, and the
-            // guard was refusing it.
-            //
-            // The type here is not a hypothesis -- it came from a classified
-            // repair, corroborated under the flip budget -- so the V-Table is
-            // trusted and the only question left is whether the read produced
-            // wild pointers. A wrong V-Table lifts offsets out of positions
-            // that hold none, and those are overwhelmingly outside the stream.
-            // One that lands in bounds yields references that classify as
-            // Unrecovered: reported, not believed, and repairing them would
-            // demand the same evidence over again.
-            if (!batch_passes(m_base, m_size, scratch, BatchTest::NoWildPointers))
-                continue;
-            for (const BlockRef& r : scratch) {
-                if (r.child == FF_NULL_OFFSET)
-                    continue;
-                // EVERY reference this block owns gets a verdict, damaged or
-                // not. It used to record only the damaged ones, so a block
-                // reconstructed out of a hole was walked and its healthy
-                // children silently went uncounted -- the subtree was recovered
-                // and then not reported, which is the same invisible loss this
-                // whole pass exists to end. `enumerated` still bounds each
-                // block to one enumeration, so nothing is double-counted.
-                const bool still_damaged =
-                    recover_follow_ref_chain(m_base, m_size, r, &map.failures);
-                {
-                    BlockVerdict v;
-                    classify_one(r, v);
-                    count(v);
-                    rep.blocks.push_back(std::move(v));
-                }
-                if (still_damaged) {
-                    const BlockVerdict& v = rep.blocks.back();
-                    if (v.class_ == RepairClass::Corroborated ||
-                        v.class_ == RepairClass::TagRepaired ||
-                        v.class_ == RepairClass::PositionRepaired) {
-                        const RECOVERY_TAG ct =
-                            r.kind == FF_FIELD_ARRAY ? ToArrayTag(r.declared) : r.declared;
-                        const Offset deeper = repaired_target(rep.blocks.back());
-                        if (ct != FF_RECOVER_UNDEFINED && deeper != FF_NULL_OFFSET &&
-                            !enumerated.contains(deeper))
-                            next.push_back({deeper, ct, step.depth + 1});
-                    }
-                } else {
-                    // Coherent under the corrected type — walk deeper.
-                    bool usable = false;
-                    const RECOVERY_TAG ct = corroborated_tag(m_base, m_size, r, usable);
-                    if (usable && !enumerated.contains(r.child))
-                        next.push_back({r.child, ct, step.depth + 1});
-                }
-            }
-        }
-        repaired.swap(next);
-    }
-
-    // REC-19.7 — the gap sweep re-runs on the augmented map: a repoint that
-    // claimed bytes shrank the holes, and the reapply may have admitted
-    // nothing new to the map (repairs are reported, not written — REC-15's
-    // apply() mutates), so only re-tile when the map changed.
-    if (!map.failures.empty() || admitted != 0)
-        find_gaps(map);
-
-    // =================================================================
-    // REC-20.5/.6 — PROGRESSIVE BAND EXPANSION, DRIVEN BY THE BROKEN REFS
-    // =================================================================
-    // The signature band has to start tight and cannot stay there.
-    //
-    // A candidate is a position whose residual word is within `band` bits of
-    // its own address. At 2 bits that is a clean signal across the whole arena
-    // -- but it is also BLIND to a block whose VALIDATION took 3 or more flips,
-    // and measured on a 512-flip artifact that is 6 of the 8 surviving holes.
-    // Widening the band up front is not the answer: over 12,227 hole bytes the
-    // 3+ band is a flat coincidence floor, and admitting it turned 11 clean
-    // verdicts Ambiguous by tying against correct orphan repoints.
-    //
-    // What makes widening safe is doing it LAST, against a pool that earlier
-    // rounds have already emptied. Eight holes is a different proposition from
-    // twelve thousand bytes: the same 4-bit band that is noise across the arena
-    // is decisive across a handful of runs nothing else could claim.
-    //
-    // So: match at the tightest band, follow every repaired block INTO the
-    // structure to pick up the references it now exposes, and only when that
-    // stalls with references still broken widen by one bit and try the
-    // remainder. Capped at FF_RECOVERY_MAX_FLIPS so one budget governs the
-    // whole engine.
-    const auto build_candidates = [&](uint32_t band) {
-        std::vector<HoleCandidate> out;
-        for (const Gap& g : map.gaps) {
-            if (g.class_ != GapClass::Hole || g.length < DATA_BLOCK::HEADER_SIZE)
-                continue;
-            const uint64_t last =
-                static_cast<uint64_t>(g.start) + g.length - DATA_BLOCK::HEADER_SIZE;
-            for (uint64_t pos = static_cast<uint64_t>(g.start); pos <= last; ++pos) {
-                if (pos + DATA_BLOCK::HEADER_SIZE > m_size)
-                    break;
-                const uint64_t word = FF_GET_VALIDATION(m_base, static_cast<Offset>(pos));
-                const uint32_t self_cost = hamming_cost(word, pos);
-                if (self_cost > band)
-                    continue;
-                out.push_back(
-                    {static_cast<Offset>(pos), self_cost, word,
-                     static_cast<uint16_t>(tag_at(m_base, m_size, static_cast<Offset>(pos))),
-                     corroborated_by_scan(static_cast<Offset>(pos))});
-            }
-        }
-        std::sort(out.begin(), out.end(),
-                  [](const HoleCandidate& a, const HoleCandidate& b) {
-                      if (a.self_cost != b.self_cost) return a.self_cost < b.self_cost;
-                      if (a.corroborated != b.corroborated) return a.corroborated;
-                      return a.pos < b.pos;
-                  });
-        return out;
-    };
-
-    // One reference against the current candidate pool. Same metric as the
-    // classifier: the offset term is scored against the candidate's EXACT
-    // position (noise-free) with its self_cost carried as separate evidence,
-    // because comparing one noisy observation to a known value beats comparing
-    // two noisy observations -- measured, tuple-against-tuple lost 2 refs.
-    //
-    // It yields the winning CANDIDATE, not merely its position, because the
-    // repair needs the candidate's own residual damage: a hole candidate does
-    // not vouch for itself, so plan_repair has to restore the target's
-    // witnesses as well as the parent's pointer at it.
-    const auto match_ref = [&](const BlockRef& r, const std::vector<HoleCandidate>& cands,
-                               uint32_t& best_cost) -> const HoleCandidate* {
-        best_cost = UINT32_MAX;
-        const HoleCandidate* winner = nullptr;
-        bool unique = false;
-        for (const HoleCandidate& hc : cands) {
-            if (map.contains(hc.pos))
-                continue;  // already claimed by an earlier round
-            const RECOVERY_TAG cand_tag = static_cast<RECOVERY_TAG>(hc.tag);
-            const RECOVERY_TAG cand_base =
-                (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(cand_tag) : cand_tag;
-            const uint32_t cost = hamming_cost(static_cast<uint64_t>(r.child),
-                                               static_cast<uint64_t>(hc.pos)) +
-                                  hc.self_cost + hamming_cost(cand_base, r.declared);
-            if (cost < best_cost) { best_cost = cost; winner = &hc; unique = true; }
-            else if (cost == best_cost) { unique = false; }
-        }
-        if (!unique || best_cost > FF_RECOVERY_MAX_FLIPS)
-            return nullptr;  // no match, or a tie -- never guessed (P0-3)
-        return winner;
-    };
-
-    std::size_t rec20_matched = 0;
-    for (uint32_t band = 2; band <= FF_RECOVERY_MAX_FLIPS; ++band) {
-        // Any references still looking? If not, no band needs trying.
-        bool any_broken = false;
-        for (const BlockVerdict& v : rep.blocks)
-            if ((v.class_ == RepairClass::Unrecovered || v.class_ == RepairClass::Ambiguous) &&
-                v.block.declared != FF_RECOVER_UNDEFINED && v.block.child != FF_NULL_OFFSET) {
-                any_broken = true;
-                break;
-            }
-        if (!any_broken)
-            break;
-
-        std::vector<HoleCandidate> cands = build_candidates(band);
-        if (cands.empty())
-            continue;
-
-        bool progress = true;
-        while (progress) {
-            progress = false;
-            // Index-based: repairing a block appends the references it exposes,
-            // and those are themselves candidates for the next sweep.
-            for (std::size_t vi = 0; vi < rep.blocks.size(); ++vi) {
-                BlockVerdict& v = rep.blocks[vi];
-                if (v.class_ != RepairClass::Unrecovered && v.class_ != RepairClass::Ambiguous)
-                    continue;
-                const BlockRef r = v.block;  // by value: rep.blocks may reallocate
-                if (r.declared == FF_RECOVER_UNDEFINED || r.child == FF_NULL_OFFSET)
-                    continue;
-
-                uint32_t cost = UINT32_MAX;
-                const HoleCandidate* hit = match_ref(r, cands, cost);
-                if (hit == nullptr)
-                    continue;
-                const Offset winner = hit->pos;
-
-                // Admit the reconstructed block: the reference chain, the
-                // self-offset and the recovery tag now agree again.
-                StreamMapEntry e = classify_block(m_base, m_size, winner);
-                e.offset = winner;
-                if (e.type == StreamMapEntryType::Undefined)
-                    e.type = StreamMapEntryType::Block;
-                if (e.size == 0)
-                    e.size = derived_block_size(r.declared);
-                e.recovery = r.declared;
-                map[winner] = e;
-                ++admitted;
-
-                rep.blocks[vi].candidates.assign(1, winner);
-                rep.blocks[vi].bit_cost = cost;
-                rep.blocks[vi].class_ = RepairClass::Corroborated;
-                // PLAN IT HERE TOO. This is the SECOND hole matcher -- the
-                // band-widening one -- and it promotes a verdict to
-                // Corroborated without going through classify_one. A verdict
-                // that never reaches plan_repair carries no writes, and apply()
-                // declines a confident verdict with an empty plan rather than
-                // inventing one, so every match this pass made was silently
-                // dropped at the write step.
-                plan_repair(rep.blocks[vi], m_base, m_size, hit);
-                ++rec20_matched;
-                progress = true;
-
-                // FOLLOW THE REPAIRED BLOCK IMMEDIATELY. THIS IS THE DESIGN.
-                //
-                // The moment a reference is repaired, the block it names is
-                // back in the hierarchy chain — and it is not merely reachable,
-                // it is now a PARENT. Its own outgoing references have never
-                // been seen by anything: the walk could not reach it, the scan
-                // could not identify it, so its slots were never enumerated and
-                // any damage in them was never counted, let alone repaired.
-                //
-                // So assess it right here, through the same router every other
-                // producer uses (recover_follow_ref_chain), and let whatever it
-                // finds broken join THIS work list. One repair exposes a parent,
-                // that parent exposes its children, and a chain of losses
-                // unwinds from a single recovered edge. Deferring this to a
-                // later pass would mean matching against a hole set that no
-                // longer describes the stream.
-                //
-                // The batch test is deliberately the weak one.
-                // EveryChildCorroborates
-                // refuses a batch containing any witness-less child, which is
-                // correct for "did I read this under the right type" and exactly
-                // wrong here: a damaged child is what the search is hunting, and
-                // rejecting the batch discards it. NoWildPointers asks
-                // only whether anything corroborates, which still catches a
-                // wrong V-Table (uniformly nonsense) without throwing away the
-                // broken references this loop exists to consume.
-                if (enumerated.insert(winner).second) {
-                    const RECOVERY_TAG use = r.kind == FF_FIELD_ARRAY
-                                                 ? ToArrayTag(r.declared)
-                                                 : r.declared;
-                    std::vector<BlockRef> exposed;
-                    enumerate_block_refs(winner, use, exposed);
-                    if (batch_passes(m_base, m_size, exposed, BatchTest::NoWildPointers)) {
-                        for (const BlockRef& child : exposed) {
-                            if (child.child == FF_NULL_OFFSET)
-                                continue;
-                            // The single router: judges the reference and
-                            // records which witness failed, so a break inside a
-                            // just-recovered block is reported the same way as
-                            // one the hierarchy walk found itself.
-                            recover_follow_ref_chain(m_base, m_size, child, &map.failures);
-                            BlockVerdict cv;
-                            classify_one(child, cv);
-                            count(cv);
-                            rep.blocks.push_back(std::move(cv));
-                        }
-                    }
-                }
-            }
-            if (progress) {
-                // Re-tile: a hole that held more than one lost block now shows
-                // its remainder, and the next sweep sees it.
-                find_gaps(map);
-                cands = build_candidates(band);
-            }
-        }
-    }
-
-    // The counters were tallied as verdicts were produced, so re-derive them
-    // rather than letting `unrecovered` keep reporting edges this pass repaired.
-    if (rec20_matched != 0) {
-        rep.intact = rep.corroborated = rep.tag_repaired = rep.position_repaired = 0;
-        rep.extent_derived = rep.ambiguous = rep.unrecovered = 0;
-        for (const BlockVerdict& v : rep.blocks) {
-            switch (v.class_) {
-                case RepairClass::Intact:            ++rep.intact; break;
-                case RepairClass::Corroborated:      ++rep.corroborated; break;
-                case RepairClass::TagRepaired:       ++rep.tag_repaired; break;
-                case RepairClass::PositionRepaired:  ++rep.position_repaired; break;
-                case RepairClass::ExtentDerived:     ++rep.extent_derived; break;
-                case RepairClass::Ambiguous:         ++rep.ambiguous; break;
-                case RepairClass::Unrecovered:       ++rep.unrecovered; break;
-            }
-        }
-    }
-
-    // REC-23 — A UNIQUE CANDIDATE IS NOT A CORROBORATED ONE.
-    //
-    // The repoint ranker accepts a candidate when it is the only one inside
-    // the flip budget. That is a property of the SEARCH, not of the evidence:
-    // when a reference's true child has itself been destroyed the byte scan
-    // never lists it as an orphan, so the true answer is absent from the
-    // candidate set and some innocent orphan of the same type is the only
-    // thing left standing. `cands == 1` then makes off_unique trivially true
-    // and the repoint is applied with full confidence.
-    //
-    // Measured at 512 flips: 11 of 206 repoints attached the WRONG block, and
-    // in 10 of the 11 the true child was never a candidate. The cost is not a
-    // lost reference but a plausible wrong one -- a real Observation hanging
-    // off another entry, reading as valid FHIR. Misattribution is worse than
-    // loss because nothing downstream can tell.
-    //
-    // Two witnesses the ranker never consulted, both already in hand:
-    //
-    //   LOCALITY. The writer appends children as it walks, so a field's
-    //   targets ascend with parent order -- measured 1471/1472 on a clean
-    //   bundle. A candidate outside the bracket set by the nearest INTACT
-    //   references on either side is not a repair of this edge. Rejecting on
-    //   that caught 10 of the 11 with zero false positives on the 195 correct.
-    //
-    //   NOT FOR RESOURCE TUPLES. Ascending order is a property of one append<T>
-    //   laying out one subtree, and a resource slot's target is not in its
-    //   parent's subtree: the Ingestor appends each contained/entry resource on
-    //   its own, in worker-completion order, and writes the {offset, tag} tuple
-    //   afterwards. Placement there is scheduler order, which is not a guarantee
-    //   (TASKS.md COV-3). Measured on a concurrently ingested 1.15 MB Synthea
-    //   bundle: 239/306 resource targets ascend against 15,971/16,107 for every
-    //   other kind. Applied to them, the rule demoted a correct 1-bit repoint
-    //   of Observation.contained[0] whenever the pool happened to place the
-    //   contained Patient before its parent -- the intermittent
-    //   ff_test_recovery failure. Exclusivity still applies to them.
-    //
-    //   EXCLUSIVITY. Two references cannot own the same child. Greedy per-ref
-    //   picking let one steal the orphan another needed; that was the 11th.
-    //
-    // Demotion only: this pass can turn a repoint into Unrecovered, never the
-    // reverse, so it cannot invent recovery -- it only declines to guess.
-    {
-        // Anchors: intact (parent -> child) per field, in parent order.
-        std::map<Offset, std::vector<std::pair<Offset, Offset>>> anchors;
-        for (const BlockVerdict& v : rep.blocks)
-            if (v.class_ == RepairClass::Intact && v.block.child != FF_NULL_OFFSET)
-                anchors[v.block.field].push_back({v.block.parent, v.block.child});
-        for (auto& [field, a] : anchors)
-            std::sort(a.begin(), a.end());
-
-        // Exclusivity: how many repoints chose each address.
-        std::map<Offset, int> claims;
-        for (const BlockVerdict& v : rep.blocks)
-            if (v.class_ == RepairClass::Corroborated && !v.candidates.empty())
-                ++claims[v.candidates.front()];
-
-        std::size_t demoted_locality = 0, demoted_contended = 0;
-        for (BlockVerdict& v : rep.blocks) {
-            if (v.class_ != RepairClass::Corroborated || v.candidates.empty())
-                continue;
-            const Offset chose = v.candidates.front();
-
-            if (claims[chose] > 1) {
-                // Contended: two references want one child and nothing here
-                // says which is entitled to it. Neither may have it.
-                v.class_ = RepairClass::Ambiguous;
-                v.writes.clear();  // no longer a repair — it must not keep a plan
-                ++demoted_contended;
-                continue;
-            }
-            if (v.block.kind == FF_FIELD_RESOURCE)
-                continue;  // placement is scheduler order — no locality witness
-            const auto it = anchors.find(v.block.field);
-            if (it == anchors.end() || it->second.size() < 2)
-                continue;  // no neighbours to reason from — leave the ranker's call
-            const auto& a = it->second;
-            const auto hi = std::lower_bound(
-                a.begin(), a.end(), std::make_pair(v.block.parent, Offset(0)));
-            if (hi == a.begin() || hi == a.end())
-                continue;  // outside the anchored run — no bracket to test against
-            const Offset lo_child = (hi - 1)->second, hi_child = hi->second;
-            if (lo_child >= hi_child)
-                continue;  // anchors not ascending here — the rule does not hold
-            if (chose <= lo_child || chose >= hi_child) {
-                v.class_ = RepairClass::Unrecovered;
-                v.candidates.clear();
-                v.writes.clear();  // no longer a repair — it must not keep a plan
-                ++demoted_locality;
-            }
-        }
-        if (demoted_locality != 0 || demoted_contended != 0) {
-            // Re-count: the tallies above were taken before these demotions.
-            rep.intact = rep.corroborated = rep.tag_repaired = 0;
-            rep.position_repaired = rep.extent_derived = 0;
-            rep.ambiguous = rep.unrecovered = 0;
-            for (const BlockVerdict& v : rep.blocks)
-                switch (v.class_) {
-                    case RepairClass::Intact:            ++rep.intact; break;
-                    case RepairClass::Corroborated:      ++rep.corroborated; break;
-                    case RepairClass::TagRepaired:       ++rep.tag_repaired; break;
-                    case RepairClass::PositionRepaired:  ++rep.position_repaired; break;
-                    case RepairClass::ExtentDerived:     ++rep.extent_derived; break;
-                    case RepairClass::Ambiguous:         ++rep.ambiguous; break;
-                    case RepairClass::Unrecovered:       ++rep.unrecovered; break;
-                }
-        }
-    }
-
-    rep.blocks_total = rep.blocks.size();
-
-    // REC-19.2 — the merged producer audits ride the report (scan tag audit +
-    // hierarchical reference judgment + the reapply's findings).
-    rep.failures = std::move(map.failures);
-    rep.failures.insert(rep.failures.end(), chain_map.failures.begin(), chain_map.failures.end());
-
-    // REC-18.5 — carry the gaps through, counted by class. A hole is the one
-    // finding neither the scan nor the reachability walk can produce.
-    // RE-INDEX LAST. Every earlier tiling predates the repairs above, so a
-    // hole this pass filled would still be reported as one. Re-running the
-    // sweep over the final census is what makes `holes` mean "still missing
-    // after recovery" instead of "was missing before it ran" -- and a hole that
-    // held more than one lost block correctly shows its remainder.
-    if (admitted != 0)
-        find_gaps(map);
-    rep.gaps = map.gaps;
-    for (const Gap& g : rep.gaps) {
-        switch (g.class_) {
-            case GapClass::Hole:        ++rep.holes; break;
-            case GapClass::VersionSkew: ++rep.version_skew; break;
-            // Trailing: arena slack past the last entry — benign, uncounted.
-            // Listed explicitly so a future GapClass member is triaged here.
-            case GapClass::Trailing:    break;
-        }
-    }
-    return rep;
+    if (tag == RECOVER_FF_CODED_VALUE && room >= FF_CODED_VALUE::HEADER_SIZE)
+        return sized(StreamMapEntryType::Block, FF_CODED_VALUE::HEADER_SIZE,
+                     FF_CODED_VALUE::HEADER_SIZE + uint64_t{FF_CODED_VALUE(off, size, 0).length(base)});
+    if (tag == RECOVER_FF_URL_DIRECTORY && room >= FF_URL_DIRECTORY::HEADER_SIZE)
+        return sized(StreamMapEntryType::Block, FF_URL_DIRECTORY::HEADER_SIZE,
+                     FF_URL_DIRECTORY::HEADER_SIZE +
+                         uint64_t{FF_URL_DIRECTORY(off, size, 0).entry_count(base)} *
+                             FF_URL_DIRECTORY::URL_ENTRY_SIZE);
+    if (tag == RECOVER_FF_MODULE_REGISTRY && room >= FF_MODULE_REGISTRY::HEADER_SIZE)
+        return sized(StreamMapEntryType::Block, FF_MODULE_REGISTRY::HEADER_SIZE,
+                     FF_MODULE_REGISTRY::HEADER_SIZE +
+                         uint64_t{LOAD_U32(base + off + FF_MODULE_REGISTRY::ENTRY_COUNT)} *
+                             FF_MODULE_REGISTRY::REG_ENTRY_SIZE);
+    if (tag == RECOVER_FF_CHECKSUM)
+        return {StreamMapEntryType::Block, off, FF_CHECKSUM::HEADER_SIZE, tag};
+    return {StreamMapEntryType::Block, off, Recovery::derived_block_size(tag), tag};
 }
 
-// =====================================================================
-// PRODUCERS — the two maps, in call order (REC-19.1)
-// =====================================================================
-
-StreamMap Recovery::reachable_blocks_map() const { return reachable_blocks_map(wire_root()); }
-
-StreamMap Recovery::reachable_blocks_map(const RootAnchor& root) const {
-    // The HIERARCHICAL producer (REC-19.4): the offset-chain walk, sized per
-    // visited block. Sizes are the delta over the bare-offset walk — without
-    // them the map cannot tile, and offset + entry.size is what maps holes.
-    StreamMap map;
-    map.file_size = static_cast<Size>(m_size);
-    if (root.usable || header_is_readable(m_base, m_size))
-        map[0] = {StreamMapEntryType::Header, 0, FF_HEADER::HEADER_SIZE};
-    for (const Offset off : walk_chain(root, nullptr, &map.failures)) {
-        if (map.contains(off))
-            continue;
-        map[off] = classify_block(m_base, m_size, off);
-        map[off].recovery = tag_at(m_base, m_size, off);
-    }
-    // The hierarchical producer's own coverage gaps: regions the reference
-    // chain did not attribute. On a clean stream the walk reaches every block
-    // and this tiles exactly like the census; on a damaged one the unreachable
-    // regions show here and resolve against the census at recover()'s join.
-    find_gaps(map);
-    return map;
-}
-
-StreamMap Recovery::scan() const {
-    // The SCANNED producer (REC-19.5): the byte census. Byte-wise, not
-    // block-wise: the arena is not aligned to block boundaries and a block can
-    // start anywhere the bump allocator left it. A u64 equal to its own
-    // position has a false-positive rate of ~2^-64 per position, so the
-    // VALIDATION word alone is a reliable block detector. The arena is split
-    // across hardware-concurrency chunks when it is large enough to amortize
-    // the spawn; each worker emits its candidates locally (no shared state),
-    // merged after join. Chunks overlap by HEADER_SIZE-1 so a block straddling
-    // a boundary is seen by the next chunk; duplicates are dropped at the
-    // merge. Every entry offers up the wire uint16 recovery tag — a SINGLE
-    // witness that may itself be corrupted: it is recorded on the entry and
-    // audited below, but never trusted to decide a type (defect 5).
-    StreamMap map;
-    map.file_size = static_cast<Size>(m_size);
-    if (header_is_readable(m_base, m_size))
-        map[0] = {StreamMapEntryType::Header, 0, FF_HEADER::HEADER_SIZE};
-
-    const auto audit = [&](Offset off) {
-        if (map.contains(off))
-            return;  // the header (and any overlap) is already claimed
-        map[off] = classify_block(m_base, m_size, off);
-        map[off].recovery = FF_GET_RECOVERY_TAG(m_base, off);
-        if (!plausible_tag(map[off].recovery))
-            map.failures.push_back({ProducerFailureKind::ScanTagInvalid, off,
-                                    FF_RECOVER_UNDEFINED, map[off].recovery,
-                                    "self-offset is consistent but the recovery tag is not a known type"});
-    };
-
-    const auto emit_candidates = [&](size_t begin, size_t end,
-                                     std::vector<Offset>& out) {
-        for (size_t off = begin; off + DATA_BLOCK::HEADER_SIZE <= end; ++off)
-            if (LOAD_U64(m_base + off) == static_cast<uint64_t>(off))
-                out.push_back(static_cast<Offset>(off));
-    };
-
-    const unsigned hw = std::thread::hardware_concurrency();
-    const size_t workers = (m_size >= (1u << 20) && hw > 1) ? std::min<size_t>(hw, 8u) : 1;
-    const size_t chunk = (m_size + workers - 1) / workers;
-    const size_t overlap = DATA_BLOCK::HEADER_SIZE - 1;
-    std::vector<std::vector<Offset>> found(workers);
-    if (workers == 1) {
-        emit_candidates(0, m_size, found[0]);  // small arena — single pass
-    } else {
-        std::vector<std::exception_ptr> errors(workers);
-        std::vector<std::thread> threads;
-        threads.reserve(workers);
-        for (size_t w = 0; w < workers; ++w) {
-            const size_t begin = w * chunk;
-            const size_t end =
-                std::min(m_size, begin + chunk + (w + 1 < workers ? overlap : 0));
-            threads.emplace_back([this, &emit_candidates, begin, end, &found, &errors, w] {
-                try {
-                    emit_candidates(begin, end, found[w]);
-                } catch (const std::exception&) {
-                    errors[w] = std::current_exception();
-                }
-            });
-        }
-        for (std::thread& t : threads)
-            t.join();
-        for (const auto& e : errors)
-            if (e)
-                std::rethrow_exception(e);
-    }
-    for (const auto& v : found)
-        for (const Offset off : v)
-            audit(off);
-    find_gaps(map);
-    return map;
-}
-
-// =====================================================================
-// REC-24 — THE HEADER, RECONCILED AGAINST THE CENSUS
-// =====================================================================
-// Fifty-four bytes with no self-offset of their own, and until this pass no
-// repair at all: a single flipped bit in ROOT_OFFSET made the Parser refuse
-// the whole stream, so a document whose 60,000 blocks were otherwise perfect
-// scored nothing. Measured on a 3.3 MB Synthea artifact, the header is 54 of
-// 495,882 corruptible positions, so at 2,048 flips it is hit in 1 - e^(-0.223)
-// = 20% of trials -- which is exactly the 4-in-20 zero-scoring rate the
-// benchmark recorded, and the whole distance between its 76.7% mean and its
-// 95.6% median.
-//
-// Nothing here searches. Each field is compared against a witness that already
-// exists elsewhere, and the rules differ because the witnesses do:
-//
-//   A CONSTANT the writer always stores. MAGIC and RECOVERY are compiled in,
-//   so the true value is known outright and the only question is whether these
-//   bytes are a FastFHIR stream at all. The census answers that: a position
-//   whose eight bytes equal its own offset occurs by chance at 2^-64, so a
-//   handful of them is proof, and a file that is not one produces none.
-//
-//   A CLOSED SET the writer chooses from. The FHIR revision is R4 or R5; the
-//   stream layout is standard or compact. A value outside the set is damage,
-//   and the unique member within the flip budget is the repair. When two
-//   members are equally close the field stays Ambiguous -- R5 with bit 8
-//   flipped IS R4, and no evidence in the header separates them.
-//
-//   AN IDENTITY WITH ANOTHER FIELD. The checksum footer is the last block a
-//   sealed stream contains, so STREAM_SIZE equals CHECKSUM_OFFSET plus that
-//   block's size on every stream the writer produces. Two fields, one fact,
-//   each one a witness for the other.
-//
-//   A SINGLETON IN THE CENSUS. The checksum footer, the URL directory and the
-//   module registry occur at most once per stream, so a field required to name
-//   one has exactly one candidate whenever the block itself survived. That
-//   candidate is not reached by proximity, so the flip budget does not govern
-//   it: the budget bounds a SEARCH, and there is no search when the arena
-//   contains one block of the type and no other. The Hamming distance is
-//   recorded as a diagnostic.
-//
-//   THE BLOCK THE FIELD NAMES. ROOT_OFFSET and ROOT_RECOVERY witness each
-//   other the way a resource tuple's two halves do: the header states the
-//   root's address and its type, and the block at that address states its own
-//   address and its own type. Whichever half survived identifies the other.
-//
-// Where a rule leaves more than one value supported, the verdict is Ambiguous
-// and carries the alternatives. apply() writes the Corroborated ones and
-// nothing else, so an ambiguity stays declared rather than becoming a silent
-// choice.
-Recovery::RootAnchor Recovery::wire_root() const noexcept {
-    RootAnchor anchor;
-    if (!header_is_readable(m_base, m_size))
-        return anchor;
-    anchor.offset = FF_HEADER(m_size).get_root(m_base);
-    anchor.tag    = tag_at(m_base, m_size, anchor.offset);
-    anchor.usable = true;
-    return anchor;
-}
-
-Recovery::RootAnchor Recovery::reconcile_header(const StreamMap& census,
-                                                std::vector<HeaderVerdict>& out) const {
-    RootAnchor anchor;
-    if (m_base == nullptr || m_size < FF_HEADER::HEADER_SIZE)
-        return anchor;
-
-    const auto record = [&out](HeaderField field, RepairClass cls, uint64_t stored,
-                               uint64_t restored, uint32_t cost, const char* why) {
-        out.push_back({field, cls, stored, restored, cost, why, {}});
-    };
-
-    // THE SUPPORT TEST, ONCE, FOR EVERY CONSTANT BELOW.
-    //
-    // Stamping a known constant over damaged bytes is only a repair when the
-    // bytes are the thing the constant belongs to. A position holding its own
-    // offset arises by chance at 2^-64 per position, so a file that is not a
-    // FastFHIR arena produces none of them; requiring several is conclusive
-    // without being a judgement call. This is what stops recovery declaring a
-    // JPEG to be a damaged FastFHIR stream and writing a magic number into it.
-    constexpr std::size_t kSupportingBlocks = 8;
-    std::size_t anchored = 0;
-    for (const auto& [off, entry] : census)
-        if (entry.type != StreamMapEntryType::Header && ++anchored >= kSupportingBlocks)
-            break;
-    const bool supported = anchored >= kSupportingBlocks;
-
-    // --- MAGIC and RECOVERY: compiled constants ---------------------------
-    const auto reconcile_constant = [&](HeaderField field, uint64_t stored, uint64_t want,
-                                        const char* name) {
-        if (stored == want) {
-            record(field, RepairClass::Intact, stored, want, 0, name);
-            return;
-        }
-        const uint32_t cost = hamming_cost(stored, want);
-        if (!supported)
-            record(field, RepairClass::Unrecovered, stored, want, cost,
-                   "no self-validating block corroborates a FastFHIR arena");
-        else if (cost > FF_RECOVERY_MAX_FLIPS)
-            record(field, RepairClass::Unrecovered, stored, want, cost,
-                   "beyond the flip budget: these bytes were not this constant");
-        else
-            record(field, RepairClass::Corroborated, stored, want, cost, name);
-    };
-    reconcile_constant(HeaderField::Magic, LOAD_U32(m_base + FF_HEADER::MAGIC),
-                       FF_MAGIC_BYTES, "compiled constant, corroborated by the census");
-    reconcile_constant(HeaderField::Recovery, LOAD_U16(m_base + FF_HEADER::RECOVERY),
-                       static_cast<uint64_t>(RECOVER_FF_HEADER),
-                       "compiled constant, corroborated by the census");
-
-    // --- FHIR_REV: a closed set of two ------------------------------------
-    {
-        constexpr uint16_t kRevisions[] = {FHIR_VERSION_R4, FHIR_VERSION_R5};
-        const uint16_t stored = LOAD_U16(m_base + FF_HEADER::FHIR_REV);
-        HeaderVerdict v{HeaderField::FhirRevision, RepairClass::Unrecovered, stored, stored,
-                        0, "no legal revision within the flip budget", {}};
-        uint32_t best = UINT32_MAX;
-        for (const uint16_t rev : kRevisions) {
-            const uint32_t cost = hamming_cost(stored, rev);
-            if (cost < best) {
-                best = cost;
-                v.restored = rev;
-                v.bit_cost = cost;
-                v.candidates.assign(1, rev);
-            } else if (cost == best) {
-                v.candidates.push_back(rev);
-            }
-        }
-        if (best == 0) {
-            v.class_ = RepairClass::Intact;
-            v.why    = "a revision this build knows";
-            v.candidates.clear();
-        } else if (v.candidates.size() > 1) {
-            v.class_ = RepairClass::Ambiguous;
-            v.why    = "equidistant from two legal revisions — nothing here separates them";
-        } else if (best <= FF_RECOVERY_MAX_FLIPS) {
-            v.class_ = RepairClass::Corroborated;
-            v.why    = "the one legal revision within the flip budget";
-            v.candidates.clear();
-        }
-        out.push_back(std::move(v));
-    }
-
-    // --- The three census singletons, and the root ------------------------
-    //
-    // A field required to name a block of type T has exactly one candidate
-    // when the census holds one block of type T, and none when that block's
-    // own header was destroyed. Absence is a legitimate value for all three of
-    // the optional ones, so FF_NULL_OFFSET with an empty census reads Intact.
-    const auto singletons_of = [&census](RECOVERY_TAG tag) {
-        std::vector<Offset> found;
-        for (const auto& [off, entry] : census)
-            if (entry.type != StreamMapEntryType::Header && entry.recovery == tag)
-                found.push_back(off);
-        return found;
-    };
-    const auto reconcile_singleton = [&](HeaderField field, Size slot, RECOVERY_TAG tag,
-                                         const char* name) -> Offset {
-        const uint64_t stored = LOAD_U64(m_base + slot);
-        const std::vector<Offset> found = singletons_of(tag);
-        if (found.size() == 1 && stored == static_cast<uint64_t>(found.front())) {
-            record(field, RepairClass::Intact, stored, stored, 0, name);
-            return found.front();
-        }
-        if (found.empty()) {
-            // Nothing of this type survives. An absent field is correct as it
-            // stands; a present one names a block whose header is gone, and
-            // rewriting it to "absent" would destroy the last record that the
-            // block ever existed.
-            record(field,
-                   stored == static_cast<uint64_t>(FF_NULL_OFFSET) ? RepairClass::Intact
-                                                                   : RepairClass::Unrecovered,
-                   stored, stored, 0,
-                   stored == static_cast<uint64_t>(FF_NULL_OFFSET)
-                       ? "absent, and the census holds no such block"
-                       : "the block this names no longer vouches for itself");
-            return FF_NULL_OFFSET;
-        }
-        if (found.size() > 1) {
-            HeaderVerdict v{field, RepairClass::Ambiguous, stored, stored, 0,
-                            "more than one block of this type — the field names no unique block",
-                            {}};
-            for (const Offset o : found)
-                v.candidates.push_back(static_cast<uint64_t>(o));
-            out.push_back(std::move(v));
-            return FF_NULL_OFFSET;
-        }
-
-        // A SINGLETON IS ONLY DECISIVE WHEN THE STORED VALUE AGREES WITH IT (F29).
-        //
-        // This used to read "one block of the type exists, therefore the field
-        // names it", and that is wrong for a reason worth stating plainly: the
-        // singleton itself can be MANUFACTURED BY THE DAMAGE. These three tags
-        // are 0x0004, 0x0005 and 0x0006, so one flipped bit in any block's tag
-        // anywhere in the arena creates a brand new "URL directory", the census
-        // then holds exactly one, and a URL_DIR_OFFSET that was legitimately
-        // absent was rewritten into a pointer at it. Measured by the WP1 gates:
-        // roughly 60 invented bits, and the only cluster in the whole header
-        // pass that wrote a WRONG byte rather than merely declining to write.
-        //
-        // The repair needs two things that agree, which is the same standard
-        // every other field here is held to. The census supplies one. The
-        // stored value supplies the other only when it is close enough to be a
-        // damaged copy of that address: FF_NULL_OFFSET is all ones and a real
-        // offset is small, so genuine absence is dozens of bits from any
-        // candidate and can never be talked into pointing somewhere.
-        const uint64_t candidate = static_cast<uint64_t>(found.front());
-        const uint32_t cost = hamming_cost(stored, candidate);
-        if (cost > FF_RECOVERY_MAX_FLIPS) {
-            HeaderVerdict v{field,
-                            stored == static_cast<uint64_t>(FF_NULL_OFFSET)
-                                ? RepairClass::Intact
-                                : RepairClass::Ambiguous,
-                            stored, stored, cost,
-                            stored == static_cast<uint64_t>(FF_NULL_OFFSET)
-                                ? "absent, and the one block of this type is too far from "
-                                  "absence to be a damaged copy of it — that block's tag is "
-                                  "the likelier damage"
-                                : "the one block of this type is beyond the flip budget of "
-                                  "the stored address; the two do not corroborate",
-                            {}};
-            v.candidates.push_back(candidate);
-            out.push_back(std::move(v));
-            return FF_NULL_OFFSET;
-        }
-        record(field, RepairClass::Corroborated, stored, candidate, cost, name);
-        return found.front();
-    };
-
-    const Offset checksum = reconcile_singleton(
-        HeaderField::ChecksumOffset, FF_HEADER::CHECKSUM_OFFSET, RECOVER_FF_CHECKSUM,
-        "the one self-validating checksum footer in the arena");
-    reconcile_singleton(HeaderField::UrlDirectoryOffset, FF_HEADER::URL_DIR_OFFSET,
-                        RECOVER_FF_URL_DIRECTORY,
-                        "the one self-validating URL directory in the arena");
-    reconcile_singleton(HeaderField::ModuleRegistryOffset, FF_HEADER::MODULE_REG_OFFSET,
-                        RECOVER_FF_MODULE_REGISTRY,
-                        "the one self-validating module registry in the arena");
-
-    // --- STREAM_SIZE: the checksum footer is the last block ---------------
-    {
-        const uint64_t stored = LOAD_U64(m_base + FF_HEADER::STREAM_SIZE);
-        if (checksum == FF_NULL_OFFSET) {
-            record(HeaderField::StreamSize, RepairClass::Unrecovered, stored, stored, 0,
-                   "no checksum footer to measure the end of the payload against");
-        } else {
-            const uint64_t sealed =
-                static_cast<uint64_t>(checksum) + FF_CHECKSUM::HEADER_SIZE;
-            record(HeaderField::StreamSize,
-                   stored == sealed ? RepairClass::Intact : RepairClass::Corroborated, stored,
-                   sealed, hamming_cost(stored, sealed),
-                   "the checksum footer is the last block a sealed stream contains");
-        }
-    }
-
-    // --- ROOT_OFFSET and ROOT_RECOVERY: two halves of one reference -------
-    //
-    // The same shape as a resource tuple. The header holds the root's address
-    // and its type; the block holds its own address and its own type. A flip
-    // in one half leaves the other standing, and which half moved is decided
-    // by which one still agrees with the block.
-    {
-        const uint64_t     stored_off = LOAD_U64(m_base + FF_HEADER::ROOT_OFFSET);
-        const RECOVERY_TAG stored_tag =
-            static_cast<RECOVERY_TAG>(LOAD_U16(m_base + FF_HEADER::ROOT_RECOVERY));
-        const bool         seat_ok = valid_validation(m_base, m_size,
-                                                      static_cast<Offset>(stored_off));
-        const RECOVERY_TAG seat_tag =
-            seat_ok ? tag_at(m_base, m_size, static_cast<Offset>(stored_off))
-                    : FF_RECOVER_UNDEFINED;
-
-        if (seat_ok && seat_tag == stored_tag && plausible_tag(stored_tag)) {
-            // Both halves agree with the block they describe.
-            record(HeaderField::RootOffset, RepairClass::Intact, stored_off, stored_off, 0,
-                   "the block here vouches for itself and for the stated type");
-            record(HeaderField::RootRecovery, RepairClass::Intact, stored_tag, stored_tag, 0,
-                   "the block here vouches for itself and for the stated type");
-            anchor = {static_cast<Offset>(stored_off), stored_tag, true};
-        } else if (seat_ok && plausible_tag(seat_tag)) {
-            // The address lands on a real block, so the address survived and
-            // the TYPE is the damaged half: the block's own tag is the witness.
-            record(HeaderField::RootOffset, RepairClass::Intact, stored_off, stored_off, 0,
-                   "the block here vouches for itself");
-            record(HeaderField::RootRecovery, RepairClass::Corroborated, stored_tag, seat_tag,
-                   hamming_cost(stored_tag, seat_tag),
-                   "the root block's own tag, which the address still reaches");
-            anchor = {static_cast<Offset>(stored_off), seat_tag, true};
-        } else {
-            // The address reaches no block. Search the census for the root the
-            // header's surviving type half describes, then widen to any
-            // resource if that half is gone too. Candidates must be within the
-            // flip budget of the stored address: a block merely being of the
-            // right type says nothing about it being THIS reference's target.
-            std::vector<Offset> typed, resources;
-            for (const auto& [off, entry] : census) {
-                if (entry.type == StreamMapEntryType::Header)
-                    continue;
-                if (hamming_cost(stored_off, static_cast<uint64_t>(off)) > FF_RECOVERY_MAX_FLIPS)
-                    continue;
-                if (plausible_tag(stored_tag) && entry.recovery == stored_tag)
-                    typed.push_back(off);
-                else if (FF_IsResourceTag(entry.recovery))
-                    resources.push_back(off);
-            }
-            const std::vector<Offset>& pool = !typed.empty() ? typed : resources;
-            const char* why = !typed.empty()
-                                  ? "the one block within the flip budget carrying the "
-                                    "root type the header still states"
-                                  : "both halves damaged — the one resource block within "
-                                    "the flip budget of the stored address";
-            if (pool.size() == 1) {
-                const Offset found = pool.front();
-                const RECOVERY_TAG found_tag = tag_at(m_base, m_size, found);
-                record(HeaderField::RootOffset, RepairClass::Corroborated, stored_off,
-                       static_cast<uint64_t>(found),
-                       hamming_cost(stored_off, static_cast<uint64_t>(found)), why);
-                record(HeaderField::RootRecovery,
-                       found_tag == stored_tag ? RepairClass::Intact : RepairClass::Corroborated,
-                       stored_tag, found_tag, hamming_cost(stored_tag, found_tag),
-                       "the tag of the block the restored address reaches");
-                anchor = {found, found_tag, true};
-            } else {
-                HeaderVerdict v{HeaderField::RootOffset, RepairClass::Unrecovered, stored_off,
-                                stored_off, 0,
-                                pool.empty()
-                                    ? "no block within the flip budget of the stored address"
-                                    : "several blocks within the flip budget — no unique root",
-                                {}};
-                if (pool.size() > 1)
-                    v.class_ = RepairClass::Ambiguous;
-                for (const Offset o : pool)
-                    v.candidates.push_back(static_cast<uint64_t>(o));
-                out.push_back(std::move(v));
-                record(HeaderField::RootRecovery, RepairClass::Unrecovered, stored_tag,
-                       stored_tag, 0, "no restored address to read a tag from");
-            }
-        }
-    }
-
-    // --- The 2-bit stream layout packed into VERSION ----------------------
-    //
-    // Only the layout bits are reconciled. The engine version beside them is a
-    // free 30-bit word whose true value this reader cannot know: a stream may
-    // legitimately have been written by an engine newer than this one, which
-    // is precisely what find_gaps() uses to tell benign version skew from
-    // damage. Guessing it would destroy that distinction, so it is left alone
-    // and SAID SO, in its own verdict below. Leaving it unmentioned made a
-    // flip in any of its 30 bits read as damage that recovery had neither
-    // repaired nor reported, which is the one outcome the gates forbid.
-    {
-        const uint32_t            encoded = LOAD_U32(m_base + FF_HEADER::VERSION);
-        const FF_StreamCompaction layout  = FF_HEADER_STREAM_LAYOUT(encoded);
-        const bool legal = layout == FF_STREAM_COMPACTION_NONE || layout == FF_STREAM_COMPACTED;
-        record(HeaderField::StreamLayout, legal ? RepairClass::Intact : RepairClass::Corroborated,
-               static_cast<uint64_t>(layout),
-               legal ? static_cast<uint64_t>(layout)
-                     : static_cast<uint64_t>(FF_STREAM_COMPACTION_NONE),
-               legal ? 0u : hamming_cost(static_cast<uint64_t>(layout), FF_STREAM_COMPACTION_NONE),
-               legal ? "one of the two layouts the writer emits"
-                     : "a layout the writer never emits; the census tiles as a standard stream");
-        // The other 30 bits of the same word, declared uncertifiable rather
-        // than left unmentioned. This is a REPORT, never a repair: there is no
-        // witness for it, so the verdict says the field cannot be vouched for
-        // and apply() writes nothing, since only Corroborated is ever written.
-        record(HeaderField::EngineVersion, RepairClass::Unrecovered,
-               FF_HEADER_ENGINE_VERSION(encoded), FF_HEADER_ENGINE_VERSION(encoded), 0,
-               "no second witness anywhere in the arena: a stream written by a newer "
-               "engine is legitimate, so this reader cannot tell a newer writer from "
-               "a flipped bit and must not choose");
-    }
-
-    // The magic may have been restored above, and every field below it was
-    // reconciled regardless — so a stream whose only damage was its magic
-    // stamp still yields a usable root.
-    if (!anchor.usable)
-        return anchor;
-    for (const HeaderVerdict& v : out)
-        if (v.field == HeaderField::Magic && v.class_ != RepairClass::Intact &&
-            v.class_ != RepairClass::Corroborated)
-            anchor.usable = false;
-    return anchor;
-}
-
-// =====================================================================
-// REC-25 — THE CENSUS (recovery_algorithm_handoff.md §6)
-// =====================================================================
-// The first phase of the rebuilt engine. It reads every slot of every
-// self-validating block, and every slot the FF_HEADER holds, and sorts the
-// links those slots describe into two groups.
-//
-// A link whose every witness holds is DECIDED here. That means the parent's
-// word names a position, the block at that position states its own offset
-// there, and its tag is exactly the type the slot expects. Under the
-// statistical model (handoff §5.3) such a link carries the full weight of all
-// three witnesses and costs nothing, and no other explanation of the slot can
-// cost less: any other position pays on the pointer, and because every block
-// in the offset chain has exactly one parent (H5), no other slot can claim the
-// block without the census seeing two claims.
-//
-// Every other slot is a question, and the census does not answer it. It
-// records the slot as OPEN against the block that owns it. Blocks joined by
-// decided links form ISLANDS. The FF_HEADER's island is attached from the
-// start, because Phase 0 already reconciled the header, and the open slots of
-// that island become the POINTS the task loop works through. Every other
-// island is an orphaned subtree, and its open slots wait until the loop
-// attaches it.
-//
-// Nothing here writes, and nothing here searches. On a clean stream the
-// result is one attached island, no points and no holes.
-
-namespace {
-
-// The FF_HEADER sits at offset 0 and parents the root and the three metadata
-// blocks. No self-validating block can start at 0, since the header is there,
-// so the value can never collide with a real block's offset.
-constexpr Offset HEADER_PARENT = 0;
-
-// How far a residual tag may sit from the type it is read as, in bits. Used
-// only where the tag is corroborated by something else (an array's geometry,
-// or a word that names that exact block).
-constexpr uint32_t TAG_RADIUS = 2;
+// ---- the board: everything recovery knows, in RAM ----
 
 // What a slot's bytes say, read on their own.
 enum class Reading : uint8_t {
-    Absent,    ///< the slot is empty
-    Inline,    ///< the word is a value (a dictionary ID, a packed date/time, a scalar choice)
-    Intact,    ///< every witness of the link holds: decided
-    Dangling,  ///< the word names a position that is not a block of the expected type
-    Suspect,   ///< the word reads as a value, but its bytes also name a block of the
-               ///< type a damaged pointer would name there
+    Absent,    // the slot is empty
+    Inline,    // the word is a value: a dictionary ID, a packed date/time, a scalar choice
+    Intact,    // every witness of the link holds
+    Dangling,  // the word names a position that is not a block of the expected type
+    Suspect,   // the word reads as a value, but it also names a block a damaged pointer would name
 };
 
 struct Judged {
     Reading reading = Reading::Absent;
-    Offset  target  = FF_NULL_OFFSET;  ///< Intact, Dangling and Suspect: the position the word names
+    Offset  target  = FF_NULL_OFFSET;
 };
 
-// One self-validating block, as the scan found it.
+// A block the board knows: one that vouches for itself, or one placed in a
+// hole by chaining from the block before it, whose self-offset is the damage.
 struct Anchor {
-    Offset       off         = FF_NULL_OFFSET;
-    RECOVERY_TAG wire_tag    = FF_RECOVER_UNDEFINED;  ///< the tag on the wire, which may be the damage
-    Size         prov_extent = 0;                     ///< provisional: under the wire tag
+    RECOVERY_TAG tag    = FF_RECOVER_UNDEFINED;  // on the wire, or the type a decision gave it
+    bool         lost   = false;
+    /// Whether it ends exactly where the next block or a gap begins. A real
+    /// block does, because the arena is dense; a pointer word that a flip has
+    /// turned into its own address self-validates too, and almost never does.
+    bool         tiles  = true;
 };
 
-// Everything the census learns, and everything the task loop will extend.
+// One hypothesis: `slot` names the block at `target`, whose type is `variant`.
+// For a tuple the variant is what its tag half should read; for every other
+// slot it is the compiled type. Each distance compares one witness with the
+// value the hypothesis says it should hold. A target of FF_NULL_OFFSET is the
+// hypothesis that the slot is empty and its word a damaged null, which has the
+// pointer as its only witness.
+struct Link {
+    Recovery::Slot slot;
+    Offset         target      = FF_NULL_OFFSET;
+    RECOVERY_TAG   variant     = FF_RECOVER_UNDEFINED;
+    uint8_t        d_ptr       = 0;  // the parent's word against the target's address
+    uint8_t        d_self      = 0;  // the target's self-offset against its address
+    uint8_t        d_tag_child = 0;  // the target's tag against the type
+    uint8_t        d_tag_slot  = 0;  // a tuple's tag half against the type
+};
+
+// An array's stamped layout: KIND_AND_STEP and ENTRY_COUNT.
+struct Geometry {
+    uint16_t packing = 0;
+    uint32_t count   = 0;
+    bool operator==(const Geometry&) const = default;
+};
+
+struct Question {
+    Recovery::Point     point;
+    bool                open = true;
+    std::vector<Offset> candidates;  // the blocks it could name, as of its last cycle
+};
+
 struct Board {
-    const BYTE* base = nullptr;
-    size_t      size = 0;
-    /// A newer writer may legitimately emit dictionary IDs and date/time
-    /// packings this build does not know, so their unfamiliarity is evidence
-    /// of damage only when the stream is not newer than this reader.
+    const BYTE* base         = nullptr;
+    size_t      size         = 0;
     bool        newer_stream = false;
-
-    std::vector<Anchor>                  anchors;    ///< ascending by offset
-    std::unordered_map<Offset, uint32_t> anchor_at;  ///< offset -> index into anchors
-    std::vector<Gap>                     holes;      ///< ascending by start
-
-    /// Each block's one parent (H5): the census fills it with decided links.
-    std::unordered_map<Offset, Recovery::Slot>              owner;
-    /// Per block: its slots whose link the census could not decide.
-    std::unordered_map<Offset, std::vector<Recovery::Slot>> open_of;
-    /// Arrays whose stamped geometry the surrounding bytes contradict.
-    std::unordered_set<Offset>                              refuted;
-
-    std::vector<Recovery::Island>             islands;
-    std::unordered_map<Offset, uint32_t>      island_of;  ///< block -> index into islands
-    /// Every unattached island's root, by its wire tag: the pools the task
-    /// loop draws candidate children from.
-    std::map<RECOVERY_TAG, std::set<Offset>>  orphans;
-    std::vector<Recovery::Point>              points;
-    std::vector<Recovery::Edge>               edges;      ///< every decided link, by seat
+    std::map<Offset, Anchor>                   anchors;
+    std::vector<Gap>                           holes;     // ascending
+    std::unordered_map<Offset, Recovery::Slot> owner;     // child -> its one parent's slot (H5)
+    std::unordered_map<Offset, Link>           decided;   // child -> the link a cycle decided
+    std::map<Offset, Geometry>                 extents;   // array -> the geometry a cycle decided
+    std::vector<Link>                          emptied;   // slots a cycle decided hold a damaged null
+    std::vector<Question>                      questions;
 };
 
-// ---- forward declarations: the census's callees, defined below it in
-// ---- call order (REC-19.1) ----
-std::vector<Recovery::Slot> header_slots(const BYTE* base, size_t size,
-                                         const std::vector<HeaderVerdict>& verdicts,
-                                         bool root_usable, Offset root_offset);
-Board take_census(const BYTE* base, size_t size, const StreamMap& scan_map,
-                  std::vector<Recovery::Slot> header);
-void slots_of(const Board& B, Offset off, RECOVERY_TAG tag,
-              std::vector<Recovery::Slot>& out, bool& refuted);
-void array_slots(const Board& B, Offset off, RECOVERY_TAG tag,
-                 std::vector<Recovery::Slot>& out, bool& refuted);
-void url_directory_slots(const Board& B, Offset off, std::vector<Recovery::Slot>& out);
-bool sizable_tag(RECOVERY_TAG tag);
-uint64_t next_anchor_after(const Board& B, Offset off);
-Judged judge(const Board& B, const Recovery::Slot& s);
-Judged judge_tuple(const Board& B, const Recovery::Slot& s);
-Judged judge_relative32(const Board& B, const Recovery::Slot& s, uint32_t raw);
-Judged judge_relative63(const Board& B, const Recovery::Slot& s, uint64_t raw);
+// ---- the callees below recover(), in call order ----
+
+Board take_census(const BYTE* base, size_t size, const StreamMap& scan_map);
+bool  run_cycle(Board& B);
+void  report(const Board& B, const StreamMap& scan_map, FF_RecoveryReport& rep);
 
 }  // namespace
 
-Recovery::Census Recovery::census() const {
-    // Phase 0 first. The header's slots take the values it reconciled wherever
-    // it reconciled them exactly (header_slots() says which), so a flipped
-    // ROOT_OFFSET is already restored by the time the census judges it.
+// =====================================================================
+// ENTRANCE — recover()
+// =====================================================================
+
+FF_RecoveryReport Recovery::recover() const {
+    FF_RecoveryReport rep;
     const StreamMap scan_map = scan();
-    std::vector<HeaderVerdict> verdicts;
-    const RootAnchor root = reconcile_header(scan_map, verdicts);
-    Board B = take_census(m_base, m_size, scan_map,
-                          header_slots(m_base, m_size, verdicts, root.usable, root.offset));
-    Census c;
-    c.extent  = static_cast<Size>(m_size);
-    c.anchors = B.anchors.size();
-    c.edges   = std::move(B.edges);
-    c.islands = std::move(B.islands);
-    c.holes   = std::move(B.holes);
-    c.points  = std::move(B.points);
-    return c;
+    Board B = take_census(m_base, m_size, scan_map);
+    while (run_cycle(B)) {
+    }
+    // The gaps the report states are the ones left AFTER the decisions: a
+    // block a cycle placed in a hole covers its bytes again.
+    StreamMap after;
+    after.file_size = static_cast<Size>(m_size);
+    if (scan_map.contains(0))
+        after[0] = scan_map.at(0);
+    for (const auto& [off, a] : B.anchors)
+        if (!a.lost)
+            after[off] = classify_block(m_base, m_size, off);
+    find_gaps(after);
+    after.failures = scan_map.failures;
+    report(B, after, rep);
+    return rep;
 }
 
 namespace {
 
-// The FF_HEADER's four slots, holding the values Phase 0 settled on. The root
-// is a tuple, since ROOT_OFFSET followed by ROOT_RECOVERY is exactly a tuple's
-// layout; the checksum footer, the URL directory and the module registry are
-// absolute offsets whose type is fixed. A field reconcile_header() could not
-// settle keeps its stored word, and the census judges that like any other.
-std::vector<Recovery::Slot> header_slots(const BYTE* base, size_t size,
-                                         const std::vector<HeaderVerdict>& verdicts,
-                                         bool root_usable, Offset root_offset) {
-    std::vector<Recovery::Slot> out;
-    if (base == nullptr || size < FF_HEADER::HEADER_SIZE)
-        return out;
+// =====================================================================
+// PHASE 1 — the census (handoff §6)
+// =====================================================================
 
-    // The root takes Phase 0's address only where Phase 0 found the root by the
-    // type the header still states, and it always keeps the header's own copy
-    // of that type. When ROOT_RECOVERY disagrees with the block it names, the
-    // two copies carry one flip between them and nothing in the header says
-    // which one moved; reconcile_header() takes the block's copy, which is
-    // wrong whenever the flip hit the block. That question belongs to the task
-    // loop, which reads the block under both types, so here the slot keeps the
-    // wire's tag, the disagreement leaves it open, and the loop decides.
-    bool address_exact = false;
-    for (const HeaderVerdict& v : verdicts)
-        if (v.field == HeaderField::RootOffset && v.class_ == RepairClass::Corroborated)
-            for (const HeaderVerdict& t : verdicts)
-                if (t.field == HeaderField::RootRecovery && t.class_ == RepairClass::Intact)
-                    address_exact = true;
-    Recovery::Slot root;
-    root.parent     = HEADER_PARENT;
-    root.seat       = FF_HEADER::ROOT_OFFSET;
-    root.kind       = FF_FIELD_RESOURCE;
-    root.repr       = Recovery::SlotRepr::Tuple;
-    root.stored     = (root_usable && address_exact) ? static_cast<uint64_t>(root_offset)
-                                                     : LOAD_U64(base + FF_HEADER::ROOT_OFFSET);
-    root.stored_tag = static_cast<RECOVERY_TAG>(LOAD_U16(base + FF_HEADER::ROOT_RECOVERY));
-    out.push_back(root);
+std::vector<Recovery::Slot> header_slots(const BYTE* base, size_t size);
+void   chain_hole(Board& B, const Gap& hole);
+bool   slots_of(const Board& B, Offset off, RECOVERY_TAG tag, std::vector<Recovery::Slot>& out,
+                bool* refuted = nullptr);
+Judged judge(const Board& B, const Recovery::Slot& s);
+std::unordered_map<Offset, std::vector<Offset>> children(const Board& B);
+std::vector<Offset> attached(const Board& B, const std::unordered_map<Offset, std::vector<Offset>>& kids);
+bool   ask(Board& B, const Recovery::Point& p);
 
-    struct Metadata { HeaderField field; Offset seat; RECOVERY_TAG tag; };
-    constexpr Metadata metadata[] = {
-        {HeaderField::ChecksumOffset,       FF_HEADER::CHECKSUM_OFFSET,   RECOVER_FF_CHECKSUM},
-        {HeaderField::UrlDirectoryOffset,   FF_HEADER::URL_DIR_OFFSET,    RECOVER_FF_URL_DIRECTORY},
-        {HeaderField::ModuleRegistryOffset, FF_HEADER::MODULE_REG_OFFSET, RECOVER_FF_MODULE_REGISTRY},
-    };
-    for (const Metadata& m : metadata) {
-        Recovery::Slot s;
-        s.parent = HEADER_PARENT;
-        s.seat   = m.seat;
-        s.kind   = FF_FIELD_BLOCK;
-        s.repr   = Recovery::SlotRepr::Absolute;
-        s.stored = LOAD_U64(base + m.seat);
-        s.expect = m.tag;
-        for (const HeaderVerdict& v : verdicts)
-            if (v.field == m.field &&
-                (v.class_ == RepairClass::Intact || v.class_ == RepairClass::Corroborated))
-                s.stored = v.restored;
-        out.push_back(s);
-    }
-    return out;
-}
+Board take_census(const BYTE* base, size_t size, const StreamMap& scan_map) {
+    Board B{base, size, stream_is_newer(base, size)};
 
-// The census proper (handoff §6), in five steps.
-Board take_census(const BYTE* base, size_t size, const StreamMap& scan_map,
-                  std::vector<Recovery::Slot> header) {
-    Board B;
-    B.base         = base;
-    B.size         = size;
-    B.newer_stream = stream_is_newer(base, size);
-
-    // 0. The anchors and the holes, both straight from the scan. The holes do
-    //    not depend on any judgement: they are the bytes no self-validating
-    //    block's provisional extent covers.
-    for (const auto& [off, entry] : scan_map) {
-        if (entry.type == StreamMapEntryType::Header)
-            continue;
-        B.anchor_at.emplace(off, static_cast<uint32_t>(B.anchors.size()));
-        B.anchors.push_back({off, entry.recovery, entry.size});
-    }
-    for (const Gap& g : scan_map.gaps)
+    // The anchors and the holes come straight from the byte census. Each hole
+    // is chained from its start, where the block before it ended, to place the
+    // blocks whose self-offsets were destroyed.
+    for (const auto& [off, entry] : scan_map)
+        if (entry.type != StreamMapEntryType::Header)
+            B.anchors.emplace(off, Anchor{entry.recovery, false, true});
+    // A trailing run is chained too: in a sealed stream the checksum footer is
+    // the last block, and one whose self-offset was destroyed leaves exactly
+    // that run behind. Arena slack is zeros, which name no type, so the chain
+    // places nothing there.
+    std::unordered_set<uint64_t> skew_starts;
+    for (const Gap& g : scan_map.gaps) {
+        if (g.class_ == GapClass::VersionSkew)
+            skew_starts.insert(g.start);
+        else
+            chain_hole(B, g);
         if (g.class_ == GapClass::Hole)
             B.holes.push_back(g);
+    }
+    // A block tiles when its end meets the next block -- one that vouches for
+    // itself, or a lost one the chain placed there -- or the end of the
+    // extent, or a newer writer's benign trailing run. A gap is no evidence:
+    // gaps are measured from these same extents, so an extent that is too
+    // short always leaves one starting exactly where it ends.
+    for (auto it = B.anchors.begin(); it != B.anchors.end(); ++it) {
+        const uint64_t end  = it->first + classify_block(base, size, it->first).size;
+        const auto     next = std::next(it);
+        it->second.tiles    = end >= size || skew_starts.contains(end) ||
+                              (next != B.anchors.end() && next->first == end);
+    }
 
-    // 1. Judge every slot: the header's first, then each block's, each read
-    //    under the block's own wire tag. Decided links are kept in this order,
-    //    so every parent's children come out in the order of its slots.
+    // Judge every slot: the header's first, then every block's under its own
+    // wire tag -- a lost block's too, so its subtree hangs from it rather than
+    // scattering into the orphan pools, where its own children would crowd the
+    // search for it. Decided links keep this order, so each parent's children
+    // come out in the order of its slots.
+    std::vector<Recovery::Slot> slots = header_slots(base, size);
+    std::unordered_set<Offset> refuted;
+    for (const auto& [off, a] : B.anchors) {
+        bool bad = false;
+        if (slots_of(B, off, a.tag, slots, &bad) && bad)
+            refuted.insert(off);
+    }
     std::vector<Recovery::Edge>                    intact;
-    std::unordered_map<Offset, std::size_t>        claim;      // child -> first claimant
-    std::map<Offset, std::vector<std::size_t>>     contested;  // child -> every claimant
+    std::unordered_map<Offset, size_t>             claim;      // child -> its first claimant
+    std::map<Offset, std::vector<size_t>>          contested;  // child -> every claimant
     std::vector<std::pair<Recovery::Slot, Offset>> suspects;
-    const auto consider = [&](const Recovery::Slot& s) {
+    std::unordered_map<Offset, std::vector<Recovery::Slot>> open_of;
+    for (const Recovery::Slot& s : slots) {
         const Judged j = judge(B, s);
-        switch (j.reading) {
-            case Reading::Absent:
-            case Reading::Inline:
-                break;
-            case Reading::Intact: {
-                const std::size_t at = intact.size();
-                intact.push_back({s, j.target});
-                const auto [it, first] = claim.emplace(j.target, at);
-                if (!first) {
-                    std::vector<std::size_t>& claimants = contested[j.target];
-                    if (claimants.empty())
-                        claimants.push_back(it->second);
-                    claimants.push_back(at);
-                }
-                break;
-            }
-            case Reading::Dangling:
-                B.open_of[s.parent].push_back(s);
-                break;
-            case Reading::Suspect:
-                suspects.emplace_back(s, j.target);
-                break;
-        }
-    };
-    for (const Recovery::Slot& s : header)
-        consider(s);
-    std::vector<Recovery::Slot> slots;
-    for (const Anchor& a : B.anchors) {
-        slots.clear();
-        bool refuted = false;
-        slots_of(B, a.off, a.wire_tag, slots, refuted);
-        for (const Recovery::Slot& s : slots)
-            consider(s);
-        if (refuted)
-            B.refuted.insert(a.off);
-    }
-
-    // 2. A block claimed by two slots keeps neither claim, because at most one
-    //    of the two words is right and the census cannot say which. Both slots
-    //    open, and the task loop weighs them. The FF_HEADER is the exception:
-    //    Phase 0 already decided what its slots name, so a second claim on the
-    //    root is the other slot's damage.
-    std::vector<bool> dropped(intact.size(), false);
-    for (const auto& [child, claimants] : contested) {
-        const bool header_holds = intact[claimants.front()].slot.parent == HEADER_PARENT;
-        for (const std::size_t i : claimants) {
-            if (header_holds && i == claimants.front())
-                continue;
-            dropped[i] = true;
-            B.open_of[intact[i].slot.parent].push_back(intact[i].slot);
-        }
-    }
-    std::unordered_map<Offset, std::vector<Offset>> kids;
-    for (std::size_t i = 0; i < intact.size(); ++i) {
-        if (dropped[i])
+        if (j.reading == Reading::Dangling)
+            open_of[s.parent].push_back(s);
+        if (j.reading == Reading::Suspect)
+            suspects.emplace_back(s, j.target);
+        if (j.reading != Reading::Intact)
             continue;
-        B.owner.emplace(intact[i].child, intact[i].slot);
-        kids[intact[i].slot.parent].push_back(intact[i].child);
+        const auto [it, first] = claim.emplace(j.target, intact.size());
+        if (!first) {
+            std::vector<size_t>& claimants = contested[j.target];
+            if (claimants.empty())
+                claimants.push_back(it->second);
+            claimants.push_back(intact.size());
+        }
+        intact.push_back({s, j.target});
     }
 
-    // 3. A suspect slot's word reads as a value and also names a block of the
-    //    type a damaged pointer would name. That second reading is evidence
-    //    only while the block has no parent: a block some other slot names
-    //    intactly is accounted for, and the value is then just a value.
+    // A block two slots claim keeps neither claim: at most one of the two
+    // words is right and the census cannot say which, so both open and a
+    // cycle weighs them. A header slot keeps its claim, because it is the one
+    // slot allowed to name the root, and the other word is the damage.
+    std::vector<bool> dropped(intact.size(), false);
+    for (const auto& [child, claimants] : contested)
+        for (const size_t i : claimants)
+            if (i != claimants.front() || intact[i].slot.parent != HEADER_PARENT) {
+                dropped[i] = true;
+                open_of[intact[i].slot.parent].push_back(intact[i].slot);
+            }
+    for (size_t i = 0; i < intact.size(); ++i)
+        if (!dropped[i])
+            B.owner.emplace(intact[i].child, intact[i].slot);
+
+    // A suspect word is evidence only while the block it names has no parent;
+    // a block some other slot names intactly accounts for itself.
     for (const auto& [s, target] : suspects)
         if (!B.owner.contains(target))
-            B.open_of[s.parent].push_back(s);
+            open_of[s.parent].push_back(s);
 
-    // 4. The islands. The FF_HEADER roots the first, attached from the start;
-    //    every block with no decided parent roots an unattached one. The walks
-    //    use an explicit stack, so depth costs nothing.
-    std::vector<bool> placed(B.anchors.size(), false);
-    const auto grow = [&](Offset root, bool attached) {
-        const uint32_t index = static_cast<uint32_t>(B.islands.size());
-        Recovery::Island island{root, attached, {}};
-        std::vector<Offset> stack{root};
-        while (!stack.empty()) {
-            const Offset b = stack.back();
-            stack.pop_back();
-            if (const auto it = B.anchor_at.find(b); it != B.anchor_at.end()) {
-                if (placed[it->second])
-                    continue;
-                placed[it->second] = true;
-            }
-            island.members.push_back(b);
-            B.island_of[b] = index;
-            if (const auto k = kids.find(b); k != kids.end())
-                stack.insert(stack.end(), k->second.rbegin(), k->second.rend());
-        }
-        B.islands.push_back(std::move(island));
-    };
-    if (!header.empty())
-        grow(HEADER_PARENT, true);
-    for (const Anchor& a : B.anchors)
-        if (!B.owner.contains(a.off) && !placed[B.anchor_at.at(a.off)]) {
-            grow(a.off, false);
-            B.orphans[a.wire_tag].insert(a.off);
-        }
-    // Whatever is still unplaced lies on a loop of decided links: every block
-    // on it has a parent, and that parent is on the loop too. The offset chain
-    // is a tree, so only damage makes a loop -- a word that happens to name one
-    // of its own ancestors. Break it at its lowest offset and open the slot
-    // that closed it, since the census cannot tell which word on the loop is
-    // the damaged one and the task loop can.
-    for (const Anchor& a : B.anchors) {
-        if (placed[B.anchor_at.at(a.off)])
-            continue;
-        const Recovery::Slot closing = B.owner.at(a.off);
-        B.owner.erase(a.off);
-        dropped[claim.at(a.off)] = true;
-        B.open_of[closing.parent].push_back(closing);
-        std::vector<Offset>& siblings = kids[closing.parent];
-        siblings.erase(std::find(siblings.begin(), siblings.end(), a.off));
-        grow(a.off, false);
-        B.orphans[a.wire_tag].insert(a.off);
+    // Only what the header reaches becomes a question. An orphaned subtree's
+    // questions are answered when a cycle attaches it, as part of its branch.
+    for (const Offset m : attached(B, children(B))) {
+        if (const auto it = open_of.find(m); it != open_of.end())
+            for (const Recovery::Slot& s : it->second)
+                ask(B, {Recovery::PointKind::Open, s, FF_NULL_OFFSET});
+        if (refuted.contains(m))
+            ask(B, {Recovery::PointKind::ArrayExtent, {}, m});
     }
-
-    // 5. The points: the open slots and the refuted arrays of the attached
-    //    island. An unattached island's questions wait until it is attached,
-    //    because until then nothing says it belongs to the document at all.
-    if (!B.islands.empty() && B.islands.front().attached) {
-        for (const Offset m : B.islands.front().members) {
-            if (const auto it = B.open_of.find(m); it != B.open_of.end())
-                for (const Recovery::Slot& s : it->second)
-                    B.points.push_back({Recovery::PointKind::Open, s, FF_NULL_OFFSET});
-            if (B.refuted.contains(m))
-                B.points.push_back({Recovery::PointKind::ArrayExtent, {}, m});
-        }
-    }
-    const auto point_key = [](const Recovery::Point& p) {
-        return p.kind == Recovery::PointKind::Open ? p.slot.seat
-                                                   : p.array + FF_ARRAY::KIND_AND_STEP;
-    };
-    std::sort(B.points.begin(), B.points.end(),
-              [&point_key](const Recovery::Point& a, const Recovery::Point& b) {
-                  return point_key(a) < point_key(b);
-              });
-    for (std::size_t i = 0; i < intact.size(); ++i)
-        if (!dropped[i])
-            B.edges.push_back(intact[i]);
-    std::sort(B.edges.begin(), B.edges.end(),
-              [](const Recovery::Edge& a, const Recovery::Edge& b) { return a.slot.seat < b.slot.seat; });
     return B;
 }
 
-// Every slot of the block at `off`, read under `tag`. A data block's slots are
-// its V-Table's; an array's are its entries; the URL directory's are its
-// segment offsets. Everything else is a leaf.
-void slots_of(const Board& B, Offset off, RECOVERY_TAG tag,
-              std::vector<Recovery::Slot>& out, bool& refuted) {
-    if (IsArrayTagged(tag)) {
-        array_slots(B, off, tag, out, refuted);
+// The FF_HEADER's slots. ROOT_OFFSET followed by ROOT_RECOVERY is exactly a
+// tuple's layout, so the root is a tuple slot; the checksum footer, the URL
+// directory and the module registry are absolute offsets of a fixed type.
+std::vector<Recovery::Slot> header_slots(const BYTE* base, size_t size) {
+    if (size < FF_HEADER::HEADER_SIZE)
+        return {};
+    std::vector<Recovery::Slot> out{
+        {HEADER_PARENT, FF_HEADER::ROOT_OFFSET, FF_FIELD_RESOURCE, Recovery::SlotRepr::Tuple,
+         LOAD_U64(base + FF_HEADER::ROOT_OFFSET),
+         static_cast<RECOVERY_TAG>(LOAD_U16(base + FF_HEADER::ROOT_RECOVERY)), FF_RECOVER_UNDEFINED, nullptr}};
+    constexpr std::pair<Offset, RECOVERY_TAG> metadata[] = {
+        {FF_HEADER::CHECKSUM_OFFSET, RECOVER_FF_CHECKSUM},
+        {FF_HEADER::URL_DIR_OFFSET, RECOVER_FF_URL_DIRECTORY},
+        {FF_HEADER::MODULE_REG_OFFSET, RECOVER_FF_MODULE_REGISTRY},
+    };
+    for (const auto& [seat, tag] : metadata)
+        out.push_back({HEADER_PARENT, seat, FF_FIELD_BLOCK, Recovery::SlotRepr::Absolute,
+                       LOAD_U64(base + seat), FF_RECOVER_UNDEFINED, tag, nullptr});
+    return out;
+}
+
+// Place the blocks a hole holds. The arena is dense, so the first lost block
+// starts where the hole starts, and each one's residual tag gives the extent
+// that places the next. A block whose self-offset took any number of flips is
+// found this way; the chain stops at a tag this build cannot size.
+void chain_hole(Board& B, const Gap& hole) {
+    const uint64_t end = static_cast<uint64_t>(hole.start) + hole.length;
+    for (uint64_t q = hole.start; q + DATA_BLOCK::HEADER_SIZE <= end;) {
+        if (!sizable_tag(tag_at(B.base, B.size, q)))
+            return;
+        const uint64_t extent = classify_block(B.base, B.size, static_cast<Offset>(q)).size;
+        if (extent == 0 || q + extent > end)
+            return;
+        B.anchors.emplace(static_cast<Offset>(q), Anchor{tag_at(B.base, B.size, q), true, true});
+        q += extent;
+    }
+}
+
+// Where the first block after `off` starts, or the end of the extent. The
+// arena is dense, so this is where the block at `off` must end. Only a block
+// that vouches for itself, carries a tag this build can size, and tiles counts:
+// a pointer flipped into its own address self-validates too (748 with bit 7
+// cleared is 620, its own seat), and the bytes after it are neither an
+// assigned tag nor the start of an extent that ends on the next block, as a
+// real block's does.
+uint64_t next_block_after(const Board& B, uint64_t off) {
+    for (auto it = B.anchors.upper_bound(static_cast<Offset>(off)); it != B.anchors.end(); ++it)
+        if (!it->second.lost && it->second.tiles && sizable_tag(it->second.tag))
+            return std::min<uint64_t>(it->first, B.size);
+    return B.size;
+}
+
+bool in_hole(const Board& B, uint64_t p) {
+    const auto h = std::upper_bound(B.holes.begin(), B.holes.end(), p,
+                                    [](uint64_t q, const Gap& g) { return q < g.start; });
+    return h != B.holes.begin() && p < static_cast<uint64_t>(std::prev(h)->start) + std::prev(h)->length;
+}
+
+// The tag at `p` as the board knows it: a known block's type, which may be a
+// decided one, or the residual bytes of a hole position.
+RECOVERY_TAG block_tag(const Board& B, uint64_t p) {
+    if (const auto a = B.anchors.find(static_cast<Offset>(p)); a != B.anchors.end())
+        return a->second.tag;
+    return in_hole(B, p) ? tag_at(B.base, B.size, p) : FF_RECOVER_UNDEFINED;
+}
+
+// ---- arrays: the geometry the bytes support ----
+
+Geometry stamped(const Board& B, Offset off) {
+    return {LOAD_U16(B.base + off + FF_ARRAY::KIND_AND_STEP), LOAD_U32(B.base + off + FF_ARRAY::ENTRY_COUNT)};
+}
+
+uint16_t packing_of(RECOVERY_TAG element, uint64_t stride) {
+    const uint16_t kind =
+        element_shape(element) == ElementShape::OffsetPtr ? FF_ARRAY::OFFSET : FF_ARRAY::INLINE_BLOCK;
+    return static_cast<uint16_t>(kind | (stride & FF_ARRAY::STEP_MASK));
+}
+
+// Can position `p` hold an entry of an array of blocks? It must fit before the
+// next block (H3), and whatever is there -- a block, or a hole's remains --
+// must carry the element type (EXACT) or a tag within TAG_RADIUS of it (NEAR).
+enum class Fit : uint8_t { Exact, Near, Foreign };
+
+Fit entry_fit(const Board& B, uint64_t p, uint64_t stride, RECOVERY_TAG element) {
+    if (!in_extent(p, stride, B.size) || p + stride > next_block_after(B, p))
+        return Fit::Foreign;
+    const RECOVERY_TAG t = block_tag(B, p);
+    if (t == element)
+        return Fit::Exact;
+    return t != FF_RECOVER_UNDEFINED && hamming(t, element) <= TAG_RADIUS ? Fit::Near : Fit::Foreign;
+}
+
+// Does the word at `p` name an entry every witness of which holds? A word
+// naming its own position is the header of the block that follows the array,
+// read as if it were an entry, and never one; nor is a block another slot
+// already names (H5).
+bool names_an_entry(const Board& B, uint64_t p, ElementShape shape, RECOVERY_TAG element) {
+    const auto a = B.anchors.find(static_cast<Offset>(LOAD_U64(B.base + p)));
+    if (a == B.anchors.end() || a->second.lost || a->first == p || B.owner.contains(a->first))
+        return false;
+    const RECOVERY_TAG want =
+        shape == ElementShape::Tuple ? static_cast<RECOVERY_TAG>(LOAD_U16(B.base + p + 8)) : element;
+    return a->second.tag == want;
+}
+
+// The geometry the bytes around an array support, or nothing when they do not
+// settle it. An array's entries carry no witnesses of their own, so its count
+// is checked against the arena instead: a tuple or offset array's entries end
+// at the next block, and an array of blocks runs for as long as blocks of the
+// element type follow at its stride. Where the bytes leave the count open -- a
+// block one tag flip from the element type at the tail, which is either a
+// damaged entry or the block after the array -- the stamped count decides.
+std::optional<Geometry> derive(const Board& B, Offset off, RECOVERY_TAG tag) {
+    const RECOVERY_TAG element = GetTypeFromTag(tag);
+    const ElementShape shape   = element_shape(element);
+    const Geometry     st      = stamped(B, off);
+    const uint64_t     entries = static_cast<uint64_t>(off) + FF_ARRAY::HEADER_SIZE;
+    const uint64_t     width   = element_stride(element);
+    if (width == 0 || !in_extent(entries, 0, B.size))
+        return std::nullopt;
+
+    if (shape != ElementShape::Block) {
+        const uint64_t limit = next_block_after(B, off);
+        if (limit < entries)
+            return std::nullopt;
+        const uint64_t room = (limit - entries) / width;
+        Geometry g{packing_of(element, width), st.count};
+        if (st.count <= room) {
+            // A count flipped low leaves entries past the stamped ones whose
+            // every witness still holds.
+            while (shape != ElementShape::Scalar && g.count < room &&
+                   names_an_entry(B, entries + g.count * width, shape, element))
+                ++g.count;
+            return g;
+        }
+        // An entry flipped into its own address self-validates too, and would
+        // end the entries early. The stamp stands when that one word sits on an
+        // entry boundary, the stamped entries fit before the block after it,
+        // and the entry following it still names an entry.
+        const bool on_boundary = (limit - entries) % width == 0;
+        const bool fits_past   = entries + uint64_t{st.count} * width <= next_block_after(B, limit);
+        if (shape != ElementShape::Scalar && on_boundary && fits_past && room + 1 < st.count &&
+            names_an_entry(B, entries + (room + 1) * width, shape, element))
+            return g;
+        // A count flipped high overruns the next block. The entries must tile
+        // exactly up to it, and the last of them must still name its entry.
+        const bool tiles = (limit - entries) % width == 0;
+        const bool last_holds = shape == ElementShape::Scalar || room == 0 ||
+                                names_an_entry(B, entries + (room - 1) * width, shape, element);
+        if (!tiles || !last_holds)
+            return std::nullopt;
+        g.count = static_cast<uint32_t>(room);
+        return g;
+    }
+
+    // An array of blocks. The stamped count is its witness, and a damaged entry
+    // does not end the array: an entry whose self-offset or tag was damaged
+    // still sits at its stride, in a hole or under a near tag (REC-21.3, where
+    // ending at the first damaged entry overwrote an intact count of 1,473 with
+    // 28). It ends early only where something else demonstrably starts inside
+    // the stamped entries: a block that vouches for itself and is not an entry
+    // (its tag is foreign, or no entry fits before the next block), or bytes
+    // that are neither a block nor a hole. It runs late while blocks of exactly
+    // the element type continue at the stride. The stride is the stamped one
+    // unless that is shorter than any block of the type, and failing that the
+    // compiled one.
+    const auto ends_at = [&](uint64_t p, uint64_t stride) {
+        const auto a = B.anchors.find(static_cast<Offset>(p));
+        if (a != B.anchors.end() && !a->second.lost)
+            return entry_fit(B, p, stride, element) == Fit::Foreign;
+        return !in_extent(p, stride, B.size) || (a == B.anchors.end() && !in_hole(B, p));
+    };
+    // An entry past the stamp is a block of exactly the element type that
+    // tiles -- the block after an array can have its own tag flipped into the
+    // element type, and then it fits but does not end where an entry would --
+    // and that no other slot names (H5).
+    const auto continues_at = [&](uint64_t p, uint64_t stride) {
+        const auto a = B.anchors.find(static_cast<Offset>(p));
+        const auto o = B.owner.find(static_cast<Offset>(p));
+        return a != B.anchors.end() && !a->second.lost && a->second.tiles &&
+               entry_fit(B, p, stride, element) == Fit::Exact && (o == B.owner.end() || o->second.parent == off);
+    };
+    const uint64_t stamped_stride = st.packing & FF_ARRAY::STEP_MASK;
+    std::optional<Geometry> first;
+    for (const uint64_t stride : {std::max(stamped_stride, width), width}) {
+        uint32_t count = 0;
+        while (count < st.count && !ends_at(entries + uint64_t{count} * stride, stride))
+            ++count;
+        while (count >= st.count && continues_at(entries + uint64_t{count} * stride, stride))
+            ++count;
+        const Geometry g{packing_of(element, stride), count};
+        if (count == st.count)
+            return g;
+        if (!first)
+            first = g;
+    }
+    return first;
+}
+
+// The slots of an array's first `g.count` entries, as far as the bytes allow:
+// no further than the next block, unless `g` is a geometry derive() settled.
+void read_entries(const Board& B, Offset off, RECOVERY_TAG element, const Geometry& g, bool settled,
+                  std::vector<Recovery::Slot>& out) {
+    const ElementShape shape   = element_shape(element);
+    const uint64_t     entries = static_cast<uint64_t>(off) + FF_ARRAY::HEADER_SIZE;
+    const uint64_t     width   = element_stride(element);
+    if (shape == ElementShape::Scalar || width == 0)
         return;
+    const bool     blocks = shape == ElementShape::Block;
+    const uint64_t stride = blocks ? std::max<uint64_t>(g.packing & FF_ARRAY::STEP_MASK, width) : width;
+    const uint64_t limit  = blocks || settled ? B.size : next_block_after(B, off);
+    for (uint64_t i = 0; i < g.count && entries + (i + 1) * stride <= limit; ++i) {
+        const uint64_t p = entries + i * stride;
+        if (blocks && entry_fit(B, p, stride, element) == Fit::Foreign)
+            return;
+        Recovery::Slot s{off, static_cast<Offset>(p), FF_FIELD_BLOCK, Recovery::SlotRepr::InlineEntry,
+                         0, FF_RECOVER_UNDEFINED, element, nullptr};
+        if (shape == ElementShape::Tuple)
+            s = {off, static_cast<Offset>(p), FF_FIELD_RESOURCE, Recovery::SlotRepr::Tuple,
+                 LOAD_U64(B.base + p), static_cast<RECOVERY_TAG>(LOAD_U16(B.base + p + 8)),
+                 FF_RECOVER_UNDEFINED, nullptr};
+        if (shape == ElementShape::OffsetPtr)
+            s = {off, static_cast<Offset>(p), FF_FIELD_STRING, Recovery::SlotRepr::Absolute,
+                 LOAD_U64(B.base + p), FF_RECOVER_UNDEFINED, element, nullptr};
+        out.push_back(s);
+    }
+}
+
+// ---- reading and judging slots ----
+
+// Every slot of the block at `off`, read as `tag`, appended to `out`. False
+// when the reading is impossible under H3: a data block never contains another
+// block's first byte, so a type whose V-Table would reach the next block is not
+// this block's type, and reading it anyway lifts the next block's slots as
+// this one's. A newer writer only ever makes a block larger than this build's
+// table says, so the true type is never refused by this. `refuted` reports an
+// array whose stamped geometry the bytes around it contradict.
+bool slots_of(const Board& B, Offset off, RECOVERY_TAG tag, std::vector<Recovery::Slot>& out,
+              bool* refuted) {
+    if (IsArrayTag(tag)) {
+        if (!in_extent(off, FF_ARRAY::HEADER_SIZE, B.size))
+            return false;
+        const std::optional<Geometry> g  = derive(B, off, tag);
+        const Geometry                st = stamped(B, off);
+        if (refuted)
+            *refuted = !g || *g != st;
+        // No further than both the stamp and the bytes allow: the entries the
+        // stamp omits are the question a cycle answers.
+        read_entries(B, off, GetTypeFromTag(tag), g ? Geometry{g->packing, std::min(g->count, st.count)} : st,
+                     g.has_value(), out);
+        return true;
     }
     if (tag == RECOVER_FF_URL_DIRECTORY) {
-        url_directory_slots(B, off, out);
-        return;
+        // Each 16-byte entry ends with the offset of its segment's FF_STRING.
+        const uint64_t table = static_cast<uint64_t>(off) + FF_URL_DIRECTORY::HEADER_SIZE;
+        const uint64_t limit = next_block_after(B, off);
+        if (limit < table)
+            return true;
+        const uint64_t n = std::min<uint64_t>(LOAD_U32(B.base + off + FF_URL_DIRECTORY::ENTRY_COUNT),
+                                              (limit - table) / FF_URL_DIRECTORY::URL_ENTRY_SIZE);
+        for (uint64_t i = 0; i < n; ++i) {
+            const uint64_t seat =
+                table + i * FF_URL_DIRECTORY::URL_ENTRY_SIZE + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET;
+            out.push_back({off, static_cast<Offset>(seat), FF_FIELD_STRING, Recovery::SlotRepr::Absolute,
+                           LOAD_U64(B.base + seat), FF_RECOVER_UNDEFINED, RECOVER_FF_STRING, nullptr});
+        }
+        return true;
     }
-    // A leaf (FF_STRING and everything sharing its layout, FF_CODED_VALUE, the
-    // checksum footer, the module registry) has no reflected fields, and a tag
-    // this build does not know has none either.
     const auto fields = reflected_fields_view(static_cast<uint16_t>(tag));
     if (fields.empty())
-        return;
-    // H3. A data block never contains another block's first byte, so a type
-    // whose V-Table would reach the next self-validating block is not this
-    // block's type, and its V-Table must not be read here. Reading it anyway
-    // lifts the NEXT block's slots as this one's, and every child they name
-    // is then claimed twice. A newer writer only ever makes a block larger
-    // than this build's table says, so the true type is never refused by this.
-    if (static_cast<uint64_t>(off) + Recovery::derived_block_size(tag) > next_anchor_after(B, off))
-        return;
+        return true;  // a leaf, or a tag this build does not know
+    if (static_cast<uint64_t>(off) + Recovery::derived_block_size(tag) > next_block_after(B, off))
+        return false;
     for (const FF_FieldInfo& f : fields) {
         const uint64_t seat = static_cast<uint64_t>(off) + f.field_offset;
-        if (seat + ff_slot_width(f.kind) > B.size)
-            continue;
-        Recovery::Slot s;
-        s.parent = off;
-        s.seat   = static_cast<Offset>(seat);
-        s.kind   = f.kind;
+        Recovery::Slot s{off, static_cast<Offset>(seat), f.kind, Recovery::SlotRepr::Absolute,
+                         0, FF_RECOVER_UNDEFINED, f.child_recovery, &f};
         switch (f.kind) {
             case FF_FIELD_BLOCK:
             case FF_FIELD_STRING:
             case FF_FIELD_ARRAY:
-                s.repr   = Recovery::SlotRepr::Absolute;
                 s.stored = LOAD_U64(B.base + seat);
-                s.expect = f.child_recovery;
                 break;
             case FF_FIELD_RESOURCE:
             case FF_FIELD_CHOICE:
                 s.repr       = Recovery::SlotRepr::Tuple;
                 s.stored     = LOAD_U64(B.base + seat);
                 s.stored_tag = static_cast<RECOVERY_TAG>(LOAD_U16(B.base + seat + 8));
+                s.expect     = FF_RECOVER_UNDEFINED;
                 break;
             case FF_FIELD_CODE:
                 s.repr   = Recovery::SlotRepr::Relative32;
@@ -2554,10 +742,9 @@ void slots_of(const Board& B, Offset off, RECOVERY_TAG tag,
                 s.stored = LOAD_U64(B.base + seat);
                 s.expect = RECOVER_FF_STRING;
                 break;
-            // An inline value names nothing. A URL slot is an index into the
-            // URL directory, not an offset. An identity slot is a
-            // cross-reference between resources, which sits outside the
-            // offset chain (H5) and takes no part in structural recovery.
+            // An inline value names nothing. A URL slot indexes the URL
+            // directory. An identity slot is a cross-reference outside the
+            // offset chain (H5), which takes no part in structural recovery.
             case FF_FIELD_UNKNOWN:
             case FF_FIELD_BOOL:
             case FF_FIELD_INT32:
@@ -2571,1038 +758,1245 @@ void slots_of(const Board& B, Offset off, RECOVERY_TAG tag,
         }
         out.push_back(s);
     }
+    return true;
 }
 
-// The entries of an array, bounded by the bytes around it rather than by the
-// stamped count alone.
-//
-// An array's entries carry no witnesses of their own, so its stamped geometry
-// (the entry kind, the stride and the count) is believed only as far as the
-// arena agrees with it. The arena is dense: a block starts where the previous
-// one ends, so the entries of a tuple or offset array end at the next
-// self-validating block, and the entries of an inline array are themselves
-// blocks of the element type, one stride apart. Where the stamped geometry
-// runs past what the bytes support, the census reads only the entries the
-// bytes do support and marks the array REFUTED, which becomes one point. That
-// is what keeps a flipped count from opening a slot for every phantom entry.
-//
-// A damaged entry does not end the array. An inline entry whose self-offset
-// was flipped still sits at its stride, inside a hole, with its tag intact, and
-// it is read as an entry whose link is open.
-void array_slots(const Board& B, Offset off, RECOVERY_TAG tag,
-                 std::vector<Recovery::Slot>& out, bool& refuted) {
-    const uint64_t entries = static_cast<uint64_t>(off) + FF_ARRAY::HEADER_SIZE;
-    if (entries > B.size) {
-        refuted = true;  // the header itself does not fit
-        return;
-    }
-    const RECOVERY_TAG element  = GetTypeFromTag(tag);
-    const uint16_t     packed   = LOAD_U16(B.base + off + FF_ARRAY::KIND_AND_STEP);
-    const uint64_t     stride   = packed & FF_ARRAY::STEP_MASK;
-    const uint32_t     stamped  = LOAD_U32(B.base + off + FF_ARRAY::ENTRY_COUNT);
-    const ElementShape shape    = element_shape_of(
-        element, static_cast<FF_ARRAY::EntryKind>(packed & FF_ARRAY::KIND_MASK));
+// How a slot's word names a block when its child's type is `x`. A tuple's
+// encoding follows its variant: a code or date/time variant names its
+// fallback leaf by an offset relative to the block that holds the slot.
+enum class Encoding : uint8_t { Absolute, Relative32, Relative63, Geometry };
 
-    // The first self-validating block after the header: under the density
-    // premise, where a tuple, offset or scalar array's entries end.
-    const uint64_t limit = next_anchor_after(B, off);
-    const auto in_hole = [&B](uint64_t p) {
-        const auto h = std::upper_bound(B.holes.begin(), B.holes.end(), p,
-                                        [](uint64_t q, const Gap& g) { return q < g.start; });
-        return h != B.holes.begin() &&
-               p < static_cast<uint64_t>(std::prev(h)->start) + std::prev(h)->length;
-    };
-    const auto anchor_tag = [&B](uint64_t p) {
-        const auto it = B.anchor_at.find(static_cast<Offset>(p));
-        return it != B.anchor_at.end() ? B.anchors[it->second].wire_tag : FF_RECOVER_UNDEFINED;
-    };
-
-    switch (shape) {
-        case ElementShape::None: {
-            // Raw scalars name nothing, but their count can still overrun.
-            const uint64_t end = entries + static_cast<uint64_t>(stamped) * stride;
-            if (end > limit)
-                refuted = true;
-            return;
-        }
-        case ElementShape::Tuple:
-        case ElementShape::OffsetPtr: {
-            const uint64_t width = shape == ElementShape::Tuple ? 10 : 8;
-            const uint64_t room  = limit > entries ? (limit - entries) / width : 0;
-            const uint64_t n     = std::min<uint64_t>(stamped, room);
-            if (stamped > room)
-                refuted = true;
-            // A count flipped LOW leaves the rest of the entries unclaimed: a
-            // hole begins exactly where the stamped entries end, and its first
-            // bytes still read as an entry whose every witness holds.
-            const uint64_t tail = entries + static_cast<uint64_t>(stamped) * width;
-            if (!refuted && tail + width <= limit && in_hole(tail)) {
-                const Offset t = static_cast<Offset>(LOAD_U64(B.base + tail));
-                const RECOVERY_TAG want = shape == ElementShape::Tuple
-                                              ? static_cast<RECOVERY_TAG>(LOAD_U16(B.base + tail + 8))
-                                              : element;
-                if (t != FF_NULL_OFFSET && anchor_tag(t) == want)
-                    refuted = true;
-            }
-            for (uint64_t i = 0; i < n; ++i) {
-                const uint64_t p = entries + i * width;
-                Recovery::Slot s;
-                s.parent = off;
-                s.seat   = static_cast<Offset>(p);
-                s.stored = LOAD_U64(B.base + p);
-                if (shape == ElementShape::Tuple) {
-                    s.kind       = FF_FIELD_RESOURCE;
-                    s.repr       = Recovery::SlotRepr::Tuple;
-                    s.stored_tag = static_cast<RECOVERY_TAG>(LOAD_U16(B.base + p + 8));
-                } else {
-                    s.kind   = FF_FIELD_STRING;
-                    s.repr   = Recovery::SlotRepr::Absolute;
-                    s.expect = element;
-                }
-                out.push_back(s);
-            }
-            return;
-        }
-        case ElementShape::InlineBlock: {
-            if (stride < DATA_BLOCK::HEADER_SIZE) {
-                refuted = true;  // no block fits a stride this short
-                return;
-            }
-            // Each position the stamped count covers is one of three things.
-            // EXACT: a block of the element type, or the unclaimed remains of
-            // one (a hole position whose residual tag is still the element
-            // type's, because only its self-offset was damaged). NEAR: a
-            // block, or remains, whose tag is within TAG_RADIUS of the element
-            // type. FOREIGN: anything else, which means the array has already
-            // ended.
-            //
-            // A NEAR position is an entry whose tag was damaged only if the
-            // array demonstrably continues after it. At the tail there is
-            // nothing after it, and there a flipped entry tag and a flipped
-            // count look exactly alike: one entry's tag moved a bit, or the
-            // count moved and this is the next block, whose tag happens to lie
-            // a bit from the element type (an FF_STRING, 0x0002, is one bit
-            // from a Coding, 0x0202). The census does not choose. It reads the
-            // entries up to the last EXACT one and refutes the array, which
-            // asks the task loop one question about its extent.
-            uint64_t last_exact = 0;  // one past the last EXACT position
-            for (uint64_t i = 0; i < stamped; ++i) {
-                const uint64_t p = entries + i * stride;
-                if (p + stride > B.size)
-                    break;
-                const RECOVERY_TAG seen = anchor_tag(p);
-                const RECOVERY_TAG residual =
-                    seen != FF_RECOVER_UNDEFINED
-                        ? seen
-                        : (in_hole(p) ? FF_GET_RECOVERY_TAG(B.base, static_cast<Offset>(p))
-                                      : FF_RECOVER_UNDEFINED);
-                if (residual == FF_RECOVER_UNDEFINED ||
-                    Recovery::hamming_cost(residual, element) > TAG_RADIUS)
-                    break;
-                if (residual == element)
-                    last_exact = i + 1;
-            }
-            if (last_exact < stamped)
-                refuted = true;
-            for (uint64_t i = 0; i < last_exact; ++i) {
-                const uint64_t p = entries + i * stride;
-                Recovery::Slot s;
-                s.parent = off;
-                s.seat   = static_cast<Offset>(p);
-                s.kind   = FF_FIELD_BLOCK;
-                s.repr   = Recovery::SlotRepr::InlineEntry;
-                s.expect = element;
-                out.push_back(s);
-            }
-            // A count flipped LOW leaves more entries after the stamped ones:
-            // a block of exactly the element type sits at the next stride, and
-            // it fits there (H3). The fit is what separates a real entry from
-            // the block that follows the array having had its own tag flipped
-            // into the element type: the string after a Coding array, tagged
-            // 0x0202 by one flip, would need 55 bytes and has 30.
-            const uint64_t after = entries + static_cast<uint64_t>(stamped) * stride;
-            if (anchor_tag(after) == element &&
-                after + stride <= next_anchor_after(B, static_cast<Offset>(after)))
-                refuted = true;
-            return;
-        }
-    }
-}
-
-// The URL directory's segment offsets. Each 16-byte entry ends with the
-// absolute offset of the FF_STRING holding that entry's segment.
-void url_directory_slots(const Board& B, Offset off, std::vector<Recovery::Slot>& out) {
-    const uint64_t table = static_cast<uint64_t>(off) + FF_URL_DIRECTORY::HEADER_SIZE;
-    if (table > B.size)
-        return;
-    // The table ends where the next self-validating block begins, for the
-    // same reason an array's entries do.
-    const uint64_t limit = next_anchor_after(B, off);
-    const uint64_t room  = limit > table ? (limit - table) / FF_URL_DIRECTORY::URL_ENTRY_SIZE : 0;
-    const uint64_t n = std::min<uint64_t>(LOAD_U32(B.base + off + FF_URL_DIRECTORY::ENTRY_COUNT), room);
-    for (uint64_t i = 0; i < n; ++i) {
-        const uint64_t seat =
-            table + i * FF_URL_DIRECTORY::URL_ENTRY_SIZE + FF_URL_DIRECTORY::URL_ENTRY_SEG_OFFSET;
-        Recovery::Slot s;
-        s.parent = off;
-        s.seat   = static_cast<Offset>(seat);
-        s.kind   = FF_FIELD_STRING;
-        s.repr   = Recovery::SlotRepr::Absolute;
-        s.stored = LOAD_U64(B.base + seat);
-        s.expect = RECOVER_FF_STRING;
-        out.push_back(s);
-    }
-}
-
-// Does this build know the layout of a block carrying `tag`? Recovery's
-// plausible_tag() cannot answer that: it maps every value from 0x0200 up to
-// FF_FIELD_BLOCK, so 0xFFFF passes it. This asks the layouts themselves. A
-// newer writer's tag fails it too, which only ever makes the census trust a
-// position less, never more.
-bool sizable_tag(RECOVERY_TAG tag) {
-    if (IsArrayTagged(tag)) {
-        const RECOVERY_TAG element = GetTypeFromTag(tag);
-        if (element == RECOVER_FF_RESOURCE)
-            return true;  // a resource array: 10-byte tuples
-        if (FF_IsScalarBlockTag(element))
-            return Recovery_to_Kind(element) != FF_FIELD_UNKNOWN;  // raw scalars
-        return sizable_tag(element);
-    }
-    if (FF_IsStringLayoutTag(tag) || tag == RECOVER_FF_CODED_VALUE || tag == RECOVER_FF_CHECKSUM ||
-        tag == RECOVER_FF_URL_DIRECTORY || tag == RECOVER_FF_MODULE_REGISTRY)
-        return true;
-    return !reflected_fields_view(static_cast<uint16_t>(tag)).empty();
-}
-
-// Where the first block after `off` starts, or the end of the trusted extent
-// when there is none. The arena is dense, so this is where the block at `off`
-// must end, and nothing it contains may lie past it.
-//
-// Only a self-validating position whose tag this build can size counts as a
-// block here. A pointer word that a flip has turned into its own address
-// self-validates as well -- 748 with bit 7 cleared is 620, and a slot at 620
-// holding a pointer to a block 128 bytes away is one flip from that -- and the
-// two bytes after it are whatever the next slot holds, almost never an
-// assigned tag. Letting such a word end the block around it would refuse that
-// block's true V-Table.
-uint64_t next_anchor_after(const Board& B, Offset off) {
-    auto next = std::upper_bound(B.anchors.begin(), B.anchors.end(), off,
-                                 [](Offset o, const Anchor& a) { return o < a.off; });
-    while (next != B.anchors.end() && !sizable_tag(next->wire_tag))
-        ++next;
-    return next != B.anchors.end() ? std::min<uint64_t>(next->off, B.size)
-                                   : static_cast<uint64_t>(B.size);
-}
-
-// The type a slot's child must carry on the wire for the link to be decided.
-// An ARRAY slot's compiled expectation is the element type, and the array
-// block itself carries it with the array bit set, so the comparison is exact
-// including that bit.
-RECOVERY_TAG wire_expectation(const Recovery::Slot& s) noexcept {
-    if (s.repr == Recovery::SlotRepr::Tuple)
-        return s.stored_tag;
-    if (s.kind == FF_FIELD_ARRAY)
-        return ToArrayTag(s.expect);
-    return s.expect;
-}
-
-// Which types a tuple slot may hold (H1). The FF_HEADER may be rooted at any
-// block the Builder was given. A resource slot holds a resource, or an opaque
-// resource kept verbatim from outside the profile. A choice slot admits every
-// type this build knows until the generator emits each field's variant list
-// (RA-2).
-bool band_admits(const Recovery::Slot& s, RECOVERY_TAG tag) noexcept {
-    if (!Recovery::plausible_tag(tag))
-        return false;
-    if (s.parent == HEADER_PARENT || s.kind == FF_FIELD_CHOICE)
-        return true;
-    return FF_IsResourceTag(tag) || tag == RECOVER_FF_OPAQUE_JSON;
-}
-
-// Does the block at `t` vouch for itself and carry exactly the type `want`?
-Judged settle(const Board& B, uint64_t t, RECOVERY_TAG want) {
-    const auto it = B.anchor_at.find(static_cast<Offset>(t));
-    if (it != B.anchor_at.end() && B.anchors[it->second].wire_tag == want)
-        return {Reading::Intact, static_cast<Offset>(t)};
-    return {Reading::Dangling, static_cast<Offset>(t)};
-}
-
-// Is the block at `t` a self-validating block of exactly the type `want`?
-bool names_a_block_of(const Board& B, uint64_t t, RECOVERY_TAG want) {
-    const auto it = B.anchor_at.find(static_cast<Offset>(t));
-    return it != B.anchor_at.end() && B.anchors[it->second].wire_tag == want;
-}
-
-Judged judge(const Board& B, const Recovery::Slot& s) {
+Encoding encoding(const Recovery::Slot& s, RECOVERY_TAG x) noexcept {
     switch (s.repr) {
-        case Recovery::SlotRepr::Absolute:
-            if (s.stored == static_cast<uint64_t>(FF_NULL_OFFSET))
-                return {};
-            return settle(B, s.stored, wire_expectation(s));
-        case Recovery::SlotRepr::InlineEntry:
-            return settle(B, s.seat, s.expect);
-        case Recovery::SlotRepr::Tuple:
-            return judge_tuple(B, s);
-        case Recovery::SlotRepr::Relative32:
-            return judge_relative32(B, s, static_cast<uint32_t>(s.stored));
-        case Recovery::SlotRepr::Relative63:
-            return judge_relative63(B, s, s.stored);
+        case Recovery::SlotRepr::Absolute:    return Encoding::Absolute;
+        case Recovery::SlotRepr::Relative32:  return Encoding::Relative32;
+        case Recovery::SlotRepr::Relative63:  return Encoding::Relative63;
+        case Recovery::SlotRepr::InlineEntry: return Encoding::Geometry;
+        case Recovery::SlotRepr::Tuple:       break;
     }
-    return {};
+    const FF_FieldKind kind = Recovery_to_Kind(x);
+    if (kind == FF_FIELD_CODE)
+        return Encoding::Relative32;
+    return kind == FF_FIELD_DATETIME ? Encoding::Relative63 : Encoding::Absolute;
 }
 
-// A tuple is read by its tag half: an offset-bearing type names a block at the
-// absolute offset in its first eight bytes, a code or date/time names one only
-// through a relative fallback, and a scalar names nothing.
-//
-// Its tag half can be the damaged witness, though, and a flip there can turn a
-// pointer into what reads as a scalar, a code or a date/time. The word then
-// still holds the child's exact offset, which a real value almost never does:
-// the child is a self-validating block, and its tag sits within TAG_RADIUS of
-// the stored one. That is read as Suspect, never as a value.
-Judged judge_tuple(const Board& B, const Recovery::Slot& s) {
-    if (s.stored == static_cast<uint64_t>(FF_NULL_OFFSET))
-        return {};  // monostate: the slot is empty
-    if (!band_admits(s, s.stored_tag))
-        return {Reading::Suspect, static_cast<Offset>(s.stored)};
-    const FF_FieldKind kind = Recovery_to_Kind(s.stored_tag);
-    const bool names_by_offset = kind == FF_FIELD_STRING || kind == FF_FIELD_BLOCK ||
-                                 kind == FF_FIELD_RESOURCE || kind == FF_FIELD_ARRAY ||
-                                 kind == FF_FIELD_CHOICE || kind == FF_FIELD_URL;
-    if (names_by_offset)
-        return settle(B, s.stored, s.stored_tag);
-    if (const auto it = B.anchor_at.find(static_cast<Offset>(s.stored)); it != B.anchor_at.end()) {
-        const RECOVERY_TAG there = B.anchors[it->second].wire_tag;
-        const FF_FieldKind there_kind = Recovery_to_Kind(there);
-        const bool there_by_offset = there_kind == FF_FIELD_STRING || there_kind == FF_FIELD_BLOCK ||
-                                     there_kind == FF_FIELD_RESOURCE;
-        if (there_by_offset && band_admits(s, there) &&
-            Recovery::hamming_cost(there, s.stored_tag) <= TAG_RADIUS)
-            return {Reading::Suspect, static_cast<Offset>(s.stored)};
+uint8_t pointer_width(Encoding e) noexcept {
+    return e == Encoding::Relative32 ? 4 : e == Encoding::Geometry ? 0 : 8;
+}
+
+uint64_t pointer_word(const Recovery::Slot& s, Encoding e) noexcept {
+    return e == Encoding::Relative32 ? static_cast<uint32_t>(s.stored) : s.stored;
+}
+
+Offset decode(const Recovery::Slot& s, Encoding e) noexcept {
+    switch (e) {
+        case Encoding::Absolute:   return static_cast<Offset>(s.stored);
+        case Encoding::Relative32: return FF_ResolveCodeableConceptOffset(static_cast<uint32_t>(s.stored), s.parent);
+        case Encoding::Relative63: return FF_ResolveDateTimeOffset(s.stored, s.parent);
+        case Encoding::Geometry:   return s.seat;
     }
-    switch (kind) {
+    return FF_NULL_OFFSET;
+}
+
+// What an empty slot holds in each encoding.
+uint64_t null_word(Encoding e) noexcept {
+    switch (e) {
+        case Encoding::Relative32: return FF_CODE_NULL;
+        case Encoding::Relative63: return FF_DATETIME_NULL;
+        case Encoding::Absolute:
+        case Encoding::Geometry:   return FF_NULL_OFFSET;
+    }
+    return FF_NULL_OFFSET;
+}
+
+uint64_t encode(const Recovery::Slot& s, Encoding e, Offset target) noexcept {
+    if (target == FF_NULL_OFFSET)
+        return null_word(e);
+    const uint64_t relative = static_cast<uint64_t>(target) - static_cast<uint64_t>(s.parent);
+    switch (e) {
+        case Encoding::Absolute:   return target;
+        case Encoding::Relative32: return (relative & 0x7FFFFFFFu) | FF_CODED_VALUE_FLAG;
+        case Encoding::Relative63: return (relative & FF_DATETIME_PAYLOAD_MASK) | FF_DATETIME_FALLBACK_FLAG;
+        case Encoding::Geometry:   return 0;
+    }
+    return 0;
+}
+
+// The tag the child must carry on the wire when the slot's type is `x`. An
+// ARRAY slot's compiled type is the element, which the array carries with the
+// array bit set; a code or date/time variant's child is its fallback leaf.
+RECOVERY_TAG child_wire(const Recovery::Slot& s, RECOVERY_TAG x) noexcept {
+    if (s.kind == FF_FIELD_ARRAY && s.repr == Recovery::SlotRepr::Absolute)
+        return ToArrayTag(x);
+    const FF_FieldKind kind = Recovery_to_Kind(x);
+    if (kind == FF_FIELD_CODE)
+        return RECOVER_FF_CODED_VALUE;
+    return kind == FF_FIELD_DATETIME ? RECOVER_FF_STRING : x;
+}
+
+// Whether a variant names a block at all. A scalar or identity variant is a
+// value held in the slot itself.
+bool names_a_block(RECOVERY_TAG x) noexcept {
+    switch (Recovery_to_Kind(x)) {
+        case FF_FIELD_STRING:
+        case FF_FIELD_BLOCK:
+        case FF_FIELD_RESOURCE:
+        case FF_FIELD_ARRAY:
+        case FF_FIELD_CHOICE:
         case FF_FIELD_CODE:
-            return judge_relative32(B, s, static_cast<uint32_t>(s.stored));
         case FF_FIELD_DATETIME:
-            return judge_relative63(B, s, s.stored);
+            return true;
+        case FF_FIELD_UNKNOWN:
         case FF_FIELD_BOOL:
         case FF_FIELD_INT32:
         case FF_FIELD_UINT32:
         case FF_FIELD_INT64:
         case FF_FIELD_UINT64:
         case FF_FIELD_FLOAT64:
-        case FF_FIELD_ID:
-            return {Reading::Inline, FF_NULL_OFFSET};
-        // Excluded above: band_admits refuses an unknown tag, and the
-        // offset-bearing kinds were settled already.
-        case FF_FIELD_UNKNOWN:
-        case FF_FIELD_STRING:
-        case FF_FIELD_BLOCK:
-        case FF_FIELD_RESOURCE:
-        case FF_FIELD_ARRAY:
-        case FF_FIELD_CHOICE:
         case FF_FIELD_URL:
+        case FF_FIELD_ID:
+            return false;
+    }
+    return false;
+}
+
+// H1: which types a tuple may hold. The Builder may root a stream at any
+// block; a resource slot holds a resource, or one kept verbatim as opaque JSON
+// from outside the profile; a choice holds one of its StructureDefinitions'
+// variants over every revision this build reads.
+std::span<const RECOVERY_TAG> band(const Recovery::Slot& s) {
+    static const auto known = [](bool resources) {
+        std::vector<RECOVERY_TAG> v;
+        for (uint32_t t = 1; t < RECOVER_ARRAY_BIT; ++t) {
+            const auto tag = static_cast<RECOVERY_TAG>(t);
+            if (sizable_tag(tag) && (!resources || FF_IsResourceTag(tag) || tag == RECOVER_FF_OPAQUE_JSON))
+                v.push_back(tag);
+        }
+        return v;
+    };
+    static const std::vector<RECOVERY_TAG> any = known(false), resources = known(true);
+    if (s.parent == HEADER_PARENT || (s.kind == FF_FIELD_CHOICE && s.field == nullptr))
+        return any;
+    return s.kind == FF_FIELD_CHOICE ? s.field->variants : std::span<const RECOVERY_TAG>(resources);
+}
+
+bool band_admits(const Recovery::Slot& s, RECOVERY_TAG tag) {
+    const std::span<const RECOVERY_TAG> b = band(s);
+    return Recovery::plausible_tag(tag) && std::find(b.begin(), b.end(), tag) != b.end();
+}
+
+// Which types a slot's child may have. A typed slot's is compiled into the
+// V-Table, which damage cannot reach. A tuple's is a latent choice from its
+// band, narrowed to the types within TAG_RADIUS of either wire copy, and
+// widened back to the whole band only when both copies are gone.
+std::vector<RECOVERY_TAG> admissible(const Board& B, const Recovery::Slot& s) {
+    if (s.repr != Recovery::SlotRepr::Tuple)
+        return {s.expect};
+    const std::span<const RECOVERY_TAG> all = band(s);
+    std::vector<RECOVERY_TAG> near;
+    for (const RECOVERY_TAG x : all) {
+        const RECOVERY_TAG seen = block_tag(B, decode(s, encoding(s, x)));
+        if (hamming(x, s.stored_tag) <= TAG_RADIUS ||
+            (seen != FF_RECOVER_UNDEFINED && hamming(child_wire(s, x), seen) <= TAG_RADIUS))
+            near.push_back(x);
+    }
+    return near.empty() ? std::vector<RECOVERY_TAG>(all.begin(), all.end()) : near;
+}
+
+// Does the word name a block that vouches for itself and carries exactly `want`?
+Judged settle(const Board& B, uint64_t t, RECOVERY_TAG want) {
+    const auto a = B.anchors.find(static_cast<Offset>(t));
+    const bool holds = a != B.anchors.end() && !a->second.lost && a->second.tag == want;
+    return {holds ? Reading::Intact : Reading::Dangling, static_cast<Offset>(t)};
+}
+
+// What a slot's bytes say on their own. A word that reads as a value is still
+// Suspect when setting it back to a reference names exactly the block a
+// damaged reference would name, or when it is a value no writer emits and the
+// stream is not newer than this build: a dictionary ID outside the ledger, a
+// packed date/time outside its ranges, a tuple tag outside its band (H1).
+Judged judge(const Board& B, const Recovery::Slot& s) {
+    switch (s.repr) {
+        case Recovery::SlotRepr::Absolute:
+            if (s.stored == static_cast<uint64_t>(FF_NULL_OFFSET))
+                return {};
+            return settle(B, s.stored, child_wire(s, s.expect));
+        case Recovery::SlotRepr::InlineEntry:
+            return settle(B, s.seat, s.expect);
+        case Recovery::SlotRepr::Relative32:
+        case Recovery::SlotRepr::Relative63:
             break;
+        case Recovery::SlotRepr::Tuple: {
+            if (s.stored == static_cast<uint64_t>(FF_NULL_OFFSET))
+                return {};
+            if (!band_admits(s, s.stored_tag))
+                return {Reading::Suspect, static_cast<Offset>(s.stored)};
+            if (encoding(s, s.stored_tag) == Encoding::Absolute && names_a_block(s.stored_tag))
+                return settle(B, s.stored, s.stored_tag);
+            // A flipped tag half can turn a pointer into what reads as a value.
+            // The word then still holds its child's exact offset, which a real
+            // value almost never does.
+            const auto a = B.anchors.find(static_cast<Offset>(s.stored));
+            if (a != B.anchors.end() && !a->second.lost && names_a_block(a->second.tag) &&
+                encoding(s, a->second.tag) == Encoding::Absolute &&
+                hamming(a->second.tag, s.stored_tag) <= TAG_RADIUS && band_admits(s, a->second.tag))
+                return {Reading::Suspect, static_cast<Offset>(s.stored)};
+            if (encoding(s, s.stored_tag) == Encoding::Absolute)
+                return {Reading::Inline, FF_NULL_OFFSET};  // a scalar or identity variant
+            break;
+        }
     }
-    return {Reading::Suspect, static_cast<Offset>(s.stored)};
-}
-
-// A code slot. With bit 31 set, the word is an offset relative to the block
-// that holds the slot, naming an FF_CODED_VALUE. With it clear, the word is a
-// dictionary ID, which names nothing -- unless it is a fallback offset whose
-// flag bit was the damage. Two things give that away: set the bit back and the
-// word names an FF_CODED_VALUE exactly (which a real ID does only by a
-// coincidence the H5 check in the census then removes), or the ID is not in
-// this build's ledger although the stream is not newer than this build.
-Judged judge_relative32(const Board& B, const Recovery::Slot& s, uint32_t raw) {
-    if (raw == FF_CODE_NULL)
+    const Encoding e    = s.repr == Recovery::SlotRepr::Tuple ? encoding(s, s.stored_tag)
+                          : s.repr == Recovery::SlotRepr::Relative32 ? Encoding::Relative32
+                                                                     : Encoding::Relative63;
+    const bool     code = e == Encoding::Relative32;
+    const uint64_t raw  = pointer_word(s, e);
+    if (raw == (code ? uint64_t{FF_CODE_NULL} : FF_DATETIME_NULL))
         return {};
-    const Offset as_reference =
-        FF_ResolveCodeableConceptOffset(raw | FF_CODED_VALUE_FLAG, s.parent);
-    if (!(raw & FF_CODED_VALUE_FLAG)) {
-        if (names_a_block_of(B, as_reference, RECOVER_FF_CODED_VALUE))
-            return {Reading::Suspect, as_reference};
-        if (!B.newer_stream && FF_ResolveCode(raw, 0) == nullptr)
-            return {Reading::Suspect, as_reference};
+    const Offset       target = decode(s, e);
+    const RECOVERY_TAG leaf   = code ? RECOVER_FF_CODED_VALUE : RECOVER_FF_STRING;
+    if (raw & (code ? uint64_t{FF_CODED_VALUE_FLAG} : FF_DATETIME_FALLBACK_FLAG))
+        return settle(B, target, leaf);
+    if (settle(B, target, leaf).reading == Reading::Intact)
+        return {Reading::Suspect, target};
+    if (B.newer_stream)
         return {Reading::Inline, FF_NULL_OFFSET};
-    }
-    return settle(B, as_reference, RECOVER_FF_CODED_VALUE);
-}
-
-// A date/time slot: the 8-byte counterpart of the code slot. With bit 63
-// clear the word is a packed civil date/time, and a packing no writer emits
-// (a day past 9999-12-31, an hour past 23, an unused precision) is the tell
-// that the flag bit was the damage.
-Judged judge_relative63(const Board& B, const Recovery::Slot& s, uint64_t raw) {
-    if (raw == FF_DATETIME_NULL)
-        return {};
-    const Offset as_reference =
-        FF_ResolveDateTimeOffset(raw | FF_DATETIME_FALLBACK_FLAG, s.parent);
-    if (!(raw & FF_DATETIME_FALLBACK_FLAG)) {
-        if (names_a_block_of(B, as_reference, RECOVER_FF_STRING))
-            return {Reading::Suspect, as_reference};
+    bool well_formed = FF_ResolveCode(static_cast<uint32_t>(raw), 0) != nullptr;
+    if (!code) {
         const FF_DateTimeParts parts = FF_UNPACK_DATETIME(raw);
-        const bool well_formed =
-            ff_datetime_fits(parts) &&
-            static_cast<uint8_t>(parts.precision) <= static_cast<uint8_t>(FF_DateTimePrecision::FRAC3);
-        if (!B.newer_stream && !well_formed)
-            return {Reading::Suspect, as_reference};
-        return {Reading::Inline, FF_NULL_OFFSET};
+        well_formed = ff_datetime_fits(parts) &&
+                      static_cast<uint8_t>(parts.precision) <= static_cast<uint8_t>(FF_DateTimePrecision::FRAC3);
     }
-    return settle(B, as_reference, RECOVER_FF_STRING);
+    return {well_formed ? Reading::Inline : Reading::Suspect, target};
+}
+
+// Each parent's decided children, in the order of its slots.
+std::unordered_map<Offset, std::vector<Offset>> children(const Board& B) {
+    std::vector<std::pair<const Recovery::Slot*, Offset>> links;
+    links.reserve(B.owner.size());
+    for (const auto& [child, slot] : B.owner)
+        links.emplace_back(&slot, child);
+    std::sort(links.begin(), links.end(), [](const auto& a, const auto& b) { return a.first->seat < b.first->seat; });
+    std::unordered_map<Offset, std::vector<Offset>> kids;
+    for (const auto& [slot, child] : links)
+        kids[slot->parent].push_back(child);
+    return kids;
+}
+
+// Every block the FF_HEADER reaches through decided links, the header first,
+// then depth first in the order of each parent's slots.
+std::vector<Offset> attached(const Board& B, const std::unordered_map<Offset, std::vector<Offset>>& kids) {
+    std::vector<Offset> members;
+    if (B.size < FF_HEADER::HEADER_SIZE)
+        return members;
+    std::unordered_set<Offset> seen;
+    std::vector<Offset> stack{HEADER_PARENT};
+    while (!stack.empty()) {
+        const Offset b = stack.back();
+        stack.pop_back();
+        if (!seen.insert(b).second)
+            continue;
+        members.push_back(b);
+        if (const auto k = kids.find(b); k != kids.end())
+            stack.insert(stack.end(), k->second.rbegin(), k->second.rend());
+    }
+    return members;
+}
+
+// Open a question, unless the same one is already open. Returns whether it did.
+bool ask(Board& B, const Recovery::Point& p) {
+    const bool open = std::any_of(B.questions.begin(), B.questions.end(), [&p](const Question& q) {
+        return q.open && q.point.kind == p.kind &&
+               (p.kind == Recovery::PointKind::Open ? q.point.slot.seat == p.slot.seat
+                                                    : q.point.array == p.array);
+    });
+    if (!open)
+        B.questions.push_back({p, true, {}});
+    return !open;
+}
+
+// =====================================================================
+// PHASE 2 — one cycle (handoff §7)
+// =====================================================================
+
+// Every block no decided link names, by its tag: the pools candidates come from.
+using Pools = std::map<RECOVERY_TAG, std::vector<Offset>>;
+
+// Every way to explain one slot or one block, ranked. Built bottom-up over an
+// explicit stack, memoised per cycle, and pruned at every node to the
+// configurations within ACCEPT_MARGIN of that node's best. The pruning loses
+// nothing a decision needs: a configuration within the margin of the best is
+// no further than that from the best in any one of its parts.
+class Tree {
+public:
+    struct Entry {
+        int64_t               cost = 0;
+        std::vector<uint32_t> pick;  // slot: {candidate, child entry} or {UNEXPLAINED}; block: one per part
+    };
+    struct Node {
+        bool                  block    = false;
+        bool                  possible = true;
+        Offset                off      = FF_NULL_OFFSET;        // block: where it is
+        RECOVERY_TAG          tag      = FF_RECOVER_UNDEFINED;  // block: the type it is read as
+        Recovery::Slot        slot;                             // slot
+        std::vector<Link>     links;                            // slot: its candidates, one per kid
+        std::vector<uint32_t> kids;                             // block: its slots; slot: its candidates' blocks
+        std::vector<Entry>    list;
+        bool                  truncated = false;                // K_BEST cut something inside the margin
+        uint8_t               state     = 0;                    // 0 unexpanded, 1 on the stack, 2 done
+    };
+    struct Config {
+        std::vector<Link>           links;  // parents before children
+        std::vector<Recovery::Slot> unexplained;
+    };
+
+    Tree(const Board& board, const Pools& pools) : B(board), pools(pools) {}
+
+    uint32_t slot_node(const Recovery::Slot& s) {
+        const auto key = std::make_tuple(s.seat, s.kind, s.repr, s.expect, reinterpret_cast<uintptr_t>(s.field));
+        if (const auto it = slots.find(key); it != slots.end())
+            return it->second;
+        nodes.push_back({});
+        nodes.back().slot = s;
+        return slots[key] = static_cast<uint32_t>(nodes.size() - 1);
+    }
+
+    // Rank a node's configurations. Post-order over an explicit stack: a node
+    // is combined once every node beneath it is. A node met again while still
+    // on the stack is a loop, which only damage makes, and it is impossible.
+    const Node& solve(uint32_t root) {
+        std::vector<std::pair<uint32_t, uint32_t>> stack;  // node, next kid
+        if (nodes[root].state == 0) {
+            expand(root);
+            stack.emplace_back(root, 0);
+        }
+        while (!stack.empty()) {
+            const auto [n, i] = stack.back();
+            if (i == nodes[n].kids.size()) {
+                combine(n);
+                stack.pop_back();
+                continue;
+            }
+            ++stack.back().second;
+            const uint32_t k = nodes[n].kids[i];
+            if (nodes[k].state == 0) {
+                expand(k);
+                stack.emplace_back(k, 0);
+            }
+        }
+        return nodes[root];
+    }
+
+    void materialize(uint32_t root, uint32_t entry, Config& out) const {
+        std::vector<std::pair<uint32_t, uint32_t>> stack{{root, entry}};
+        while (!stack.empty()) {
+            const auto [n, e] = stack.back();
+            stack.pop_back();
+            const Node&                  node = nodes[n];
+            const std::vector<uint32_t>& pick = node.list[e].pick;
+            if (node.block) {
+                for (size_t i = node.kids.size(); i-- > 0;)
+                    stack.emplace_back(node.kids[i], pick[i]);
+            } else if (pick[0] == UNEXPLAINED) {
+                out.unexplained.push_back(node.slot);
+            } else {
+                out.links.push_back(node.links[pick[0]]);
+                stack.emplace_back(node.kids[pick[0]], pick[1]);
+            }
+        }
+    }
+
+    const Node& operator[](uint32_t n) const { return nodes[n]; }
+
+    // Every way to take one entry from each list whose total lies within
+    // ACCEPT_MARGIN of the cheapest total, cheapest first, at most K_BEST.
+    // Precondition: no list is empty.
+    static std::vector<Entry> sums(const std::vector<const std::vector<Entry>*>& lists, bool& truncated) {
+        std::vector<Entry>    out;
+        std::vector<uint32_t> pick(lists.size(), 0);
+        int64_t best = 0;
+        for (const auto* l : lists)
+            best += l->front().cost;
+        const auto walk = [&](auto& self, size_t i, int64_t slack) -> void {
+            if (out.size() > K_BEST)
+                return;
+            if (i == lists.size()) {
+                out.push_back({best + ACCEPT_MARGIN - slack, pick});
+                return;
+            }
+            const std::vector<Entry>& l = *lists[i];
+            for (uint32_t j = 0; j < l.size() && l[j].cost - l[0].cost <= slack; ++j) {
+                pick[i] = j;
+                self(self, i + 1, slack - (l[j].cost - l[0].cost));
+            }
+        };
+        walk(walk, 0, ACCEPT_MARGIN);
+        prune(out, truncated);
+        return out;
+    }
+
+private:
+    void expand(uint32_t n);
+    void combine(uint32_t n);
+
+    static void prune(std::vector<Entry>& list, bool& truncated) {
+        std::sort(list.begin(), list.end(), [](const Entry& a, const Entry& b) {
+            return a.cost != b.cost ? a.cost < b.cost : a.pick < b.pick;
+        });
+        if (list.empty())
+            return;
+        const int64_t bound = list.front().cost + ACCEPT_MARGIN;
+        list.erase(std::find_if(list.begin(), list.end(), [bound](const Entry& e) { return e.cost > bound; }),
+                   list.end());
+        if (list.size() > K_BEST) {
+            list.resize(K_BEST);
+            truncated = true;
+        }
+    }
+
+    uint32_t block_node(Offset off, RECOVERY_TAG tag) {
+        const auto key = std::make_pair(off, tag);
+        if (const auto it = blocks.find(key); it != blocks.end())
+            return it->second;
+        nodes.push_back({});
+        nodes.back().block = true;
+        nodes.back().off   = off;
+        nodes.back().tag   = tag;
+        return blocks[key] = static_cast<uint32_t>(nodes.size() - 1);
+    }
+
+    const Board& B;
+    const Pools& pools;
+    std::vector<Node> nodes;
+    std::map<std::pair<Offset, RECOVERY_TAG>, uint32_t> blocks;
+    std::map<std::tuple<Offset, FF_FieldKind, Recovery::SlotRepr, RECOVERY_TAG, uintptr_t>, uint32_t> slots;
+};
+
+std::vector<Link> candidates(const Board& B, const Pools& pools, const Recovery::Slot& s);
+int64_t value_header(const Link& L) noexcept;
+
+void Tree::expand(uint32_t n) {
+    nodes[n].state = 1;
+    std::vector<uint32_t> kids;
+    if (nodes[n].block) {
+        std::vector<Recovery::Slot> read;
+        nodes[n].possible = slots_of(B, nodes[n].off, nodes[n].tag, read);
+        for (const Recovery::Slot& s : read) {
+            const Reading r = judge(B, s).reading;
+            if (r != Reading::Absent && r != Reading::Inline)
+                kids.push_back(slot_node(s));
+        }
+    } else {
+        std::vector<Link> links = candidates(B, pools, nodes[n].slot);
+        for (const Link& L : links)  // an empty slot's child is a leaf at FF_NULL_OFFSET
+            kids.push_back(block_node(L.target, L.target == FF_NULL_OFFSET ? FF_RECOVER_UNDEFINED
+                                                                          : child_wire(L.slot, L.variant)));
+        nodes[n].links = std::move(links);
+    }
+    nodes[n].kids = std::move(kids);
+}
+
+void Tree::combine(uint32_t n) {
+    Node& node = nodes[n];
+    node.state = 2;
+    if (!node.block) {
+        for (uint32_t i = 0; i < node.kids.size(); ++i) {
+            const Node& child = nodes[node.kids[i]];
+            if (child.state != 2)
+                continue;  // still on the stack: a loop
+            node.truncated |= child.truncated;
+            for (uint32_t j = 0; j < child.list.size(); ++j)
+                node.list.push_back({child.list[j].cost - value_header(node.links[i]), {i, j}});
+        }
+        node.list.push_back({U_UNEXPLAINED, {UNEXPLAINED}});
+        prune(node.list, node.truncated);
+        return;
+    }
+    std::vector<const std::vector<Entry>*> parts;
+    for (const uint32_t k : node.kids) {
+        node.possible &= nodes[k].state == 2;  // a slot still on the stack: a loop
+        node.truncated |= nodes[k].truncated;
+        parts.push_back(&nodes[k].list);
+    }
+    if (node.possible)
+        node.list = sums(parts, node.truncated);
+}
+
+// Does `t` lie strictly inside the extent of the block before it? No block
+// starts there (H3), whether that block vouches for itself or was placed in
+// its hole by chaining.
+bool inside_a_block(const Board& B, uint64_t t) {
+    auto it = B.anchors.upper_bound(static_cast<Offset>(t));
+    if (it == B.anchors.begin())
+        return false;
+    --it;
+    return it->first < t && t < it->first + classify_block(B.base, B.size, it->first).size;
+}
+
+// How many bits a pointer search may repair before a match stops being
+// evidence: the largest r at which the pool is expected to put fewer than
+// MAX_CHANCE blocks within r bits of a word by coincidence, or -1 when even an
+// exact match would be coincidence that often.
+int significant_radius(size_t extent, size_t pool) noexcept {
+    const unsigned width   = static_cast<unsigned>(std::bit_width(extent));
+    const double   density = static_cast<double>(pool) / static_cast<double>(extent);
+    double ball = 0, choose = 1;  // C(width, d)
+    int radius = -1;
+    for (unsigned d = 0; d <= FF_RECOVERY_MAX_FLIPS && d <= width; ++d) {
+        ball += choose;
+        if (density * ball >= MAX_CHANCE)
+            break;
+        radius = static_cast<int>(d);
+        choose = choose * (width - d) / (d + 1);
+    }
+    return radius;
+}
+
+// Every block the slot could name, as a scored link (handoff §7.2). The stored
+// word as it stands costs no search. A block from the pools costs one, so it
+// is admitted only inside the significance radius, counted in the low bits the
+// extent spans: set bits above them must be cleared to land in bounds at all,
+// and clearing them is forced, not searched.
+std::vector<Link> candidates(const Board& B, const Pools& pools, const Recovery::Slot& s) {
+    std::vector<Link> out;
+    const uint64_t low = (uint64_t{1} << std::bit_width(B.size)) - 1;
+    // A position the stored word names exactly needs no search, so it is a
+    // candidate wherever a block could be: a known block, a hole the chain
+    // did not reach, or bytes one or two flips from their own address.
+    const auto consider = [&](RECOVERY_TAG x, Offset t, bool stored) {
+        if (!in_extent(t, DATA_BLOCK::HEADER_SIZE, B.size))
+            return;  // H2
+        if (const auto o = B.owner.find(t); o != B.owner.end() && o->second.seat != s.seat)
+            return;  // H5: another slot holds it
+        const auto     a    = B.anchors.find(t);
+        const uint32_t self = hamming(LOAD_U64(B.base + t), t);
+        if (a == B.anchors.end() && self > SELF_RADIUS && !(stored && in_hole(B, t) && !inside_a_block(B, t)))
+            return;  // no block is there
+        const Encoding     e    = encoding(s, x);
+        const RECOVERY_TAG seen = a != B.anchors.end() ? a->second.tag : tag_at(B.base, B.size, t);
+        const Link L{s, t, x,
+                     static_cast<uint8_t>(pointer_width(e) ? hamming(pointer_word(s, e), encode(s, e, t)) : 0),
+                     static_cast<uint8_t>(std::min<uint32_t>(self, 64)),
+                     static_cast<uint8_t>(hamming(seen, child_wire(s, x))),
+                     static_cast<uint8_t>(s.repr == Recovery::SlotRepr::Tuple ? hamming(s.stored_tag, x) : 0)};
+        // A block whose own tag lies further than TAG_RADIUS from the type is
+        // some other block, whatever the pointer says.
+        if (L.d_tag_child <= TAG_RADIUS && std::max({L.d_ptr, L.d_self, L.d_tag_slot}) <= FF_RECOVERY_MAX_FLIPS)
+            out.push_back(L);
+    };
+    std::vector<RECOVERY_TAG> types = admissible(B, s);
+    if (s.repr == Recovery::SlotRepr::Tuple)
+        std::erase_if(types, [](RECOVERY_TAG x) { return !names_a_block(x); });  // values, which
+                                                                                    // "unexplained" stands for
+    for (const RECOVERY_TAG x : types)
+        consider(x, decode(s, encoding(s, x)), true);
+    if (s.repr == Recovery::SlotRepr::InlineEntry)
+        return out;  // an inline entry's place is fixed by its array; there is nothing to search
+
+    // The slot may be empty, its word a damaged null. No block lies within a
+    // few bits of all-ones, so a word that close to null has no other reading.
+    // It is held to SELF_RADIUS, like a damaged self-offset, for the same
+    // reason: a V-Table read under the wrong type lands on runs of null words
+    // shifted out of alignment, which sit a handful of bits from all-ones and
+    // would otherwise make the wrong reading look cheap.
+    const Encoding stored = s.repr == Recovery::SlotRepr::Relative32   ? Encoding::Relative32
+                            : s.repr == Recovery::SlotRepr::Relative63 ? Encoding::Relative63
+                                                                       : Encoding::Absolute;
+    const uint32_t from_null = hamming(pointer_word(s, stored), null_word(stored));
+    if (from_null <= SELF_RADIUS)
+        out.push_back({s, FF_NULL_OFFSET, FF_RECOVER_UNDEFINED, static_cast<uint8_t>(from_null)});
+
+    // The search: one radius for the slot, taken over every unowned block any
+    // of its types could be. A radius per type would let a type with few
+    // orphans nearby search further than the true type, whose neighbourhood
+    // the same damage has crowded.
+    std::vector<std::pair<Offset, RECOVERY_TAG>> reach;  // block, a type it could be
+    for (const auto& [tag, offs] : pools)
+        for (const RECOVERY_TAG x : types)
+            if (hamming(tag, child_wire(s, x)) <= TAG_RADIUS)
+                for (const Offset o : offs)
+                    reach.emplace_back(o, x);
+    std::vector<Offset> distinct;
+    for (const auto& [o, x] : reach)
+        distinct.push_back(o);
+    std::sort(distinct.begin(), distinct.end());
+    distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
+    // Bits set above the extent must be cleared to land in bounds at all, so
+    // clearing them is forced rather than searched -- but a real pointer has
+    // at most a flip or two there. A word with more is not a damaged pointer:
+    // it is what a V-Table read under the wrong type finds, and letting it
+    // search lets that wrong reading adopt some other block's orphaned subtree.
+    const int radius = significant_radius(B.size, distinct.size());
+    for (const auto& [o, x] : reach) {
+        const Encoding e    = encoding(s, x);
+        const uint64_t word = pointer_word(s, e), want = encode(s, e, o);
+        if (o != decode(s, e) && hamming(word & ~low, want & ~low) <= SELF_RADIUS &&
+            static_cast<int>(hamming(word & low, want & low)) <= radius)
+            consider(x, o, false);
+    }
+    // One link per (target, type): the stored word and a pool can find the same block.
+    std::sort(out.begin(), out.end(), [](const Link& a, const Link& b) {
+        if (a.target != b.target || a.variant != b.variant)
+            return std::tie(a.target, a.variant) < std::tie(b.target, b.variant);
+        return value_header(a) > value_header(b);
+    });
+    out.erase(std::unique(out.begin(), out.end(),
+                          [](const Link& a, const Link& b) { return a.target == b.target && a.variant == b.variant; }),
+              out.end());
+    return out;
+}
+
+// The value of a link's own witnesses, in bits (handoff §5.3): an exact match
+// is worth the witness's width, and each disagreeing bit costs C_FLIP.
+int64_t value_header(const Link& L) noexcept {
+    const auto w = [](int64_t width, uint8_t d) { return width - C_FLIP * d; };
+    if (L.target == FF_NULL_OFFSET)
+        return w(8 * pointer_width(encoding(L.slot, L.variant)), L.d_ptr);
+    int64_t v = w(64, L.d_self) + w(16, L.d_tag_child);
+    if (const uint8_t width = pointer_width(encoding(L.slot, L.variant)))
+        v += w(8 * width, L.d_ptr);
+    if (L.slot.repr == Recovery::SlotRepr::Tuple)
+        v += w(16, L.d_tag_slot);
+    return v;
+}
+
+bool resolve_extent(Board& B, size_t question);
+bool decide(Board& B, const Tree::Config& best, const std::vector<size_t>& branch);
+
+// One cycle: the arrays whose geometry the bytes now settle, then every open
+// slot's branch, ranked whole. Branches that want the same block are solved as
+// one, because only one of them can have it (H5). Returns whether anything
+// changed, which is what keeps the cycles going.
+bool run_cycle(Board& B) {
+    bool changed = false;
+    for (size_t q = 0; q < B.questions.size(); ++q)
+        if (B.questions[q].open && B.questions[q].point.kind == Recovery::PointKind::ArrayExtent)
+            changed |= resolve_extent(B, q);
+
+    Pools pools;
+    for (const auto& [off, a] : B.anchors)
+        if (!B.owner.contains(off))
+            pools[a.tag].push_back(off);
+    Tree tree(B, pools);
+
+    std::vector<size_t> open;
+    for (size_t q = 0; q < B.questions.size(); ++q)
+        if (B.questions[q].open && B.questions[q].point.kind == Recovery::PointKind::Open)
+            open.push_back(q);
+    std::sort(open.begin(), open.end(), [&B](size_t a, size_t b) {
+        return B.questions[a].point.slot.seat < B.questions[b].point.slot.seat;
+    });
+
+    // Rank each branch, and join the branches that want the same block.
+    std::vector<uint32_t> roots(open.size());
+    std::vector<size_t>   group(open.size());
+    const auto find = [&group](size_t i) {
+        while (group[i] != i)
+            i = group[i];
+        return i;
+    };
+    std::unordered_map<Offset, size_t> wanted;
+    for (size_t i = 0; i < open.size(); ++i) {
+        Question& q = B.questions[open[i]];
+        roots[i]    = tree.slot_node(q.point.slot);
+        group[i]    = i;
+        q.candidates.clear();
+        for (const Link& L : tree.solve(roots[i]).links) {
+            q.candidates.push_back(L.target);
+            const auto [it, first] = wanted.emplace(L.target, i);
+            if (!first)
+                group[std::max(find(i), find(it->second))] = std::min(find(i), find(it->second));
+        }
+    }
+    std::map<size_t, std::vector<size_t>> components;
+    for (size_t i = 0; i < open.size(); ++i)
+        components[find(i)].push_back(i);
+
+    for (const auto& [first, members] : components) {
+        if (members.size() > MAX_COMPONENT)
+            continue;
+        std::vector<const std::vector<Tree::Entry>*> lists;
+        bool truncated = false;
+        for (const size_t i : members) {
+            lists.push_back(&tree[roots[i]].list);
+            truncated |= tree[roots[i]].truncated;
+        }
+        // The cheapest configuration that uses no block twice, and the cost of the next.
+        std::optional<Tree::Config> best;
+        int64_t best_cost = 0;
+        std::optional<int64_t> alt_cost;
+        for (const Tree::Entry& e : Tree::sums(lists, truncated)) {
+            Tree::Config cfg;
+            for (size_t k = 0; k < members.size(); ++k)
+                tree.materialize(roots[members[k]], e.pick[k], cfg);
+            std::unordered_set<Offset> used;
+            const bool valid = std::all_of(cfg.links.begin(), cfg.links.end(), [&](const Link& L) {
+                const auto o = B.owner.find(L.target);
+                return L.target == FF_NULL_OFFSET ||
+                       (used.insert(L.target).second && (o == B.owner.end() || o->second.seat == L.slot.seat));
+            });
+            if (!valid)
+                continue;
+            if (best) {
+                alt_cost = e.cost;
+                break;
+            }
+            best      = std::move(cfg);
+            best_cost = e.cost;
+        }
+        // Rule 7: decide only what the evidence separates, and only links
+        // each worth something in their own right.
+        const bool separated = alt_cost ? *alt_cost - best_cost >= ACCEPT_MARGIN : !truncated;
+        if (!best || best->links.empty() || !separated || best->unexplained.size() > best->links.size() ||
+            std::any_of(best->links.begin(), best->links.end(),
+                        [](const Link& L) { return value_header(L) < ACCEPT_ABS; }))
+            continue;
+        std::vector<size_t> branch;
+        for (const size_t i : members)
+            branch.push_back(open[i]);
+        changed |= decide(B, *best, branch);
+    }
+    return changed;
+}
+
+// The geometry the bytes now settle for a refuted array: decide it, and ask
+// about every entry it exposes. Each exposed entry is a question rather than a
+// decision here, so its whole branch is ranked like any other.
+bool resolve_extent(Board& B, size_t question) {
+    const Offset array = B.questions[question].point.array;
+    const auto   a     = B.anchors.find(array);
+    const std::optional<Geometry> g = a == B.anchors.end() ? std::nullopt : derive(B, array, a->second.tag);
+    if (!g)
+        return false;
+    // The stamped count is a witness too. A single flip moves it by one bit,
+    // so a geometry further than that from the stamp needs more damage than
+    // it explains -- an orphan of the element type that happens to follow the
+    // array is likelier -- and the question stays open, reported.
+    if (hamming(g->count, stamped(B, array).count) > 1)
+        return false;
+    B.questions[question].open = false;
+    if (*g == stamped(B, array))
+        return true;
+    B.extents[array] = *g;
+    std::vector<Recovery::Slot> entries;
+    read_entries(B, array, GetTypeFromTag(a->second.tag), *g, true, entries);
+    for (const Recovery::Slot& s : entries) {
+        const Judged j = judge(B, s);
+        const auto   o = B.owner.find(j.target);
+        if (j.reading == Reading::Intact && o != B.owner.end() && o->second.seat == s.seat)
+            continue;  // the census already decided it
+        if (j.reading != Reading::Absent && j.reading != Reading::Inline)
+            ask(B, {Recovery::PointKind::Open, s, FF_NULL_OFFSET});
+    }
+    return true;
+}
+
+// Record a branch's decisions on the board. Nothing is written to the stream:
+// each link's writes are planned only when the report is built.
+bool decide(Board& B, const Tree::Config& best, const std::vector<size_t>& branch) {
+    bool changed = false;
+    for (const Link& L : best.links) {
+        if (L.target == FF_NULL_OFFSET) {
+            B.emptied.push_back(L);
+            changed = true;
+            continue;
+        }
+        const auto o     = B.owner.find(L.target);
+        const bool exact = L.d_ptr == 0 && L.d_self == 0 && L.d_tag_child == 0 && L.d_tag_slot == 0;
+        if (exact && o != B.owner.end() && o->second.seat == L.slot.seat)
+            continue;  // a link the census already decided
+        B.owner[L.target]   = L.slot;
+        B.decided[L.target] = L;
+        B.anchors[L.target] = Anchor{child_wire(L.slot, L.variant), false, true};
+        changed = true;
+    }
+    for (const size_t q : branch) {
+        const Offset seat = B.questions[q].point.slot.seat;
+        B.questions[q].open = std::any_of(best.unexplained.begin(), best.unexplained.end(),
+                                          [seat](const Recovery::Slot& s) { return s.seat == seat; });
+        changed |= !B.questions[q].open;
+    }
+    for (const Recovery::Slot& s : best.unexplained)
+        changed |= ask(B, {Recovery::PointKind::Open, s, FF_NULL_OFFSET});
+    return changed;
+}
+
+// =====================================================================
+// THE REPORT (handoff §9)
+// =====================================================================
+
+// The writes a decided link needs: every copy of every witness brought to the
+// value the decision says it holds. A relative pointer stays relative.
+std::vector<PlannedWrite> plan(const Board& B, const Link& L) {
+    std::vector<PlannedWrite> w;
+    const Encoding     e    = encoding(L.slot, L.variant);
+    const RECOVERY_TAG wire = child_wire(L.slot, L.variant);
+    if (pointer_width(e) && encode(L.slot, e, L.target) != pointer_word(L.slot, e))
+        w.push_back({L.slot.seat, pointer_width(e), encode(L.slot, e, L.target)});
+    if (L.target == FF_NULL_OFFSET)
+        return w;
+    if (L.slot.repr == Recovery::SlotRepr::Tuple && L.slot.stored_tag != L.variant)
+        w.push_back({L.slot.seat + 8, 2, L.variant});
+    if (LOAD_U64(B.base + L.target) != L.target)
+        w.push_back({L.target, 8, L.target});
+    if (tag_at(B.base, B.size, L.target) != wire)
+        w.push_back({L.target + DATA_BLOCK::RECOVERY, 2, wire});
+    return w;
+}
+
+// A verdict is named by the strongest write it plans.
+RepairClass class_of(const BlockVerdict& v, Offset seat) {
+    int strongest = 0;
+    for (const PlannedWrite& w : v.writes)  // an inline entry's seat is its own self-offset
+        strongest = std::max(strongest, w.seat == v.block.child                          ? 3
+                                        : w.seat == seat                                 ? 4
+                                        : w.seat == v.block.child + DATA_BLOCK::RECOVERY ||
+                                              w.seat == seat + 8                         ? 2
+                                                                                         : 1);
+    constexpr RepairClass classes[] = {RepairClass::Intact, RepairClass::ExtentDerived, RepairClass::TagRepaired,
+                                       RepairClass::PositionRepaired, RepairClass::Corroborated};
+    return classes[strongest];
+}
+
+void header_verdicts(const Board& B, const std::vector<BlockVerdict>& blocks, FF_RecoveryReport& rep);
+
+void report(const Board& B, const StreamMap& scan_map, FF_RecoveryReport& rep) {
+    const std::vector<Offset>        members = attached(B, children(B));
+    const std::unordered_set<Offset> reach(members.begin(), members.end());
+    std::unordered_set<Offset> unsettled;  // arrays whose geometry stayed open
+    for (const Question& q : B.questions)
+        if (q.open && q.point.kind == Recovery::PointKind::ArrayExtent)
+            unsettled.insert(q.point.array);
+
+    // Every link the header reaches: Intact, or the repair its writes name.
+    for (const auto& [child, slot] : B.owner) {
+        if (!reach.contains(slot.parent))
+            continue;
+        const auto d = B.decided.find(child);
+        const RECOVERY_TAG type = d != B.decided.end()                   ? d->second.variant
+                                  : slot.repr == Recovery::SlotRepr::Tuple ? slot.stored_tag
+                                                                           : slot.expect;
+        BlockVerdict v{{slot.parent, slot.seat - slot.parent, slot.kind, child, child_wire(slot, type),
+                        tag_at(B.base, B.size, child)}};
+        if (d != B.decided.end())
+            v.writes = plan(B, d->second);
+        if (const auto x = B.extents.find(child); x != B.extents.end()) {
+            const Geometry st = stamped(B, child);
+            if (x->second.packing != st.packing)
+                v.writes.push_back({child + FF_ARRAY::KIND_AND_STEP, 2, x->second.packing});
+            if (x->second.count != st.count)
+                v.writes.push_back({child + FF_ARRAY::ENTRY_COUNT, 4, x->second.count});
+            v.derived_extent = x->second.count;
+        }
+        for (const PlannedWrite& w : v.writes)
+            v.bit_cost += hamming(load(B.base, w.seat, w.width), w.value);
+        v.class_ = class_of(v, slot.seat);
+        if (v.class_ == RepairClass::Intact && unsettled.contains(child))
+            v.class_ = RepairClass::Ambiguous;
+        rep.blocks.push_back(std::move(v));
+    }
+    // Every slot a cycle emptied: its word was a damaged null.
+    for (const Link& L : B.emptied) {
+        BlockVerdict v{{L.slot.parent, L.slot.seat - L.slot.parent, L.slot.kind, FF_NULL_OFFSET,
+                        FF_RECOVER_UNDEFINED, FF_RECOVER_UNDEFINED}};
+        v.writes = plan(B, L);
+        for (const PlannedWrite& w : v.writes)
+            v.bit_cost += hamming(load(B.base, w.seat, w.width), w.value);
+        v.class_ = RepairClass::Corroborated;
+        rep.blocks.push_back(std::move(v));
+    }
+    // Every question still open: named, never guessed.
+    for (const Question& q : B.questions) {
+        if (!q.open || q.point.kind != Recovery::PointKind::Open)
+            continue;
+        const Recovery::Slot& s    = q.point.slot;
+        const RECOVERY_TAG    type = s.repr == Recovery::SlotRepr::Tuple ? s.stored_tag : s.expect;
+        const Offset          at   = judge(B, s).target;
+        BlockVerdict v{{s.parent, s.seat - s.parent, s.kind, at, child_wire(s, type), tag_at(B.base, B.size, at)}};
+        v.class_     = q.candidates.empty() ? RepairClass::Unrecovered : RepairClass::Ambiguous;
+        v.candidates = q.candidates;
+        rep.blocks.push_back(std::move(v));
+    }
+    std::sort(rep.blocks.begin(), rep.blocks.end(), [](const BlockVerdict& a, const BlockVerdict& b) {
+        return a.block.parent + a.block.field < b.block.parent + b.block.field;
+    });
+
+    rep.blocks_total = rep.blocks.size();
+    std::size_t* const counters[] = {&rep.intact,          &rep.corroborated,   &rep.tag_repaired,
+                                     &rep.position_repaired, &rep.extent_derived, &rep.ambiguous,
+                                     &rep.unrecovered};
+    for (const BlockVerdict& v : rep.blocks)
+        ++*counters[static_cast<size_t>(v.class_)];
+    header_verdicts(B, rep.blocks, rep);
+    rep.failures = scan_map.failures;
+    rep.gaps     = scan_map.gaps;
+    for (const Gap& g : rep.gaps) {
+        rep.holes        += g.class_ == GapClass::Hole;
+        rep.version_skew += g.class_ == GapClass::VersionSkew;
+    }
+}
+
+// One verdict per FF_HEADER field, in HeaderField order. The pointer fields
+// report what the census and the cycles decided for the header's slots, whose
+// own verdicts carry the writes; the rest are checked here against their
+// witnesses.
+void header_verdicts(const Board& B, const std::vector<BlockVerdict>& blocks, FF_RecoveryReport& rep) {
+    if (B.size < FF_HEADER::HEADER_SIZE)
+        return;
+    const auto record = [&rep](HeaderField field, RepairClass c, uint64_t stored, uint64_t restored,
+                               const char* why, std::vector<uint64_t> candidates = {}) {
+        rep.header.push_back({field, c, stored, restored, hamming(stored, restored), why, std::move(candidates)});
+        rep.header_repaired += c == RepairClass::Corroborated;
+    };
+    const auto slot_verdict = [&blocks](Offset seat) -> const BlockVerdict* {
+        const auto v = std::find_if(blocks.begin(), blocks.end(), [seat](const BlockVerdict& b) {
+            return b.block.parent == HEADER_PARENT && b.block.field == seat;
+        });
+        return v == blocks.end() ? nullptr : &*v;
+    };
+    const auto settled = [](const BlockVerdict* v) {
+        return v != nullptr && v->class_ != RepairClass::Ambiguous && v->class_ != RepairClass::Unrecovered;
+    };
+
+    // A constant is restored only where the bytes are demonstrably a FastFHIR
+    // arena: a position holding its own offset occurs by chance at 2^-64, so
+    // eight of them settle it.
+    const auto anchored = std::count_if(B.anchors.begin(), B.anchors.end(), [](const auto& a) { return !a.second.lost; });
+    const auto constant = [&](HeaderField field, uint64_t stored, uint64_t want) {
+        const RepairClass c = stored == want                                                  ? RepairClass::Intact
+                              : anchored >= 8 && hamming(stored, want) <= FF_RECOVERY_MAX_FLIPS ? RepairClass::Corroborated
+                                                                                              : RepairClass::Unrecovered;
+        record(field, c, stored, want, "a compiled constant, corroborated by the census");
+    };
+    constant(HeaderField::Magic, LOAD_U32(B.base + FF_HEADER::MAGIC), FF_MAGIC_BYTES);
+    constant(HeaderField::Recovery, LOAD_U16(B.base + FF_HEADER::RECOVERY), RECOVER_FF_HEADER);
+
+    // A closed set: the one legal member nearest the stored value. R4 and R5
+    // are one bit apart, so a flip between them cannot be seen (F31).
+    const uint16_t rev = LOAD_U16(B.base + FF_HEADER::FHIR_REV);
+    const uint32_t d4 = hamming(rev, FHIR_VERSION_R4), d5 = hamming(rev, FHIR_VERSION_R5);
+    const uint16_t nearest = d4 < d5 ? FHIR_VERSION_R4 : FHIR_VERSION_R5;
+    if (d4 == d5)
+        record(HeaderField::FhirRevision, RepairClass::Ambiguous, rev, rev, "equidistant from two legal revisions",
+               {FHIR_VERSION_R4, FHIR_VERSION_R5});
+    else
+        record(HeaderField::FhirRevision,
+               std::min(d4, d5) == 0 ? RepairClass::Intact
+               : std::min(d4, d5) <= FF_RECOVERY_MAX_FLIPS ? RepairClass::Corroborated
+                                                           : RepairClass::Unrecovered,
+               rev, nearest, "the nearest legal revision");
+
+    // The checksum footer is the last block a sealed stream holds.
+    const uint64_t      size     = LOAD_U64(B.base + FF_HEADER::STREAM_SIZE);
+    const BlockVerdict* checksum = slot_verdict(FF_HEADER::CHECKSUM_OFFSET);
+    if (settled(checksum)) {
+        const uint64_t sealed = checksum->block.child + FF_CHECKSUM::HEADER_SIZE;
+        record(HeaderField::StreamSize, size == sealed ? RepairClass::Intact : RepairClass::Corroborated, size,
+               sealed, "the checksum footer is the last block");
+    } else {
+        record(HeaderField::StreamSize, RepairClass::Unrecovered, size, size,
+               "no checksum footer to measure the payload's end by");
+    }
+
+    const auto pointer = [&](HeaderField field, Offset seat) {
+        const uint64_t      stored = LOAD_U64(B.base + seat);
+        const BlockVerdict* v      = slot_verdict(seat);
+        if (v == nullptr)
+            record(field, RepairClass::Intact, stored, stored, "absent");
+        else if (!settled(v))
+            record(field, v->class_, stored, stored, "the block this names is not established",
+                   std::vector<uint64_t>(v->candidates.begin(), v->candidates.end()));
+        else
+            record(field, v->block.child == stored ? RepairClass::Intact : RepairClass::Corroborated, stored,
+                   v->block.child, "the block the header's slot names");
+    };
+    pointer(HeaderField::RootOffset, FF_HEADER::ROOT_OFFSET);
+    const uint64_t      root_tag = LOAD_U16(B.base + FF_HEADER::ROOT_RECOVERY);
+    const BlockVerdict* root     = slot_verdict(FF_HEADER::ROOT_OFFSET);
+    if (settled(root))
+        record(HeaderField::RootRecovery, root->block.declared == root_tag ? RepairClass::Intact : RepairClass::Corroborated,
+               root_tag, root->block.declared, "the type of the block the root names");
+    else
+        record(HeaderField::RootRecovery, root ? root->class_ : RepairClass::Unrecovered, root_tag, root_tag,
+               "the root is not established");
+    pointer(HeaderField::ChecksumOffset, FF_HEADER::CHECKSUM_OFFSET);
+    pointer(HeaderField::UrlDirectoryOffset, FF_HEADER::URL_DIR_OFFSET);
+    pointer(HeaderField::ModuleRegistryOffset, FF_HEADER::MODULE_REG_OFFSET);
+
+    const uint32_t word   = LOAD_U32(B.base + FF_HEADER::VERSION);
+    const auto     layout = FF_HEADER_STREAM_LAYOUT(word);
+    const bool     legal  = layout == FF_STREAM_COMPACTION_NONE || layout == FF_STREAM_COMPACTED;
+    record(HeaderField::StreamLayout, legal ? RepairClass::Intact : RepairClass::Corroborated, layout,
+           legal ? layout : FF_STREAM_COMPACTION_NONE, "one of the two layouts the writer emits");
+    record(HeaderField::EngineVersion, RepairClass::Unrecovered, FF_HEADER_ENGINE_VERSION(word),
+           FF_HEADER_ENGINE_VERSION(word), "no second witness: a newer writer is legitimate, so this reader must not choose");
 }
 
 }  // namespace
 
 // =====================================================================
-// The walk — the hierarchical producer's engine, then its enumerators
+// PHASE 3 — apply(): the only writer
 // =====================================================================
 
-// The root arrives as an argument rather than being read here, and that is the
-// whole point of the RootAnchor type: reconcile_header() may have restored one
-// or both halves out of the census, and a callee that re-reads the wire would
-// walk the damaged value while the report says the good one. One root per
-// recover(), decided once (REC-24).
-std::vector<Offset> Recovery::walk_chain(const RootAnchor& root, std::vector<BlockRef>* out,
-                                         std::vector<ProducerFailure>* failures) const {
-    std::vector<Offset> reachable;
-    if (!root.usable || !valid_validation(m_base, m_size, root.offset) ||
-        !plausible_tag(root.tag))
-        return reachable;
+FF_ApplyReport Recovery::apply(const FF_RecoveryReport& report, std::vector<BYTE>& repaired,
+                               const ApplyFilter& filter) const {
+    FF_ApplyReport out;
+    repaired.assign(m_base, m_base + m_size);  // the copy; the arena is untouched
+    BYTE* const  dst = repaired.data();
+    const size_t n   = repaired.size();
+    std::vector<bool> touched(n, false);
 
-    // DFS through INTACT references only, depth- and cycle-bounded. Marking on
-    // completion is unnecessary here (the verdict of a reference does not
-    // depend on how it was reached), so a simple visited set bounds the work.
-    struct Pending { Offset off; std::size_t depth; RECOVERY_TAG tag; };
-    std::unordered_set<Offset> visited;
-    std::vector<Pending> stack{{root.offset, 0, root.tag}};
-    std::vector<BlockRef> scratch;
-    while (!stack.empty()) {
-        const auto [off, depth, tag] = stack.back();
-        stack.pop_back();
-        if (!visited.insert(off).second)
+    // Enact one group of writes as a unit: every seat in bounds and written by
+    // no earlier group, then written, then `holds` asked of the result. A
+    // group that fails is restored byte for byte.
+    const auto enact = [&](const std::vector<PlannedWrite>& writes, const auto& holds, Offset edge) {
+        const bool free = std::all_of(writes.begin(), writes.end(), [&](const PlannedWrite& w) {
+            return in_extent(w.seat, w.width, n) &&
+                   std::none_of(touched.begin() + static_cast<std::ptrdiff_t>(w.seat),
+                                touched.begin() + static_cast<std::ptrdiff_t>(w.seat + w.width),
+                                [](bool t) { return t; });
+        });
+        std::vector<uint64_t> before;
+        if (free)
+            for (const PlannedWrite& w : writes) {
+                before.push_back(load(dst, w.seat, w.width));
+                store(dst, w.seat, w.width, w.value);
+            }
+        if (free && holds()) {
+            for (const PlannedWrite& w : writes)
+                std::fill_n(touched.begin() + static_cast<std::ptrdiff_t>(w.seat), w.width, true);
+            ++out.applied;
+            return;
+        }
+        for (size_t k = before.size(); k-- > 0;)
+            store(dst, writes[k].seat, writes[k].width, before[k]);
+        ++out.failed;
+        out.failed_edges.push_back(edge);
+    };
+    const auto reads_back = [dst](const std::vector<PlannedWrite>& writes) {
+        return std::all_of(writes.begin(), writes.end(),
+                           [dst](const PlannedWrite& w) { return load(dst, w.seat, w.width) == w.value; });
+    };
+
+    // The header's own fields first. Its pointer fields are written by their
+    // references' verdicts below, together with the rest of each link.
+    struct Seat { HeaderField field; Offset seat; uint8_t width; };
+    constexpr Seat seats[] = {{HeaderField::Magic, FF_HEADER::MAGIC, 4},
+                              {HeaderField::Recovery, FF_HEADER::RECOVERY, 2},
+                              {HeaderField::FhirRevision, FF_HEADER::FHIR_REV, 2},
+                              {HeaderField::StreamSize, FF_HEADER::STREAM_SIZE, 8},
+                              {HeaderField::StreamLayout, FF_HEADER::VERSION, 4}};
+    for (const HeaderVerdict& v : report.header) {
+        // The root and the metadata offsets are absent from `seats`: their
+        // writes belong to their references' verdicts, and land with those.
+        const Seat* s = std::find_if(std::begin(seats), std::end(seats), [&v](const Seat& x) { return x.field == v.field; });
+        if (v.class_ != RepairClass::Corroborated || s == std::end(seats) || n < FF_HEADER::HEADER_SIZE) {
+            ++out.declined;
             continue;
-        reachable.push_back(off);
+        }
+        const uint64_t value =
+            v.field == HeaderField::StreamLayout
+                ? FF_ENCODE_HEADER_VERSION(FF_HEADER_ENGINE_VERSION(LOAD_U32(dst + FF_HEADER::VERSION)),
+                                           static_cast<FF_StreamCompaction>(v.restored))
+                : v.restored;
+        const std::vector<PlannedWrite> writes{{s->seat, s->width, value}};
+        enact(writes, [&] { return reads_back(writes); }, s->seat);
+    }
 
-        // One enumeration per block feeds both the walk (child discovery) and,
-        // when requested, the baseline output — no second pass. The tag comes
-        // down the stack rather than off the wire: for a child whose own tag
-        // was the damaged half, the parent's declared type is the surviving
-        // witness and the only one that names the right V-Table.
-        scratch.clear();
-        enumerate_block_refs(off, tag, scratch);
-        if (out)
-            out->insert(out->end(), scratch.begin(), scratch.end());
-        if (depth >= FF_RECOVERY_MAX_DEPTH)
+    // Then every selected link: the writes land, and the link holds -- its
+    // child vouches for its own offset and carries the type the link names.
+    for (const BlockVerdict& v : report.blocks) {
+        if (v.writes.empty() || (filter && !filter(v))) {
+            ++out.declined;
             continue;
+        }
+        const auto holds = [&] {
+            return reads_back(v.writes) &&
+                   (v.block.child == FF_NULL_OFFSET ||
+                    (self_validates(dst, n, v.block.child) && tag_at(dst, n, v.block.child) == v.block.declared));
+        };
+        enact(v.writes, holds, v.block.child);
+    }
+    return out;
+}
 
-        for (const BlockRef& r : scratch) {
-            if (r.child == FF_NULL_OFFSET)
+// =====================================================================
+// THE CENSUS AS A PRODUCER — census(), reachable_blocks(), reachable_blocks_map()
+// =====================================================================
+
+Recovery::Census Recovery::census() const {
+    const Board B    = take_census(m_base, m_size, scan());
+    const auto  kids = children(B);
+    Census c;
+    c.extent  = static_cast<Size>(m_size);
+    c.anchors = static_cast<std::size_t>(
+        std::count_if(B.anchors.begin(), B.anchors.end(), [](const auto& a) { return !a.second.lost; }));
+    for (const auto& [child, slot] : B.owner)
+        c.edges.push_back({slot, child});
+    std::sort(c.edges.begin(), c.edges.end(), [](const Edge& a, const Edge& b) { return a.slot.seat < b.slot.seat; });
+
+    // The header's island, then one per self-validating block no decided link names.
+    std::unordered_set<Offset> placed;
+    const auto grow = [&](Offset root, bool attached_to_header) {
+        Island island{root, attached_to_header, {}};
+        std::vector<Offset> stack{root};
+        while (!stack.empty()) {
+            const Offset b = stack.back();
+            stack.pop_back();
+            if (!placed.insert(b).second)
                 continue;
-            // REC-19.3 — the hierarchical producer's audit: every reference is
-            // judged by the same routine the reapply loop uses, so a damaged
-            // ref is recorded exactly here, at the moment the walk sees it.
-            // This recording is not a gate — the descent rule below is
-            // deliberately unchanged.
-            recover_follow_ref_chain(m_base, m_size, r, failures);
-            // ONE SURVIVING WITNESS IS ENOUGH TO KEEP WALKING.
-            //
-            // This used to require the child to be fully intact -- self-offset
-            // valid AND tag equal to the slot's declared type -- and abandoned
-            // the subtree otherwise. That threw away the whole point of storing
-            // the type twice. A single bit flipped in a child's 10-byte header
-            // left the PARENT still naming both its address and its type, and
-            // the walk stopped there anyway, so every block below it went
-            // unreached and unenumerated. Measured on a 1.05 MB Synthea
-            // artifact: one flip in a block header cost 3 block references, in
-            // a stream where recover() reported zero failures -- the loss never
-            // appeared as a failed repair because the references were never
-            // enumerated to be repaired.
-            //
-            // The rule now matches the redundancy the format actually has: the
-            // pair (child's self-offset, child's tag) is corroborated by the
-            // parent's slot, so descend while EITHER half still agrees, and
-            // stop only when both are gone -- which is the genuine no-witness
-            // hole REC-18 exists to report and no walk can cross.
-            // A BROKEN SELF-OFFSET MUST STILL BE WITHIN THE FLIP BUDGET.
-            //
-            // "the tag corroborates but the self-offset does not" describes two
-            // very different situations, and they must not be treated alike:
-            //   * the child is real and its VALIDATION word took the flip --
-            //     the stored word is then a Hamming neighbour of the address;
-            //   * the PARENT's offset took the flip and now names arbitrary
-            //     bytes whose two tag bytes happen to match -- the stored word
-            //     there is unrelated to the address, so the distance is large.
-            // Descending on the second one enumerates garbage under a real
-            // V-Table. Measured: it invented 13 references and 15 unrecovered
-            // verdicts on a stream with a single bit flipped. The budget is the
-            // same D1/D2 discipline the classifier already applies, so the walk
-            // and the verdict cannot disagree about what is repairable.
-            const bool self_ok = valid_validation(m_base, m_size, r.child);
-            const bool self_repairable =
-                self_ok || (r.child >= 0 &&
-                            static_cast<size_t>(r.child) + DATA_BLOCK::HEADER_SIZE <= m_size &&
-                            hamming_cost(FF_GET_VALIDATION(m_base, r.child),
-                                         static_cast<uint64_t>(r.child)) <= FF_RECOVERY_MAX_FLIPS);
-            const RECOVERY_TAG actual = tag_at(m_base, m_size, r.child);
-            const bool declared_known = r.declared != FF_RECOVER_UNDEFINED;
-            const RECOVERY_TAG actual_base =
-                (r.kind == FF_FIELD_ARRAY) ? GetTypeFromTag(actual) : actual;
-            const bool tag_ok = declared_known && actual_base == r.declared;
-            if (!self_repairable && !tag_ok)
-                continue;  // both witnesses gone — a hole, not a reference
-            if (!self_repairable)
-                continue;  // tag matches by coincidence at an unrelated address
-            // Enumerate under the corroborated type. When the child's own tag
-            // is the damaged half, its V-Table would be wrong (or absent), and
-            // enumerating under it silently yields no children at all — the
-            // same subtree loss by another route.
-            // Which tag names the V-Table to walk this child under.
-            //
-            // The wire tag wins when it CORROBORATES the slot, because it is
-            // the one that carries the array bit (`declared` is an ELEMENT
-            // type, and enumerating an array under its element's V-Table reads
-            // the wrong shape entirely). But "plausible" is not "correct": a
-            // flipped tag frequently lands on another live tag, and trusting it
-            // walks the wrong V-Table and silently yields no children. When the
-            // slot declares a type and the wire disagrees, the tag is the
-            // damaged half by definition -- the parent is the surviving witness
-            // -- so follow the parent, restoring the array bit the slot's
-            // element type does not carry.
-            const RECOVERY_TAG use =
-                tag_ok ? actual
-                       : (declared_known
-                              ? (r.kind == FF_FIELD_ARRAY ? ToArrayTag(r.declared) : r.declared)
-                              : actual);
-            stack.emplace_back(r.child, depth + 1, use);
+            island.members.push_back(b);
+            if (const auto k = kids.find(b); k != kids.end())
+                stack.insert(stack.end(), k->second.rbegin(), k->second.rend());
         }
-    }
-    return reachable;
+        c.islands.push_back(std::move(island));
+    };
+    if (m_size >= FF_HEADER::HEADER_SIZE)
+        grow(HEADER_PARENT, true);
+    for (const auto& [off, a] : B.anchors)
+        if (!a.lost && !B.owner.contains(off) && !placed.contains(off))
+            grow(off, false);
+    c.holes = B.holes;
+    for (const Question& q : B.questions)
+        c.points.push_back(q.point);
+    const auto key = [](const Point& p) {
+        return p.kind == PointKind::Open ? p.slot.seat : p.array + FF_ARRAY::KIND_AND_STEP;
+    };
+    std::sort(c.points.begin(), c.points.end(), [&key](const Point& a, const Point& b) { return key(a) < key(b); });
+    return c;
 }
 
-
-// =====================================================================
-// An ARRAY is not a datablock, and is not recovered like one.
-// =====================================================================
-// A datablock is a V-Table of slots; an array is a stride and a count over
-// inline entries. The entries carry no witnesses of their own -- that is the
-// format's design, not an omission: they are not pointers to distant objects,
-// so the array's VALIDATION (where it is) and RECOVERY (what is inside) cover
-// all of them at once.
-//
-// Which means the array is the ONLY way back to its contents, and walking it
-// with the V-Table walker finds nothing at all: reflected_fields_view of an
-// array tag is empty, so enumerate_block_refs returns immediately. That is
-// exactly what happened when a repaired array reference was followed -- the
-// address was recovered correctly and every entry stayed lost, because the
-// only code that reads entries was a branch inside the PARENT's walk, run
-// earlier against the corrupted address.
-//
-// So it lives here, callable, and both paths use it: the parent's walk when it
-// reaches an FF_FIELD_ARRAY slot, and the repair path when the thing repaired
-// IS the array. The concentration of witnesses at the array is what makes this
-// matter -- lose the pointer and the array's self-offset together and every
-// entry goes with them, N references from a two-bit event.
-void Recovery::enumerate_array_entries(Offset array_off, RECOVERY_TAG array_tag,
-                                       std::vector<BlockRef>& out) const {
-    if (array_off == FF_NULL_OFFSET)
-        return;
-            // Element references. The array header's self-offset may be the
-            // damaged half -- the slot above still names this address and
-            // this element type -- so require only that it be REPAIRABLE
-            // under the flip budget, not already correct. Demanding a clean
-            // self-offset here dropped every element of the array from the
-            // census even after the walk had recovered the array itself,
-            // which on the test fixture cost 2 of 24 references from one
-            // flipped bit. Bytes that are not a Hamming neighbour of their
-            // own address are still refused: that is not this array.
-            if (!valid_validation(m_base, m_size, array_off) &&
-                (static_cast<size_t>(array_off) + DATA_BLOCK::HEADER_SIZE > m_size ||
-                 hamming_cost(FF_GET_VALIDATION(m_base, array_off),
-                              static_cast<uint64_t>(array_off)) > FF_RECOVERY_MAX_FLIPS))
-                return;
-            if (static_cast<size_t>(array_off) + FF_ARRAY::HEADER_SIZE > m_size)
-                return;
-            const RECOVERY_TAG element_tag = GetTypeFromTag(array_tag);
-            const FF_ARRAY array(array_off, m_size, 0);
-            const uint16_t stride = array.entry_step(m_base);
-            const uint32_t stamped = array.entry_count(m_base);
-            const ElementShape shape = element_shape_of(element_tag, array.entry_kind(m_base));
-            if (shape == ElementShape::None)
-                return;
-    // EMITTING REFERENCES IS NOT DERIVING AN EXTENT, and conflating them is
-    // what stopped the generational recovery dead.
-    //
-    // Bound by GEOMETRY (REC-21.1): the stamped count when the arena has room
-    // for it, and the largest fitting extent when it does not, so a corrupted
-    // ENTRY_COUNT cannot conjure thousands of references out of a small array.
-    // walk_array_extent never stops at a DAMAGED entry -- elements sit at a
-    // fixed stride, so damage to one element is work for the matcher, not the
-    // end of the array (stopping there turned one flipped VALIDATION word into
-    // an ExtentDerived that overwrote an intact 1,473-entry count).
-    // Each emitted reference is then judged on its own merits -- an intact one
-    // classifies Intact, a damaged one becomes work for the matcher.
-    const uint64_t entries = static_cast<uint64_t>(array_off) + FF_ARRAY::HEADER_SIZE;
-    const uint64_t width = (shape == ElementShape::Tuple)       ? 10
-                           : (shape == ElementShape::OffsetPtr) ? 8
-                                                                : stride;
-    const uint64_t room = (width != 0 && m_size > entries)
-                              ? (static_cast<uint64_t>(m_size) - entries) / width
-                              : 0;
-    const uint32_t walked = walk_array_extent(m_base, m_size, array_off,
-                                              shape, stride, stamped);
-    const uint32_t extent = (static_cast<uint64_t>(stamped) <= room) ? stamped : walked;
-            for (uint32_t i = 0; i < extent; ++i) {
-                const uint64_t pos = entries + static_cast<uint64_t>(i) * (shape == ElementShape::Tuple ? 10
-                                                                  : shape == ElementShape::OffsetPtr ? 8
-                                                                  : stride);
-                if (pos + (shape == ElementShape::Tuple ? 10 : 8) > m_size)
-                    break;
-                if (shape == ElementShape::Tuple) {
-                    const Offset child = static_cast<Offset>(LOAD_U64(m_base + pos));
-                    // An absent element, not the end of the array: the reader
-                    // exports every entry after it, so the enumerator must too.
-                    if (child == FF_NULL_OFFSET)
-                        continue;
-                    const RECOVERY_TAG stored = FF_GET_RECOVERY_TAG(m_base, static_cast<Offset>(pos));
-                    out.push_back(BlockRef{array_off, static_cast<Offset>(pos - static_cast<uint64_t>(array_off)),
-                                           FF_FIELD_RESOURCE, child,
-                                           plausible_tag(stored) ? stored : FF_RECOVER_UNDEFINED,
-                                           FF_RECOVER_UNDEFINED});
-                } else {
-                    // OFFSET entries point at string blocks; inline blocks
-                    // sit at `pos` itself. Both are single-witness-ish
-                    // references whose declared type is the array's element tag.
-                    const Offset child = (shape == ElementShape::OffsetPtr)
-                                             ? static_cast<Offset>(LOAD_U64(m_base + pos))
-                                             : static_cast<Offset>(pos);
-                    if (child == FF_NULL_OFFSET)
-                        continue;  // an absent element; see the tuple branch above
-                    out.push_back(BlockRef{array_off, static_cast<Offset>(pos - static_cast<uint64_t>(array_off)),
-                                           shape == ElementShape::OffsetPtr ? FF_FIELD_STRING : FF_FIELD_BLOCK,
-                                           child, element_tag, FF_RECOVER_UNDEFINED});
-                }
-            }
-
+// The references the census decided and the header reaches. On a clean stream
+// that is every reference in it, which makes this the clean-stream baseline.
+std::vector<BlockRef> Recovery::reachable_blocks() const {
+    const Board                      B       = take_census(m_base, m_size, scan());
+    const std::vector<Offset>        members = attached(B, children(B));
+    const std::unordered_set<Offset> reach(members.begin(), members.end());
+    std::vector<BlockRef> out;
+    for (const auto& [child, slot] : B.owner)
+        if (reach.contains(slot.parent))
+            out.push_back({slot.parent, slot.seat - slot.parent, slot.kind, child,
+                           child_wire(slot, slot.repr == SlotRepr::Tuple ? slot.stored_tag : slot.expect),
+                           B.anchors.at(child).tag});
+    std::sort(out.begin(), out.end(),
+              [](const BlockRef& a, const BlockRef& b) { return a.parent + a.field < b.parent + b.field; });
+    return out;
 }
 
-bool Recovery::reads_as(Offset off, RECOVERY_TAG tag) const {
-    if (!plausible_tag(tag))
-        return false;
-    std::vector<BlockRef> kids;
-    enumerate_block_refs(off, tag, kids);
-    if (kids.empty())
-        return false;  // no children to judge by — silence, not agreement
-    return batch_passes(m_base, m_size, kids, BatchTest::EveryChildCorroborates);
-}
-
-TagCopy Recovery::adjudicate_tag(Offset child, RECOVERY_TAG slot_tag,
-                                 RECOVERY_TAG child_tag) const {
-    // Both copies are plausible types or there would be nothing to decide --
-    // plausibility is what the ranker already used, and it is exactly what
-    // fails here: 0x1012 and 0x1010 are both real resource tags, one bit apart.
-    // So ask the bytes instead of the tag.
-    const bool slot_reads  = reads_as(child, slot_tag);
-    const bool child_reads = reads_as(child, child_tag);
-    if (slot_reads == child_reads)
-        return TagCopy::Undecided;  // both coherent, or neither — no opinion
-    // The coherent reading names the true type; the OTHER copy is the damage.
-    return slot_reads ? TagCopy::ChildHeader : TagCopy::ParentSlot;
-}
-
-void Recovery::enumerate_block_refs(Offset block_offset, RECOVERY_TAG block_tag,
-                                    std::vector<BlockRef>& out) const {
-    // Was `> m_size`, which let an offset within a header's width of the end
-    // through to code that immediately reads that header.
-    if (!FF_BLOCK_IN_BOUNDS(block_offset, m_size))
-        return;
-
-    // DISPATCH ON SHAPE. There are three, and they are recovered differently:
-    //
-    //   ARRAY       stride + count over inline entries. No V-Table at all --
-    //               reflected_fields_view of an array tag is empty -- so the
-    //               walk below would return nothing and silently lose every
-    //               entry. Its own routine.
-    //   BYTE ARRAY  a length and an opaque payload (FF_STRING and everything
-    //               sharing its layout, opaque JSON included). It has an
-    //               extent but no children, so there is nothing to enumerate;
-    //               saying so here is the difference between "no references"
-    //               and "unknown tag", which is not the same answer.
-    //   DATABLOCK   a V-Table of slots. The walk below.
-    //
-    // Callers ask for "the references of the block at X" and get the right
-    // answer for what X actually is. Leaving the array case as a branch inside
-    // the datablock walk meant only the parent could reach it, and the repair
-    // path -- which needs exactly that walk against a corrected address --
-    // could not.
-    if (IsArrayTagged(block_tag)) {
-        enumerate_array_entries(block_offset, block_tag, out);
-        return;
-    }
-    if (FF_IsStringLayoutTag(block_tag))
-        return;  // byte array: an extent, no references
-
-    const auto fields = reflected_fields_view(static_cast<uint16_t>(block_tag));
-    if (fields.empty())
-        return;  // unknown tag — nothing the compiled table can walk
-
-    for (const FF_FieldInfo& f : fields) {
-        const uint64_t slot = static_cast<uint64_t>(block_offset) + f.field_offset;
-        switch (f.kind) {
-            case FF_FIELD_BLOCK:
-            case FF_FIELD_STRING: {
-                if (slot + 8 > m_size)
-                    continue;
-                const Offset child = static_cast<Offset>(LOAD_U64(m_base + slot));
-                if (child == FF_NULL_OFFSET)
-                    continue;  // legitimately absent — no reference
-                out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset),
-                                       f.kind, child, f.child_recovery, FF_RECOVER_UNDEFINED});
-                break;
-            }
-            case FF_FIELD_CHOICE:
-            case FF_FIELD_RESOURCE: {
-                // 10-byte tuple: the tag half at slot+8 mirrors the child's
-                // RECOVERY for OFFSET-BEARING variants (F1: the compiled table
-                // is a decoy here). Inline-scalar variants (bool/int/double)
-                // put the VALUE in the first 8 bytes, packed date/times and
-                // codes are inline too — only flagged fallbacks and
-                // block/string/resource variants are references (D3).
-                if (slot + 10 > m_size)
-                    continue;
-                const uint64_t raw = LOAD_U64(m_base + slot);
-                if (raw == static_cast<uint64_t>(FF_NULL_OFFSET))
-                    continue;  // absent (monostate) — not a reference
-                const RECOVERY_TAG stored = FF_GET_RECOVERY_TAG(m_base, static_cast<Offset>(slot));
-                const FF_FieldKind variant_kind = Recovery_to_Kind(stored);
-                // No-default on purpose: Recovery_to_Kind's output set is closed
-                // (see the mapping in FF_Primitives.hpp), so a kind added there
-                // must be triaged here at compile time, never mis-read.
-                switch (variant_kind) {
-                    case FF_FIELD_UNKNOWN:
-                        // The tag half names no kind this build knows.
-                        continue;
-                    case FF_FIELD_BOOL:
-                    case FF_FIELD_INT32:
-                    case FF_FIELD_UINT32:
-                    case FF_FIELD_INT64:
-                    case FF_FIELD_UINT64:
-                    case FF_FIELD_FLOAT64:
-                        continue;  // inline scalar value — no addressable child (D3)
-                    case FF_FIELD_DATETIME: {
-                        // Packed civil value unless the fallback flag is set; the
-                        // flagged form is a SIGNED offset RELATIVE to this block
-                        // (CLAUDE.md hard invariant) naming an FF_STRING fallback.
-                        if (raw == FF_DATETIME_NULL || !(raw & FF_DATETIME_FALLBACK_FLAG))
-                            continue;
-                        out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
-                                               FF_ResolveDateTimeOffset(raw, block_offset),
-                                               RECOVER_FF_STRING, FF_RECOVER_UNDEFINED});
-                        break;
-                    }
-                    case FF_FIELD_CODE: {
-                        // Code occupies the low 4 bytes of the 8-byte value area;
-                        // MSB clear = packed dictionary ID, MSB set = signed
-                        // relative offset to an FF_CODED_VALUE fallback block.
-                        const uint32_t raw_code = static_cast<uint32_t>(raw);
-                        if (!(raw_code & FF_CODED_VALUE_FLAG))
-                            continue;
-                        out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
-                                               FF_ResolveCodeableConceptOffset(raw_code, block_offset),
-                                               RECOVER_FF_CODED_VALUE, FF_RECOVER_UNDEFINED});
-                        break;
-                    }
-                    // Offset-bearing: the raw 8 bytes are an absolute child
-                    // offset. Array-tagged tags reach here through their base
-                    // kind — GetTypeFromTag strips the array bit before the
-                    // mapping — and the array bit survives in `stored` for the
-                    // walker. ARRAY/CHOICE/URL are never yielded by
-                    // Recovery_to_Kind; they are listed anyway so -Wswitch stays
-                    // live and a future widening of that mapping is triaged
-                    // here instead of silently mis-reading a new inline form.
-                    case FF_FIELD_STRING:
-                    case FF_FIELD_BLOCK:
-                    case FF_FIELD_RESOURCE:
-                    case FF_FIELD_ARRAY:
-                    case FF_FIELD_CHOICE:
-                    case FF_FIELD_URL:
-                        out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
-                                               static_cast<Offset>(raw), stored, FF_RECOVER_UNDEFINED});
-                        break;
-                    // An identity slot is 16 SELF-DESCRIBING bytes, not the bare
-                    // 8-byte offset this group reads -- bytes 0-7 may be a trie
-                    // index and a kind word, which read as an offset would be a
-                    // plausible wrong answer. Recovery_to_Kind never yields it
-                    // (no tag maps to it yet); the case exists so -Wswitch stays
-                    // live, and when a tag does map to it the arm must be decoded
-                    // via FF_Id::read_slot, never read as `raw`.
-                    case FF_FIELD_ID:
-                        continue;
-                }
-                break;  // end of the CHOICE/RESOURCE case
-            }
-            case FF_FIELD_ARRAY: {
-                if (slot + 8 > m_size)
-                    continue;
-                const Offset array_off = static_cast<Offset>(LOAD_U64(m_base + slot));
-                if (array_off == FF_NULL_OFFSET)
-                    continue;
-                // The parent→array reference itself...
-                out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
-                                       array_off, f.child_recovery, FF_RECOVER_UNDEFINED});
-                // ...and NOTHING ELSE. The entries belong to the array, not to
-                // this parent: the walk descends into the array like any other
-                // child and enumerate_block_refs dispatches to the array
-                // routine there. Emitting them from both places counted every
-                // array entry twice -- measured, it inflated a clean stream
-                // from 16,071 references to 21,566.
-                //
-                // One owner per fact: the parent owns the parent→array edge,
-                // the array owns what is inside it.
-                break;
-            }
-            case FF_FIELD_DATETIME: {
-                // Packed inline unless the fallback flag is set; only the
-                // flagged form is a reference. The offset is SIGNED and
-                // RELATIVE to the containing block (CLAUDE.md hard invariant),
-                // and the fallback it names is an FF_STRING block (D6).
-                if (slot + 8 > m_size)
-                    continue;
-                const uint64_t raw = LOAD_U64(m_base + slot);
-                if (raw == FF_DATETIME_NULL || !(raw & FF_DATETIME_FALLBACK_FLAG))
-                    continue;
-                out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
-                                       FF_ResolveDateTimeOffset(raw, block_offset),
-                                       RECOVER_FF_STRING, FF_RECOVER_UNDEFINED});
-                break;
-            }
-            case FF_FIELD_CODE: {
-                // Packed dictionary ID unless the fallback flag is set; the
-                // flagged form is a signed relative offset to an
-                // FF_CODED_VALUE fallback block (D5).
-                if (slot + 4 > m_size)
-                    continue;
-                const uint32_t raw = LOAD_U32(m_base + slot);
-                if (raw == FF_CODE_NULL || !(raw & FF_CODED_VALUE_FLAG))
-                    continue;
-                out.push_back(BlockRef{block_offset, static_cast<Offset>(f.field_offset), f.kind,
-                                       FF_ResolveCodeableConceptOffset(raw, block_offset),
-                                       RECOVER_FF_CODED_VALUE, FF_RECOVER_UNDEFINED});
-                break;
-            }
-            default:
-                break;  // scalars, codes, URL-directory refs: no addressable child
-        }
-    }
+StreamMap Recovery::reachable_blocks_map() const {
+    const Board B = take_census(m_base, m_size, scan());
+    StreamMap map;
+    map.file_size = static_cast<Size>(m_size);
+    for (const Offset m : attached(B, children(B)))
+        map[m] = m == HEADER_PARENT
+                     ? StreamMapEntry{StreamMapEntryType::Header, 0, FF_HEADER::HEADER_SIZE, RECOVER_FF_HEADER}
+                     : classify_block(m_base, m_size, m);
+    find_gaps(map);
+    return map;
 }
 
 // =====================================================================
-// CALLEES — the free helpers, in call order (REC-19.1)
+// THE BYTE CENSUS — scan() and find_gaps()
 // =====================================================================
-namespace {
 
-// Classify one self-consistent block start: which StreamMapEntryType it is and
-// how big it is.
-//
-// REC-18.2 — CONTAINMENT. An entry is charged only the bytes NO OTHER ENTRY
-// OWNS. An inline array of self-describing block headers has each element in
-// the map already, so charging the array its whole extent double-counts: doing
-// that produced 11,374 "overlaps" totalling 54 MB in a 3.3 MB stream. Arrays
-// whose elements are their own entries are charged HEADER-ONLY; every other
-// array (raw scalars, resource tuples, the string OFFSET table) is charged its
-// full extent, because nothing else claims those bytes.
-StreamMapEntry classify_block(const BYTE* base, size_t size, Offset off) {
-    const RECOVERY_TAG tag = FF_GET_RECOVERY_TAG(base, off);
-    if (IsArrayTagged(tag)) {
-        // size = 16 + count x stride, when the header fits and the math lands
-        // inside the arena; otherwise the header itself is suspect.
-        if (static_cast<size_t>(off) + FF_ARRAY::HEADER_SIZE <= size) {
-            const FF_ARRAY array(off, size, 0);
-            const uint32_t count  = array.entry_count(base);
-            const uint64_t stride = array.entry_step(base);
-            const uint64_t total  = FF_ARRAY::HEADER_SIZE + static_cast<uint64_t>(count) * stride;
-            // Elements that are themselves self-describing blocks appear in the
-            // map on their own; charging them twice is the overlap above.
-            const ElementShape shape = element_shape_of(GetTypeFromTag(tag), array.entry_kind(base));
-            if (shape == ElementShape::InlineBlock)
-                return {StreamMapEntryType::Array, off, FF_ARRAY::HEADER_SIZE};
-            if (total <= size - static_cast<size_t>(off))
-                return {StreamMapEntryType::Array, off, static_cast<Size>(total)};
+// Every position whose eight bytes hold its own offset. A random word does so
+// with probability 2^-64, so this alone finds every block whose self-offset
+// survived. Split across workers when the arena is large enough to pay for
+// them; chunks overlap by a header's width so a block on a boundary is seen.
+StreamMap Recovery::scan() const {
+    StreamMap map;
+    map.file_size = static_cast<Size>(m_size);
+    if (has_magic(m_base, m_size))
+        map[0] = {StreamMapEntryType::Header, 0, FF_HEADER::HEADER_SIZE, RECOVER_FF_HEADER};
+
+    const unsigned hw      = std::thread::hardware_concurrency();
+    const size_t   workers = (m_size >= (1u << 20) && hw > 1) ? std::min<size_t>(hw, 8u) : 1;
+    const size_t   chunk   = (m_size + workers - 1) / workers;
+    std::vector<std::vector<Offset>> found(workers);
+    std::vector<std::exception_ptr>  errors(workers);
+    const auto sweep = [&](size_t w) {
+        try {
+            const size_t end = std::min(m_size, (w + 1) * chunk + (w + 1 < workers ? DATA_BLOCK::HEADER_SIZE - 1 : 0));
+            for (size_t off = w * chunk; off + DATA_BLOCK::HEADER_SIZE <= end; ++off)
+                if (LOAD_U64(m_base + off) == off)
+                    found[w].push_back(static_cast<Offset>(off));
+        } catch (const std::exception&) {
+            errors[w] = std::current_exception();  // rethrown on the calling thread below
         }
-        return {StreamMapEntryType::Array, off, FF_ARRAY::HEADER_SIZE};
-    }
-    if (FF_IsStringLayoutTag(tag)) {
-        // FF_STRING stamps its LENGTH at +10; size = STRING_DATA + LENGTH.
-        if (static_cast<size_t>(off) + FF_STRING::STRING_DATA <= size) {
-            const uint32_t len = FF_GET_STRING_LENGTH(base, off);
-            if (static_cast<uint64_t>(len) <= size - static_cast<size_t>(off) - FF_STRING::STRING_DATA)
-                return {StreamMapEntryType::String, off, static_cast<Size>(FF_STRING::STRING_DATA + len)};
+    };
+    std::vector<std::thread> threads;
+    for (size_t w = 1; w < workers; ++w)
+        threads.emplace_back(sweep, w);
+    sweep(0);
+    for (std::thread& t : threads)
+        t.join();
+    for (const std::exception_ptr& e : errors)
+        if (e)
+            std::rethrow_exception(e);
+
+    for (const std::vector<Offset>& offsets : found)
+        for (const Offset off : offsets) {
+            if (map.contains(off))
+                continue;  // the header, or a chunk overlap
+            map[off] = classify_block(m_base, m_size, off);
+            if (!plausible_tag(map[off].recovery))
+                map.failures.push_back({ProducerFailureKind::ScanTagInvalid, off, FF_RECOVER_UNDEFINED,
+                                        map[off].recovery,
+                                        "the self-offset holds, but the tag is no type this build knows"});
         }
-        return {StreamMapEntryType::String, off, 0};
-    }
-    // REC-18.1 — the three hand-written primitive blocks have no GENERATED
-    // reflection, so reflected_fields_view() is empty for them and the derived
-    // size would collapse to DATA_BLOCK::HEADER_SIZE. Each carries a compiled
-    // HEADER_SIZE instead. Measured on one Synthea bundle: CODED_VALUE
-    // x6593, URL_DIRECTORY x1, CHECKSUM x1 -- three tags cover every one.
-    if (tag == RECOVER_FF_CODED_VALUE) {
-        if (static_cast<size_t>(off) + FF_CODED_VALUE::HEADER_SIZE <= size) {
-            const uint8_t len = FF_CODED_VALUE(off, size, 0).length(base);
-            const uint64_t total = FF_CODED_VALUE::HEADER_SIZE + static_cast<uint64_t>(len);
-            if (total <= size - static_cast<size_t>(off))
-                return {StreamMapEntryType::Block, off, static_cast<Size>(total)};
-        }
-        return {StreamMapEntryType::Block, off, FF_CODED_VALUE::HEADER_SIZE};
-    }
-    if (tag == RECOVER_FF_URL_DIRECTORY) {
-        if (static_cast<size_t>(off) + FF_URL_DIRECTORY::HEADER_SIZE <= size) {
-            const uint32_t n = FF_URL_DIRECTORY(off, size, 0).entry_count(base);
-            const uint64_t total = FF_URL_DIRECTORY::HEADER_SIZE +
-                                   static_cast<uint64_t>(n) * FF_URL_DIRECTORY::URL_ENTRY_SIZE;
-            if (total <= size - static_cast<size_t>(off))
-                return {StreamMapEntryType::Block, off, static_cast<Size>(total)};
-        }
-        return {StreamMapEntryType::Block, off, FF_URL_DIRECTORY::HEADER_SIZE};
-    }
-    if (tag == RECOVER_FF_CHECKSUM) {
-        // FF_CHECKSUM is a hand-written primitive with no GENERATED reflection;
-        // derived_block_size would collapse it to DATA_BLOCK::HEADER_SIZE and
-        // every sealed stream would trail a gap after its checksum block.
-        return {StreamMapEntryType::Block, off, FF_CHECKSUM::HEADER_SIZE};
-    }
-    return {StreamMapEntryType::Block, off, Recovery::derived_block_size(tag)};
+    find_gaps(map);
+    return map;
 }
 
-// The walked extent of one array: how many elements the GEOMETRY can hold
-// (fixed stride inside the buffer). Element validation is deliberately NOT
-// part of this answer -- a damaged element is damage to one element, repaired
-// by its own reference verdict, never the end of the array. Returns the
-// stamped count when the shape makes geometry the only check, and the largest
-// fitting index when the stamped count overruns the buffer (the
-// anti-inflation bound: a corrupted count must not conjure elements).
-uint32_t walk_array_extent(const BYTE* base, size_t size, Offset array_off,
-                           ElementShape shape, uint16_t stride, uint32_t stamped) {
-    if (shape == ElementShape::None)
-        return stamped;  // raw scalars have no headers to walk
-    const uint64_t entries = static_cast<uint64_t>(array_off) + FF_ARRAY::HEADER_SIZE;
-    const uint64_t step    = (shape == ElementShape::Tuple)  ? 10
-                           : (shape == ElementShape::OffsetPtr) ? 8
-                           : stride;
-    if (step < 8)
-        return stamped;  // implausible stride — the header is suspect
-
-    // The extent is a GEOMETRY question, never a validation score. Elements
-    // sit at a fixed stride, so a failed element is damage to ONE element —
-    // the reference verdicts repair it individually — not the end of the
-    // array. Bailing at the first damaged entry read a mid-array flip as
-    // truncation: one flipped VALIDATION word in entry 28 of a 1,473-entry
-    // bundle array derived an extent of 28, ExtentDerived overwrote the
-    // INTACT entry count (the flip was in the entry, not the count), and the
-    // reparse lost 97% of the document (reproduced via bench recovery_probe:
-    // the single 2-byte count rewrite 1473 -> 28 dropped the leaf census
-    // 99% -> 3%). Only an element position the buffer cannot hold ends the
-    // extent — that is the anti-inflation bound, and a count that overruns
-    // the arena is the one case a derived extent may replace.
-    for (uint32_t i = 0; i < stamped; ++i) {
-        const uint64_t pos = entries + static_cast<uint64_t>(i) * step;
-        if (pos + step > size)
-            return i;
-    }
-    return stamped;
-}
-
-}  // namespace (free helpers)
-
-// REC-18.3/.4/.7 — tile the arena; every run of bytes no entry claims is a gap.
-//
-// The map is already offset-ordered (std::map), so this is one O(n) sweep with
-// no sort. Overlap is impossible by construction once REC-18.2's containment
-// rule holds -- an entry is charged only the bytes nothing else owns -- so a
-// cursor that only moves forward is sufficient.
-//
-// Classification, cheapest discriminator first:
-//   1. VERSION GATE. A gap can only be benign skew if the stream was written by
-//      a NEWER engine than this reader. FF_HEADER::VERSION carries it; Parser
-//      has always read that field and never acted on it, and this is the first
-//      place that changes.
-//   2. SYSTEMATICITY. A version gap trails EVERY instance of a tag at the SAME
-//      size; a hole is a one-off. That is self-calibrating -- the reader cannot
-//      know the newer layout, but it can observe that 6,593 CodeableConcepts all
-//      trail exactly 6 bytes and conclude the delta rather than 6,593 holes.
-//   3. SIZE FLOOR. A hole must be at least DATA_BLOCK::HEADER_SIZE; less than
-//      that cannot have been a block. Weak alone -- a large version delta can
-//      exceed a small block -- so it never decides on its own.
+// Tile the arena and classify every run of bytes no entry covers (REC-18). A
+// run is benign version skew only when the stream is newer than this reader
+// and every block of the tag before it trails the same run: a longer V-Table,
+// not damage. After the last entry it is slack; otherwise it is a hole.
 void Recovery::find_gaps(StreamMap& map) const {
     map.gaps.clear();
     if (map.empty())
         return;
+    if (has_magic(m_base, m_size) && FF_HEADER(m_size).get_stream_layout(m_base) == FF_STREAM_COMPACTED)
+        return;  // the compact layout's geometry is another matter (handoff §11)
 
-    // REC-18.7 — the compact layout is a presence-bitmask rewrite with entirely
-    // different geometry. Refuse rather than emit nonsense.
-    //
-    // The test names the compact layout exactly, because the field is two bits
-    // wide and half its values are ones the writer never emits. Refusing on
-    // "anything other than standard" meant one flipped bit in those two bits
-    // disabled the whole hole analysis, so a damaged stream silently reported
-    // no holes at all — a total loss of the evidence, caused by the damage the
-    // evidence exists to find (REC-24).
-    if (header_is_readable(m_base, m_size)) {
-        if (FF_HEADER(m_size).get_stream_layout(m_base) == FF_STREAM_COMPACTED)
-            return;  // compact archive: gap analysis does not apply
+    // Each entry covers its extent, but never past the next entry: a block
+    // never contains another block's first byte, and a stamped count or length
+    // that damage inflated would otherwise swallow every hole behind it.
+    struct Run { Offset start; Size length; RECOVERY_TAG after; };
+    std::vector<Run> runs;
+    std::unordered_map<uint16_t, size_t> instances;
+    uint64_t     cursor = 0;
+    RECOVERY_TAG after  = FF_RECOVER_UNDEFINED;
+    for (auto it = map.begin(); it != map.end(); ++it) {
+        const auto& [off, e] = *it;
+        if (off > cursor)
+            runs.push_back({static_cast<Offset>(cursor), static_cast<Size>(off - cursor), after});
+        const auto next = std::next(it);
+        const uint64_t end = static_cast<uint64_t>(off) + e.size;
+        cursor = std::max<uint64_t>(cursor, next == map.end() ? end : std::min<uint64_t>(end, next->first));
+        after  = e.recovery;
+        ++instances[static_cast<uint16_t>(after)];
     }
+    if (map.file_size > cursor)
+        runs.push_back({static_cast<Offset>(cursor), static_cast<Size>(map.file_size - cursor), after});
 
-    // Pass 1 — collect the raw runs, remembering which tag each one trails.
-    struct Raw { Offset start; Size len; RECOVERY_TAG after; Offset after_off; };
-    std::vector<Raw> raw;
-    uint64_t cursor = 0;
-    RECOVERY_TAG prev_tag = FF_RECOVER_UNDEFINED;
-    Offset prev_off = FF_NULL_OFFSET;
-    for (const auto& [off, e] : map) {
-        const uint64_t o = static_cast<uint64_t>(off);
-        if (o > cursor)
-            raw.push_back({static_cast<Offset>(cursor), static_cast<Size>(o - cursor),
-                           prev_tag, prev_off});
-        cursor   = std::max(cursor, o + static_cast<uint64_t>(e.size));
-        prev_tag = tag_at(m_base, m_size, off);
-        prev_off = off;
-    }
-    if (static_cast<uint64_t>(map.file_size) > cursor)
-        raw.push_back({static_cast<Offset>(cursor),
-                       static_cast<Size>(map.file_size - cursor), prev_tag, prev_off});
-
-    // Pass 2 — could this reader be under-sizing blocks at all?
-    const bool newer_stream = stream_is_newer(m_base, m_size);
-
-    // Pass 3 — per-tag systematicity. A tag whose every instance trails the same
-    // non-zero run is a version delta, not N separate holes.
-    std::unordered_map<uint16_t, std::size_t> instances;
-    for (const auto& [off, e] : map)
-        instances[static_cast<uint16_t>(tag_at(m_base, m_size, off))]++;
-    std::unordered_map<uint16_t, std::unordered_map<Size, std::size_t>> trail;
-    for (const Raw& r : raw)
-        if (r.after != FF_RECOVER_UNDEFINED)
-            trail[static_cast<uint16_t>(r.after)][r.len]++;
-
-    for (const Raw& r : raw) {
-        Gap g{r.start, r.len, r.after, GapClass::Hole, "unattributed bytes"};
-        if (static_cast<uint64_t>(r.start) + r.len >= static_cast<uint64_t>(map.file_size)) {
+    const bool newer = stream_is_newer(m_base, m_size);
+    std::map<std::pair<uint16_t, Size>, size_t> trails;  // (tag, run length) -> how many
+    for (const Run& r : runs)
+        ++trails[{static_cast<uint16_t>(r.after), r.length}];
+    for (const Run& r : runs) {
+        const size_t same = trails[{static_cast<uint16_t>(r.after), r.length}];
+        Gap g{r.start, r.length, r.after, GapClass::Hole, "unattributed bytes"};
+        if (static_cast<uint64_t>(r.start) + r.length >= map.file_size) {
             g.class_ = GapClass::Trailing;
             g.why    = "arena slack past the last entry";
-        } else if (newer_stream && r.after != FF_RECOVER_UNDEFINED) {
-            const uint16_t t = static_cast<uint16_t>(r.after);
-            const auto it = trail.find(t);
-            const std::size_t same = (it != trail.end() && it->second.count(r.len))
-                                         ? it->second.at(r.len) : 0;
-            // Every instance of the tag trails this exact run -> a V-Table the
-            // writer knows about and this reader does not.
-            if (same > 1 && same == instances[t]) {
-                g.class_ = GapClass::VersionSkew;
-                g.why    = "constant trailing run after every block of this tag; "
-                           "stream engine is newer than this reader";
-            }
-        }
-        if (g.class_ == GapClass::Hole && r.len < DATA_BLOCK::HEADER_SIZE)
+        } else if (newer && r.after != FF_RECOVER_UNDEFINED && same > 1 &&
+                   same == instances[static_cast<uint16_t>(r.after)]) {
+            g.class_ = GapClass::VersionSkew;
+            g.why    = "every block of this tag trails the same run, and the stream is newer";
+        } else if (r.length < DATA_BLOCK::HEADER_SIZE) {
             g.why = "unattributed, but too small to have held a block header";
+        }
         map.gaps.push_back(g);
     }
 }
@@ -3611,321 +2005,59 @@ void Recovery::find_gaps(StreamMap& map) const {
 // LEAF HELPERS
 // =====================================================================
 
-// The clean-stream baseline path: offset-chain walk only, no census, no
-// classification. On bytes the caller vouches for, reachable blocks are all
-// blocks — so this yields exactly the reference set recover() would classify
-// Intact, at O(blocks) instead of O(bytes). recover() is for damaged streams;
-// a baseline must never run the byte scan (TASKS.md REC-10).
-std::vector<BlockRef> Recovery::reachable_blocks() const {
-    std::vector<BlockRef> out;
-    walk_chain(wire_root(), &out);
-    return out;
-}
-
-// REC-18.1 — a generated block's V-Table extent, derived from the COMPILED
-// reflection table. No generator change is needed: ff_slot_width() is constexpr
-// and total over FF_FieldKind, so the widest (field_offset + width) is the
-// header size. Verified exact against the compiled constants -- FF_OBSERVATION
-// 288, FF_PATIENT 191, FF_CODING 55.
-//
-// This is also where an OLD parser under-sizes a NEWER stream: a future engine
-// appends slots, so this reader's table is short and every block of that tag
-// trails a small gap. That is benign and classify_gaps() must not call it
-// damage (REC-18.4).
+// A generated block's V-Table extent under this build's reflection table: the
+// widest field offset plus slot width. An older reader under-sizes a newer
+// writer's block this way, which find_gaps() expects.
 Size Recovery::derived_block_size(RECOVERY_TAG tag) noexcept {
-    const auto fields = reflected_fields_view(static_cast<uint16_t>(tag));
     Size widest = DATA_BLOCK::HEADER_SIZE;
-    for (const FF_FieldInfo& f : fields) {
-        const Size end = static_cast<Size>(f.field_offset) + ff_slot_width(f.kind);
-        if (end > widest)
-            widest = end;
-    }
+    for (const FF_FieldInfo& f : reflected_fields_view(static_cast<uint16_t>(tag)))
+        widest = std::max<Size>(widest, static_cast<Size>(f.field_offset) + ff_slot_width(f.kind));
     return widest;
 }
 
 uint32_t Recovery::hamming_cost(uint64_t a, uint64_t b) noexcept {
-    return static_cast<uint32_t>(std::popcount(a ^ b));
+    return hamming(a, b);
 }
 
 bool Recovery::plausible_tag(RECOVERY_TAG tag) noexcept {
-    if (tag == FF_RECOVER_UNDEFINED)
-        return false;
-    // Assigned-ness, not band membership: the bands tile 0x0001-0x7FFF, so a
-    // range test reduces to "non-zero" and lets thousands of unassigned values
-    // pollute the orphan buckets (pushing real corruption into Ambiguous).
-    // Recovery_to_Kind's scalar-band switch has no default — unassigned scalar
-    // values map to FF_FIELD_UNKNOWN — while every assigned tag maps to a real
-    // kind (review finding D8). Loose enough that a false positive costs a
-    // rejected candidate, strict enough that garbage tags stop polluting.
-    return Recovery_to_Kind(tag) != FF_FIELD_UNKNOWN;
-}
-
-// =====================================================================
-// REC-15 — apply(): the only mutating entry point
-// =====================================================================
-FF_ApplyReport Recovery::apply(const FF_RecoveryReport& report, std::vector<BYTE>& repaired,
-                               const ApplyFilter& filter) const {
-    FF_ApplyReport out;
-    repaired.assign(m_base, m_base + m_size);   // the copy; the arena is untouched
-    BYTE* const dst = repaired.data();
-    const size_t n = repaired.size();
-
-    const auto in_bounds = [n](uint64_t off, size_t width) {
-        return off + width <= n;
-    };
-
-    // WHICH BYTES THIS CALL HAS ALREADY WRITTEN.
-    //
-    // Two verdicts planning the same seat is not a repair but a collision: the
-    // second overwrites the first and BOTH verify, because each only re-reads
-    // its own value. Nothing here can say which is right, so the second is
-    // refused and counted failed -- the engine produced two incompatible plans
-    // and that is the honest report of it.
-    //
-    // The header's 54 bytes start marked. They belong to the header pass below,
-    // so a block verdict planning a write inside them is a collision by
-    // definition rather than by coincidence.
-    std::vector<bool> touched(n, false);
-    for (std::size_t i = 0; i < static_cast<std::size_t>(FF_HEADER::HEADER_SIZE) && i < n; ++i)
-        touched[i] = true;
-    const auto collides = [&touched, n](const PlannedWrite& w) {
-        for (uint64_t i = 0; i < w.width && w.seat + i < n; ++i)
-            if (touched[static_cast<std::size_t>(w.seat + i)])
-                return true;
-        return false;
-    };
-
-    // REC-24 — THE HEADER FIRST, AND IT IS NOT SUBJECT TO THE FILTER.
-    //
-    // The ApplyFilter takes a BlockVerdict, so it has nothing to say about a
-    // header field; passing header fields through a predicate that cannot see
-    // them would silently apply or skip them on the strength of whichever
-    // BlockVerdict happened to be fabricated for the call. A header repair is
-    // the precondition for the stream opening at all, so a caller filtering
-    // block repairs still wants it.
-    //
-    // Only Corroborated is written. Ambiguous carries alternatives the engine
-    // declined to choose between, and writing one of them would convert a
-    // declared uncertainty into a silent one — the same rule the block classes
-    // follow, for the same reason.
-    for (const HeaderVerdict& v : report.header) {
-        if (v.class_ != RepairClass::Corroborated) {
-            ++out.declined;
-            continue;
-        }
-        Size     slot  = 0;
-        unsigned width = 0;
-        uint64_t value = v.restored;
-        switch (v.field) {
-            case HeaderField::Magic:        slot = FF_HEADER::MAGIC;         width = 4; break;
-            case HeaderField::Recovery:     slot = FF_HEADER::RECOVERY;      width = 2; break;
-            case HeaderField::FhirRevision: slot = FF_HEADER::FHIR_REV;      width = 2; break;
-            case HeaderField::StreamSize:   slot = FF_HEADER::STREAM_SIZE;   width = 8; break;
-            case HeaderField::RootOffset:   slot = FF_HEADER::ROOT_OFFSET;   width = 8; break;
-            case HeaderField::RootRecovery: slot = FF_HEADER::ROOT_RECOVERY; width = 2; break;
-            case HeaderField::ChecksumOffset:
-                slot = FF_HEADER::CHECKSUM_OFFSET; width = 8; break;
-            case HeaderField::UrlDirectoryOffset:
-                slot = FF_HEADER::URL_DIR_OFFSET;  width = 8; break;
-            case HeaderField::ModuleRegistryOffset:
-                slot = FF_HEADER::MODULE_REG_OFFSET; width = 8; break;
-            case HeaderField::StreamLayout:
-                // The layout shares its 32-bit word with the engine version,
-                // which this pass has no evidence about and must not disturb.
-                // Re-encode rather than store: the two fields are packed.
-                slot  = FF_HEADER::VERSION;
-                width = 4;
-                value = FF_ENCODE_HEADER_VERSION(
-                    FF_HEADER_ENGINE_VERSION(LOAD_U32(dst + FF_HEADER::VERSION)),
-                    static_cast<FF_StreamCompaction>(v.restored));
-                break;
-            case HeaderField::EngineVersion:
-                // reconcile_header() never corroborates it, because nothing in
-                // the arena witnesses it; a verdict that reaches here anyway
-                // has nothing behind it to write.
-                ++out.declined;
-                continue;
-        }
-        if (!in_bounds(slot, width)) {
-            ++out.declined;
-            continue;
-        }
-        switch (width) {
-            case 2: STORE_U16(dst + slot, static_cast<uint16_t>(value)); break;
-            case 4: STORE_U32(dst + slot, static_cast<uint32_t>(value)); break;
-            default: STORE_U64(dst + slot, value); break;
-        }
-        // Read it back from the copy, exactly as the block classes do. A write
-        // that does not hold is not a repair.
-        const uint64_t after = width == 2   ? LOAD_U16(dst + slot)
-                               : width == 4 ? LOAD_U32(dst + slot)
-                                            : LOAD_U64(dst + slot);
-        if (after == value) {
-            ++out.applied;
-        } else {
-            ++out.failed;
-            out.failed_edges.push_back(static_cast<Offset>(slot));
-        }
-    }
-
-    // ONE VERDICT, ONE GROUP OF WRITES, STAGED AND VERIFIED AS A UNIT.
-    //
-    // `before` is hoisted so the whole call allocates once; a repair plans at
-    // most three writes, and there are tens of thousands of verdicts.
-    std::vector<uint64_t> before;
-    for (const BlockVerdict& v : report.blocks) {
-        const bool confident = v.class_ == RepairClass::Corroborated ||
-                               v.class_ == RepairClass::TagRepaired ||
-                               v.class_ == RepairClass::PositionRepaired ||
-                               v.class_ == RepairClass::ExtentDerived;
-        if (!(filter ? filter(v) : confident)) {
-            ++out.declined;
-            continue;
-        }
-        // Ambiguous and Unrecovered are never applied even when a filter asks
-        // for them: the engine reported those because it declined to choose,
-        // and writing a guess would turn a declared uncertainty into a silent
-        // one. That is the failure mode the whole class exists to avoid.
-        //
-        // A confident verdict carrying an EMPTY plan is declined for the same
-        // reason. apply() enacts a plan; it does not invent one from a label.
-        if (!confident || v.writes.empty()) {
-            ++out.declined;
-            continue;
-        }
-
-        // ADMIT THE WHOLE GROUP OR NONE OF IT. A repair whose second write is
-        // out of bounds must not leave its first one standing: a half-enacted
-        // hypothesis is the state this whole path exists to make impossible.
-        bool admissible = true;
-        for (const PlannedWrite& w : v.writes)
-            if (!in_bounds(w.seat, w.width) || collides(w))
-                admissible = false;
-        if (!admissible) {
-            ++out.failed;
-            out.failed_edges.push_back(v.block.child);
-            continue;
-        }
-
-        before.clear();
-        for (const PlannedWrite& w : v.writes) {
-            before.push_back(w.width == 2   ? LOAD_U16(dst + w.seat)
-                             : w.width == 4 ? LOAD_U32(dst + w.seat)
-                                            : LOAD_U64(dst + w.seat));
-            switch (w.width) {
-                case 2:  STORE_U16(dst + w.seat, static_cast<uint16_t>(w.value)); break;
-                case 4:  STORE_U32(dst + w.seat, static_cast<uint32_t>(w.value)); break;
-                default: STORE_U64(dst + w.seat, w.value); break;
-            }
-        }
-
-        if (verify_edge(dst, n, v)) {
-            for (const PlannedWrite& w : v.writes)
-                for (uint64_t i = 0; i < w.width && w.seat + i < n; ++i)
-                    touched[static_cast<std::size_t>(w.seat + i)] = true;
-            ++out.applied;
-            continue;
-        }
-        // RESTORE EVERY BYTE OF THE GROUP. A write that does not verify is not
-        // a repair, and leaving any part of one standing would make the copy
-        // worse than the damaged original while reporting success -- the one
-        // outcome this must never produce.
-        for (std::size_t k = 0; k < v.writes.size(); ++k) {
-            const PlannedWrite& w = v.writes[k];
-            switch (w.width) {
-                case 2:  STORE_U16(dst + w.seat, static_cast<uint16_t>(before[k])); break;
-                case 4:  STORE_U32(dst + w.seat, static_cast<uint32_t>(before[k])); break;
-                default: STORE_U64(dst + w.seat, before[k]); break;
-            }
-        }
-        ++out.failed;
-        out.failed_edges.push_back(v.block.child);
-    }
-    return out;
+    return tag != FF_RECOVER_UNDEFINED && Recovery_to_Kind(tag) != FF_FIELD_UNKNOWN;
 }
 
 namespace {
 
-// THE EXTENT, BOOTSTRAPPED FROM THE ONE IDENTITY THE HEADER CARRIES TWICE.
-//
-// `ceiling` is the furthest byte the arena itself vouches for, and nothing in
-// the stream can influence it. Inside that ceiling there are two wire words
-// that both claim to say where the payload ends:
-//
-//   STREAM_SIZE                              (FF_HEADER, bytes 8-15)
-//   CHECKSUM_OFFSET + FF_CHECKSUM::HEADER_SIZE   (FF_HEADER, bytes 26-33)
-//
-// They agree on every sealed stream, because the checksum footer is the last
-// block the writer lays down. That makes them two independent copies of one
-// fact, so a flip in either is detectable, and the one that still lands on a
-// block vouching for itself as a checksum footer is the one that survived.
-//
-// The test is decisive rather than merely suggestive: a candidate extent E is
-// accepted only when the eight bytes at E - FF_CHECKSUM::HEADER_SIZE hold
-// exactly that address and the two bytes after them read RECOVER_FF_CHECKSUM.
-// Random bytes satisfy the address half with probability 2^-64.
-//
-// Without this, a single flipped bit in STREAM_SIZE set the extent to the
-// arena's 4 GiB sparse reservation (an anonymous arena has no disk size to
-// fall back on), and the byte census then swept 4 GiB looking for a 3 MB
-// document. A flip the other way truncated the extent and hid every block past
-// it. Neither failure could be repaired afterwards, because both happen before
-// any of the repair machinery runs.
-inline size_t trusted_extent(const BYTE* base, uint64_t claimed, uint64_t ceiling) noexcept {
+// THE EXTENT, from the one fact the header states twice. STREAM_SIZE and
+// CHECKSUM_OFFSET + FF_CHECKSUM::HEADER_SIZE agree on every sealed stream,
+// because the checksum footer is the last block the writer lays down. A claim
+// is believed only when the bytes it implies vouch for themselves as that
+// footer, which random bytes do at 2^-64; otherwise the ceiling, which no wire
+// value sets. Without this, one flipped bit in STREAM_SIZE set the extent to a
+// 4 GiB sparse reservation, and the byte census swept 4 GiB for 3 MB of data.
+size_t trusted_extent(const BYTE* base, uint64_t claimed, uint64_t ceiling) noexcept {
     if (base != nullptr && ceiling >= FF_HEADER::HEADER_SIZE) {
         const auto seals_at = [base, ceiling](uint64_t end) {
-            if (end < static_cast<uint64_t>(FF_HEADER::HEADER_SIZE) + FF_CHECKSUM::HEADER_SIZE ||
-                end > ceiling)
+            if (end < static_cast<uint64_t>(FF_HEADER::HEADER_SIZE) + FF_CHECKSUM::HEADER_SIZE || end > ceiling)
                 return false;
-            const Offset seat = static_cast<Offset>(end - FF_CHECKSUM::HEADER_SIZE);
-            return LOAD_U64(base + seat) == static_cast<uint64_t>(seat) &&
-                   FF_GET_RECOVERY_TAG(base, seat) == RECOVER_FF_CHECKSUM;
+            const uint64_t seat = end - FF_CHECKSUM::HEADER_SIZE;
+            return LOAD_U64(base + seat) == seat && FF_GET_RECOVERY_TAG(base, seat) == RECOVER_FF_CHECKSUM;
         };
         if (seals_at(claimed))
             return static_cast<size_t>(claimed);
-        const uint64_t implied =
-            LOAD_U64(base + FF_HEADER::CHECKSUM_OFFSET) + FF_CHECKSUM::HEADER_SIZE;
+        const uint64_t implied = LOAD_U64(base + FF_HEADER::CHECKSUM_OFFSET) + FF_CHECKSUM::HEADER_SIZE;
         if (seals_at(implied))
             return static_cast<size_t>(implied);
     }
-    // No checksum footer to corroborate either word — an unsealed stream has
-    // none by design. Fall back to the ceiling, which is still never a wire value.
     return static_cast<size_t>(std::min(claimed, ceiling));
 }
 
 }  // namespace
 
+// Memory::size() reads the write head, which lives in the same eight bytes as
+// FF_HEADER::STREAM_SIZE, so on a damaged stream it is damaged data. The
+// ceiling is what the OS reports for the backing file, or the arena's
+// reservation for an anonymous one; neither is read from the stream.
 Recovery::Recovery(const Memory& memory) noexcept
     : m_base(memory->base()),
-      // THE DECLARED SIZE IS A WIRE VALUE, AND THIS CLASS TRUSTS NO WIRE VALUE.
-      //
-      // Memory_t::size() reads the arena's write head, and the head lives at
-      // byte 8 of the arena (Memory_t::STREAM_CURSOR_OFFSET) -- the same 8 bytes
-      // FF_HEADER::STREAM_SIZE occupies. That identity is the design: sealing a
-      // stream parks the head at the payload size, so it becomes the declared
-      // file size. It also means that on a DAMAGED stream those 8 bytes are
-      // just corrupted bytes, and size() reports whatever they say.
-      //
-      // Measured: a Synthea artifact with 256 bits flipped reported a size of
-      // 8,591,006,582 for a 1,071,990-byte file, and the byte census walked
-      // 8 GiB of unmapped sparse address space -- SIGSEGV, in the one class
-      // whose entire purpose is surviving bytes it does not trust, and whose
-      // header promises every read is bounds-checked. It killed test 5's sweep
-      // at 256 bits and predates the REC-19 rewrite.
-      //
-      // So bound it by an extent the stream cannot influence. disk_size() is
-      // what the OS reports for the backing file and is the real answer when
-      // there is one; capacity() is only the sparse RESERVATION (4 GiB by
-      // default), so it is the weaker fallback used for an anonymous arena.
-      // Neither is read from the stream, which is the whole point.
-      //
-      // That ceiling keeps every read inside mapped memory, and on an anonymous
-      // arena it is 4 GiB wide, so it is a safety floor rather than an answer.
-      // trusted_extent() narrows it to the payload by checking which of the
-      // header's two claims about the end of the stream still lands on the
-      // checksum footer (REC-24).
       m_size(trusted_extent(memory->base(), memory->size(),
-                            memory->disk_size() != 0 ? memory->disk_size()
-                                                     : memory->capacity())) {}
+                            memory->disk_size() != 0 ? memory->disk_size() : memory->capacity())) {}
 
 }  // namespace FastFHIR

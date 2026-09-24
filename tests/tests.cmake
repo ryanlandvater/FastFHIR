@@ -270,13 +270,13 @@ if(FASTFHIR_BUILD_TESTS)
     # test nobody is forced to revisit is how a suite starts lying, which is the
     # failure these gates exist to end.
     add_test(NAME cpp_ff_test_recovery COMMAND ff_test_recovery --gates off)
-    foreach(_gate clean_stream_zero_writes repair_is_idempotent
+    foreach(_gate clean_stream_zero_writes repair_is_idempotent paired_flip_oracle
                   hole_repoint_applies_both_witnesses tuple_self_and_tag_repair_together
                   inline_element_is_never_repointed census_single_flip_sample_synthea)
         add_test(NAME "cpp_recovery_gate_${_gate}"
                  COMMAND ff_test_recovery --gates only --filter ${_gate})
     endforeach()
-    foreach(_gate single_flip_oracle paired_flip_oracle header_single_bit_enumeration)
+    foreach(_gate single_flip_oracle header_single_bit_enumeration)
         add_test(NAME "cpp_recovery_gate_${_gate}"
                  COMMAND ff_test_recovery --gates only --filter ${_gate})
         set_tests_properties("cpp_recovery_gate_${_gate}" PROPERTIES WILL_FAIL TRUE)
