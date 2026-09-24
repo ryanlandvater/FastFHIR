@@ -45,9 +45,6 @@ namespace FastFHIR {
 /// from its witnesses is a guess, and recovery does not guess.
 inline constexpr uint32_t FF_RECOVERY_MAX_FLIPS = 8;
 
-/// The FHIR nesting bound, the same 64 the compactor and the parser use.
-inline constexpr std::size_t FF_RECOVERY_MAX_DEPTH = 64;
-
 // ---------------------------------------------------------------------------
 // StreamMap — the located blocks of an arena
 // ---------------------------------------------------------------------------
@@ -269,9 +266,6 @@ public:
 
     /// Tile `map` and record every run of bytes no entry covers.
     void find_gaps(StreamMap& map) const;
-
-    /// Hamming distance, the unit every witness is scored in.
-    static uint32_t hamming_cost(uint64_t a, uint64_t b) noexcept;
 
     /// Loose test for a tag read from untrusted bytes: does it map to a kind.
     static bool plausible_tag(RECOVERY_TAG tag) noexcept;

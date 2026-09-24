@@ -2015,10 +2015,6 @@ Size Recovery::derived_block_size(RECOVERY_TAG tag) noexcept {
     return widest;
 }
 
-uint32_t Recovery::hamming_cost(uint64_t a, uint64_t b) noexcept {
-    return hamming(a, b);
-}
-
 bool Recovery::plausible_tag(RECOVERY_TAG tag) noexcept {
     return tag != FF_RECOVER_UNDEFINED && Recovery_to_Kind(tag) != FF_FIELD_UNKNOWN;
 }

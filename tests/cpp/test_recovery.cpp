@@ -2652,9 +2652,9 @@ static void test_tuple_self_and_tag_repair_together()
 
 // F10 — AN INLINE ELEMENT HAS NO POINTER, SO IT CAN NEVER BE REPOINTED.
 //
-// An inline array element is stored AT its slot: enumerate_array_entries emits
-// it with child == parent + field, because the element's address comes from
-// array geometry and nothing stores it. There is therefore no pointer word to
+// An inline array element is stored AT its slot: the census reads it with
+// child == parent + field, because the element's address comes from array
+// geometry and nothing stores it. There is therefore no pointer word to
 // repair, and the only meaningful repair is in place.
 //
 // apply()'s Corroborated arm does not know that. It writes an 8-byte target
