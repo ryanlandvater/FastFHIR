@@ -159,6 +159,13 @@ def merge_fhir_versions(schemas_by_version, root_resource):
                 el.get("type", [{"code": "BackboneElement"}])[0].get("code", "BackboneElement")
             )
             is_array = el.get("max") == "*"
+            # A choice field's variants are the UNION over every revision this
+            # build reads: R4 and R5 disagree on 26 of them (Extension.value[x]
+            # gained five), and a stream of either revision must ingest, and be
+            # recovered, with the whole set.
+            if is_choice and field_name in blk["seen"]:
+                known = blk["by_name"][field_name]["choice_types"]
+                known.extend(t for t in choice_types if t not in known)
             if field_name not in blk["seen"]:
                 if is_choice:
                     mapping = _tm.TYPE_MAP["CHOICE"]

@@ -213,6 +213,28 @@ enum class TagCopy : uint8_t {
 /// One block reference plus its verdict. `blocks` in the report carries every
 /// reference so the benchmark's anchored check can verify recovered ⊆ baseline
 /// over (parent, field, child, tag) — the unit that can audit attachment (F3).
+/// ONE BYTE-LEVEL WRITE A REPAIR NEEDS.
+///
+/// A `RepairClass` is a LABEL, and a label is not a plan. apply() used to
+/// re-derive the seats from the label, and that derivation lost everything the
+/// classifier knew which the label does not spell: whether the target needs its
+/// own self-offset rewritten, whether a tag the cost was already charged for
+/// still has to be written, whether the slot is a pointer word at all.
+///
+/// Three defects lived in exactly that gap, and every one of them REPORTED A
+/// CONFIDENT REPAIR while leaving the damage on the wire. A hole match is the
+/// clearest: a hole candidate is admitted for having a damaged self-offset, so
+/// repointing the parent at it and then demanding it validate is a
+/// contradiction, and all 36 of them reverted.
+///
+/// So the classifier states the writes and apply() enacts exactly those. It is
+/// the rule `derived_extent` already followed, generalised: one owner per fact.
+struct PlannedWrite {
+    Offset   seat  = FF_NULL_OFFSET;  ///< absolute byte offset in the stream
+    uint8_t  width = 0;               ///< 2, 4 or 8 — the wire field's width
+    uint64_t value = 0;               ///< what to store there
+};
+
 struct BlockVerdict {
     BlockRef                block;
     RepairClass             class_    = RepairClass::Unrecovered;
@@ -229,6 +251,11 @@ struct BlockVerdict {
     RECOVERY_TAG            consensus_tag  = FF_RECOVER_UNDEFINED;
     TagCopy                 damaged_copy   = TagCopy::Undecided;
     std::vector<Offset>     candidates;    ///< populated for Ambiguous
+    /// Every byte this repair must write, staged, verified and rolled back as
+    /// ONE unit. Empty for Intact, Ambiguous and Unrecovered: a verdict that is
+    /// not a repair plans nothing, and apply() declines anything with no plan
+    /// rather than inventing one from the class label.
+    std::vector<PlannedWrite> writes;
 };
 
 // ---------------------------------------------------------------------------
@@ -271,6 +298,15 @@ enum class HeaderField : uint8_t {
     UrlDirectoryOffset,    ///< the census block tagged RECOVER_FF_URL_DIRECTORY
     ModuleRegistryOffset,  ///< the census block tagged RECOVER_FF_MODULE_REGISTRY
     StreamLayout,          ///< the 2-bit layout field packed into VERSION
+    /// The 30-bit engine version sharing VERSION's word with the layout bits.
+    /// It has NO second witness anywhere in the arena, and that is by design
+    /// rather than by omission: a stream written by an engine newer than this
+    /// reader is perfectly legitimate, and `find_gaps` relies on exactly that
+    /// possibility to tell benign version skew from damage. A reader that
+    /// "repaired" the field to its own version would destroy the distinction.
+    /// So it is reported and never written, which is the honest answer to a
+    /// field whose true value this build cannot know.
+    EngineVersion,
 };
 
 /// One header field and what the evidence says about it.
@@ -463,6 +499,127 @@ public:
     /// this build has no table for -- which is also how an OLD reader
     /// under-sizes a NEWER stream, so gap classification must expect it.
     static Size derived_block_size(RECOVERY_TAG tag) noexcept;
+
+    // -----------------------------------------------------------------------
+    // REC-25 — the census (recovery_algorithm_handoff.md §6)
+    // -----------------------------------------------------------------------
+    //
+    // The rebuilt engine starts by reading every slot of every block and
+    // sorting the links it finds into two groups. A link whose every witness
+    // agrees with every other (the parent's pointer names a block, that block's
+    // self-offset is its own address, and its tag is the type the slot expects)
+    // is DECIDED here, because no alternative explanation of that slot could
+    // cost less. Every other slot is left OPEN, as a question for the task loop
+    // that follows. The census itself repairs nothing and writes nothing.
+    //
+    // These types are public so that the census can be observed on its own: a
+    // clean stream must come out as a single attached island with no open
+    // points, and each single flipped bit must open exactly the point it
+    // damaged. Those two facts are what everything after the census rests on.
+
+    /// How a slot's stored word names its child. Everything after the census
+    /// dispatches on this shape, so the field kind and the stored tag are read
+    /// once, here, instead of being re-interpreted by every later step.
+    enum class SlotRepr : uint8_t {
+        /// An 8-byte absolute offset: BLOCK, STRING and ARRAY slots, the
+        /// entries of a string array, the URL directory's segments, and the
+        /// FF_HEADER's three metadata offsets.
+        Absolute,
+        /// A 10-byte {value, tag} tuple: RESOURCE and CHOICE slots, the entries
+        /// of a resource array, and the FF_HEADER's root (ROOT_OFFSET followed
+        /// by ROOT_RECOVERY has exactly this layout).
+        Tuple,
+        /// An FF_FIELD_CODE slot. With bit 31 set, the low 31 bits are a signed
+        /// offset RELATIVE TO THE CONTAINING BLOCK, naming an FF_CODED_VALUE;
+        /// with it clear, the word is a dictionary ID and names nothing.
+        Relative32,
+        /// An FF_FIELD_DATETIME slot. With bit 63 set, the low 63 bits are a
+        /// signed offset relative to the containing block, naming an FF_STRING;
+        /// with it clear, the word is a packed date/time and names nothing.
+        Relative63,
+        /// An array entry that is itself a block. It has no pointer word: the
+        /// array's own geometry places it, so its only witnesses are its own
+        /// self-offset and tag.
+        InlineEntry,
+    };
+
+    /// One place where a parent names, or may name, a child.
+    struct Slot {
+        /// The block that owns the slot. The FF_HEADER owns the root slot and
+        /// the three metadata slots, and it sits at offset 0.
+        Offset       parent     = FF_NULL_OFFSET;
+        Offset       seat       = FF_NULL_OFFSET;  ///< absolute position of the slot's first byte
+        FF_FieldKind kind       = FF_FIELD_UNKNOWN;
+        SlotRepr     repr       = SlotRepr::Absolute;
+        /// The pointer word exactly as it stands on the wire. For the header's
+        /// slots it is the value Phase 0 reconciled, since that value is the
+        /// one the rest of recovery treats as decided.
+        uint64_t     stored     = 0;
+        /// Tuple only: the tag half, which is the parent's copy of the child's
+        /// type. FF_RECOVER_UNDEFINED for every other shape.
+        RECOVERY_TAG stored_tag = FF_RECOVER_UNDEFINED;
+        /// The compiled expectation for the child's type, which damage cannot
+        /// reach. For an ARRAY slot it is the ELEMENT type, without the array
+        /// bit, exactly as the reflection table stores it. FF_RECOVER_UNDEFINED
+        /// for a tuple, whose type is whatever its tag half says.
+        RECOVERY_TAG expect     = FF_RECOVER_UNDEFINED;
+    };
+
+    /// A link the census decided: every witness of it agrees.
+    struct Edge {
+        Slot   slot;
+        Offset child = FF_NULL_OFFSET;
+    };
+
+    /// A set of blocks joined to each other by decided links. The census puts
+    /// every self-validating block into exactly one island. The FF_HEADER's
+    /// island is attached from the start, because Phase 0 already reconciled
+    /// the header; every other island is an orphaned subtree waiting for the
+    /// task loop to find the slot that names its root.
+    struct Island {
+        /// The block at the top, which no decided link names. The FF_HEADER's
+        /// island is rooted at offset 0.
+        Offset              root     = FF_NULL_OFFSET;
+        bool                attached = false;
+        /// Every block of the island, the root first, then depth first in the
+        /// order of each parent's slots.
+        std::vector<Offset> members;
+    };
+
+    enum class PointKind : uint8_t {
+        /// A slot in an attached island whose child the census could not
+        /// decide: the pointer names no matching block, or it names one that
+        /// another slot also names, or its bytes read as a value that looks
+        /// like a damaged pointer.
+        Open,
+        /// An array in an attached island whose stamped geometry (its entry
+        /// count, or its stride and entry kind) contradicts the bytes around
+        /// it. The entries the census read are bounded by that geometry, so it
+        /// never invents entries past the array's true end.
+        ArrayExtent,
+    };
+
+    /// One question the census leaves for the task loop.
+    struct Point {
+        PointKind kind  = PointKind::Open;
+        Slot      slot;                     ///< Open only
+        Offset    array = FF_NULL_OFFSET;   ///< ArrayExtent only
+    };
+
+    /// What the census found. Everything in it is a reading of the bytes as
+    /// they stand; nothing in it has been repaired.
+    struct Census {
+        Size                extent  = 0;  ///< the trusted extent every read is bounded by
+        std::size_t         anchors = 0;  ///< self-validating blocks, the FF_HEADER excluded
+        std::vector<Edge>   edges;        ///< every decided link, by seat
+        std::vector<Island> islands;      ///< the FF_HEADER's island first, then by root offset
+        std::vector<Gap>    holes;        ///< unattributed runs of bytes (GapClass::Hole)
+        std::vector<Point>  points;       ///< the open questions, by seat
+    };
+
+    /// Run Phase 0 (the header) and Phase 1 (the census) and report what the
+    /// census found. Read-only, like recover().
+    Census census() const;
 
 private:
     /// Enumerate the block references of one block (V-Table slots + array

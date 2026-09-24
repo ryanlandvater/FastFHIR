@@ -432,6 +432,75 @@ def enum_underlying_type(code_count: int) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 
 
+# The RECOVERY_TAG an integer-family choice ([x]) variant carries.
+#
+# A choice slot has nothing but this tag to say which FHIR type it holds, so the
+# exporter reads the variant's name straight off it. One tag standing in for
+# several types therefore RENAMES the field rather than corrupting its value:
+# every one of these used to emit RECOVER_FF_UINT32 (except integer64), and
+# get_choice_suffix maps that to "UnsignedInt", so `valueInteger` left as
+# `valueUnsignedInt` -- 4,396 pairs in Synthea, silent and well-formed.
+#
+# Every value here MUST be in the scalar band (0x0100-0x01FF). A choice slot
+# holds its value inline, and Recovery_to_Kind sends anything >= 0x0200 down the
+# FF_FIELD_BLOCK path, where the reader would treat the raw integer as a block
+# offset. That is why RECOVER_FF_POSITIVEINT (0x0230) and RECOVER_FF_UNSIGNEDINT
+# (0x0237) are NOT used despite their names -- they are datatype-band tags, and
+# `positiveInt` consequently shares "UnsignedInt" until a scalar-band tag is
+# appended for it (TASKS.md AR-5).
+CHOICE_INT_TAGS: dict[str, str] = {
+    "integer": "RECOVER_FF_INT32",
+    "unsignedInt": "RECOVER_FF_UINT32",
+    "positiveInt": "RECOVER_FF_UINT32",
+    "integer64": "RECOVER_FF_UINT64",
+}
+
+# FHIR primitive types stored as strings (no _from_json function, no vtable).
+# A choice variant of one of these carries RECOVER_FF_STRING.
+STRING_LIKE_TYPES: frozenset = frozenset(
+    {
+        "string",
+        "code",
+        "id",
+        "markdown",
+        "uri",
+        "url",
+        "canonical",
+        "oid",
+        "base64Binary",
+        "date",
+        "dateTime",
+        "instant",
+        "time",
+        "uuid",
+    }
+)
+
+
+def choice_variant_tag(c_type: str) -> str:
+    """The RECOVER_FF_* tag a choice ([x]) variant of FHIR type `c_type` carries.
+
+    ONE definition for the two places that must agree on it: the ingest
+    emitter, which writes the tag into the slot, and the reflection table,
+    which lists each choice field's variants so recovery can refuse a tag the
+    field can never hold (H1). Order matters: code and the date/time types
+    are also string-like, and each carries its own tag.
+    """
+    if c_type == "boolean":
+        return "RECOVER_FF_BOOL"
+    if c_type in CHOICE_INT_TAGS:
+        return CHOICE_INT_TAGS[c_type]
+    if c_type == "decimal":
+        return "RECOVER_FF_FLOAT64"
+    if c_type == "code":
+        return "RECOVER_FF_CODE"
+    if c_type in DATETIME_TYPES:
+        return DATETIME_TYPES[c_type]
+    if c_type in STRING_LIKE_TYPES:
+        return "RECOVER_FF_STRING"
+    return f"RECOVER_FF_{c_type.upper()}"
+
+
 def _scalar_recovery_tag(fhir_type: str) -> str:
     """Map a scalar FHIR type to its RECOVER_FF_* tag name."""
     tag_map = {

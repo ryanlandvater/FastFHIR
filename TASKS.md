@@ -101,9 +101,9 @@ proves it. Those are the ones to take if you are picking without other context.
 |---|---|---|---|
 | **P0** | **P0-3 / REC-10…17** | Recovery: stream map, bit-similarity edge restoration, `src/FF_Recovery.cpp`. Has its own work order written for a flash model | `^# ▶ P0-3` |
 | **P0** | **REC-20** | Recovery: cross-reference the two producers' holes, match 10-byte tuples by Hamming | `^# ▶ REC-20` |
-| **P0** | **REC-FMEA / WP2…WP7** | Recovery repair, governed by the FMEA in `../FastFHIR-benchmark/recovery_handoff.md`: 31 failure modes by pipeline stage, seven work packages. **WP1 (the gates) landed 2026-09-22** and the measured red list is the progress meter | `^# ▶ REC-FMEA` |
+| **P0** | **REC-FMEA / WP3…WP7** | Recovery repair, governed by the FMEA in `../FastFHIR-benchmark/recovery_handoff.md`: 32 failure modes by pipeline stage, seven work packages. **WP1 (gates) and WP2 (transactional apply) landed 2026-09-22**; the measured red list is the progress meter | `^# ▶ REC-FMEA` |
 | **P0** | **AMEND/APPEND** | Amend + append must take the abstraction types, not only JSON (C_API-12) | `^# ▶ P0 — AMEND` |
-| **P1** | **REC-21** | Recovery: arrays in holes — bound the count by geometry, propose then confirm | `^# ▶ REC-21` |
+| **P0** | **REC-25 / RA-1…8** | Recovery rebuild. Working skeleton is `recovery_algorithm_handoff.md` (gitignored); this file carries only a pointer. Supersedes REC-21 (folded in) and REC-20's hole-signature search | `^# ▶ REC-25` |
 | **P1** | C_API-1, 2, 3, 8, **16** | Consumer-API gaps: inline-block array writes, validator/deserializer disagreement, `ChoiceEntry` across arenas, allocating `entries()`. **C_API-16 is new (2026-09-10)**: a `code` field cannot be assigned through a mutable handle at all — it throws, and four README blocks documented it working. Read A8.2 before starting it | `^## C_API-` |
 | **P1** | Block C | Archive recovery subsystem — **governed by P0-3; do not start before REC-10** | `^## Block C` |
 | **P1** | DT-2.4, DT-3, DT-4 | Packed date/time: array-typed fields, ingest/export, wire baseline | `^## DT-` |
@@ -229,6 +229,44 @@ found. All three are in the handoff's §5:
 
 REC-24's header reconciliation comes out well: all 432 single header bits produce a
 stream the Parser opens, and header-only damage writes zero wrong bytes.
+
+**WP2 is DONE (2026-09-22): apply enacts the whole hypothesis.** `BlockVerdict` gained
+`std::vector<PlannedWrite> writes`; `classify_one` states them and `Recovery::apply`
+enacts exactly those, staged and rolled back as one group, with a single `verify_edge`
+predicate replacing four per-class checks and an overlap refusal so two plans cannot
+both claim a byte. A confident verdict carrying an empty plan is declined rather than
+having one invented from its class label.
+
+| gate | ingest | out-of-order |
+|---|---:|---:|
+| damage left silent | 292 → **74** | 180 → **40** |
+| confident-but-declined | 218 → **0** | 140 → **0** |
+| wrong writes | 11 → 11 | 9 → 9 |
+
+Four modes closed and one found:
+
+- **F30** closed. `apply` declined to write a TagRepaired verdict whenever
+  `plausible_tag` said the child could be an innocent block, while `classify_one` never
+  applied that guard. The verdict stayed confident, `rep.tag_repaired` counted it, and
+  the damage stayed on the wire. The guard was right and its LOCATION was wrong; it now
+  runs in the classifier, where the honest answer is Ambiguous.
+- **F03a and F03b** closed, and they were one defect. A Corroborated repoint onto a hole
+  candidate wrote only the parent's slot, then demanded the target self-validate, which
+  a hole candidate never does by construction. Worth knowing: the **band-widening hole
+  matcher** promotes to Corroborated outside `classify_one`, so it needed its own
+  `plan_repair` call; without it every match that pass made was silently dropped.
+- **F10** was predicted red and came out green. No inline element is repointed on either
+  fixture, so the new guard is a regression lock rather than a fix.
+- **F32 is new**, found by the WP2 hole gate. A repoint wrote an absolute 8-byte offset
+  into the slot, but `FF_FIELD_CODE` holds a FOUR-byte block-relative fallback, so the
+  write corrupted the slot and the field after it. The schema cannot say which shape a
+  slot has: a choice variant tagged `RECOVER_FF_STRING` is either a plain string variant
+  or a date/time fallback. The wire can, because `r.child` equals the stored word only
+  for the absolute arms, so a repoint is now formed only there. **Residual**: a damaged
+  relative reference is reported rather than mis-repaired, and still not repaired.
+
+The largest remaining cluster is `no-write/Intact`, 38 probes on the ingest fixture:
+damage the classifier reads as undamaged. That is WP3 and WP4.
 
 ---
 
@@ -5067,94 +5105,49 @@ tuple-half comparison. Kept the position form.
 
 ---
 
-# ▶ REC-21 — ARRAYS IN HOLES: PROPOSE, THEN CONFIRM
+# ▶ REC-25 — THE RECOVERY REBUILD
 
-**Ryan, 2026-09-02. Design, not started.** REC-20 recovers a block by matching a
-broken reference to a position. This is the constraint-propagation half: what to
-do once the thing in the hole is an ARRAY, whose entry count is unknown because
-its header went with it.
+**Ryan + Astra + Claude, 2026-09-22. Design lives elsewhere, on purpose.**
 
-## The sudoku framing
+> ↗ **The plan of record is [`recovery_algorithm_handoff.md`](recovery_algorithm_handoff.md)**
+> in this repo. It holds the replacement algorithm end to end: the measured
+> root causes, the witness model, the state records, the propagation and
+> bounded-search procedures, the transactional apply, compact-layout
+> reconstruction, and work packages **RA-1 … RA-8** each opening with a test
+> that fails on current code.
 
-`walk_array_extent` today walks entries and stops at the first that does not
-validate. That is right when the entries are intact and gives up early when they
-are not — which is precisely the damaged case. Replace "walk until something
-fails" with "propose, then confirm", and let the constraints tighten each other:
+This section is a pointer and holds no design of its own. An earlier draft kept
+600 lines of it here as well, which is how two plans that disagree get started.
 
-- **Hole length bounds the count from above.** A hole holding an array admits at
-  most `(hole_length - FF_ARRAY::HEADER_SIZE) / stride` entries. That is a real
-  ceiling even when `ENTRY_COUNT` is destroyed, and it costs nothing to compute.
-- **A confirmed entry back-solves the array's address.** An entry confirmed at
-  position `p` as index `i` puts the array header at
-  `p - FF_ARRAY::HEADER_SIZE - i * stride`. One good entry locates the array
-  even when the array's own two witnesses are gone.
-- **Every confirmation shrinks the hole**, which tightens the bound on whatever
-  else is in it, which makes the next proposal cheaper. This is the same
-  iterate-to-a-fixed-point loop REC-20 already runs; these are additional
-  constraints to feed it.
+**Numbering.** Three documents govern recovery and their identifiers do not
+overlap:
 
-Provisional entries are candidates, not facts: later rounds confirm them (their
-targets resolve) or drop them. **Nothing provisional may reach the report as a
-recovered reference** — the standing constraint is zero invented references, and
-a proposal that cannot be confirmed is exactly an invention if it is counted.
+| Document | Identifiers |
+|---|---|
+| `../FastFHIR-benchmark/recovery_handoff.md` | failure modes **F01…F32**, work packages **WP0…WP6** |
+| `recovery_algorithm_handoff.md` | work packages **RA-1…RA-8** |
+| this file | **REC-n**, historical |
 
-## Why arrays specifically
+Never renumber across the three.
 
-The format concentrates witnesses at the array on purpose. Entries are inline
-and carry no validation of their own — they are not pointers to distant objects,
-so the array's VALIDATION (where it is) and RECOVERY (what is inside) cover all
-of them at once. Efficient, and it means the blast radius of losing an array is
-its entire contents: **N references from a two-bit event**, not one.
+**Supersedes.** REC-21 (arrays in holes) is folded into §7.7 of the algorithm
+document and its section here is retired. REC-20's hole-signature search is
+superseded in design by RA-4 and stays in the code until RA-7 deletes it.
+REC-19's file-layout contract still stands.
 
-That is why a single broken generation in
-`ff_test_recovery::generational_holes_recover_from_the_root` costs three
-references rather than one, and why the array case is worth more than its share
-of the code.
+**Already landed, and the rewrite must preserve both:** header reconciliation
+(§2.5, 432/432 single-bit header flips recover) and transactional apply
+(§8, REC-FMEA WP2).
 
-## Known asymmetry, worth its own coverage
+**Progress.** The new engine is built BESIDE the old one in
+`src/FF_Recovery.cpp`; `recover()` keeps the old path until the new one's
+report beats it on the gates, and RA-7 deletes the old path.
 
-An **inline-block array element has one witness, not two**: the slot that names
-it IS its own header (`parent + field == child`, because +0 of an inline entry is
-the element's own offset). A single flip there destroys the only witness, which
-makes inline elements strictly less recoverable than a pointed-to block — and
-makes "destroy both witnesses" impossible to express for them. The generational
-test skips such links deliberately (`two_witnesses`); the case deserves a test
-of its own that asserts the weaker guarantee rather than pretending it is the
-same one.
-
-## Also here, because it is the same shape
-
-- **Byte arrays** (`FF_STRING` and everything sharing its layout, opaque JSON
-  included) are a third shape: an extent and no children.
-  `enumerate_block_refs` now dispatches them to "no references", which is a
-  different answer from "unknown tag". Their extent recovery — a damaged LENGTH
-  against a hole boundary — is unexamined.
-- **CANDIDATES are a flat vector**, scanned in full by every reference. Fine for
-  a few refs against a few thousand candidates; if the pool grows, bucket by
-  declared tag the way orphans already are.
-
-- [ ] **REC-21.1** Bound a hole-resident array's entry count by hole geometry.
-- [ ] **REC-21.2** Back-solve the array address from a confirmed entry.
-- [ ] **REC-21.3** Provisional entries: propose, confirm in later rounds, drop
-      the unconfirmed. Never report a proposal as recovered.
-- [ ] **REC-21.4** A test for the single-witness guarantee on inline elements.
-- [ ] **REC-21.5** Byte-array extent recovery against a hole boundary.
-
-**Verify.** `ff_test_recovery::generational_holes_recover_from_the_root` is the
-acceptance test and is **currently RED**: 21 of 24 references, 1 surviving hole,
-the grandchild generation not recovered. It asserts against a denominator taken
-before the damage, which is the point — every earlier measurement in this area
-was taken against a corpus whose damage was never enumerated, so numbers going
-up read as discoveries when they should have been assertions.
-
-**And check the CLEAN baseline every time.** Giving arrays their own routine
-without also giving them sole ownership of their entries counted each entry
-twice and inflated a clean stream from 16,071 references to 21,566 — which on
-damaged streams would have looked like a 34% improvement. The clean count is the
-control.
-
-Current figures, for comparison: clean 16,071; 256 flips 16,035 (4 holes);
-512 flips 16,001 (8 holes); 40 single-bit trials, 0 invented.
+- **RA-1, the census — built 2026-09-24.** `Recovery::census()` (public,
+  read-only). Tests `census_clean_stream_is_one_attached_island` and
+  `census_single_flip_opens_exactly_its_point` (every bit of both fixtures,
+  30,472 flips), gate `census_single_flip_sample_synthea`. The sweep's five
+  findings are recorded in the algorithm document §6.3.
 
 ---
 

@@ -42,6 +42,7 @@
 #include <cstddef>       // std::size_t
 #include <cstdint>       // the fixed-width types every constant is spelled in
 #include <optional>      // FF_PARSE_DATETIME's return
+#include <span>          // FF_FieldInfo::variants
 #include <string>        // FF_FORMAT_DATETIME's return
 #include <string_view>   // the date/time and field-key signatures
 
@@ -981,6 +982,11 @@ struct FF_FieldInfo
     uint16_t field_offset = 0;
     RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED;
     uint8_t array_entries_are_offsets = 0;
+    /// FF_FIELD_CHOICE only: every tag the field's StructureDefinitions allow
+    /// its tuple to carry, over every revision this build reads. Empty for any
+    /// other kind. Recovery refuses a choice tag outside this set, since the
+    /// writer can never have stored it there.
+    std::span<const RECOVERY_TAG> variants = {};
 };
 struct FF_FieldKey
 {

@@ -19,27 +19,6 @@ from generator.model.structure import (
 # Per-field JSON-ingest overrides (relocated from ffc.py line 144).
 INGEST_FIELD_OVERRIDES: dict[tuple[str, str], str] = {}
 
-# FHIR primitive types stored as strings (no _from_json function, no vtable).
-# These parse as string_view with RECOVER_FF_STRING, exactly like "string".
-_STRING_LIKE_TYPES: frozenset = frozenset(
-    {
-        "string",
-        "code",
-        "id",
-        "markdown",
-        "uri",
-        "url",
-        "canonical",
-        "oid",
-        "base64Binary",
-        "date",
-        "dateTime",
-        "instant",
-        "time",
-        "uuid",
-    }
-)
-
 # How each scalar primitive is pulled out of simdjson: the accessor, the type of
 # the staging local, and the expression stored into the POD member.
 #
@@ -62,29 +41,6 @@ _SCALAR_INGEST: dict[str, tuple[str, str, str]] = {
     "positiveInt": ("get_uint64", "uint64_t", "static_cast<uint32_t>(v)"),
     "integer64": ("get_uint64", "uint64_t", "v"),
     "decimal": ("get_double", "double", "v"),
-}
-
-# The RECOVERY_TAG a choice ([x]) variant of each integer-family type carries.
-#
-# A choice slot has nothing but this tag to say which FHIR type it holds, so the
-# exporter reads the variant's name straight off it. One tag standing in for
-# several types therefore RENAMES the field rather than corrupting its value:
-# every one of these used to emit RECOVER_FF_UINT32 (except integer64), and
-# get_choice_suffix maps that to "UnsignedInt", so `valueInteger` left as
-# `valueUnsignedInt` -- 4,396 pairs in Synthea, silent and well-formed.
-#
-# Every value here MUST be in the scalar band (0x0100-0x01FF). A choice slot
-# holds its value inline, and Recovery_to_Kind sends anything >= 0x0200 down the
-# FF_FIELD_BLOCK path, where the reader would treat the raw integer as a block
-# offset. That is why RECOVER_FF_POSITIVEINT (0x0230) and RECOVER_FF_UNSIGNEDINT
-# (0x0237) are NOT used despite their names -- they are datatype-band tags, and
-# `positiveInt` consequently shares "UnsignedInt" until a scalar-band tag is
-# appended for it (TASKS.md AR-5).
-_CHOICE_INT_TAGS: dict[str, str] = {
-    "integer": "RECOVER_FF_INT32",
-    "unsignedInt": "RECOVER_FF_UINT32",
-    "positiveInt": "RECOVER_FF_UINT32",
-    "integer64": "RECOVER_FF_UINT64",
 }
 
 # Scalars whose SOURCE TEXT carries something the parsed value cannot.
@@ -191,6 +147,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                 is_first_choice = True
                 for c_type in f.get("choice_types", []):
                     suffix_match = c_type[0].upper() + c_type[1:]
+                    tag = _tm.choice_variant_tag(c_type)
                     cond = (
                         f'if (suffix == "{suffix_match}")'
                         if is_first_choice
@@ -201,11 +158,11 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         cpp += (
                             f"                bool b_val;\n"
                             f"                if (field.value().get_bool().get(b_val) == simdjson::SUCCESS) {{\n"
-                            f"                    data.{cpp_name}.tag = RECOVER_FF_BOOL;\n"
+                            f"                    data.{cpp_name}.tag = {tag};\n"
                             f"                    data.{cpp_name}.value = b_val;\n"
                             f"                }}\n"
                         )
-                    elif c_type in _CHOICE_INT_TAGS:
+                    elif c_type in _tm.CHOICE_INT_TAGS:
                         # The tag is the ONLY thing naming a choice variant on the
                         # way out, so one tag standing in for several FHIR types
                         # renames the field: RECOVER_FF_UINT32 made every
@@ -225,7 +182,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         cpp += (
                             f"                uint64_t i_val;\n"
                             f"                if (field.value().get_uint64().get(i_val) == simdjson::SUCCESS) {{\n"
-                            f"                    data.{cpp_name}.tag = {_CHOICE_INT_TAGS[c_type]};\n"
+                            f"                    data.{cpp_name}.tag = {tag};\n"
                             f"                    data.{cpp_name}.value = i_val;\n"
                             f"                }}\n"
                         )
@@ -233,7 +190,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         cpp += (
                             f"                double d_val;\n"
                             f"                if (field.value().get_double().get(d_val) == simdjson::SUCCESS) {{\n"
-                            f"                    data.{cpp_name}.tag = RECOVER_FF_FLOAT64;\n"
+                            f"                    data.{cpp_name}.tag = {tag};\n"
                             f"                    data.{cpp_name}.value = d_val;\n"
                             f"                }}\n"
                         )
@@ -242,7 +199,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                             f"                std::string_view s_val;\n"
                             f"                if (field.value().get_string().get(s_val) == simdjson::SUCCESS) {{\n"
                             f"                    if (!s_val.empty()) {{\n"
-                            f"                        data.{cpp_name}.tag = RECOVER_FF_STRING;\n"
+                            f"                        data.{cpp_name}.tag = {tag};\n"
                             f"                        data.{cpp_name}.value = s_val;\n"
                             f"                    }}\n"
                             f"                }}\n"
@@ -259,7 +216,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                             f"                std::string_view s_val;\n"
                             f"                if (field.value().get_string().get(s_val) == simdjson::SUCCESS) {{\n"
                             f"                    if (!s_val.empty()) {{\n"
-                            f"                        data.{cpp_name}.tag = RECOVER_FF_CODE;\n"
+                            f"                        data.{cpp_name}.tag = {tag};\n"
                             f"                        data.{cpp_name}.value = s_val;\n"
                             f"                    }}\n"
                             f"                }}\n"
@@ -277,12 +234,12 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                             f"                std::string_view s_val;\n"
                             f"                if (field.value().get_string().get(s_val) == simdjson::SUCCESS) {{\n"
                             f"                    if (!s_val.empty()) {{\n"
-                            f"                        data.{cpp_name}.tag = {_tm.DATETIME_TYPES[c_type]};\n"
+                            f"                        data.{cpp_name}.tag = {tag};\n"
                             f"                        data.{cpp_name}.value = s_val;\n"
                             f"                    }}\n"
                             f"                }}\n"
                         )
-                    elif c_type in _STRING_LIKE_TYPES:
+                    elif c_type in _tm.STRING_LIKE_TYPES:
                         # String-like primitives (url, base64Binary, canonical,
                         # etc.) have no _from_json function and no vtable —
                         # they're stored as string_view with the
@@ -291,7 +248,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                             f"                std::string_view s_val;\n"
                             f"                if (field.value().get_string().get(s_val) == simdjson::SUCCESS) {{\n"
                             f"                    if (!s_val.empty()) {{\n"
-                            f"                        data.{cpp_name}.tag = RECOVER_FF_STRING;\n"
+                            f"                        data.{cpp_name}.tag = {tag};\n"
                             f"                        data.{cpp_name}.value = s_val;\n"
                             f"                    }}\n"
                             f"                }}\n"
@@ -317,14 +274,13 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         target_block = c_type
                         if target_block in master_blocks:
                             child_fn = f"{target_block}_from_json"
-                            tag_name = f"RECOVER_FF_{target_block.upper()}"
                             cpp += (
                                 f"                simdjson::ondemand::object obj_val;\n"
                                 f"                if (field.value().get_object().get(obj_val) == simdjson::SUCCESS) {{\n"
                                 f"                    if (builder) {{\n"
                                 f"                        auto child_data = {child_fn}(obj_val, logger, concurrent_queue, builder);\n"
                                 f"                        data.{cpp_name}.value = builder->append(child_data);\n"
-                                f"                        data.{cpp_name}.tag = {tag_name};\n"
+                                f"                        data.{cpp_name}.tag = {tag};\n"
                                 f"                    }} else if (logger) {{\n"
                                 f'                        logger->log("[Warning] FastFHIR Ingestion: Cannot stage choice block {c_type} without a Builder.");\n'
                                 f"                    }}\n"
@@ -370,7 +326,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                         f"data.{cpp_name}.push_back({stored});\n"
                         f"                else {{ {err_log_line} }}\n"
                     )
-                elif fhir_type in _STRING_LIKE_TYPES:
+                elif fhir_type in _tm.STRING_LIKE_TYPES:
                     # Array of string-like primitives (e.g. dateTime[])
                     cpp += (
                         f"                std::string_view sv;\n"
@@ -470,7 +426,7 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
                     f"                data.{cpp_name} = ResourceReference();\n"
                     f"            }}\n"
                 )
-            elif f["fhir_type"] in _STRING_LIKE_TYPES:
+            elif f["fhir_type"] in _tm.STRING_LIKE_TYPES:
                 # String-like primitives (url, dateTime, base64Binary,
                 # canonical, date, etc.) — parse as string_view.
                 # These have no _from_json function.

@@ -135,13 +135,27 @@ def generate_lazy_view_struct(layout, block_struct_name, extra_methods=""):
 
 
 def generate_field_info_implementation(layout, block_struct_name):
-    cpp = f"const FF_FieldInfo {block_struct_name}::FIELDS[{block_struct_name}::FIELD_COUNT] = {{\n"
+    # Each choice field's variant tags, named once and referenced by its row.
+    cpp = ""
+    variants = {}
+    for f in layout:
+        if f.get("is_choice"):
+            tags = list(dict.fromkeys(_tm.choice_variant_tag(t) for t in f["choice_types"]))
+            variants[f["name"]] = f"{block_struct_name}_{f['name']}_VARIANTS"
+            cpp += (
+                f"static constexpr RECOVERY_TAG {variants[f['name']]}[] = {{{', '.join(tags)}}};\n"
+            )
+    cpp += (
+        f"const FF_FieldInfo {block_struct_name}::FIELDS[{block_struct_name}::FIELD_COUNT] = {{\n"
+    )
     for f in layout:
         cpp += (
             f'    {{"{f["orig_name"]}", {_st._field_kind_expr(f)}, '
             f'{block_struct_name}::{f["name"]}, '
             f"{_st._child_recovery_expr(f, block_struct_name)}, "
-            f"{_st._array_entries_are_offsets_expr(f)}}},\n"
+            f"{_st._array_entries_are_offsets_expr(f)}"
+            + (f", {variants[f['name']]}" if f["name"] in variants else "")
+            + "},\n"
         )
     cpp += "};\n"
     # Compact slot widths. The generator emits the field KIND and lets

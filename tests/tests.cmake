@@ -214,6 +214,10 @@ if(FASTFHIR_BUILD_TESTS)
     add_ff_cpp_test(ff_test_recovery tests/cpp/test_recovery.cpp)
     target_link_libraries(ff_test_recovery
         PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
+    # REC-25's census is checked on real Synthea bundles as well as the two
+    # hand-built fixtures; without the corpus that part reports SKIP.
+    target_compile_definitions(ff_test_recovery PRIVATE
+        $<$<BOOL:${FASTFHIR_DOWNLOAD_SYNTHEA}>:FASTFHIR_SYNTHEA_DIR="${_SYNTHEA_DIR}">)
     # The URL-directory case ingests a Patient with an extension.
     target_link_libraries(ff_test_file_modes
         PRIVATE fastfhir_ingestor simdjson::simdjson OpenSSL::Crypto)
@@ -266,7 +270,9 @@ if(FASTFHIR_BUILD_TESTS)
     # test nobody is forced to revisit is how a suite starts lying, which is the
     # failure these gates exist to end.
     add_test(NAME cpp_ff_test_recovery COMMAND ff_test_recovery --gates off)
-    foreach(_gate clean_stream_zero_writes repair_is_idempotent)
+    foreach(_gate clean_stream_zero_writes repair_is_idempotent
+                  hole_repoint_applies_both_witnesses tuple_self_and_tag_repair_together
+                  inline_element_is_never_repointed census_single_flip_sample_synthea)
         add_test(NAME "cpp_recovery_gate_${_gate}"
                  COMMAND ff_test_recovery --gates only --filter ${_gate})
     endforeach()

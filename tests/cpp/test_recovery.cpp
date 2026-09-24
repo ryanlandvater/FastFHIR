@@ -21,6 +21,7 @@
 #include "FF_AllTypes.hpp"
 
 #include "FFHR_tests.hpp"
+#include "FFHR_test_corpus.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -32,6 +33,7 @@
 #include <memory>
 #include <random>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -43,6 +45,52 @@ using namespace FastFHIR;
 
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+// Ingest one FHIR JSON document through the real pipeline and seal it, so the
+// stream under test is writer output rather than bytes arranged by hand (COV-1).
+// A document may ingest with warnings (a resource outside the profile is kept
+// as opaque JSON and reported), so only an outright failure refuses it.
+static Memory ingest_json(const std::string &json, std::size_t arena_bytes,
+                          FF_ExtensionFilterMode filter = FF_ExtensionFilterMode::FILTER_ALL_KNOWN)
+{
+    auto arena = Memory::create(arena_bytes);
+
+    FF_BuilderCreateInfo builder_info;
+    builder_info.arena = arena;
+    builder_info.version = FHIR_VERSION_R5;
+    FF_Builder builder;
+    if (!FF_CreateBuilder(builder_info, builder))
+        return nullptr;
+
+    FF_IngestorCreateInfo ingestor_info;
+    FF_Ingestor ingestor;
+    if (!FF_CreateIngestor(ingestor_info, ingestor))
+        return nullptr;
+
+    Reflective::ObjectHandle bundle_handle;
+    Size parsed_count = 0;
+    const auto result = FF_Ingest(FF_IngestInfo{
+        .ingestor = ingestor,
+        .builder = builder,
+        .source_type = FF_SOURCE_FHIR_JSON,
+        .extension_filter = filter,
+        .payload = json,
+    }, bundle_handle, parsed_count);
+    if (result.failed() || parsed_count == 0 || !bundle_handle)
+        return nullptr;
+
+    if (!FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+            .builder = builder,
+            .root = bundle_handle,
+        }))
+        return nullptr;
+    Memory::View view;
+    if (!FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+            .builder = builder,
+        }, view))
+        return nullptr;
+    return arena;
+}
 
 // A finalized Memory holding a two-resource Bundle that exercises the shapes
 // recovery must NOT misread: boolean choice variants (deceased[x]),
@@ -62,21 +110,7 @@ using namespace FastFHIR;
 // test (TASKS.md P0-3).
 static Memory build_bundle()
 {
-    auto arena = Memory::create(64 * 1024 * 1024);
-
-    FF_BuilderCreateInfo builder_info;
-    builder_info.arena = arena;
-    builder_info.version = FHIR_VERSION_R5;
-    FF_Builder builder;
-    if (!FF_CreateBuilder(builder_info, builder))
-        return nullptr;
-
-    FF_IngestorCreateInfo ingestor_info;
-    FF_Ingestor ingestor;
-    if (!FF_CreateIngestor(ingestor_info, ingestor))
-        return nullptr;
-
-    const std::string json = R"({
+    return ingest_json(R"({
         "resourceType": "Bundle",
         "type": "collection",
         "entry": [
@@ -96,30 +130,7 @@ static Memory build_bundle()
                                                "code": "2085-9"}]},
                           "valueQuantity": {"value": 4.5, "unit": "mmol/L"}}}
         ]
-    })";
-
-    Reflective::ObjectHandle bundle_handle;
-    Size parsed_count = 0;
-    const auto result = FF_Ingest(FF_IngestInfo{
-        .ingestor = ingestor,
-        .builder = builder,
-        .source_type = FF_SOURCE_FHIR_JSON,
-        .payload = json,
-    }, bundle_handle, parsed_count);
-    if (result.code != FF_SUCCESS || parsed_count == 0 || !bundle_handle)
-        return nullptr;
-
-    if (!FF_BuilderSetRoot(FF_BuilderSetRootInfo{
-            .builder = builder,
-            .root = bundle_handle,
-        }))
-        return nullptr;
-    Memory::View view;
-    if (!FF_BuilderFinalize(FF_BuilderFinalizeInfo{
-            .builder = builder,
-        }, view))
-        return nullptr;
-    return arena;
+    })", 64 * 1024 * 1024);
 }
 
 // RESOURCE TARGETS OUT OF PARENT ORDER, ON PURPOSE (TASKS.md COV-3).
@@ -1150,6 +1161,356 @@ static void test_interior_entry_damage_does_not_truncate_array()
                 block_elems);
 }
 
+// A NULL ENTRY IS AN ABSENT ELEMENT, NOT THE END OF THE ARRAY.
+//
+// FHIR has no gaps in `contained[]`, but the public Builder API does: a
+// default-constructed ResourceReference holds FF_NULL_OFFSET, and a caller can
+// push one into any resource array. The reader treats it as an absent element
+// and carries on -- print_json exports every entry after it. The recovery
+// enumerator did not: it returned from the whole array at the first null, so
+// every later entry vanished from reachable_blocks() (the clean baseline) and
+// from recover(). Nothing reported it, because an edge that is never enumerated
+// never gets a verdict, damaged or intact. On a damaged stream that edge could
+// not be repaired, and the benchmark never chose its bytes to corrupt.
+//
+// Built through the Builder rather than by hand-editing bytes, so the fixture
+// is writer output (COV-1).
+static void test_null_array_entry_keeps_later_entries()
+{
+    auto arena = Memory::create(4 * 1024 * 1024);
+    FF_BuilderCreateInfo builder_info;
+    builder_info.arena = arena;
+    FF_Builder builder;
+    CHECK(FF_CreateBuilder(builder_info, builder), "builder created");
+    if (!builder)
+        return;
+
+    const auto patient = [&](std::string_view id) {
+        PatientData p;
+        p.id = id;
+        return builder->append_obj(p).offset();
+    };
+    const Offset before = patient("before");
+    const Offset after  = patient("after");
+
+    ObservationData o;
+    o.id = "o1";
+    o.status = FF_ObservationStatus::Final;
+    o.contained.emplace_back(before, RECOVER_FF_PATIENT);
+    o.contained.emplace_back();                               // null, mid-array
+    o.contained.emplace_back(after, RECOVER_FF_PATIENT);
+    const Offset obs = builder->append_obj(o).offset();
+
+    BundleData bundle;
+    bundle.type = FF_BundleType::Collection;
+    BundleentryData entry;
+    entry.resource = ResourceReference(obs, RECOVER_FF_OBSERVATION);
+    bundle.entry.push_back(std::move(entry));
+    const auto root = builder->append_obj(bundle);
+    CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root}), "root set");
+    Memory::View view;
+    CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{.builder = builder}, view), "finalized");
+
+    // The reader is the control: it already sees the entry after the null.
+    std::ostringstream exported;
+    Parser(arena).root().print_json(exported);
+    CHECK(exported.str().find("\"after\"") != std::string::npos,
+          "the reader exports the entry after the null (control)");
+
+    Recovery rec(arena);
+    bool baseline_before = false, baseline_after = false;
+    for (const BlockRef &r : rec.reachable_blocks()) {
+        baseline_before |= r.child == before;
+        baseline_after  |= r.child == after;
+    }
+    CHECK(baseline_before, "the clean baseline enumerates the entry before the null");
+    CHECK(baseline_after, "the clean baseline enumerates the entry after the null");
+
+    const FF_RecoveryReport rep = rec.recover();
+    const BlockVerdict *v_after = nullptr;
+    for (const BlockVerdict &v : rep.blocks)
+        if (v.block.child == after)
+            v_after = &v;
+    CHECK(v_after != nullptr, "recover() gives the entry after the null a verdict");
+    CHECK(v_after && v_after->class_ == RepairClass::Intact,
+          "on a clean stream that verdict is Intact");
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REC-25 / RA-1 — THE CENSUS (recovery_algorithm_handoff.md §6)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The rebuilt engine begins with a census. It reads every slot of every block,
+// DECIDES each link whose witnesses all agree, and leaves every other slot as
+// an open question for the task loop. Everything after it assumes two facts,
+// and these cases pin both:
+//
+//   1. A clean stream leaves nothing open. Every block hangs from the header
+//      through decided links, so there is one island, it is attached, and
+//      there are no points and no holes.
+//   2. One flipped bit opens exactly the question it damaged: the slot whose
+//      word it hit, or the slot naming the block whose header it hit, and
+//      nothing anywhere else. A census that opened unrelated points would send
+//      the solver after damage that is not there; one that missed a point
+//      would leave damage no later step ever looks at.
+
+// Does byte `b` lie in the part of a slot's word that decides what it names?
+// For a tuple holding a code, that is the low four bytes and the tag half: the
+// code is a four-byte value in an eight-byte area, and nothing reads the rest.
+static bool census_word_holds(const Recovery::Slot &s, std::size_t b)
+{
+    const std::size_t seat = static_cast<std::size_t>(s.seat);
+    switch (s.repr) {
+        case Recovery::SlotRepr::Absolute:
+        case Recovery::SlotRepr::Relative63:
+            return b >= seat && b < seat + 8;
+        case Recovery::SlotRepr::Relative32:
+            return b >= seat && b < seat + 4;
+        case Recovery::SlotRepr::Tuple:
+            if (b >= seat + 8 && b < seat + 10)
+                return true;
+            return b >= seat &&
+                   b < seat + (Recovery_to_Kind(s.stored_tag) == FF_FIELD_CODE ? 4u : 8u);
+        case Recovery::SlotRepr::InlineEntry:
+            return false;  // no pointer word: the array's geometry names the entry
+    }
+    return false;
+}
+
+// The block a slot's stored word names, decoded in the slot's own encoding.
+static Offset census_target_of(const Recovery::Slot &s)
+{
+    switch (s.repr) {
+        case Recovery::SlotRepr::Absolute:
+            return static_cast<Offset>(s.stored);
+        case Recovery::SlotRepr::Relative32:
+            return FF_ResolveCodeableConceptOffset(static_cast<uint32_t>(s.stored), s.parent);
+        case Recovery::SlotRepr::Relative63:
+            return FF_ResolveDateTimeOffset(s.stored, s.parent);
+        case Recovery::SlotRepr::Tuple:
+            if (Recovery_to_Kind(s.stored_tag) == FF_FIELD_CODE)
+                return FF_ResolveCodeableConceptOffset(static_cast<uint32_t>(s.stored), s.parent);
+            if (Recovery_to_Kind(s.stored_tag) == FF_FIELD_DATETIME)
+                return FF_ResolveDateTimeOffset(s.stored, s.parent);
+            return static_cast<Offset>(s.stored);
+        case Recovery::SlotRepr::InlineEntry:
+            return s.seat;
+    }
+    return FF_NULL_OFFSET;
+}
+
+static const Recovery::Edge *census_edge_at(const Recovery::Census &c, Offset seat)
+{
+    const auto it = std::lower_bound(c.edges.begin(), c.edges.end(), seat,
+                                     [](const Recovery::Edge &e, Offset s) { return e.slot.seat < s; });
+    return (it != c.edges.end() && it->slot.seat == seat) ? &*it : nullptr;
+}
+
+static void check_clean_census(const Memory &clean, const std::string &fixture)
+{
+    const Recovery rec(clean);
+    const Recovery::Census c = rec.census();
+
+    CHECK(c.anchors > 0, fixture << ": the census finds self-validating blocks");
+    CHECK_EQ(c.islands.size(), std::size_t{1}, fixture << ": islands");
+    if (!c.islands.empty()) {
+        CHECK(c.islands[0].attached && c.islands[0].root == 0,
+              fixture << ": the one island is the FF_HEADER's, attached");
+        CHECK_EQ(c.islands[0].members.size(), c.anchors + 1,
+                 fixture << ": every block hangs from the header (members, header included)");
+    }
+    CHECK_EQ(c.points.size(), std::size_t{0}, fixture << ": open points on a clean stream");
+    CHECK_EQ(c.holes.size(), std::size_t{0}, fixture << ": holes on a clean stream");
+
+    // The census and the clean-stream baseline must agree on every reference
+    // the baseline enumerates. The census also decides the links the baseline
+    // never walks: the FF_HEADER's own slots, and the URL directory's segments.
+    const std::vector<BlockRef> refs = rec.reachable_blocks();
+    std::size_t missing = 0;
+    for (const BlockRef &r : refs) {
+        const Recovery::Edge *e = census_edge_at(c, r.parent + r.field);
+        if (e == nullptr || e->child != r.child)
+            ++missing;
+    }
+    CHECK_EQ(missing, std::size_t{0}, fixture << ": baseline references the census did not decide");
+    std::size_t beyond_baseline = 0;
+    for (const Recovery::Edge &e : c.edges)
+        if (e.slot.parent == 0 ||
+            FF_GET_RECOVERY_TAG(clean->base(), e.slot.parent) == RECOVER_FF_URL_DIRECTORY)
+            ++beyond_baseline;
+    CHECK_EQ(c.edges.size(), refs.size() + beyond_baseline,
+             fixture << ": decided links beyond the baseline are the header's and the URL directory's");
+    std::printf("    %s: %zu blocks, %zu decided links (%zu beyond the baseline)\n",
+                fixture.c_str(), c.anchors, c.edges.size(), beyond_baseline);
+}
+
+static void test_census_clean_stream_is_one_attached_island()
+{
+    const auto bundle = build_bundle();
+    REQUIRE(bundle != nullptr, "bundle build failed");
+    check_clean_census(bundle, "bundle");
+
+    const auto out_of_order = build_out_of_order_contained();
+    REQUIRE(out_of_order != nullptr, "out-of-order build failed");
+    check_clean_census(out_of_order, "out-of-order");
+
+    // Real Synthea bundles carry the shapes the hand-written fixtures do not:
+    // code and date/time fallbacks, extensions and their URL directory,
+    // resources outside the profile kept as opaque JSON.
+    const auto bundles = ff_test::find_bundles(2);
+    if (bundles.empty())
+        std::printf("    SKIP Synthea: no corpus configured (FASTFHIR_SYNTHEA_DIR)\n");
+    for (const auto &path : bundles) {
+        // FILTER_NONE, so every Extension.url reaches the URL directory.
+        const auto stream = ingest_json(ff_test::read_file(path), std::size_t{1} << 30,
+                                        FF_ExtensionFilterMode::FILTER_NONE);
+        REQUIRE(stream != nullptr, "ingest " << path.filename().string());
+        check_clean_census(stream, path.filename().string().substr(0, 32));
+    }
+}
+
+// Single flips, one at a time: every bit of a small stream, or a seeded sample
+// of the structural bytes of a large one (`sample` > 0). For each flip, every
+// point the census opens must be one the flip explains, and every decided link
+// whose word or whose child's header the flip hit must be open.
+static void census_single_flip_sweep(const Memory &clean, const char *fixture,
+                                     std::size_t sample = 0, uint64_t seed = 0)
+{
+    const Recovery::Census c0 = Recovery(clean).census();
+    const std::size_t n = static_cast<std::size_t>(c0.extent);
+    REQUIRE(!c0.edges.empty() && n > 0, fixture << ": the clean census decides links to sweep");
+
+    // Which decided link each byte witnesses, from the clean census: the link
+    // whose child's header holds the byte, and the link whose word holds it.
+    std::vector<Offset> child_header_of(n, FF_NULL_OFFSET);
+    std::vector<Offset> word_of(n, FF_NULL_OFFSET);
+    for (const Recovery::Edge &e : c0.edges) {
+        for (std::size_t j = 0; j < DATA_BLOCK::HEADER_SIZE &&
+                                static_cast<std::size_t>(e.child) + j < n; ++j)
+            child_header_of[static_cast<std::size_t>(e.child) + j] = e.slot.seat;
+        for (std::size_t j = 0; j < 10 && static_cast<std::size_t>(e.slot.seat) + j < n; ++j)
+            if (census_word_holds(e.slot, static_cast<std::size_t>(e.slot.seat) + j))
+                word_of[static_cast<std::size_t>(e.slot.seat) + j] = e.slot.seat;
+    }
+
+    std::vector<std::pair<std::size_t, int>> sites;  // (byte, bit)
+    if (sample == 0) {
+        for (std::size_t b = 0; b < n; ++b)
+            for (int bit = 0; bit < 8; ++bit)
+                sites.emplace_back(b, bit);
+    } else {
+        // Structural bytes only. Everything else is payload the census never reads.
+        std::vector<std::size_t> structural;
+        for (std::size_t b = 0; b < n; ++b)
+            if (child_header_of[b] != FF_NULL_OFFSET || word_of[b] != FF_NULL_OFFSET)
+                structural.push_back(b);
+        std::mt19937_64 rng(seed);
+        std::printf("    %s: sampling %zu of %zu structural bytes, seed %llu\n", fixture, sample,
+                    structural.size(), static_cast<unsigned long long>(seed));
+        for (std::size_t i = 0; i < sample; ++i)
+            sites.emplace_back(structural[rng() % structural.size()], static_cast<int>(rng() % 8));
+    }
+
+    Memory damaged = copy_of(clean);
+    BYTE *const bytes = damaged->base();
+    std::map<std::string, std::size_t> wrong;
+    std::vector<std::string> examples;  // the first few, printed to localise a failure
+    std::size_t opened = 0;
+    const auto record = [&](const char *what, std::size_t b, int bit, const std::string &detail) {
+        ++wrong[what];
+        if (examples.size() < 12)
+            examples.push_back("byte " + std::to_string(b) + " bit " + std::to_string(bit) + " " +
+                               detail);
+    };
+    for (const auto &[b, bit] : sites) {
+        bytes[b] ^= static_cast<BYTE>(1u << bit);
+        const Recovery::Census c = Recovery(damaged).census();
+        bytes[b] ^= static_cast<BYTE>(1u << bit);
+        opened += c.points.size();
+
+        // Every point must be explained by this flip.
+        for (const Recovery::Point &p : c.points) {
+            bool explained = false;
+            if (p.kind == Recovery::PointKind::ArrayExtent) {
+                // The array's KIND_AND_STEP or ENTRY_COUNT, or the header of one
+                // of its inline entries: at the tail of an inline array a
+                // flipped entry tag and a flipped count look alike.
+                explained = b >= static_cast<std::size_t>(p.array) + FF_ARRAY::KIND_AND_STEP &&
+                            b < static_cast<std::size_t>(p.array) + FF_ARRAY::HEADER_SIZE;
+                const Recovery::Edge *e = child_header_of[b] != FF_NULL_OFFSET
+                                              ? census_edge_at(c0, child_header_of[b]) : nullptr;
+                if (e != nullptr && e->slot.repr == Recovery::SlotRepr::InlineEntry &&
+                    e->slot.parent == p.array)
+                    explained = true;
+            } else {
+                const Recovery::Edge *e = census_edge_at(c0, p.slot.seat);
+                explained = census_word_holds(p.slot, b) ||
+                            (e != nullptr && child_header_of[b] == p.slot.seat);
+                // A flipped pointer that lands exactly on another slot's child
+                // makes that child claimed twice, and both slots open.
+                for (const Recovery::Point &q : c.points)
+                    if (!explained && e != nullptr && q.kind == Recovery::PointKind::Open &&
+                        q.slot.seat != p.slot.seat && census_word_holds(q.slot, b) &&
+                        census_target_of(q.slot) == e->child)
+                        explained = true;
+            }
+            if (!explained)
+                record("an unexplained point", b, bit,
+                       "opened seat " + std::to_string(p.slot.seat) +
+                           (p.kind == Recovery::PointKind::ArrayExtent
+                                ? " (array " + std::to_string(p.array) + ")" : ""));
+        }
+
+        // Every decided link the flip damaged must be open. At the tail of an
+        // inline array the census asks about the array instead of the entry.
+        const auto asked = [&c](const Recovery::Edge &e) {
+            for (const Recovery::Point &p : c.points) {
+                if (p.kind == Recovery::PointKind::Open && p.slot.seat == e.slot.seat)
+                    return true;
+                if (p.kind == Recovery::PointKind::ArrayExtent &&
+                    e.slot.repr == Recovery::SlotRepr::InlineEntry && p.array == e.slot.parent)
+                    return true;
+            }
+            return false;
+        };
+        // The FF_HEADER's own words are Phase 0's to restore, and it does.
+        if (const Recovery::Edge *e = word_of[b] != FF_NULL_OFFSET ? census_edge_at(c0, word_of[b]) : nullptr;
+            e != nullptr && e->slot.parent != 0 && !asked(*e))
+            record("a damaged slot left closed", b, bit,
+                   "left seat " + std::to_string(e->slot.seat) + " closed");
+        if (const Recovery::Edge *e = child_header_of[b] != FF_NULL_OFFSET
+                                          ? census_edge_at(c0, child_header_of[b]) : nullptr;
+            e != nullptr && !asked(*e))
+            record("a damaged child left closed", b, bit,
+                   "left seat " + std::to_string(e->slot.seat) + " closed");
+    }
+    std::size_t total_wrong = 0;
+    for (const auto &[what, count] : wrong) {
+        std::printf("    %s: %zu x %s\n", fixture, count, what.c_str());
+        total_wrong += count;
+    }
+    for (const std::string &e : examples)
+        std::printf("      e.g. %s\n", e.c_str());
+    std::printf("    %s: %zu single flips over %zu bytes, %zu points opened\n",
+                fixture, sites.size(), n, opened);
+    CHECK_EQ(total_wrong, std::size_t{0},
+             fixture << ": flips whose points do not match the damage (first: "
+                     << (examples.empty() ? std::string("none") : examples.front()) << ")");
+}
+
+static void test_census_single_flip_opens_exactly_its_point()
+{
+    const auto bundle = build_bundle();
+    REQUIRE(bundle != nullptr, "bundle build failed");
+    census_single_flip_sweep(bundle, "bundle");
+
+    const auto out_of_order = build_out_of_order_contained();
+    REQUIRE(out_of_order != nullptr, "out-of-order build failed");
+    census_single_flip_sweep(out_of_order, "out-of-order");
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // WP1 — THE GATES (../FastFHIR-benchmark/recovery_handoff.md §6)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1180,22 +1541,26 @@ static void test_interior_entry_damage_does_not_truncate_array()
 // Assertion 1 catches wrong writes; assertion 2 catches silent loss. Neither
 // can be satisfied by making the ranker bolder, which is the point.
 //
-// MEASURED RED LIST, 2026-09-22, against FastFHIR 4adcfcc plus the uncommitted
-// REC-24 header work (benchmark 3bfb498). These gates are RED ON PURPOSE. Each
-// number below came from the run that introduced them, and the list is the
-// progress measure: it shrinks as recovery_handoff.md's work packages land. A
-// gate going green before its package lands means the gate was weakened, not
-// that the defect was fixed -- do not delete an entry without the commit that
-// closes it.
+// MEASURED RED LIST. Updated 2026-09-22 after WP2 (apply enacts the whole
+// hypothesis). These gates are RED ON PURPOSE where a work package has not
+// landed, and the list is the progress measure: a gate going green before its
+// package lands means the gate was weakened, not that the defect was fixed. Do
+// not change a number here without the commit that moved it.
 //
-//   gate                     ingest      out-of-order   header(432 bits)
-//   wrong writes             11          9              0
-//   damage left silent       292         180            32
-//   confident-but-declined   218         140            0
-//   unaccounted verdicts     0           0              0
-//   repaired length drift    0           0 (1 paired)   0
-//   idempotence drift        0           0              --
-//   clean-stream writes      0           0              --
+//   gate                     ingest        out-of-order   header(432 bits)
+//   wrong writes             11            9              0
+//   damage left silent       74  (was 292) 40  (was 180)  32
+//   confident-but-declined   0   (was 218) 0   (was 140)  0
+//   unaccounted verdicts     0             0              0
+//   repaired length drift    0             0              0
+//   idempotence drift        0             0              --
+//   clean-stream writes      0             0              --
+//
+// WP2 closed F30 outright and cut silent damage by about three quarters. The
+// paired-flip gate moved the same way, 99 -> 17 and 83 -> 12 silent. Its
+// wrong-write count runs 0 to 6 depending on seed, so read it as a sample and
+// not as a trend; the single-flip counts are exhaustive and are the ones to
+// watch.
 //
 // The ingest fixture's counts move by a few between runs, because the Ingestor
 // pool places resources in worker-completion order and that layout is not a
@@ -1203,32 +1568,19 @@ static void test_interior_entry_damage_does_not_truncate_array()
 // so nothing is pinned to a schedule. The out-of-order fixture goes through the
 // Builder directly and is byte-stable run to run.
 //
-// Where the failures cluster, and which mode owns each cluster. Seat names are
+// Where the failures cluster, and which mode owns each. Seat names are
 // gate_blame()'s: "X" means a verdict of class X writes that byte; "no-write/X"
 // means no repair class covers it and the edge it witnesses has verdict X.
 //
-//   [TagRepaired x216/x140]  F30, NEW. apply()'s TagRepaired arm breaks without
-//        writing when plausible_tag() says the child's wire tag could be an
-//        innocent block. The CLASSIFIER never applies that guard, so the verdict
-//        stays TagRepaired and rep.tag_repaired still counts it: the damage
-//        stays and the report says it was repaired. The guard itself is
-//        defensible -- it is the F01 "innocent block" worry -- but it is taken
-//        in the writer, so the decision never reaches the report. It belongs in
-//        classify_one, where the honest answer is Ambiguous.             [WP2]
-//   [header StreamLayout/Intact x31]  F04b, predicted. The 30 engine-version
-//        bits packed into VERSION are neither reconciled nor reported, and the
-//        layout verdict beside them reads Intact.                        [WP5]
 //   [no-write/Intact x38/x5]  damage the classifier reads as Intact: no repair
 //        seat covers the byte and the edge it witnesses is called undamaged.
-//        Spans F01, F02b and F05; needs triage before assignment.    [WP3/WP4]
-//   [no-verdict-at-all x4/x3]  F02, predicted. The edge vanished before
-//        classification, so nothing in the report mentions it.           [WP3]
-//   [header FhirRevision/Intact x1]  F31, NEW. FHIR_VERSION_R4 (0x0400) and
-//        FHIR_VERSION_R5 (0x0500) are ONE BIT apart, so a flip lands exactly on
-//        the other legal revision. The closed-set check scores that at cost 0
-//        and calls it Intact. Deterministic, both fixtures, one bit.      [WP5]
+//        Now the largest remaining cluster on the ingest fixture. Spans F01,
+//        F02b and F05; needs triage before assignment.               [WP3/WP4]
+//   [header StreamLayout/Intact x31]  F04b. The 30 engine-version bits packed
+//        into VERSION are neither reconciled nor reported, and the layout
+//        verdict beside them reads Intact.                               [WP5]
 //   [header UrlDirectoryOffset / ModuleRegistryOffset Corroborated x10/x9]
-//        F29, NEW, and the only cluster that WRITES a wrong byte.
+//        F29, and still the only cluster that WRITES a wrong byte.
 //        reconcile_singleton records Corroborated whenever the census holds
 //        exactly one block carrying the field's tag, with NO flip-budget check
 //        -- unlike the root reconciliation directly below it, which has one.
@@ -1236,20 +1588,51 @@ static void test_interior_entry_damage_does_not_truncate_array()
 //        each other and of other low tags, so one flipped tag byte ANYWHERE in
 //        the stream can fabricate a singleton. The field was FF_NULL_OFFSET
 //        (absent) in the clean stream and becomes a pointer: ~60 invented bits,
-//        a URL directory the document never had. Note the header-only gate
-//        reports wrong=0, so this is reached by damage OUTSIDE the header.[WP5]
+//        a URL directory the document never had. The header-only gate reports
+//        wrong=0, so this is reached by damage OUTSIDE the header.        [WP5]
+//   [no-verdict-at-all x4/x3]  F02. The edge vanished before classification, so
+//        nothing in the report mentions it.                               [WP3]
+//   [header FhirRevision/Intact x1]  F31. FHIR_VERSION_R4 (0x0400) and
+//        FHIR_VERSION_R5 (0x0500) are ONE BIT apart, so a flip lands exactly on
+//        the other legal revision. The closed-set check scores that at cost 0
+//        and calls it Intact. Deterministic, both fixtures, one bit.       [WP5]
 //   [ExtentDerived x1]  an array extent rewrite landing on an undamaged byte.
-//        F11/F19 family, one occurrence, not yet minimised.              [WP3]
+//        F11/F19 family, one occurrence, not yet minimised.               [WP3]
 //
-// Predicted but NOT separated by these fixtures, because neither builds the
-// shape: F03a (a hole match writes only the parent slot and then verifies a
-// self-offset the hole candidate cannot have), F03b (a tuple's priced tag
-// repair goes unwritten), F10 (an inline element repointed as a pointer). WP2
-// adds the fixtures that isolate them.
+// CLOSED BY WP2, and the gates below hold them closed:
 //
-// Two gates are GREEN and must stay that way: idempotence (a second pass over a
-// repaired stream writes nothing) and clean-stream (apply on undamaged bytes
-// changes none of them).
+//   F30  apply()'s TagRepaired arm declined to write whenever plausible_tag()
+//        said the child could be an innocent block, while the CLASSIFIER never
+//        applied that guard -- so the verdict stayed a confident TagRepaired,
+//        rep.tag_repaired counted it, and the damage stayed on the wire. 218
+//        of 3,712 probes, the largest cluster WP1 found. The guard was right;
+//        its location was wrong. It now runs in classify_one, where the honest
+//        answer is Ambiguous.
+//   F03a a Corroborated repoint onto a HOLE candidate wrote only the parent's
+//        slot and then demanded the target self-validate -- which a hole
+//        candidate never does, by construction. All 36 hole matches across the
+//        two fixtures reverted. The plan now carries the target's own
+//        witnesses. The SECOND hole matcher, the band-widening pass, promotes
+//        to Corroborated outside classify_one and needed the same call.
+//   F03b a tuple's in-place cost is val + tag, and only the VALIDATION word was
+//        written. The plan now carries both, and 5/5 and 6/6 tuples restore.
+//   F32  NEW, found by the WP2 hole gate. A repoint wrote an absolute 8-byte
+//        offset into the slot -- but FF_FIELD_CODE holds a FOUR-byte
+//        block-relative fallback and FF_FIELD_DATETIME an 8-byte one, so the
+//        write corrupted the slot and, for the 4-byte case, the field after it.
+//        The old applier did this for every class. A repoint is now formed only
+//        for a slot the WIRE proves is an absolute pointer, which the schema
+//        cannot answer: a choice variant tagged RECOVER_FF_STRING is either a
+//        plain string variant (absolute) or a date/time fallback (relative),
+//        and BlockRef records nothing that separates them. RESIDUAL: a damaged
+//        relative reference is now reported rather than mis-repaired, but it is
+//        still not REPAIRED. Giving BlockRef an explicit physical shape, and
+//        re-encoding the relative form, is filed as F32 for a later package.
+//
+// F10 was predicted red and came out GREEN: no inline element is repointed on
+// either fixture today. The code path is real, so classify_one now refuses to
+// form the hypothesis at all and the gate locks that in. Read it as a
+// regression guard, not as a defect that was fixed.
 //
 // A note on what these fixtures CANNOT show. copy_of() sizes each arena to the
 // payload exactly, so trusted_extent's ceiling is already the true length and
@@ -1264,6 +1647,7 @@ static void test_interior_entry_damage_does_not_truncate_array()
 static uint64_t    g_gate_seed   = 20260922;
 static std::size_t g_gate_probes = 4096;  ///< single-bit probes per fixture
 static std::size_t g_gate_pairs  = 384;   ///< paired-bit probes per fixture
+static std::size_t g_census_samples = 256;  ///< census single flips on a Synthea bundle
 
 // Which half of this binary runs. Three of the gates are RED on purpose, so
 // ctest registers them as their own entries and runs the legacy cases with
@@ -1284,6 +1668,8 @@ static void gate_set_options(int argc, char **argv)
             g_gate_probes = std::strtoull(argv[i + 1], nullptr, 10);
         else if (flag == "--pairs")
             g_gate_pairs = std::strtoull(argv[i + 1], nullptr, 10);
+        else if (flag == "--census-samples")
+            g_census_samples = std::strtoull(argv[i + 1], nullptr, 10);
         else if (flag == "--gates")
             g_gate_mode = std::string_view(argv[i + 1]) == "off"    ? GateMode::Off
                           : std::string_view(argv[i + 1]) == "only" ? GateMode::Only
@@ -1351,10 +1737,17 @@ static std::vector<std::size_t> gate_eligible_positions(const Memory &clean,
     return pos;
 }
 
-// Which FF_HEADER field owns a byte. The VERSION word holds the engine version
-// AND the 2-bit stream layout, and only the layout is reconciled, so a flip in
-// the other 30 bits maps to StreamLayout and finds an Intact verdict -- that is
-// F04b, and this mapping is what makes it visible instead of invisible.
+// Which FF_HEADER field owns a byte. The VERSION word packs the 30-bit engine
+// version together with the 2-bit stream layout, and this table is byte
+// granular, so it cannot split the one byte they share. It attributes the whole
+// word to EngineVersion because that is where 30 of the 32 bits live.
+//
+// Only the layout is ever REPAIRED. The engine version has no second witness --
+// a stream written by a newer engine is legitimate, and find_gaps() depends on
+// that being possible to tell version skew from damage -- so recovery declares
+// it uncertifiable instead of guessing. That declaration is what this mapping
+// looks for: F04b was a flip in those 30 bits landing on an Intact verdict,
+// which read as damage neither repaired nor reported.
 static bool gate_header_field(std::size_t at, HeaderField &out)
 {
     struct Span { std::size_t begin, end; HeaderField field; };
@@ -1368,7 +1761,7 @@ static bool gate_header_field(std::size_t at, HeaderField &out)
         {FF_HEADER::CHECKSUM_OFFSET,   FF_HEADER::URL_DIR_OFFSET,    HeaderField::ChecksumOffset},
         {FF_HEADER::URL_DIR_OFFSET,    FF_HEADER::MODULE_REG_OFFSET, HeaderField::UrlDirectoryOffset},
         {FF_HEADER::MODULE_REG_OFFSET, FF_HEADER::VERSION,           HeaderField::ModuleRegistryOffset},
-        {FF_HEADER::VERSION,           FF_HEADER::HEADER_SIZE,       HeaderField::StreamLayout},
+        {FF_HEADER::VERSION,           FF_HEADER::HEADER_SIZE,       HeaderField::EngineVersion},
     };
     for (const Span &s : spans)
         if (at >= s.begin && at < s.end) { out = s.field; return true; }
@@ -1388,6 +1781,7 @@ static const char *gate_header_name(HeaderField f)
         case HeaderField::UrlDirectoryOffset:   return "UrlDirectoryOffset";
         case HeaderField::ModuleRegistryOffset: return "ModuleRegistryOffset";
         case HeaderField::StreamLayout:         return "StreamLayout";
+        case HeaderField::EngineVersion:        return "EngineVersion";
     }
     return "?";
 }
@@ -2017,6 +2411,319 @@ static void test_repair_is_idempotent()
     gate_idempotent(ordered, "out-of-order");
 }
 
+// ── WP2 gates: apply must enact the WHOLE hypothesis ──────────────────────
+//
+// The three shapes the WP1 oracles could not separate, because neither fixture
+// reaches them by a single flip. Each one is a case where the CLASSIFIER is
+// right and the WRITER enacts only part of what it decided, so the report
+// claims a repair that never reached the bytes.
+//
+// All three have the same root cause: a BlockVerdict carries a RepairClass
+// LABEL, and apply() re-derives the seats from that label. A label is not a
+// plan. Deriving one loses whatever the classifier knew that the label does not
+// spell -- which witness was damaged, whether the target needs its own
+// self-offset rewritten, whether the slot is a pointer at all.
+
+// Every reference whose slot is an ABSOLUTE 8-BYTE POINTER: the child lives
+// elsewhere and the slot names it outright, so the slot and the child are two
+// distinct, independently repairable seats.
+//
+// Two shapes are excluded, and both for the same reason -- their slot is not a
+// pointer word, so "restore the 8 bytes at the slot" is not what a repair of
+// them even means:
+//
+//   * an INLINE ARRAY ELEMENT, whose slot IS the element (its own gate below);
+//   * a RELATIVE reference. FF_FIELD_CODE stores a 4-byte block-relative
+//     fallback and FF_FIELD_DATETIME an 8-byte one, so an absolute write
+//     corrupts the slot and, for the 4-byte case, its neighbour too. Those
+//     edges are covered by the single-flip oracle's "restored or reported"
+//     rule instead, and the repoint gap is recorded as F32.
+//
+// The test is taken from the WIRE, not the schema, because the schema cannot
+// answer it: a choice variant tagged RECOVER_FF_STRING is either a plain string
+// variant (absolute) or a date/time fallback (relative). enumerate_block_refs
+// sets r.child from the raw word for an absolute arm and from a resolver for a
+// relative one, so the stored word equalling r.child is decisive.
+static std::vector<BlockRef> wp2_pointer_refs(const Memory &clean)
+{
+    std::vector<BlockRef> out;
+    for (const BlockRef &r : Recovery(clean).reachable_blocks()) {
+        if (r.child == FF_NULL_OFFSET || r.child == 0)
+            continue;
+        if (r.parent + r.field == r.child)
+            continue;  // inline element — no pointer word to damage
+        if (static_cast<std::size_t>(r.child) + DATA_BLOCK::HEADER_SIZE > clean->size())
+            continue;
+        const std::size_t slot = static_cast<std::size_t>(r.parent + r.field);
+        if (slot + 8 > clean->size() ||
+            LOAD_U64(clean->base() + slot) != static_cast<uint64_t>(r.child))
+            continue;  // relative reference — its slot is not an absolute pointer
+        out.push_back(r);
+    }
+    return out;
+}
+
+// Both 8-byte words of an edge, compared against clean.
+static bool wp2_word_restored(const Memory &clean, const GateProbe &p, std::size_t seat)
+{
+    for (std::size_t i = 0; i < 8; ++i)
+        if (seat + i >= p.repaired.size() || p.repaired[seat + i] != clean->base()[seat + i])
+            return false;
+    return true;
+}
+
+// F03a — THE HOLE MATCH MUST BE ENACTABLE, NOT MERELY DIAGNOSABLE.
+//
+// Damage BOTH witnesses of one edge: one bit in the parent's offset word and
+// one bit in the child's VALIDATION. Neither witness now names the child, so
+// scan() loses it and its bytes become a hole. REC-20's hole matcher is built
+// for exactly this: the position whose residual VALIDATION word is a Hamming
+// neighbour of its own address is the lost block, and the parent's damaged
+// offset is a neighbour of that same address.
+//
+// The classifier finds it and reports Corroborated. apply() then writes ONLY
+// the parent's slot and verifies valid_validation() on the target -- which a
+// hole candidate NEVER satisfies, because it was admitted precisely for having
+// a damaged self-offset (self_cost is 1 or 2 by construction). So every hole
+// match verifies false, reverts, and is counted failed. The diagnosis is right
+// and nothing reaches the wire.
+static void wp2_hole_repoint(const Memory &clean, const char *fixture)
+{
+    const std::vector<BlockRef> refs = wp2_pointer_refs(clean);
+    REQUIRE(!refs.empty(), fixture << ": the fixture has pointer references");
+
+    std::size_t tried = 0, diagnosed = 0, slot_ok = 0, child_ok = 0, applied = 0;
+    std::string first;
+    for (const BlockRef &r : refs) {
+        const std::size_t slot  = static_cast<std::size_t>(r.parent + r.field);
+        const std::size_t child = static_cast<std::size_t>(r.child);
+        ++tried;
+
+        // One bit in each witness: the parent now names child±1, and the child
+        // vouches for child±1 instead of itself.
+        const GateProbe p = gate_probe(clean, {{slot, 0}, {child, 0}});
+        const BlockVerdict *v = find_verdict(p.report, r.parent, r.field);
+        if (v && v->class_ == RepairClass::Corroborated)
+            ++diagnosed;
+        const bool s = wp2_word_restored(clean, p, slot);
+        const bool c = wp2_word_restored(clean, p, child);
+        slot_ok  += s;
+        child_ok += c;
+        applied  += p.written.applied;
+        if (!(s && c) && first.empty()) {
+            // Name the PLAN, not just the outcome. A Corroborated verdict that
+            // restored nothing is either a wrong candidate or an empty plan,
+            // and those need opposite fixes.
+            std::size_t duplicates = 0;
+            for (const BlockVerdict &bv : p.report.blocks)
+                if (bv.block.parent == r.parent && bv.block.field == r.field)
+                    ++duplicates;
+            char buf[512];
+            std::snprintf(buf, sizeof buf,
+                          "slot=%zu child=%zu kind=%d verdict=%s verdicts_for_edge=%zu "
+                          "writes=%zu cand=%llu slot_clean=%llu slot_repaired=%llu "
+                          "slot_restored=%d child_restored=%d applied=%zu "
+                          "declined=%zu failed=%zu",
+                          slot, child, static_cast<int>(r.kind),
+                          v ? gate_class_name(v->class_) : "none", duplicates,
+                          v ? v->writes.size() : 0,
+                          (v && !v->candidates.empty())
+                              ? static_cast<unsigned long long>(v->candidates.front())
+                              : 0ULL,
+                          static_cast<unsigned long long>(LOAD_U64(clean->base() + slot)),
+                          slot + 8 <= p.repaired.size()
+                              ? static_cast<unsigned long long>(LOAD_U64(p.repaired.data() + slot))
+                              : 0ULL,
+                          s, c, p.written.applied, p.written.declined, p.written.failed);
+            first = buf;
+        }
+    }
+    std::printf("    hole repoint [%s]: %zu edges, %zu diagnosed Corroborated, "
+                "slot restored %zu, child restored %zu\n",
+                fixture, tried, diagnosed, slot_ok, child_ok);
+    CHECK_EQ(slot_ok, tried, "hole repoint [" << fixture
+                                 << "]: the parent's offset is restored -- " << first);
+    CHECK_EQ(child_ok, tried, "hole repoint [" << fixture
+                                  << "]: the child's self-offset is restored too -- " << first);
+}
+
+static void test_hole_repoint_applies_both_witnesses()
+{
+    const auto ingested = build_bundle();
+    REQUIRE(ingested != nullptr, "bundle build failed");
+    wp2_hole_repoint(ingested, "ingest");
+
+    const auto ordered = build_out_of_order_contained();
+    REQUIRE(ordered != nullptr, "out-of-order fixture build failed");
+    wp2_hole_repoint(ordered, "out-of-order");
+}
+
+// F03b — A TUPLE'S PRICED TAG REPAIR MUST ACTUALLY BE WRITTEN.
+//
+// Damage both of the CHILD's witnesses and leave the parent alone: one bit in
+// the child's VALIDATION and one in the child's recovery tag. For a resource or
+// choice tuple the parent holds both surviving copies -- the address beside the
+// offset and the concrete type in the tag half -- so both halves of the child
+// are uniquely determined and the repair needs no search at all.
+//
+// classify_one prices it that way: for a tuple whose child fails self-validation
+// it computes `val_cost + tag_cost` and emits PositionRepaired at that combined
+// cost. apply()'s PositionRepaired arm then writes the VALIDATION word and
+// stops. The tag it charged for is never written, and the verdict verifies
+// anyway because the check only asks whether the self-offset now holds.
+static void wp2_tuple_pair(const Memory &clean, const char *fixture)
+{
+    std::size_t tried = 0, self_ok = 0, tag_ok = 0;
+    std::string first;
+    for (const BlockRef &r : wp2_pointer_refs(clean)) {
+        if (r.kind != FF_FIELD_RESOURCE && r.kind != FF_FIELD_CHOICE)
+            continue;
+        const std::size_t child = static_cast<std::size_t>(r.child);
+        const std::size_t tag   = child + static_cast<std::size_t>(DATA_BLOCK::RECOVERY);
+        if (tag + 2 > clean->size())
+            continue;
+        ++tried;
+
+        const GateProbe p = gate_probe(clean, {{child, 0}, {tag, 1}});
+        const BlockVerdict *v = find_verdict(p.report, r.parent, r.field);
+        const bool s = wp2_word_restored(clean, p, child);
+        const bool t = tag + 1 < p.repaired.size() &&
+                       p.repaired[tag] == clean->base()[tag] &&
+                       p.repaired[tag + 1] == clean->base()[tag + 1];
+        self_ok += s;
+        tag_ok  += t;
+        if (!(s && t) && first.empty()) {
+            char buf[384];
+            std::snprintf(buf, sizeof buf,
+                          "child=%zu verdict=%s cost=%u self_restored=%d tag_restored=%d "
+                          "(clean tag %02x%02x, repaired %02x%02x)",
+                          child, v ? gate_class_name(v->class_) : "none", v ? v->bit_cost : 0, s,
+                          t, clean->base()[tag], clean->base()[tag + 1],
+                          tag < p.repaired.size() ? p.repaired[tag] : 0,
+                          tag + 1 < p.repaired.size() ? p.repaired[tag + 1] : 0);
+            first = buf;
+        }
+    }
+    std::printf("    tuple pair [%s]: %zu tuples, self restored %zu, tag restored %zu\n", fixture,
+                tried, self_ok, tag_ok);
+    CHECK(tried > 0, fixture << ": the fixture carries resource or choice tuples");
+    CHECK_EQ(self_ok, tried,
+             "tuple pair [" << fixture << "]: the child's self-offset is restored -- " << first);
+    CHECK_EQ(tag_ok, tried,
+             "tuple pair [" << fixture
+                            << "]: the tag the verdict was PRICED for is restored too -- " << first);
+}
+
+static void test_tuple_self_and_tag_repair_together()
+{
+    const auto ingested = build_bundle();
+    REQUIRE(ingested != nullptr, "bundle build failed");
+    wp2_tuple_pair(ingested, "ingest");
+
+    const auto ordered = build_out_of_order_contained();
+    REQUIRE(ordered != nullptr, "out-of-order fixture build failed");
+    wp2_tuple_pair(ordered, "out-of-order");
+}
+
+// F10 — AN INLINE ELEMENT HAS NO POINTER, SO IT CAN NEVER BE REPOINTED.
+//
+// An inline array element is stored AT its slot: enumerate_array_entries emits
+// it with child == parent + field, because the element's address comes from
+// array geometry and nothing stores it. There is therefore no pointer word to
+// repair, and the only meaningful repair is in place.
+//
+// apply()'s Corroborated arm does not know that. It writes an 8-byte target
+// offset at `parent + field`, which for these references IS the element's own
+// VALIDATION word -- so a repoint overwrites the element's self-offset with
+// another block's address. It happens to be harmless when the winning candidate
+// is the element itself, since the value written is then the address it should
+// hold anyway, but that is luck and not design: any other candidate silently
+// relabels the element as living somewhere it does not.
+//
+// So this asserts the STRUCTURAL claim, not the lucky byte: no verdict on an
+// inline element may ever be Corroborated, whatever value it would have written.
+static void wp2_inline_elements(const Memory &clean, const char *fixture)
+{
+    std::vector<BlockRef> inlines;
+    for (const BlockRef &r : Recovery(clean).reachable_blocks())
+        if (r.child != FF_NULL_OFFSET && r.parent + r.field == r.child &&
+            static_cast<std::size_t>(r.child) + DATA_BLOCK::HEADER_SIZE <= clean->size())
+            inlines.push_back(r);
+    CHECK(!inlines.empty(), fixture << ": the fixture carries inline array elements");
+
+    std::size_t repointed = 0, restored = 0;
+    std::string first;
+    for (const BlockRef &r : inlines) {
+        const std::size_t at = static_cast<std::size_t>(r.child);
+        const GateProbe   p  = gate_probe(clean, {{at, 0}});
+
+        // The damaged element itself, and every other verdict in the report: an
+        // inline element must not be repointed no matter which edge is damaged.
+        for (const BlockVerdict &bv : p.report.blocks)
+            if (bv.class_ == RepairClass::Corroborated &&
+                bv.block.child != FF_NULL_OFFSET &&
+                bv.block.parent + bv.block.field == bv.block.child) {
+                ++repointed;
+                if (first.empty()) {
+                    char buf[320];
+                    std::snprintf(buf, sizeof buf,
+                                  "damaged element %zu produced a Corroborated verdict on inline "
+                                  "element parent=%llu field=%llu child=%llu",
+                                  at, static_cast<unsigned long long>(bv.block.parent),
+                                  static_cast<unsigned long long>(bv.block.field),
+                                  static_cast<unsigned long long>(bv.block.child));
+                    first = buf;
+                }
+            }
+        restored += wp2_word_restored(clean, p, at);
+    }
+    std::printf("    inline elements [%s]: %zu elements, %zu restored, %zu repoint verdicts\n",
+                fixture, inlines.size(), restored, repointed);
+    CHECK_EQ(repointed, static_cast<std::size_t>(0),
+             "inline elements [" << fixture
+                                 << "]: an inline element is never repointed -- " << first);
+    CHECK_EQ(restored, inlines.size(),
+             "inline elements [" << fixture << "]: a damaged inline element is repaired in place");
+}
+
+static void test_inline_element_is_never_repointed()
+{
+    const auto ingested = build_bundle();
+    REQUIRE(ingested != nullptr, "bundle build failed");
+    wp2_inline_elements(ingested, "ingest");
+
+    const auto ordered = build_out_of_order_contained();
+    REQUIRE(ordered != nullptr, "out-of-order fixture build failed");
+    wp2_inline_elements(ordered, "out-of-order");
+}
+
+// ── REC-25 gate: the census on a real stream, single flips sampled ─────────
+//
+// The exhaustive census sweep runs on the two small fixtures, which hold no
+// date/time fallback and no URL directory, and only one code fallback. A
+// Synthea bundle holds all of them, and it is far too large to sweep bit by
+// bit, so this samples its structural bytes under the pinned gate seed.
+static void test_census_single_flip_sample_synthea()
+{
+    const auto bundles = ff_test::find_bundles(1);
+    if (bundles.empty()) {
+        // Without the corpus there is nothing new to learn, but a gate that
+        // runs no check at all reports as a failure, and rightly. So the
+        // sampler runs over the hand-built fixture instead and says so.
+        std::printf("    SKIP Synthea: no corpus configured (FASTFHIR_SYNTHEA_DIR); "
+                    "sampling the ingest fixture instead\n");
+        const auto bundle = build_bundle();
+        REQUIRE(bundle != nullptr, "bundle build failed");
+        census_single_flip_sweep(bundle, "bundle", g_census_samples, g_gate_seed);
+        return;
+    }
+    const auto stream = ingest_json(ff_test::read_file(bundles.front()), std::size_t{1} << 30,
+                                    FF_ExtensionFilterMode::FILTER_NONE);
+    REQUIRE(stream != nullptr, "ingest " << bundles.front().filename().string());
+    // copy_of() sizes the arena to the payload, as every other gate does.
+    census_single_flip_sweep(copy_of(stream), "synthea", g_census_samples, g_gate_seed);
+}
+
 int main(int argc, char **argv)
 {
     ff_test::set_filter(argc, argv);
@@ -2044,8 +2751,17 @@ int main(int argc, char **argv)
         test_resource_tuple_repoint_independent_of_layout);
     run_case("interior_entry_damage_does_not_truncate_array",
         test_interior_entry_damage_does_not_truncate_array);
+    run_case("null_array_entry_keeps_later_entries",
+        test_null_array_entry_keeps_later_entries);
     run_case("tag_consensus_resolves_either_damaged_copy",
         test_tag_consensus_resolves_either_damaged_copy);
+
+    // REC-25: the rebuilt engine, one work package at a time
+    // (recovery_algorithm_handoff.md §12).
+    run_case("census_clean_stream_is_one_attached_island",
+        test_census_clean_stream_is_one_attached_island);
+    run_case("census_single_flip_opens_exactly_its_point",
+        test_census_single_flip_opens_exactly_its_point);
 
     // WP1 gates (recovery_handoff.md §6) -- byte-level oracles over every
     // eligible structural byte, not a hand-picked edge. Several are expected
@@ -2056,6 +2772,15 @@ int main(int argc, char **argv)
     run_gate("paired_flip_oracle", test_paired_flip_oracle);
     run_gate("header_single_bit_enumeration", test_header_single_bit_enumeration);
     run_gate("repair_is_idempotent", test_repair_is_idempotent);
+
+    // WP2 gates: apply must enact the whole hypothesis, not the part its
+    // RepairClass label happens to spell.
+    run_gate("hole_repoint_applies_both_witnesses", test_hole_repoint_applies_both_witnesses);
+    run_gate("tuple_self_and_tag_repair_together", test_tuple_self_and_tag_repair_together);
+    run_gate("inline_element_is_never_repointed", test_inline_element_is_never_repointed);
+
+    // REC-25 gates.
+    run_gate("census_single_flip_sample_synthea", test_census_single_flip_sample_synthea);
 
     std::cout << "\n" << ::ff_test::g_checks << " test(s), " << ::ff_test::g_failures << " failure(s)\n";
     if (::ff_test::g_checks == 0)
