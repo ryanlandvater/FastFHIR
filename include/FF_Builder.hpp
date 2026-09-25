@@ -291,7 +291,7 @@ class UrlDirectory;   // the URL intern table (FF_UrlDirectory.hpp); pimpl membe
                 ~MutationGuard() { self->end_mutation(); }
             } guard{this};
 
-            // Conformance BEFORE claim_space, deliberately: a rejected write must
+            // Conformance BEFORE claim_space. A rejected write must
             // leave the arena exactly as it found it, which is what makes the
             // layer's byte-identity guarantee hold even when it fires. Detached
             // -- what a shipped build runs -- this is one predictable branch.

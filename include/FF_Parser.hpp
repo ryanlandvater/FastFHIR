@@ -106,6 +106,38 @@ public:
     explicit Parser (const Memory& memory);
 
     /**
+    * @brief Create a parser from a Memory::View.
+    *
+    * This is the constructor that keeps the lifetime guarantee intact across the
+    * write -> read handoff. A View already holds a strong reference to the arena
+    * it spans, so the parser retains it: the bytes stay mapped for as long as
+    * the parser lives, with no copy. `Parser(view.data(), view.size())` names the
+    * same bytes but drops the guarantee, because the raw-buffer constructor has
+    * nothing it can own.
+    *
+    * @param view A view over a committed arena, typically the one returned by
+    *        FF_BuilderFinalize or FF_Compact.
+    * @return A valid parser holding a reference to the view's arena.
+    * @throws std::runtime_error If the view is empty or the header fails
+    *         validation.
+    */
+    explicit Parser (const Memory::View& view);
+
+private:
+    /**
+     * @brief The one initialization path every constructor converges on.
+     *
+     * Validates the header and extracts the parsed fields. Each constructor only
+     * establishes m_memory / m_base / m_size and delegates the rest here, so the
+     * pipeline exists once rather than once per entry point.
+     *
+     * Preconditions: m_base / m_size / m_memory are set.
+     * @throws std::runtime_error On a null base or an invalid header.
+     */
+    void _bind();
+
+public:
+    /**
      * @brief Walk the offset graph and verify it is structurally sound.
      *
      * **Call this on any stream you did not produce.** Construction validates

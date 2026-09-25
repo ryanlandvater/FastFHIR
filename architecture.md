@@ -24,6 +24,7 @@
   - [2.2 Lock-Free Claiming — `claim_space()`](#22-lock-free-claiming--claim_space)
   - [2.3 Lifetime Safety — `Memory::View`](#23-lifetime-safety--memoryview)
   - [2.4 RAII Stream Management — `StreamHead`](#24-raii-stream-management--streamhead)
+  - [2.5 The Unified Public API — One Shape for Read and Write](#25-the-unified-public-api--one-shape-for-read-and-write)
 - [3. The Dual-Layer Type System](#3-the-dual-layer-type-system)
   - [3.1 `FF_FieldKind` — Physical Discriminant](#31-ff_fieldkind--physical-discriminant)
   - [3.2 `RECOVERY_TAG` — Semantic Identifier](#32-recovery_tag--semantic-identifier)
@@ -354,6 +355,122 @@ atomic head value already occupies those bytes and is the source of truth.
 > arena; `FF_HEADER` is the sole, intentional exception, because it must be
 > identifiable by file-magic alone before any structural assumptions can be
 > made.
+
+---
+
+### 2.5 The Unified Public API — One Shape for Read and Write
+
+The public surface is deliberately small and deliberately *symmetric*. A
+consumer learns one shape and applies it in both directions: read and write
+expose the same vocabulary, so `parser.root()["status"]` and
+`builder.append_object(obs)["status"] = "final"` are the same sentence about the
+same data.
+
+Two tiers exist, and the split is enforced by the compiler rather than by
+convention:
+
+| Tier | Types | Reached by | Spelling |
+|---|---|---|---|
+| **Public** | `Memory`, `Builder`, `Parser`, `ObjectHandle`, `MutableEntry`, `Node`, `Entry` | `#include <FastFHIR.hpp>` | the `.` form |
+| **Internal** | `Memory_t`, `Builder_t`, `Ingestor_t` (opaque) | the internal header that defines the body | the `->` form |
+
+`Memory` and `Builder` derive from `std::shared_ptr<Memory_t>` /
+`std::shared_ptr<Builder_t>`, so `->` is always reachable and is what internal
+code uses. The `.` forwarders are the *public* spelling. Two spellings of one
+operation is a real cost, paid deliberately: `.` does not advertise "I am a
+pointer to a body you may also reach", and it lets the representation change
+later without moving a call site. **The rule is `.` is the API, `->` is the
+escape hatch** — the two must agree, and the `handle_forwarders` case in
+`test_memory.cpp` pins that they do.
+
+```mermaid
+classDiagram
+    direction LR
+    class Memory_t {
+        <<arena body>>
+        +claim_space() +base() +size()
+    }
+    class Builder_t {
+        <<builder body, internal>>
+        +append(T) +amend_pointer() +claim_child_space()
+    }
+    class Memory {
+        <<public handle>>
+        +create() +size() +capacity() +view()
+    }
+    class Builder {
+        <<public write handle>>
+        +append_object(T) ObjectHandle
+        +set_root() +finalize() +query()
+    }
+    class Parser {
+        <<public read value>>
+        +root() Node +size_bytes() +print_json()
+    }
+    class ObjectHandle { +operator[](key) MutableEntry }
+    class MutableEntry { +operator=(v) +operator[](key) }
+    class Node { +operator[](key) Entry +as() }
+    class Entry { +as() +operator T }
+
+    Memory_t <|-- Memory : shared_ptr
+    Builder_t <|-- Builder : shared_ptr
+    Builder_t *-- Memory : owns the arena
+    Parser *-- Memory : retains the arena
+    Builder ..> Parser : query()
+    Builder ..> ObjectHandle : returns
+    ObjectHandle --> MutableEntry : write entry
+    Node --> Entry : read entry
+    ObjectHandle ..> Node : as_node()
+```
+
+#### The mirrored API
+
+| Intent | Read | Write |
+|---|---|---|
+| root | `parser.root()` → `Node` | `builder.append_object(x)` → `ObjectHandle` |
+| index | `node[key]` → `Entry` | `handle[key]` → `MutableEntry` |
+| value | `entry.as<T>()` / `operator T` | `entry = value` |
+| present? | `bool(entry)` | `bool(entry)` |
+| descend | `node[i]` → `Node` | `handle[i]` → `MutableEntry` |
+
+`ObjectHandle` : `Node` :: write : read. `MutableEntry` : `Entry` :: write :
+read. Nothing on one side lacks a counterpart on the other, and that is exactly
+what makes the API guessable: a developer who can write a field can read it, and
+a developer who has read one has read them all.
+
+#### Three rules that keep it symmetric
+
+1. **The `Reflective` family belongs in one public header.** `ObjectHandle` and
+   `MutableEntry` are the write half of a pair whose read half (`Node`, `Entry`)
+   lives in `FF_Parser.hpp`. Splitting the pairs across two headers is what let
+   `Builder_t` leak into every consumer translation unit: `FF_DataTypes.hpp`
+   included `FF_Builder.hpp` while using `Builder_t`, `ObjectHandle` and
+   `MutableEntry` **zero** times.
+
+2. **A template may not name an incomplete body.** `append_object<T>` needs
+   `TypeTraits<T>` and `append`, so a body that is only forward-declared cannot
+   host it. The write side therefore erases the SIZE/STORE contract behind a
+   `TypeDescriptor` of two thunks (`size`, `store`) emitted per type by the
+   generator, with the erased entry point defined in a `.cpp`. This is the shape
+   the read side **already** uses for `ParserOps` — an opaque pointer declared in
+   the header, defined in the translation unit (§8.4) — applied to the write
+   path. Reuse of an established convention, not a second one.
+
+3. **Ownership is on the read side too.** `Memory::View` exists to keep an arena
+   mapped (§2.3), and `Parser(const Memory::View&)` takes over the view's strong
+   reference, so the canonical `finalize → View → Parser` flow keeps the bytes
+   alive with no copy. `Parser(buffer, size)` cannot own anything and is
+   documented as caller-owned — the escape hatch for sockets and third-party
+   buffers. All three constructors converge on one private `Parser::_bind()`, so
+   there is a single validation path rather than one per entry point.
+
+#### Status
+
+`Parser(const Memory::View&)`, the `Memory` handle forwarders and the shared
+`Parser::_bind()` are landed. Moving the `Reflective` family into a single public
+header, the `TypeDescriptor` erasure, and making `Builder_t` opaque are the
+remaining work; until they land, `Builder_t` is still reachable from the public
+header and `FF_DataTypes.hpp` still pulls `FF_Builder.hpp` in.
 
 ---
 

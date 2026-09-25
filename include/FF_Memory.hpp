@@ -27,6 +27,8 @@ namespace FastFHIR
 
     class Memory_t;   // the arena body
     class Memory;     // the handle; defined first so its nested types are complete
+    class Parser;     // the read value type; built from Memory::View and takes
+                      // over the strong reference the View already holds
 
     /**
      * @class Memory
@@ -49,9 +51,29 @@ namespace FastFHIR
     {
         using Base = std::shared_ptr<Memory_t>;
     public:
+        // The handle's nested types, declared before the forwarders below name
+        // them. Both are defined further down this class.
+        class View;
+        class StreamHead;
+
         using Base::Base;              // every shared_ptr constructor
+        // reset() is a BASE member, so declaring one below would hide the whole
+        // set; this keeps mem.reset() (clear the handle) working beside the
+        // arena reset forwarder.
+        using Base::reset;
         Memory() noexcept = default;
         Memory(std::nullptr_t) noexcept {}
+
+        /**
+         * @brief Convert an arena body pointer into its handle.
+         *
+         * The inherited constructors CANNOT supply this: a constructor inherited
+         * from shared_ptr<Memory_t> may not be used to copy or move the same
+         * type, so `Memory m = make_shared<Memory_t>(...)` does not compile
+         * without it. The builder's construction path and the View -> Parser
+         * handoff both route through here. Non-explicit on purpose.
+         */
+        Memory(std::shared_ptr<Memory_t> arena) noexcept : Base(std::move(arena)) {}
 
         // --- Lifecycle (the factories live on the handle, because they return one) ---
 
@@ -94,6 +116,17 @@ namespace FastFHIR
          * @throws std::runtime_error if it is too short to hold a header.
          */
         static Memory openReadOnly(const std::filesystem::path &filepath);
+
+        // --- Handle forwarders -------------------------------------------------
+        // The public spelling is `mem.size()`; `mem->size()` still works and is
+        // the escape hatch internal code uses. See the definitions at the bottom
+        // of this header. Declared here and defined there because Memory_t is
+        // not complete at this point.
+        Size size() const;
+        Size capacity() const;
+        BYTE *base() const;
+        View view();
+        void reset(Size committed_size);
 
         /**
          * @class Memory::View
@@ -142,6 +175,10 @@ namespace FastFHIR
 
         private:
             friend class Memory_t;
+            // Parser takes the strong reference out of the view, so a parser
+            // built from one keeps its arena alive. Friendship rather than a
+            // public accessor, so Memory_t never surfaces publicly.
+            friend class Parser;
             // Holds the shared_ptr, not the handle, so View does not depend on
             // the handle's own definition; a Memory converts to it freely.
             std::shared_ptr<Memory_t> m_vma_ref = nullptr;
@@ -417,6 +454,26 @@ namespace FastFHIR
     {
         return size() == 0;
     }
+
+    // ============================================================================
+    // Memory handle forwarders
+    // ============================================================================
+    //
+    // Memory IS a std::shared_ptr<Memory_t>, so `mem->size()` has always worked
+    // and still does. These exist so the PUBLIC spelling is `.`, which does not
+    // advertise "I am a pointer to a body you may also reach". The representation
+    // can change later without moving a call site.
+    //
+    // Only what the FF_ surface already wraps is forwarded. claim_space() is
+    // deliberately absent: the guarded way to claim space on a live stream is
+    // Builder_t::claim_child_space(), and promoting the unguarded claim to
+    // first-class public API would make the sharp edge the easy one. Reach it
+    // through `->` when that is genuinely what you mean.
+    inline Size Memory::size() const { return get()->size(); }
+    inline Size Memory::capacity() const { return get()->capacity(); }
+    inline BYTE *Memory::base() const { return get()->base(); }
+    inline Memory::View Memory::view() { return get()->view(); }
+    inline void Memory::reset(Size committed_size) { get()->reset(committed_size); }
 
     inline Memory::StreamHead::StreamHead(Memory_t *memory)
         : m_memory(memory),

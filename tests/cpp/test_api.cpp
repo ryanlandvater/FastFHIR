@@ -100,6 +100,53 @@ int main() {
         CHECK(threw, "Parser(buffer, size) rejects a null buffer");
     }
 
+    // ── 5b. Parser(Memory::View) — the write -> read handoff keeps the arena ─
+    {
+        Parser round_tripped;
+        {
+            // The arena's only references are the builder's and the view's, and
+            // both die at the end of this scope. If the parser below did not take
+            // over the view's strong reference, the read afterwards would touch an
+            // unmapped arena.
+            FF_BuilderCreateInfo info;
+            info.capacity = 1ull << 20;  // small, so a dropped reference faults fast
+            FF_Builder scoped;
+            CHECK(FF_CreateBuilder(info, scoped), "create stream for the view handoff");
+
+            PatientData p;
+            p.id = "view-handoff";
+            auto root = FF_BuilderAppendObject(scoped, p);
+            CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+                .builder = scoped,
+                .root = root,
+            }), "set handoff root");
+
+            Memory::View view;
+            CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+                .builder = scoped,
+            }, view), "finalize the handoff stream");
+            CHECK(!view.empty(), "handoff view is non-empty");
+
+            round_tripped = Parser(view);
+        }
+
+        // The parse IS the assertion: these reads come from an arena that every
+        // other owner has already released.
+        CHECK(static_cast<bool>(round_tripped), "Parser(Memory::View) accepted the view");
+        CHECK(round_tripped.size_bytes() != 0, "parser over a view has a real extent");
+        const Reflective::Node node = round_tripped.root();
+        CHECK(node.is<RESOURCETYPE::PATIENT>(), "root over the view is a Patient");
+        CHECK(node[Fields::PATIENT::ID] == std::string_view("view-handoff"),
+              "field reads back through Parser(Memory::View)");
+
+        // A default View holds no arena, so it is refused exactly as a null
+        // buffer is -- one rejection path, not two.
+        bool threw = false;
+        try { Parser rejected(Memory::View{}); }
+        catch (const std::exception &) { threw = true; }
+        CHECK(threw, "Parser(Memory::View) rejects a null view");
+    }
+
     // ── 6. FF_Compact — invalid source parser ───────────────────────────────
     {
         Memory::View view = sealed_view;  // populated

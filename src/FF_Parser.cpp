@@ -368,17 +368,22 @@ static Offset checked_root_offset(Offset root, size_t size) {
     return root;
 }
 
-Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast<const BYTE*>(buffer)), m_size(size) {
-    // A null buffer has no bytes to validate, so it is rejected before the size
+// The one initialization path. Every constructor establishes m_memory / m_base
+// / m_size and converges here, so the header validation and the field extraction
+// below exist once. The raw-buffer and arena constructors were already two
+// verbatim copies of this; a View constructor would have made it three.
+void Parser::_bind()
+{
+    // A null base has no bytes to validate, so it is rejected before the size
     // check: validate_full dereferences m_base, and a length check alone cannot
     // catch a null pointer carrying a plausible length.
-    if (buffer == nullptr) {
-        throw std::runtime_error("FastFHIR Parsing Error: null buffer.");
+    if (m_base == nullptr) {
+        throw std::runtime_error("FastFHIR Parsing Error: null buffer or arena.");
     }
-    if (size < FF_HEADER::HEADER_SIZE) {
+    if (m_size < FF_HEADER::HEADER_SIZE) {
         throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
     }
-    FF_HEADER header(size);
+    FF_HEADER header(m_size);
     auto validation_result = header.validate_full(m_base);
     if (validation_result != FF_SUCCESS) {
         throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with error " + validation_result.message);
@@ -391,6 +396,13 @@ Parser::Parser(const void* buffer, size_t size) : m_memory(), m_base(static_cast
     m_root_recovery      = header.get_root_type(m_base);
     m_url_dir_offset     = header.get_url_dir_offset(m_base);    // FF_NULL_OFFSET if no extension URLs
     m_module_reg_offset  = header.get_module_reg_offset(m_base); // FF_NULL_OFFSET until Phase 7
+}
+
+// No arena: the caller owns the bytes, so m_memory stays a null handle and this
+// parser carries no lifetime guarantee. Stated at the declaration.
+Parser::Parser(const void* buffer, size_t size)
+    : m_memory(), m_base(static_cast<const BYTE*>(buffer)), m_size(size) {
+    _bind();
 }
 
 // CLAMP THE CLAIMED STREAM SIZE TO WHAT IS ACTUALLY MAPPED.
@@ -421,22 +433,22 @@ Parser::Parser(const Memory& memory)
     if (!memory) {
         throw std::runtime_error("FastFHIR Parsing Error: null arena.");
     }
-    if (m_size < FF_HEADER::HEADER_SIZE) {
-        throw std::runtime_error("FastFHIR Parsing Error: Buffer too small to contain a valid header.");
-    }
-    FF_HEADER header(m_size);
-    auto validation_result = header.validate_full(m_base);
-    if (validation_result != FF_SUCCESS) {
-        throw std::runtime_error("FastFHIR Parsing Error: Header validation failed with code " + validation_result.message);
-    }
-    m_version            = header.get_fhir_rev(m_base);
-    m_engine_version     = header.get_engine_version(m_base);
-    m_stream_layout      = header.get_stream_layout(m_base);
-    m_ops                = Reflective::select_ops(m_stream_layout);
-    m_root_offset        = checked_root_offset(header.get_root(m_base), m_size);
-    m_root_recovery      = header.get_root_type(m_base);
-    m_url_dir_offset     = header.get_url_dir_offset(m_base);
-    m_module_reg_offset  = header.get_module_reg_offset(m_base);
+    _bind();
+}
+
+// The write -> read handoff, guarantee intact. A View already holds a strong
+// reference to the arena it spans, so taking it here is what keeps the bytes
+// mapped for this parser's lifetime -- no copy, no syscall. The extent is the
+// view's committed size, which is the value ff_mapped_extent derives anyway
+// (View::size() reads the identical write head).
+//
+// A default-constructed View yields a null reference, a null base and size 0, so
+// _bind rejects it exactly as it rejects a null buffer: one path, not two.
+Parser::Parser(const Memory::View& view)
+    : m_memory(view.m_vma_ref),
+      m_base(reinterpret_cast<const BYTE*>(view.data())),
+      m_size(view.size()) {
+    _bind();
 }
 
 uint32_t Parser::version()   const { return m_version; }

@@ -249,6 +249,38 @@ static void test_default_handle()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Test: handle forwarders (`.` spelling) agree with the raw `->` spelling
+// ─────────────────────────────────────────────────────────────────────────────
+static void test_handle_forwarders()
+{
+    auto mem = Memory::create(1024 * 1024);
+    mem->claim_space(256);
+
+    // `.` is the public spelling and `->` is the escape hatch, but they are ONE
+    // operation -- so the two must agree. That agreement is the entire guarantee
+    // the forwarders make, and it is what lets the representation change later
+    // without moving a call site.
+    CHECK_EQ(mem.size(), mem->size(), ".size() matches ->size()");
+    CHECK_EQ(mem.capacity(), mem->capacity(), ".capacity() matches ->capacity()");
+    CHECK_EQ(mem.base(), mem->base(), ".base() matches ->base()");
+    CHECK_EQ(mem.size(), 256ULL, "claimed bytes are visible through the handle");
+
+    // view() hands back the same extent the arena reports, starting at base.
+    Memory::View v = mem.view();
+    CHECK_EQ(v.size(), mem.size(), ".view() spans the claimed extent");
+    CHECK(v.data() == reinterpret_cast<const char *>(mem.base()),
+          ".view() starts at the arena base");
+
+    // reset(Size) is the forwarder; reset() with no argument is the INHERITED
+    // shared_ptr clear. Declaring one reset would have hidden the other, so this
+    // pins that the using-declaration kept both reachable.
+    mem.reset(Size{128});
+    CHECK_EQ(mem.size(), 128ULL, ".reset(Size) rebinds the committed extent");
+    mem.reset();
+    CHECK(static_cast<bool>(mem) == false, "inherited reset() still clears the handle");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // main — filter dispatch
 // ─────────────────────────────────────────────────────────────────────────────
 int main(int argc, char **argv)
@@ -261,6 +293,7 @@ int main(int argc, char **argv)
         void (*fn)();
     } tests[] = {
         {"default_handle", test_default_handle},
+        {"handle_forwarders", test_handle_forwarders},
         {"create_anonymous", test_create_anonymous},
         {"create_from_file", test_create_from_file},
         {"claim_space", test_claim_space},
