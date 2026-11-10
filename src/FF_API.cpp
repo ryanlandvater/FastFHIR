@@ -15,6 +15,7 @@
  */
 
 #include "FastFHIR.hpp"
+#include "FF_Builder.hpp"
 #include "FF_Compactor.hpp"
 #include <exception>
 

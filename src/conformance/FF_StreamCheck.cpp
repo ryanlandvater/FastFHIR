@@ -8,7 +8,7 @@
 #include "FF_ConformanceEngine.hpp"  // report(): the shared sink-and-count step
 #include "FF_FieldKeys.hpp"
 #include "FF_Logger.hpp"
-#include "FF_Parser.hpp"
+#include "FF_Access.hpp"
 #include "FF_Primitives.hpp"
 #include "FF_Reflection.hpp"
 #include "FF_Utilities.hpp"
@@ -209,10 +209,7 @@ void walk(const Node& node, Scan& scan) noexcept
 
     for (const FF_FieldInfo& field : node.fields())
     {
-        const FF_FieldKey key = FF_FieldKey::from_cstr(
-            node.recovery(), field.kind, field.field_offset,
-            field.child_recovery, field.array_entries_are_offsets, field.name);
-        const Entry slot = node[key];
+        const Entry slot = node[field];
         if (!slot) continue;
         if (ff_kind_is_inline_scalar(field.kind)) continue;
 

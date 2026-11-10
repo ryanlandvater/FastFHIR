@@ -96,10 +96,7 @@ static void walk_document(const Reflective::Node& node, WalkStats& stats, int de
 
     if (!node.is_object()) return;
     for (const auto& f : node.fields()) {
-        const FF_FieldKey key = FF_FieldKey::from_cstr(
-            node.recovery(), f.kind, f.field_offset,
-            f.child_recovery, f.array_entries_are_offsets, f.name);
-        const Reflective::Entry entry = node[key];
+        const Reflective::Entry entry = node[f];
         if (!entry) continue;
         // Inline scalars have no child node to descend into; they are counted
         // by their parent's presence and rendered from the Entry.

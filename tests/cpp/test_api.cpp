@@ -147,6 +147,60 @@ int main() {
         CHECK(threw, "Parser(Memory::View) rejects a null view");
     }
 
+    // ── 5c. View liveness — a read after the owner dies is caught ────────────
+    // Node/Entry are non-owning views. Holding one past the death of the
+    // Parser/Builder that backed it is undefined behaviour; the debug-only
+    // liveness witness turns it into a throw with a legible message. Compiled
+    // out under NDEBUG, so this section does not exist in a release build --
+    // which is exactly what it is pinning.
+#ifndef NDEBUG
+    {
+        // Deliberately leak a Node derived by DESCENT (not the root) out of the
+        // scope that owns its arena, then read through it. Descent matters:
+        // it proves the child inherited the owner token, so a walked tree is
+        // checked as deep as it goes.
+        Reflective::Node escaped;
+        {
+            FF_BuilderCreateInfo info;
+            info.capacity = 1ull << 20;
+            FF_Builder scoped;
+            CHECK(FF_CreateBuilder(info, scoped), "liveness: create scoped stream");
+
+            PatientData p;
+            p.id = "liveness";
+            HumanNameData nm;
+            nm.family = "Escaped";
+            p.name.push_back(nm);
+            auto root = FF_BuilderAppendObject(scoped, p);
+            CHECK(FF_BuilderSetRoot(FF_BuilderSetRootInfo{
+                .builder = scoped, .root = root,
+            }), "liveness: set scoped root");
+
+            Memory::View view;
+            CHECK(FF_BuilderFinalize(FF_BuilderFinalizeInfo{
+                .builder = scoped,
+            }, view), "liveness: finalize scoped stream");
+
+            Parser scoped_parser(view);
+            escaped = scoped_parser.root()[Fields::PATIENT::NAME][size_t{0}];
+        }   // arena released here; `escaped` now names nothing
+
+        bool threw = false;
+        try { (void)escaped[Fields::HUMANNAME::FAMILY].as<std::string_view>(); }
+        catch (const std::exception &) { threw = true; }
+        CHECK(threw, "read through a view whose owner died throws (inherited token)");
+
+        // A view whose owner is alive must NOT be reported as stale: the
+        // sentinel/token must be silent on the happy path, or every read in the
+        // suite would be throwing.
+        Parser owned(sealed_view);
+        Reflective::Node live = owned.root();
+        CHECK(static_cast<bool>(live), "liveness: live root is truthy");
+        CHECK(live[Fields::PATIENT::ID] == std::string_view("p1"),
+              "liveness: live read through an owned view still works");
+    }
+#endif
+
     // ── 6. FF_Compact — invalid source parser ───────────────────────────────
     {
         Memory::View view = sealed_view;  // populated
@@ -156,7 +210,6 @@ int main() {
         CHECK(view.data() == nullptr && view.size() == 0,
               "FF_Compact cleared out_view on invalid args");
     }
-
     // ── 7. FF_Ingest — null ingestor / null destination builder─────────────
     {
         // Pre-populate out_root via a real ingest.

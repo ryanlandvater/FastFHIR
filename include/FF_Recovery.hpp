@@ -34,7 +34,7 @@
 #include <map>
 #include <vector>
 
-#include "FF_Memory.hpp"
+#include "FF_Access.hpp"  // the Memory handle; Recovery needs no arena internals
 #include "FF_Primitives.hpp"
 #include "FF_Reflection.hpp"
 #include "FF_Utilities.hpp"

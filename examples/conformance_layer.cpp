@@ -29,6 +29,8 @@
  * License, v. 2.0 — see LICENSE or http://mozilla.org/MPL/2.0/.
  */
 #include <FastFHIR.hpp>
+// internal: drives Builder_t directly; a public consumer needs only <FastFHIR.hpp>
+#include <FF_Builder.hpp>
 
 #include "FF_AllTypes.hpp"
 #include "FF_Conformance_Layer.hpp"

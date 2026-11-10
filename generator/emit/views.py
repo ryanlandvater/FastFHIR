@@ -247,7 +247,7 @@ def generate_reflection_dispatch(block_struct_names, resources, top_level_types=
         "// Copyright (c) Ryan Landvater. All rights reserved.\n"
         "// ============================================================\n"
         '#include "FF_Utilities.hpp"\n'
-        '#include "FF_Parser.hpp"\n'
+        '#include "FF_Access.hpp"\n'
         '#include "FF_AllTypes.hpp"\n'
         '#include "FF_Reflection.hpp"\n\n'
     )

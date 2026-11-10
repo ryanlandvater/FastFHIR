@@ -722,7 +722,7 @@ mapped file, so a field read is a vtable-slot lookup plus a bounds check, and th
 and nothing is freed.
 
 **Do** — lens reads: navigate to exactly the fields you need and coerce them to
-`std::string_view` / scalars. Nodes are views over the arena, not copies.
+`std::string_view` / scalars. Nodes are non-owning viewers over the arena, not copies.
 Index-walk arrays (`node[i]`) instead of `entries()` when you don't need the
 materialized list — the index walk allocates nothing.
 
@@ -742,6 +742,56 @@ Two slot kinds need care:
   and use `print_json` only when the text is required (CAPI-4).
 - **Choice slots** (`value[x]`, `effective[x]`) carry their variant type in the
   slot's recovery tag — read `entry.target_recovery` without expanding the node.
+
+### View lifetime — keep an owner alive
+
+`Node` and `Entry` are **non-owning viewers** (think `std::string_view`): each
+holds a coordinate into the mapped arena, which is what makes a field read cost
+a slot lookup instead of a reference count. A viewer is therefore valid only
+while some handle owning that arena is still alive.
+
+Every owning handle is `shared_ptr`-backed, so the rule is just *keep one in
+scope*:
+
+| owning handle | where it comes from |
+|---|---|
+| `Memory` | `Memory::create` / `createFromFile` / `openReadOnly` |
+| `Memory::View` | `FF_BuilderFinalize`, `FF_Compact` |
+| `Parser` | built from a `Memory` or a `Memory::View` |
+| `FF_Builder` | `FF_CreateBuilder` |
+
+A helper that returns a viewer it no longer owns is the one shape to avoid:
+
+```cpp
+// WRONG — the Parser holds the only reference to the arena. It is released when
+// the lambda returns, and the Node handed back points at unmapped memory.
+auto find_patient = [](const char* path) -> FastFHIR::Reflective::Node {
+    FastFHIR::Parser p(FastFHIR::Memory::openReadOnly(path));
+    return p.root();
+};
+
+// RIGHT — hand the caller the owner and keep the arena mapped for as long as it
+// holds the viewer. Pass the Parser around, not the Node.
+auto open_patient = [](const char* path) -> FastFHIR::Parser {
+    return FastFHIR::Parser(FastFHIR::Memory::openReadOnly(path));
+};
+```
+
+Note that a `Parser` itself does not need to outlive the viewer — the *arena*
+does. Reading through a temporary `Parser` while a `Builder` or `Memory::View`
+still holds the same arena is fine; the bytes are still there.
+
+**In debug builds this is checked.** Each arena carries a liveness token and
+every viewer over it holds a weak reference, so a read through a viewer whose
+arena has been released throws with a message naming the cause instead of
+segfaulting. The check is compiled out under `NDEBUG` — **a release build does
+not catch it**, and the read is undefined behaviour there. Treat it as a
+development aid, not a guarantee the shipping binary makes.
+
+> Because the check is `NDEBUG`-gated and the token lives in the arena, a debug
+> library and a release consumer (or the reverse) disagree on the layout of
+> `Node`/`Entry`/`Memory_t`. Build both the same way, as with any debug-only
+> instrumentation.
 
 ---
 
@@ -772,7 +822,9 @@ FF_Ingestor ingestor;
 FastFHIR::FF_CreateIngestor(ingestor_info, ingestor);
 
 // Obtain a mutable handle to the existing root
-auto patient = builder->root_handle();
+// `root()` is the public spelling; the underlying Builder_t::root_handle() is
+// internal, and the write handle does not expose it.
+auto patient = builder.root();
 
 // Append or overwrite scalar fields (new bytes appended; field pointer amended)
 patient[FastFHIR::Fields::PATIENT::BIRTH_DATE] = std::string_view("1990-03-21");
@@ -814,9 +866,15 @@ reads straight from the same arena pages — zero copies on egress.
 `tests/cpp/test_readme.cpp` validates this path end-to-end with an in-process
 loopback TCP transport.
 
+> This example reaches below the public handle for the raw-socket path:
+> `try_acquire_stream()` and the `StreamHead` it hands back live in
+> `FF_Memory.hpp`, so the example includes that header. Code that only creates
+> arenas and builds streams needs `<FastFHIR.hpp>` alone.
+
 <!-- ff-compile: fragment -->
 ```cpp
 #include <FastFHIR.hpp>
+#include <FF_Memory.hpp>   // deep: try_acquire_stream() / the raw-socket lock
 #include <FF_FieldKeys.hpp>
 #include <asio.hpp>
 
@@ -958,7 +1016,7 @@ FastFHIR::FF_BundleAppendEntries(FastFHIR::FF_BundleAppendInfo{
 }, appended);
 
 // Amend the ROOT record — the handle the stream already owns
-auto root_handle = builder->root_handle();
+auto root_handle = builder.root();
 root_handle[FastFHIR::Fields::BUNDLE::TIMESTAMP] = std::string_view("2026-09-09T00:00:00Z");
 
 // Reseal — restamps the header and writes a new checksum
@@ -1849,16 +1907,19 @@ Entry 1: prior = 0     seg = "race"      → full URL: "http://…/StructureDefi
 Entry 2: prior = 0     seg = "ethnicity" → full URL: "http://…/StructureDefinition/ethnicity"
 ```
 
-Reconstruct any URL at read time:
+Reconstruct any URL at read time. The URL directory is part of the deeper read
+surface, so this example includes `FF_Parser.hpp` and reaches it with `->`:
 
 <!-- ff-compile: fragment needs=arena -->
 ```cpp
+#include <FF_Parser.hpp>   // deep: url_directory() lives on Parser_t
+
 Parser parser(mem);
-if (parser.has_url_directory()) {
-    FF_URL_DIRECTORY dir = parser.url_directory();
-    uint32_t n = dir.entry_count(parser.data());
+if (parser->has_url_directory()) {
+    FF_URL_DIRECTORY dir = parser->url_directory();
+    uint32_t n = dir.entry_count(parser->data());
     for (uint32_t i = 0; i < n; ++i)
-        std::cout << dir.get_url(parser.data(), i) << "\n";
+        std::cout << dir.get_url(parser->data(), i) << "\n";
 }
 ```
 

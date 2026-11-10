@@ -39,7 +39,7 @@ model/               Pure data. No string emission.
   structure.py         StructureDefinition -> field layout
   merge.py             Reconciles R4 vs R5 into one block
   type_map.py          FHIR type -> C++ type, PRODUCTION_TYPES
-  types.py             Typed Field/Block adapter over the layout dicts.
+  types.py             The typed shapes (FieldLayout, BlockLayout, ...) every emitter reads.
                        Not yet wired into the emitters -- it is the migration
                        target for that work, and is covered by
                        tests/generator/test_model.py.

@@ -4,22 +4,42 @@
  * @copyright Copyright (c) 2026 Ryan Landvater. All rights reserved.
  * @remark This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0 (MPL-2.0) — see LICENSE or http://mozilla.org/MPL/2.0/.
  * @version 0.1
- * 
- * @brief FastFHIR File Parser — Internal Declarations
- * 
- * Prefer including FastFHIR.hpp instead of this header directly.
- * 
- * Parser and Node are lightweight value types with no shared ownership overhead.
- * 
+ *
+ * @brief FastFHIR read BODY — the internal tier behind `FastFHIR::Parser`.
+ *
+ * TIERS. FastFHIR's read surface is two types, deliberately:
+ *
+ *   - PUBLIC  — `FastFHIR::Parser` in "FF_Access.hpp" (pulled in by
+ *               <FastFHIR.hpp>). A `std::shared_ptr<Parser_t>` handle; its `.`
+ *               methods are the everyday read API. This is what a consumer
+ *               includes and all most callers ever need.
+ *   - BODY    — `FastFHIR::Parser_t` (here). The heap-owned reader that holds
+ *               the arena and the parsed header fields, plus the deeper API:
+ *               `validate_FFHR_stream_deep()`, `checksum()`, `url_directory()`,
+ *               the module-registry accessors, and the raw members. Reach it
+ *               with `parser->…` by including THIS header alongside FastFHIR.
+ *
+ * So the ordinary path is `#include <FastFHIR.hpp>`; the advanced one adds
+ * `#include "FF_Parser.hpp"`. The split mirrors the write side (`Builder` /
+ * `Builder_t`, completed by "FF_Builder.hpp") and the arena (`Memory` /
+ * `Memory_t`).
+ *
+ * `Parser_t` derives from `std::enable_shared_from_this<Parser_t>`: it is only
+ * ever owned through a `shared_ptr`, created by the `make_shared<Parser_t>`
+ * calls in `Parser`'s constructors, so `shared_from_this()` is always valid
+ * inside it (an internal helper that needs to keep the reader alive can take a
+ * `Parser` from itself).
  */
 
 #pragma once
 
-#include <concepts>
+#include <cstddef>
+#include <cstdint>
 #include <iosfwd>
-#include <span>
-#include <type_traits>
+#include <memory>
+#include <string_view>
 
+#include "FF_Access.hpp"       // the Parser handle, Reflective fwd decls, Memory, value/type vocabulary
 #include "FF_Dictionary.hpp"
 #include "FF_Memory.hpp"
 #include "FF_Primitives.hpp"
@@ -27,47 +47,24 @@
 #include "FF_Utilities.hpp"
 
 namespace FastFHIR {
-class Builder_t;
-struct ArchiveContext;
-template<typename T> struct TypeTraits;
-
-/// Concept: true for any T that has a FastFHIR::TypeTraits<T> specialization with a read() method.
-template <typename T>
-concept HasTypeTraits = requires(const BYTE* base, Offset off, Size sz, uint32_t ver) {
-    { FastFHIR::TypeTraits<T>::read(base, off, sz, ver) } -> std::convertible_to<T>;
-};
-
-namespace Reflective {
-struct ParserOps;
-class Node;
-struct Entry;
-}
 
 /**
- * @class Parser
- * @brief Entry point for reading a FastFHIR byte stream.
+ * @class Parser_t
+ * @brief The read body behind @ref Parser. Internal tier.
  *
- * At creation time `Parser` validates **the header and the root offset only**:
- * magic bytes, FHIR revision, the stream-layout flag, the structural integrity
- * of the checksum block when one is present, and that `ROOT_OFFSET` is either
- * null or addressable within the buffer.
- *
- * It does **not** walk the offset graph, and it does **not** verify the
- * checksum digest — `checksum()` exposes the stored digest for a caller that
- * wants to check it. Every other offset in the stream is therefore still
- * untrusted after construction. Do not treat a successfully constructed
- * `Parser` as proof that the bytes are well-formed; on untrusted input the
- * graph must be validated explicitly (TASKS.md XP-2.3).
- *
- * This comment previously claimed the constructor "validates file structure",
- * which overstated it by everything in the paragraph above and cost a reviewer
- * a wrong assumption.
+ * Not constructed directly by consumers: `Parser`'s constructors build one with
+ * `make_shared<Parser_t>(...)` and hand back a handle. Reaching a member here
+ * (via `parser->…`) is the advanced interface — it is why one includes this
+ * header. The `.`-forwarding surface lives on @ref Parser.
  */
-class Parser {
+class Parser_t : public std::enable_shared_from_this<Parser_t>
+{
     friend class Builder_t;
-    // Non-const so Parser stays copy-assignable (FF_* out-parameter pattern).
-    // The handle is never rebound after construction; the const-ness was
-    // stylistic and blocked Parser& out params.
+    friend class Parser;   // the handle's forwarders reach these members/methods
+
+    // Non-const so the handle stays copy-assignable (FF_* out-parameter
+    // pattern). The reader is never rebound after construction; the const-ness
+    // was stylistic and blocked Parser& out params.
     Memory m_memory;
     const BYTE*     m_base = nullptr;
     Size            m_size = 0;
@@ -81,84 +78,86 @@ class Parser {
     Offset          m_module_reg_offset = FF_NULL_OFFSET; // FF_NULL_OFFSET if absent
 
 public:
-    /** @brief Null/invalid parser; required for FF_* out-parameter patterns. */
-    Parser() = default;
+    /** @brief Null/invalid reader body. */
+    Parser_t() = default;
+
+    /**
+    * @brief Bind to a raw in-memory byte buffer.
+    * @throws std::runtime_error If the header is truncated or fails validation.
+     */
+    explicit Parser_t(const void* buffer, size_t size);
+
+    /**
+    * @brief Bind to an arena's memory mapping.
+    * @throws std::runtime_error If the header is truncated or fails validation.
+     */
+    explicit Parser_t(const Memory& memory);
+
+    /**
+    * @brief Bind to a Memory::View, keeping its arena alive (no copy).
+    *
+    * A View already holds a strong reference to the arena it spans, so the
+    * reader retains it: the bytes stay mapped for as long as the reader lives.
+    * `Parser(view.data(), view.size())` names the same bytes but drops the
+    * guarantee, because the raw-buffer constructor has nothing it can own.
+    *
+    * @throws std::runtime_error If the view is empty or the header fails.
+    */
+    explicit Parser_t(const Memory::View& view);
 
     /** @brief Total bytes of the parsed buffer. */
     Size size() const noexcept { return m_size; }
 
-    /**
-    * @brief Create a parser from a raw in-memory byte buffer.
-    * @param buffer Pointer to the beginning of a FastFHIR file in memory.
-    * @param size Total number of bytes available at @p buffer.
-    * @return A valid parser bound to the supplied buffer.
-    * @throws std::runtime_error If the header is truncated or fails validation.
-     */
-    explicit Parser (const void* buffer, size_t size);
+    /** @brief Total stream size in bytes. */
+    Size size_bytes() const noexcept { return m_size; }
 
-    /**
-    * @brief Create a parser directly from an FF_Memory's memory mapping.
-     * 
-    * @param memory Shared pointer to an initialized FF_Memory providing the memory mapping for the parser.
-     * @return A valid parser bound to the supplied allocator.
-     * @throws std::runtime_error If the header is truncated or fails validation.
-     */
-    explicit Parser (const Memory& memory);
+    /** @brief Check whether this reader references a parsed buffer. */
+    explicit operator bool() const { return m_base != nullptr; }
 
-    /**
-    * @brief Create a parser from a Memory::View.
-    *
-    * This is the constructor that keeps the lifetime guarantee intact across the
-    * write -> read handoff. A View already holds a strong reference to the arena
-    * it spans, so the parser retains it: the bytes stay mapped for as long as
-    * the parser lives, with no copy. `Parser(view.data(), view.size())` names the
-    * same bytes but drops the guarantee, because the raw-buffer constructor has
-    * nothing it can own.
-    *
-    * @param view A view over a committed arena, typically the one returned by
-    *        FF_BuilderFinalize or FF_Compact.
-    * @return A valid parser holding a reference to the view's arena.
-    * @throws std::runtime_error If the view is empty or the header fails
-    *         validation.
-    */
-    explicit Parser (const Memory::View& view);
+    /** @brief The encoded FastFHIR/FHIR version from the file header. */
+    uint32_t version() const;
 
-private:
-    /**
-     * @brief The one initialization path every constructor converges on.
-     *
-     * Validates the header and extracts the parsed fields. Each constructor only
-     * establishes m_memory / m_base / m_size and delegates the rest here, so the
-     * pipeline exists once rather than once per entry point.
-     *
-     * Preconditions: m_base / m_size / m_memory are set.
-     * @throws std::runtime_error On a null base or an invalid header.
-     */
-    void _bind();
+    /** @brief Pointer to the underlying stream bytes. */
+    const BYTE* data() const noexcept { return m_base; }
 
-public:
+    /** @brief The stream layout mode detected from header metadata. */
+    FF_StreamCompaction stream_layout() const noexcept { return m_stream_layout; }
+
+    /** @brief True if the stream has a URL directory. */
+    bool has_url_directory() const noexcept { return m_url_dir_offset != FF_NULL_OFFSET; }
+
+    /** @brief True if the stream has a WASM module registry binding. */
+    bool has_module_registry() const noexcept { return m_module_reg_offset != FF_NULL_OFFSET; }
+
+    /** @brief Raw offset to the FF_MODULE_REGISTRY block (FF_NULL_OFFSET if none). */
+    Offset module_registry_offset() const noexcept { return m_module_reg_offset; }
+
+    /** @brief A zero-copy view of the stream-level FF_URL_DIRECTORY.
+     *  @throws std::runtime_error if the stream has no URL directory. */
+    FF_URL_DIRECTORY url_directory() const;
+
+    /** @brief The root resource recovery/type tag from the header. */
+    uint16_t root_type() const;
+
+    /** @brief The root resource as a typed enum, without exposing recovery tags. */
+    RESOURCETYPE root_resource_type() const noexcept { return resource_type_from_recovery(m_root_recovery); }
+
+    /** @brief Typed root resource check. */
+    template <RESOURCETYPE T>
+    bool is_root() const noexcept { return m_root_recovery == ResourceTypeTraits<T>::recovery; }
+
+    /** @brief The root resource node. */
+    Reflective::Node root() const;
+
+    /** @brief Stream the entire file back out as minified FHIR JSON. */
+    void print_json(std::ostream& out) const;
+
     /**
      * @brief Walk the offset graph and verify it is structurally sound.
      *
      * **Call this on any stream you did not produce.** Construction validates
      * the header and the root offset only; every other offset is untrusted
-     * until this returns success. Deliberately explicit rather than automatic,
-     * so opening a trusted stream stays O(1) — the cost here is O(blocks).
-     *
-     * For every reachable non-null offset it checks that the target is in
-     * bounds, that the block's `VALIDATION` word equals its own offset, and
-     * that its `RECOVERY` tag is what the referring slot said it would be.
-     * Cycles and excessive nesting are rejected rather than followed.
-     *
-     * "Every reachable offset" means every EDGE, not every block: a block
-     * reached by several slots is type-checked once per slot, because the
-     * expected tag belongs to the referring slot rather than to the target.
-     * Only the subtree walk below a block is memoised.
-     *
-     * A slot whose MSB flags a fallback offset — `FF_FIELD_CODE` with
-     * `FF_CODED_VALUE_FLAG`, `FF_FIELD_DATETIME` with
-     * `FF_DATETIME_FALLBACK_FLAG` — is an edge and is walked like any other.
-     * Only genuinely inline slots are skipped.
+     * until this returns success. O(blocks), explicit, never automatic.
      *
      * @return `FF_SUCCESS`, or a failure whose message names the offending
      *         offset and the field it was reached through.
@@ -168,102 +167,21 @@ public:
     /**
      * @brief `validate_FFHR_stream()` plus inspection of inline scalar slots.
      *
-     * The structural pass deliberately skips scalar slots: they are data
-     * inside a V-Table it has already bounds-checked, so they cannot aim the
-     * reader at memory it does not own and are irrelevant to deciding whether
-     * a stream is hostile. This variant visits them too, at proportionally
+     * The structural pass deliberately skips scalar slots: they are data inside
+     * a V-Table it has already bounds-checked, so they cannot aim the reader at
+     * memory it does not own. This variant visits them too, at proportionally
      * higher cost, for callers who want the values inspected as well as the
      * shape.
      */
     FF_Result validate_FFHR_stream_deep() const;
 
-    /** 
-    * @brief Check whether this parser instance references a parsed buffer.
-    * @return `true` when the parser holds a valid underlying buffer; otherwise `false`.
-     */
-    explicit operator bool() const { return m_base != nullptr; }
-
-    /**
-    * @brief Get the encoded FastFHIR/FHIR version from the file header.
-    * @return Version value stored in the header.
-     */
-    uint32_t version() const;
-
-    /** @brief Pointer to the underlying stream bytes. */
-    const BYTE* data() const { return m_base; }
-
-    /** @brief Total stream size in bytes. */
-    Size size_bytes() const { return m_size; }
-
-    /**
-    * @brief Get the stream layout mode detected from header metadata.
-    * @return Standard or compact stream layout mode.
-     */
-    FF_StreamCompaction stream_layout() const { return m_stream_layout; }
-
-    /**
-     * @brief Returns true if the stream has a URL directory.
-     */
-    bool has_url_directory() const { return m_url_dir_offset != FF_NULL_OFFSET; }
-
-    /**
-     * @brief Returns true if the stream has a WASM module registry binding.
-     */
-    bool has_module_registry() const { return m_module_reg_offset != FF_NULL_OFFSET; }
-
-    /**
-     * @brief Raw offset to the FF_MODULE_REGISTRY block (FF_NULL_OFFSET if none).
-     */
-    Offset module_registry_offset() const { return m_module_reg_offset; }
-
-    /**
-     * @brief Returns a zero-copy view of the stream-level FF_URL_DIRECTORY.
-     * @throws std::runtime_error if the stream has no URL directory.
-     */
-    FF_URL_DIRECTORY url_directory() const;
-    
-    /** 
-    * @brief Get the root resource recovery/type tag from the header.
-    * @return Recovery/type tag for the root resource.
-     */
-    uint16_t root_type() const;
-
-    /**
-    * @brief Get the root resource as a typed enum without exposing recovery tags.
-    */
-    RESOURCETYPE root_resource_type() const { return resource_type_from_recovery(m_root_recovery); }
-
-    /**
-    * @brief Typed root resource check.
-    */
-    template <RESOURCETYPE T>
-    bool is_root() const { return m_root_recovery == ResourceTypeTraits<T>::recovery; }
-
-    /**
-    * @brief Get the root resource node.
-    * @return Root node of the parsed FastFHIR stream.
-     */
-    Reflective::Node root() const;
-
-    /**
-     * @brief Stream the entire FastFHIR file back out as minified FHIR JSON.
-     * @param out The output stream (e.g., std::cout, std::ofstream).
-     */
-    void print_json(std::ostream& out) const;
-
     /**
     * @struct ChecksumValidation
     * @brief Checksum metadata extracted from the file.
-     * 
-     * Provides the necessary information to perform checksum validation, including:
-     * - A pointer to the first byte of the payload to be checksummed.
-     * - The total number of bytes to include in the checksum calculation.
-     * - The checksum algorithm used (e.g., CRC32, MD5, SHA256).
-     * - The expected checksum value as stored in the file's footer.
-     * 
-     * Checksum validation is performed outside of the parser to allow for flexibility
-     *  in how and when it is executed, and to avoid coupling the parser to specific 
-     *  checksum implementations.
+     *
+     * Checksum validation is performed outside the reader so the caller
+     * controls how and when it runs, and so the reader is not coupled to any
+     * particular checksum implementation.
      */
     struct ChecksumValidation {
         /// Pointer to first byte included in the checksum span.
@@ -280,452 +198,22 @@ public:
 
     /**
      * @brief Get checksum metadata for external checksum verification.
-     * @return A populated @ref ChecksumValidation when present, otherwise an empty one
-     *         (`first_byte == nullptr`, `total_bytes == 0`, and empty checksum text).
+     * @return A populated @ref ChecksumValidation when present, otherwise an
+     *         empty one (`first_byte == nullptr`, `total_bytes == 0`, empty text).
      */
     ChecksumValidation checksum() const;
+
+private:
+    /**
+     * @brief The one initialization path every constructor converges on.
+     *
+     * Validates the header and extracts the parsed fields, so the pipeline
+     * exists once rather than once per entry point.
+     *
+     * Preconditions: m_base / m_size / m_memory are set.
+     * @throws std::runtime_error On a null base or an invalid header.
+     */
+    void _bind();
 };
 
-namespace Reflective {
-// Vtable slot coordinate — represents one field slot within a parent block.
-struct Entry {
-    const BYTE*  base            = nullptr;
-    Offset       parent_offset   = FF_NULL_OFFSET;
-    uint32_t     vtable_offset   = 0;
-    RECOVERY_TAG target_recovery = FF_RECOVER_UNDEFINED;
-    FF_FieldKind kind            = FF_FIELD_UNKNOWN;
-    Size         m_size          = 0;
-    uint32_t     m_version       = 0;         // FHIR revision
-    uint32_t     m_engine_version = 0;        // FastFHIR engine version
-    const ParserOps* m_ops       = nullptr;
-
-    Entry() = default;
-    // 5-arg constructor — backward-compatible; size/version remain zero.
-    Entry(const BYTE* b, Offset parent, uint32_t vtable, RECOVERY_TAG recovery, FF_FieldKind field_kind)
-        : base(b), parent_offset(parent), vtable_offset(vtable), target_recovery(recovery), kind(field_kind) {}
-    // 7-arg constructor — bakes in size/version for self-contained chaining.
-    Entry(const BYTE* b, Offset parent, uint32_t vtable, RECOVERY_TAG recovery, FF_FieldKind field_kind,
-            Size size, uint32_t version, const ParserOps* ops = nullptr, uint32_t engine_ver = 0)
-        : base(b), parent_offset(parent), vtable_offset(vtable), target_recovery(recovery), kind(field_kind),
-            m_size(size), m_version(version), m_engine_version(engine_ver), m_ops(ops) {}
-
-    Offset absolute_offset() const {
-        if (parent_offset == FF_NULL_OFFSET) return FF_NULL_OFFSET;
-        return parent_offset + static_cast<Offset>(vtable_offset);
-    }
-
-    // Validity check — true when this vtable slot is non-null.
-    explicit operator bool() const {
-        return base != nullptr && parent_offset != FF_NULL_OFFSET;
-    }
-
-    // Read a fixed-width scalar value at this vtable slot.
-    // Defined in FF_Parser.cpp (via Decode::scalar) — explicitly instantiated
-    // for the six FHIR scalar wire types, so FF_Ops.hpp stays out of headers.
-    template <typename T>
-    requires std::is_arithmetic_v<T>
-    T as_scalar(RECOVERY_TAG expected_tag) const;
-
-    // Serialize an inline scalar (bool, int, uint, float, code) directly to JSON.
-    void print_scalar_json(std::ostream& out, uint32_t version) const;
-
-    /**
-     * @brief The date/time this slot holds, in whichever arm it holds it.
-     *
-     * Defined in FF_Parser.cpp, like `operator std::string_view()` above and
-     * for the same reason: reading the 8-byte slot needs FF_Ops.hpp, which is
-     * internal (CLAUDE.md invariant 9).
-     *
-     * IT LIVES ON Entry RATHER THAN Node BECAUSE OF THE FALLBACK ARM. When bit
-     * 63 is set the slot is a signed offset measured from the CONTAINING
-     * BLOCK, so resolving it takes two operands -- the slot and its parent --
-     * and a Node carries only its own offset. Entry still holds both, so this
-     * is the last point where the arithmetic is possible at all. Deferring it
-     * is the defect CLAUDE.md records for the code slot one width down.
-     *
-     * Degrades rather than throws (invariant 10): a slot that is not a
-     * date/time, a choice whose live variant is some other type, a null slot,
-     * or a fallback offset that does not land on a block vouching for itself
-     * all come back as an absent DateTime, which is falsy.
-     */
-    DateTime datetime_value() const;
-
-    // Produce a Node over a DATA_BLOCK field (block, array, string, choice, resource).
-    // 4-arg form used by generated code and Python bindings.
-    Node as_node(Size size, uint32_t version, RECOVERY_TAG tag, FF_FieldKind field_kind,
-                 const ParserOps* ops = nullptr) const;
-    // 0-arg form — uses stored m_size/m_version; requires the 7-arg constructor.
-    Node as_node() const;
-
-    // ── Implicit conversions — bodies defined after Node ──────────────────────
-    // String and code reads require a Node expansion (as_node() pointer-hop).
-    operator std::string_view() const;
-    // TypeTraits-backed struct reads (PatientData, BundleData, …).
-    template <HasTypeTraits T>
-    operator T() const;
-    // Pure in-place scalar reads — no Node expansion needed.
-    operator int32_t()  const { return as_scalar<int32_t> (RECOVER_FF_INT32);   }
-    operator uint32_t() const { return as_scalar<uint32_t>(RECOVER_FF_UINT32);  }
-    operator int64_t()  const { return as_scalar<int64_t> (RECOVER_FF_INT64);   }
-    operator uint64_t() const { return as_scalar<uint64_t>(RECOVER_FF_UINT64);  }
-    operator double()   const { return as_scalar<double>  (RECOVER_FF_FLOAT64); }
-    // Explicit escape hatch — handles bool and auto/template contexts.
-    // Body defined after Node.
-    template <typename T>
-    T as() const;
-
-    // ── Chained traversal — bodies defined after Node ─────────────────────────
-    Entry             operator[](FF_FieldKey key) const;
-    Node              operator[](size_t index)    const;
-    std::vector<Node> entries()                   const;
-    bool   is_array()  const;
-    bool   is_object() const;
-    bool   is_string() const;
-    bool   is_scalar() const;
-    size_t size()      const;
-
-
-    /**
-     * @brief The concrete RECOVERY_TAG recorded BESIDE the offset in a 10-byte
-     *        {offset, tag} tuple (FF_FIELD_RESOURCE / FF_FIELD_CHOICE).
-     *
-     * Reads the SLOT only — it does not follow the offset, so it answers
-     * "what is this?" without touching the target block. `target_recovery`
-     * cannot: for a resource slot it carries the static `child_recovery`
-     * (RECOVER_FF_RESOURCE, the polymorphic base), and only a choice slot
-     * resolves the runtime tag during lookup.
-     *
-     * The type is on the wire twice — here and in the target's header — which
-     * is the redundancy the recovery adjudicator settles when they disagree.
-     * A consumer needing certainty still calls as_node(); a consumer filtering
-     * a scan by type does not, and should not pay a dereference per record for
-     * a value already sitting in the slot it just read.
-     *
-     * @return the tag, or FF_RECOVER_UNDEFINED for slot kinds that are not
-     *         tuples or when the slot is out of bounds.
-     */
-    RECOVERY_TAG concrete_recovery() const;
-};
-/**
- * @class Node
- * @brief Lightweight view over a FastFHIR value.
- * 
- * The Node class represents a node in the parsed FastFHIR data structure. It can represent
- * various types of data, including objects (blocks), arrays, strings, and scalar values.
- * 
- * Nodes are lightweight, non-owning value objects. The class provides methods for
- * accessing child nodes by key or index,
- * as well as methods for retrieving the node's value in the appropriate type (e.g., string, bool, uint32_t, double).
- * 
- */
-class Node {
-protected:
-    friend struct ParserOps;
-    // Sole production consumer of the per-node identity below: the compactor's
-    // archive traversal keys its ancestry/archived-once sets on it. Friendship
-    // is granted to ArchiveContext (the traversal state), not the file-static
-    // free functions that walk the graph.
-    friend struct FastFHIR::ArchiveContext;
-    const BYTE* m_base = nullptr;
-    Offset m_node_offset = FF_NULL_OFFSET;
-    Size m_size = 0;
-    uint32_t m_version = 0;         // FHIR revision
-    uint32_t m_engine_version = 0;  // FastFHIR engine version
-    RECOVERY_TAG m_recovery = FF_RECOVER_UNDEFINED;
-    RECOVERY_TAG m_child_recovery = FF_RECOVER_UNDEFINED;
-    FF_FieldKind m_kind = FF_FIELD_UNKNOWN;
-    bool m_array_entries_are_offsets = false;
-    const ParserOps* m_ops = nullptr;
-
-    /**
-     * @brief Opaque per-node identity within one parsed stream.
-     * @return Offset of the block backing this node; `FF_NULL_OFFSET` for an empty node.
-     *         Unique per node within a stream, so it identifies a node for graph
-     *         bookkeeping (the compactor's ancestry and archived-once sets).
-     *         Internal coordinate: stable for the lifetime of one parse, but not
-     *         a versioned wire coordinate, and not for arithmetic. Not public API;
-     *         access is granted to the compactor via friendship above.
-     */
-    Offset offset() const { return m_node_offset; }
-public:
-    /** @brief Construct an empty/invalid node handle. */
-    Node() = default;
-    /**
-    * @brief Construct a node backed by a structured (offset-based) value.
-    */
-    Node(const BYTE* base, Size size, uint32_t version, Offset offset,
-         RECOVERY_TAG recovery, FF_FieldKind kind,
-            RECOVERY_TAG child_recovery = FF_RECOVER_UNDEFINED, bool array_entries_are_offsets = false,
-            const ParserOps* ops = nullptr, uint32_t engine_ver = 0);
-
-    /** @brief Check whether this node contains a value */
-    bool is_empty() const;
-
-    /**
-     * @brief Resolve a choice node to its concrete type based on the schema kind.
-     *
-     * @param base Pointer to the base of the FastFHIR data.
-     * @param size Size of the FastFHIR data.
-     * @param version Version of the FastFHIR data.
-     * @param parent_offset Offset of the **containing block** — NOT the slot.
-     *        Load-bearing: a flagged `RECOVER_FF_CODE` variant stores a signed
-     *        offset relative to the block, and this is the only operand that
-     *        can resolve it (a `Node` keeps no parent). Both call sites once
-     *        passed `value_offset` here, which read one V-Table width past the
-     *        real block and returned an empty code.
-     * @param value_offset Offset of the value within the parent node.
-     * @param schema_kind The schema kind to resolve the choice against.
-     * @return Node representing the resolved choice. For a flagged code variant
-     *         this already points at the `FF_CODED_VALUE` block.
-     */
-    static Node resolve_choice(const BYTE* base, Size size, uint32_t version, 
-                       Offset parent_offset, Offset value_offset, FF_FieldKind schema_kind,
-                       const ParserOps* ops = nullptr);
-
-    /**
-     * @brief Check whether this node references a valid underlying value.
-     * @return `true` if this node is bound to valid data; otherwise `false`.
-     */
-    explicit operator bool() const;
-
-    /** @brief Check whether this node is an array value. */
-    bool is_array() const;
-    /** @brief Check whether this node is an object/block value. */
-    bool is_object() const;
-    /** @brief Check whether this node is a string value. */
-    bool is_string() const;
-    /** @brief Check whether this node is an inline scalar value. */
-    bool is_scalar() const;
-
-    /**
-     * @brief Get the node field kind.
-     * @return Encoded FastFHIR field kind for this node.
-     */
-    FF_FieldKind kind() const;
-
-    /**
-     * @brief Get the node recovery/type tag.
-     * @return Recovery/type tag associated with this node.
-     */
-    RECOVERY_TAG recovery() const;
-
-    /**
-     * @brief Get this node's concrete resource type as a typed enum.
-     */
-    RESOURCETYPE resource_type() const { return resource_type_from_recovery(m_recovery); }
-
-    /**
-     * @brief Typed check for concrete resource type.
-     */
-    template <RESOURCETYPE T>
-    bool is() const { return m_recovery == ResourceTypeTraits<T>::recovery; }
-
-    /**
-     * @brief Zero-copy view of reflected field metadata for object nodes.
-     * @return Span over the block's static field table; empty for non-object
-     *         nodes. No allocation: the table is a static array in the
-     *         generated block (see reflected_fields_view()).
-     */
-    std::span<const FF_FieldInfo> fields() const;
-
-    /**
-     * @brief Enumerate reflected key names for object nodes.
-     * @return Key list for object nodes; empty for non-object nodes.
-     */
-    std::vector<std::string_view> keys() const;
-
-    /**
-     * @brief Get the number of direct children.
-     * @return Entry count for arrays, key count for objects, otherwise `0`.
-     */
-    size_t size() const;
-
-    /**
-     * @brief Materialize all direct array entries.
-     * @return Child nodes for arrays; empty for non-array nodes.
-     */
-    std::vector<Node> entries() const;
-
-    /**
-     * @brief Lookup a child field by precomputed key descriptor.
-     * @return An Entry containing vtable slot coordinates; implicitly converts to scalars or structs.
-     */
-    Entry operator[](FF_FieldKey key) const;
-
-    /**
-     * @brief Lookup an array element by index.
-     * @return The resolved child Node at the given index.
-     */
-    Node operator[](size_t index) const;
-
-    /**
-     * @brief Materialize this block node into a typed C++ struct.
-     * @tparam T A generated FastFHIR data struct with a TypeTraits specialization.
-     */
-    template <HasTypeTraits T>
-    operator T() const { return as<T>(); }
-
-    /**
-     * @brief Explicit typed read — escape hatch for auto/template/bool contexts.
-     * @tparam T Primitives, std::string_view, or a HasTypeTraits struct.
-     * @throws std::runtime_error on recovery tag mismatch.
-     */
-    template <typename T>
-    T as() const {
-        if constexpr (std::is_same_v<T, std::string_view>) {
-            if (m_recovery == RECOVER_FF_CODE) {
-                uint32_t raw_code = code_word();
-                if (raw_code == FF_CODE_NULL) return "";
-
-                if (const char* label = FF_ResolveCode(raw_code, m_version)) {
-                    return label;
-                }
-
-                if (raw_code & FF_CODED_VALUE_FLAG) {
-                    // Unreachable: every producer of a code Node resolves the
-                    // flagged case eagerly (ParserOps::code_node), because the
-                    // offset is relative to the CONTAINING BLOCK and a Node no
-                    // longer knows it. This used to resolve against
-                    // m_node_offset -- the slot for a choice variant -- and so
-                    // decoded a V-Table width away from the real block. Loud,
-                    // not silent: a wrong address here reads plausible garbage.
-                    throw std::runtime_error(
-                        "FastFHIR: code Node carries an unresolved CodeableConcept "
-                        "offset; the containing block is no longer known. Build it "
-                        "through ParserOps::code_node.");
-                }
-
-                return "";
-            }
-
-            // A flagged code, already resolved to its block by code_node(). No
-            // arithmetic left to do -- that is the entire point of resolving at
-            // construction.
-            if (m_recovery == RECOVER_FF_CODED_VALUE) {
-                return FF_DECODE_CODED_VALUE(m_base, m_node_offset, m_version, m_size).label;
-            }
-
-            // Opaque JSON shares the FF_STRING layout exactly, so the DECODE is
-            // identical; only the render sites care that the bytes are already
-            // JSON. See FF_IsStringLayoutTag.
-            if (!FF_IsStringLayoutTag(m_recovery)) {
-                throw std::runtime_error("FastFHIR: Node is not a string or code.");
-            }
-            return FF_STRING(m_node_offset, m_size, m_version, m_engine_version).read_view(m_base);
-        } else if constexpr (
-            std::is_same_v<T, bool> ||
-            std::is_same_v<T, int32_t> ||
-            std::is_same_v<T, uint32_t> ||
-            std::is_same_v<T, int64_t> ||
-            std::is_same_v<T, uint64_t> ||
-            std::is_same_v<T, double>
-        ) {
-            RECOVERY_TAG expected = FF_RECOVER_UNDEFINED;
-            if constexpr (std::is_same_v<T, bool>) expected = RECOVER_FF_BOOL;
-            else if constexpr (std::is_same_v<T, int32_t>) expected = RECOVER_FF_INT32;
-            else if constexpr (std::is_same_v<T, uint32_t>) expected = RECOVER_FF_UINT32;
-            else if constexpr (std::is_same_v<T, int64_t>) expected = RECOVER_FF_INT64;
-            else if constexpr (std::is_same_v<T, uint64_t>) expected = RECOVER_FF_UINT64;
-            else if constexpr (std::is_same_v<T, double>) expected = RECOVER_FF_FLOAT64;
-
-            if (m_recovery != expected) {
-                throw std::runtime_error("Node::as() recovery tag mismatch");
-            }
-            return read_scalar<T>(expected);
-        } else {
-            if (m_recovery != TypeTraits<T>::recovery) {
-                throw std::runtime_error("Node::as() recovery tag mismatch");
-            }
-            return TypeTraits<T>::read(m_base, m_node_offset, m_size, m_version);
-        }
-    }
-
-public:
-    // Packed code word at this node's slot — out-of-line so the load stays in
-    // FF_Parser.cpp (FF_Ops.hpp is an implementation detail there).
-    uint32_t code_word() const;
-    // Six-wire-scalar typed read at this node's slot — declared here, defined
-    // in FF_Parser.cpp via Decode::scalar, explicitly instantiated.
-    template <typename T>
-    requires std::is_arithmetic_v<T>
-    T read_scalar(RECOVERY_TAG expected_tag) const;
-
-    /**
-     * @brief Recursively print this node and all children as minified FHIR JSON.
-     * @param out The output stream.
-     */
-    void print_json(std::ostream& out) const;
-
-#ifndef NDEBUG
-    /**
-     * @brief `print_json` with the wire metadata each value was decoded from.
-     *
-     * Debug builds only. Every value becomes an object carrying what the reader
-     * believed about it, so a wrong belief is visible instead of merely wrong:
-     *
-     * ```json
-     * "effectiveDateTime": {"_off":40184,"_tag":"RECOVER_FF_STRING",
-     *                       "_kind":"FF_FIELD_STRING","_v":"2019-04-01"}
-     * ```
-     *
-     * That line is the motivating case: the value round-trips correctly and the
-     * tag is still wrong, which no amount of JSON diffing can surface. Auditing
-     * a corpus for it is a grep:
-     *
-     *     ff_roundtrip fixture.json --debug | grep -o '"[A-Za-z]*":{[^}]*RECOVER_FF_STRING' \
-     *       | grep -i 'date\\|time\\|instant\\|period'
-     *
-     * Emitted per value: `_off` (absolute byte offset of the block or slot the
-     * value was read from -- paste it straight into a hex dump), `_tag`
-     * (RECOVERY_TAG spelling via FF_RecoveryName), `_kind` (the FF_FieldKind the
-     * reader dispatched on), `_v` (the value print_json would have emitted).
-     * Arrays add `_entry_kind` / `_stride` / `_count` / `_elem`; code slots add
-     * `_code` and whether the CodeableConcept fallback flag is set; date/time
-     * slots add whether the slot is packed or a fallback offset.
-     *
-     * NOT valid FHIR and never round-trip input -- it is a lens on the bytes.
-     *
-     * @param out    The output stream.
-     * @param indent Spaces per level; 0 (default) minifies.
-     */
-    void to_debug_json(std::ostream& out, int indent = 0) const;
-#endif // NDEBUG
-
-};
-
-// ── Entry methods requiring the complete Node definition ─────────────────────
-inline Node Entry::as_node() const {
-    return as_node(m_size, m_version, target_recovery, kind, m_ops);
-}
-
-// Entry::operator std::string_view() is defined in FF_Parser.cpp — the
-// code-slot load needs FF_Ops.hpp, which stays an implementation detail of
-// that TU (and primitives / generated code).
-
-template <HasTypeTraits T>
-inline Entry::operator T() const { return as_node().as<T>(); }
-
-template <typename T>
-inline T Entry::as() const {
-    if constexpr (std::is_same_v<T, bool>)               return as_scalar<bool>(RECOVER_FF_BOOL);
-    else if constexpr (std::is_same_v<T, DateTime>)      return datetime_value();
-    else if constexpr (std::is_same_v<T, std::string_view>) return operator std::string_view();
-    else if constexpr (std::is_same_v<T, int32_t>)       return operator int32_t();
-    else if constexpr (std::is_same_v<T, uint32_t>)      return operator uint32_t();
-    else if constexpr (std::is_same_v<T, int64_t>)       return operator int64_t();
-    else if constexpr (std::is_same_v<T, uint64_t>)      return operator uint64_t();
-    else if constexpr (std::is_same_v<T, double>)        return operator double();
-    else                                                  return operator T();
-}
-
-inline Entry             Entry::operator[](FF_FieldKey key) const { return as_node()[key]; }
-inline Node              Entry::operator[](size_t index)    const { return as_node()[index]; }
-inline std::vector<Node> Entry::entries()                   const { return as_node().entries(); }
-inline bool   Entry::is_array()  const { return as_node().is_array(); }
-inline bool   Entry::is_object() const { return as_node().is_object(); }
-inline bool   Entry::is_string() const { return as_node().is_string(); }
-inline bool   Entry::is_scalar() const { return as_node().is_scalar(); }
-inline size_t Entry::size()      const { return as_node().size(); }
-
-} // namespace Reflective
 } // namespace FastFHIR

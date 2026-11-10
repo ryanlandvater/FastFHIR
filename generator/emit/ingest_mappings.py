@@ -62,12 +62,21 @@ def generate_ingest_mappings(master_blocks, resources, output_dir="generated_src
         f"{auto_header}#pragma once\n"
         f'#include "FF_AllTypes.hpp"\n'
         f'#include "FF_Logger.hpp"\n'
+        # The public write handles. Builder_t is only NAMED in these signatures
+        # (a pointer / reference parameter), so FF_Access.hpp's forward
+        # declaration is enough and the builder BODY stays out of every
+        # translation unit that only needs the mapping signatures.
+        f'#include "FF_Access.hpp"\n'
         f"#include <simdjson.h>\n\n"
         f"namespace FastFHIR::Ingest {{\n\n"
     )
 
     cpp = (
-        f'{auto_header}#include "FF_IngestMappings.hpp"\n\n'
+        f'{auto_header}#include "FF_IngestMappings.hpp"\n'
+        # The builder BODY: these mappings call builder->append(...) and
+        # builder->resolve_extension_url(...), which need the complete type. The
+        # public header above deliberately does not supply it.
+        f'#include "FF_Builder.hpp"\n\n'
         f"namespace FastFHIR::Ingest {{\n\n"
         f"// Internal Parser Forward Declarations\n"
     )

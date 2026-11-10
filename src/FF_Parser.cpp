@@ -12,7 +12,9 @@
 
 #include "FF_Utilities.hpp"
 #include "FF_Ops.hpp"
-#include "FF_Parser.hpp"
+#include "FF_Access.hpp"
+#include "FF_Parser.hpp"   // the Parser_t body this TU implements
+#include "FF_Memory.hpp"   // deep: Memory_t members (claim_space, base, size)
 #include "FF_SIMD.hpp"
 #include "FF_Dictionary.hpp"
 #include "FF_Reflection.hpp"
@@ -372,7 +374,7 @@ static Offset checked_root_offset(Offset root, size_t size) {
 // / m_size and converges here, so the header validation and the field extraction
 // below exist once. The raw-buffer and arena constructors were already two
 // verbatim copies of this; a View constructor would have made it three.
-void Parser::_bind()
+void Parser_t::_bind()
 {
     // A null base has no bytes to validate, so it is rejected before the size
     // check: validate_full dereferences m_base, and a length check alone cannot
@@ -400,10 +402,33 @@ void Parser::_bind()
 
 // No arena: the caller owns the bytes, so m_memory stays a null handle and this
 // parser carries no lifetime guarantee. Stated at the declaration.
-Parser::Parser(const void* buffer, size_t size)
+Parser_t::Parser_t(const void* buffer, size_t size)
     : m_memory(), m_base(static_cast<const BYTE*>(buffer)), m_size(size) {
     _bind();
 }
+
+// =====================================================================
+// FastFHIR::Parser — the public handle's constructors and `.` forwarders.
+//
+// A thin layer over the body: constructors build it with make_shared, the
+// forwarders call through it. Defined here because Parser_t is only complete
+// in this translation unit (FF_Access.hpp joins a forward declaration).
+// =====================================================================
+Parser::Parser(const void* buffer, size_t size) : Base(std::make_shared<Parser_t>(buffer, size)) {}
+Parser::Parser(const Memory& memory)            : Base(std::make_shared<Parser_t>(memory)) {}
+Parser::Parser(const Memory::View& view)        : Base(std::make_shared<Parser_t>(view)) {}
+
+Size                Parser::size()              const noexcept { return get()->size(); }
+Size                Parser::size_bytes()        const noexcept { return get()->size_bytes(); }
+uint32_t            Parser::version()           const noexcept { return get()->version(); }
+const BYTE*         Parser::data()              const noexcept { return get()->data(); }
+FF_StreamCompaction Parser::stream_layout()     const noexcept { return get()->stream_layout(); }
+uint16_t            Parser::root_type()         const noexcept { return get()->root_type(); }
+RESOURCETYPE        Parser::root_resource_type() const noexcept { return get()->root_resource_type(); }
+uint16_t            Parser::_root_recovery()    const noexcept { return get()->m_root_recovery; }
+Reflective::Node    Parser::root()              const { return get()->root(); }
+void                Parser::print_json(std::ostream& out) const { get()->print_json(out); }
+FF_Result           Parser::validate_FFHR_stream() const { return get()->validate_FFHR_stream(); }
 
 // CLAMP THE CLAIMED STREAM SIZE TO WHAT IS ACTUALLY MAPPED.
 //
@@ -426,7 +451,7 @@ static inline size_t ff_mapped_extent(const Memory& memory) {
     return claimed < mapped ? claimed : mapped;
 }
 
-Parser::Parser(const Memory& memory)
+Parser_t::Parser_t(const Memory& memory)
     : m_memory(memory),
       m_base(memory ? memory->base() : nullptr),
       m_size(memory ? ff_mapped_extent(memory) : 0) {
@@ -444,17 +469,17 @@ Parser::Parser(const Memory& memory)
 //
 // A default-constructed View yields a null reference, a null base and size 0, so
 // _bind rejects it exactly as it rejects a null buffer: one path, not two.
-Parser::Parser(const Memory::View& view)
+Parser_t::Parser_t(const Memory::View& view)
     : m_memory(view.m_vma_ref),
       m_base(reinterpret_cast<const BYTE*>(view.data())),
       m_size(view.size()) {
     _bind();
 }
 
-uint32_t Parser::version()   const { return m_version; }
-uint16_t Parser::root_type() const { return m_root_recovery; }
+uint32_t Parser_t::version()   const { return m_version; }
+uint16_t Parser_t::root_type() const { return m_root_recovery; }
 
-Parser::ChecksumValidation Parser::checksum() const {
+Parser_t::ChecksumValidation Parser_t::checksum() const {
     FF_HEADER header(m_size);
     FF_CHECKSUM cs = header.get_checksum(m_base);
 
@@ -939,7 +964,7 @@ bool DeepValidator::walk_fields(Offset off, RECOVERY_TAG tag,
 
 } // namespace
 
-FF_Result Parser::validate_FFHR_stream() const {
+FF_Result Parser_t::validate_FFHR_stream() const {
     DeepValidator v;
     v.base = m_base;
     v.size = m_size;
@@ -954,7 +979,7 @@ FF_Result Parser::validate_FFHR_stream() const {
     return out;
 }
 
-FF_Result Parser::validate_FFHR_stream_deep() const {
+FF_Result Parser_t::validate_FFHR_stream_deep() const {
     DeepValidator v;
     v.base = m_base;
     v.size = m_size;
@@ -969,13 +994,20 @@ FF_Result Parser::validate_FFHR_stream_deep() const {
     return out;
 }
 
-Reflective::Node Parser::root() const {
-    return Reflective::Node(m_base, m_size, m_version,
+Reflective::Node Parser_t::root() const {
+    Reflective::Node out(m_base, m_size, m_version,
                 m_root_offset, m_root_recovery, FF_FIELD_BLOCK,
                 FF_RECOVER_UNDEFINED, false, m_ops, m_engine_version);
+#ifndef NDEBUG
+    // The token comes from the ARENA, not from this reader: the bytes a view
+    // points at outlive any one Parser that opened them. A temporary Parser over
+    // a live arena must not make its nodes look stale.
+    if (m_memory) out._attach(m_memory->liveness());
+#endif
+    return out;
 }
 
-FF_URL_DIRECTORY Parser::url_directory() const {
+FF_URL_DIRECTORY Parser_t::url_directory() const {
     if (m_url_dir_offset == FF_NULL_OFFSET)
         throw std::runtime_error("FastFHIR: Stream has no URL directory (legacy format or not yet written).");
     return FF_URL_DIRECTORY(m_url_dir_offset, m_size, m_version, m_engine_version);
@@ -1099,6 +1131,7 @@ static void print_url_json(std::ostream& out, std::string_view url) {
 }
 
 void Reflective::Node::print_json(std::ostream& out) const {
+    _check_alive();
     if (is_empty()) return;
 
     switch (m_kind) {
@@ -1115,14 +1148,7 @@ void Reflective::Node::print_json(std::ostream& out) const {
             for (size_t i = 0; i < f_list.size(); ++i) {
                 const auto& f = f_list[i];
 
-                // Construct the O(1) field key blueprint
-                FF_FieldKey key = FF_FieldKey::from_cstr(
-                    m_recovery, f.kind, f.field_offset,
-                    f.child_recovery, f.array_entries_are_offsets, f.name
-                );
-
-                // Pure pointer-math lookup (Zero loops)
-                auto child_entry = (*this)[key];
+                auto child_entry = (*this)[f];
                 if (!child_entry) continue;
 
                 // A present slot is not the same as a renderable value. An
@@ -1343,10 +1369,7 @@ void Reflective::Node::to_debug_json(std::ostream& out, int indent) const {
 
                 const DebugFmt inner = fmt.in();
                 for (const FF_FieldInfo& f : n.fields()) {
-                    const FF_FieldKey key = FF_FieldKey::from_cstr(
-                        n.m_recovery, f.kind, f.field_offset,
-                        f.child_recovery, f.array_entries_are_offsets, f.name);
-                    const Entry child_entry = n[key];
+                    const Entry child_entry = n[f];
                     if (!child_entry) continue;   // slot genuinely absent
 
                     out << ",";
@@ -1496,7 +1519,7 @@ void Reflective::Entry::print_scalar_json(std::ostream& out, uint32_t version) c
     }
 }
 
-void Parser::print_json(std::ostream& out) const {
+void Parser_t::print_json(std::ostream& out) const {
     auto r = root();
     if (r) {
         r.print_json(out);
@@ -1697,11 +1720,7 @@ bool Node::is_empty() const {
             auto f_list = fields();
             for (size_t i = 0; i < f_list.size(); ++i) {
                 const auto& f = f_list[i];
-                FF_FieldKey key = FF_FieldKey::from_cstr(
-                    m_recovery, f.kind, f.field_offset,
-                    f.child_recovery, f.array_entries_are_offsets, f.name
-                );
-                if ((*this)[key])
+                if ((*this)[f])
                     return false;
             }
             return true;
@@ -1751,8 +1770,15 @@ size_t Node::size() const {
 }
 
 std::vector<Node> Node::entries() const {
+    _check_alive();
     const ParserOps* ops = m_ops ? m_ops : &STANDARD_OPS;
-    return ops->node_entries(*this);
+    std::vector<Node> out = ops->node_entries(*this);
+#ifndef NDEBUG
+    // Children inherit the owner token, so a walked tree stays checked however
+    // deep the read goes.
+    for (Node &child : out) child._attach(m_liveness);
+#endif
+    return out;
 }
 
 size_t ParserOps::standard_node_size(const Node& n) {
@@ -1971,8 +1997,13 @@ std::vector<Node> ParserOps::standard_node_entries(const Node& n) {
 // Node child lookup
 // =====================================================================
 Entry Node::operator[](FF_FieldKey key) const {
+    _check_alive();
     const ParserOps* ops = m_ops ? m_ops : &STANDARD_OPS;
-    return ops->node_lookup_field(*this, key);
+    Entry out = ops->node_lookup_field(*this, key);
+#ifndef NDEBUG
+    out._attach(m_liveness);
+#endif
+    return out;
 }
 
 Entry ParserOps::standard_node_lookup_field(const Node& n, FF_FieldKey key) {
@@ -2006,8 +2037,13 @@ Entry ParserOps::standard_node_lookup_field(const Node& n, FF_FieldKey key) {
 }
 
 Node Node::operator[](size_t index) const {
+    _check_alive();
     const ParserOps* ops = m_ops ? m_ops : &STANDARD_OPS;
-    return ops->node_lookup_index(*this, index);
+    Node out = ops->node_lookup_index(*this, index);
+#ifndef NDEBUG
+    out._attach(m_liveness);
+#endif
+    return out;
 }
 
 Node ParserOps::standard_node_lookup_index(const Node& n, size_t index) {
@@ -2028,7 +2064,7 @@ Node Entry::as_node(Size size, uint32_t version, RECOVERY_TAG expected_tag, FF_F
 // =====================================================================
 // Typed scalar slot reads — the wire loads live here, not in headers.
 // =====================================================================
-// Declared in FF_Parser.hpp; defined in this TU where FF_Ops.hpp is visible,
+// Declared in FF_Access.hpp; defined in this TU where FF_Ops.hpp is visible,
 // and explicitly instantiated for the six FHIR scalar wire types. A caller
 // requesting any other arithmetic T fails loudly at link time instead of
 // silently misreading — the honest contract.

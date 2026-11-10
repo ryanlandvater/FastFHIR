@@ -485,6 +485,7 @@ set(FASTFHIR_PUBLIC_HEADERS
     ${FASTFHIR_INCLUDE_DIR}/FF_Dictionary.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Memory.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Parser.hpp
+    ${FASTFHIR_INCLUDE_DIR}/FF_Access.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Builder.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Conformance.hpp
     ${FASTFHIR_INCLUDE_DIR}/FF_Logger.hpp

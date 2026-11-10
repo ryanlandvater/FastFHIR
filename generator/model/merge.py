@@ -525,7 +525,34 @@ def generate_cxx_for_blocks(master_blocks, versions):
             f" Size size, uint32_t v)"
             f" {{ return FF_DESERIALIZE_{bridge_name}(base, off, size, v); }}\n"
         )
+        # Type-erased SIZE/STORE pair. FF_Access.hpp cannot define a template
+        # that needs Builder_t (it is incomplete there), so the append path is
+        # erased through this instead of through a template argument.
+        traits_hpp += (
+            f"    /// Type-erased SIZE/STORE pair; see FF_TypeTraits.hpp.\n"
+            f"    static const TypeDescriptor& descriptor();\n"
+        )
         traits_hpp += "};\n"
+
+        # ── CPP: the erased descriptor ────────────────────────
+        # Declared in the header, defined here. The thunks are capture-less
+        # lambdas, so they decay to function pointers, and each forwards to the
+        # SAME SIZE_/STORE_ free function the inline path calls. Nothing is
+        # duplicated -- the descriptor IS those two functions, addressed, which
+        # is what lets a consumer TU append a type it can see (the POCO) through
+        # a builder body it cannot.
+        cpp += (
+            f"const TypeDescriptor& TypeTraits<{d_name}>::descriptor() {{\n"
+            f"    static const TypeDescriptor d{{\n"
+            f"        RECOVER_{s_name},\n"
+            f"        [](const void* __data, uint32_t __v) -> Size\n"
+            f"            {{ return SIZE_{s_name}(*static_cast<const {d_name}*>(__data), __v); }},\n"
+            f"        [](BYTE* __base, Offset __off, const void* __data, uint32_t __v) -> Offset\n"
+            f"            {{ return STORE_{s_name}(__base, __off, *static_cast<const {d_name}*>(__data), __v); }},\n"
+            f"    }};\n"
+            f"    return d;\n"
+            f"}}\n\n"
+        )
 
         # ── CPP: Implementations ──────────────────────────────
         cpp += (

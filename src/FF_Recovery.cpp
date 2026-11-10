@@ -41,6 +41,7 @@
  */
 
 #include "FF_Recovery.hpp"
+#include "FF_Memory.hpp"   // deep: this TU dereferences the arena (memory->base() etc.)
 #include "FF_Ops.hpp"
 
 #include <algorithm>

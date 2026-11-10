@@ -30,6 +30,8 @@
  */
 
 #include <FastFHIR.hpp>
+// internal: drives Builder_t directly; a public consumer needs only <FastFHIR.hpp>
+#include <FF_Builder.hpp>
 #include <FF_FieldKeys.hpp>
 #include "FF_AllTypes.hpp"
 

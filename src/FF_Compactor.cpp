@@ -428,11 +428,7 @@ static Offset archive_object(const Reflective::Node& node, ArchiveContext& conte
     Size dense_bytes = 0;
     for (size_t i = 0; i < fields.size(); ++i) {
         const auto& field = fields[i];
-        FF_FieldKey key = FF_FieldKey::from_cstr(
-            node.recovery(), field.kind, field.field_offset,
-            field.child_recovery, field.array_entries_are_offsets, field.name
-        );
-        auto entry = node[key];
+        auto entry = node[field];
         if (!entry) continue;
 
         present_fields.push_back(PresentField{i, field, entry});
@@ -642,9 +638,7 @@ static bool child_touches_path(const Reflective::Node& node, ArchiveContext& con
                 if (field.kind != FF_FIELD_ARRAY && field.kind != FF_FIELD_BLOCK &&
                     field.kind != FF_FIELD_RESOURCE && field.kind != FF_FIELD_CHOICE)
                     continue;
-                const Reflective::Entry entry = node[FF_FieldKey::from_cstr(
-                    node.recovery(), field.kind, field.field_offset,
-                    field.child_recovery, field.array_entries_are_offsets, field.name)];
+                const Reflective::Entry entry = node[field];
                 if (!entry) continue;
                 if (on_path(entry.as_node())) return true;
             }

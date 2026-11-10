@@ -21,6 +21,7 @@
  */
 
 #include <FastFHIR.hpp>  // the C++ API this shim drives
+#include "FF_Builder.hpp"  // the builder BODY: this shim builds streams
 
 #include "FastFHIR.h"    // the C ABI this shim implements (extern "C" declarations)
 

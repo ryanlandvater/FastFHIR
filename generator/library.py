@@ -88,7 +88,11 @@ def compile_fhir_library(
         f"{auto_header}// MARK: - Universal Data Types\n#pragma once\n"
         '#include "FF_Primitives.hpp"\n'
         '#include "FF_Utilities.hpp"\n'
-        '#include "FF_Builder.hpp"\n'
+        # The public write handles (Builder, ObjectHandle, MutableEntry) and the
+        # TypeDescriptor the erased append path needs. NOT FF_Builder.hpp: the
+        # builder body is internal, and a POCO header has no business dragging it
+        # into every translation unit that only wants the data types.
+        '#include "FF_Access.hpp"\n'
         '#include "FF_CodeSystems.hpp"\n'
         # TypeTraits for string_view and the inline-scalar arrays. Hand-written
         # (include/FF_TypeTraits.hpp): nothing about them varies with a FHIR

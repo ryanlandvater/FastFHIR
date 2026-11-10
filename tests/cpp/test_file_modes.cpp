@@ -25,6 +25,7 @@
  */
 
 #include <FastFHIR.hpp>
+#include <FF_Builder.hpp>   // internal: drives Builder_t directly
 #include <FF_FieldKeys.hpp>
 #include <FF_BundleAppend.hpp>
 #include "FF_AllTypes.hpp"

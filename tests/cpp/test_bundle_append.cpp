@@ -21,6 +21,7 @@
 // Streams are built through the real writer, never by hand (COV-1).
 
 #include <FastFHIR.hpp>
+#include <FF_Builder.hpp>   // internal: drives Builder_t directly
 #include <FF_BundleAppend.hpp>
 #include <FF_FieldKeys.hpp>
 #include "FF_AllTypes.hpp"

@@ -5,6 +5,7 @@
  * @remark This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0 (MPL-2.0) — see LICENSE or http://mozilla.org/MPL/2.0/.
  */
 #include "FF_BundleAppend.hpp"
+#include "FF_Builder.hpp"
 #include "FF_Bundle_internal.hpp"
 
 #include <cstdint>

@@ -101,13 +101,11 @@
 // accidental use in C++ mutation paths. Include <FF_FieldKeys.hpp> explicitly
 // ONLY when you need generic reflective keys. It's confusing and not recommended.
 
-// The type layer the FF_* surface references: wire primitives, the Memory
-// arena, the Parser value type, the Reflective mutation handles, and the
-// archive recovery surface (REC-10…17). Recovery does no work at construction
-// — the scan is explicit — so carrying it on the core surface costs nothing.
+// The types the FF_* surface below is built from: wire primitives, the arena,
+// the read value type, the write handles, and the archive recovery surface.
 #include "FF_Primitives.hpp"
-#include "FF_Parser.hpp"
-#include "FF_Builder.hpp"
+#include "FF_Access.hpp"
+#include "FF_Conformance.hpp"
 #include "FF_Recovery.hpp"
 
 #include <functional>
@@ -116,17 +114,14 @@
 // =====================================================================
 // HANDLES AND SHARED ALIASES
 // =====================================================================
-// A handle is the type a caller passes around; the heap body it owns carries
-// the _t suffix. Builder and Ingestor are always heap-allocated, so their
-// handle is a shared_ptr and these names alias it. Memory IS its own handle --
-// a copyable value that owns the arena by shared_ptr -- so it keeps its name.
+// The handles this API creates, declared ahead of the FF_*Info structs below,
+// which name them by their global FF_ spelling.
 //
-// Declared above the FF_*Info structs, because those name the handles by
-// their global FF_ spelling (the block just below).
+// FF_Memory and FF_Builder are the SAME types as FastFHIR::Memory and
+// FastFHIR::Builder. The FF_ spelling is a global alias, not a second type.
 namespace FastFHIR
 {
-class Ingestor_t;  ///< opaque; defined in the internal FF_Ingestor.hpp
-using Builder  = std::shared_ptr<Builder_t>;
+class Ingestor_t;  ///< The ingestion engine. See FastFHIR::Ingestor.
 using Ingestor = std::shared_ptr<Ingestor_t>;
 
 /** @brief Checksum callback: hashes [byte_start, byte_start + bytes_to_hash). */
@@ -134,29 +129,20 @@ using HashCallback = std::function<std::vector<BYTE>(const unsigned char* byte_s
 } // namespace FastFHIR
 
 // =====================================================================
-// GLOBAL C-STYLE ALIASES -- the ONE list
+// GLOBAL C-STYLE ALIASES
 // =====================================================================
-// Inside the namespace every type has its plain C++ name; these FF_-prefixed
-// names are that type's C-style spelling, at global scope, for a consumer that
-// does not want to qualify with FastFHIR:: on every line. The FF_ prefix is
-// the namespace spelled out; it is never a second type.
-//
-// Not aliased here: the wire block structs (FF_HEADER, FF_STRING, ...) and the
-// C-ABI Info structs (FF_BuilderCreateInfo, ...), which keep their FF_ names
-// because they ARE the C surface, not a C++ type behind one. There is no
-// FF_ParseInfo on either side: the parse surface is Parser's two constructors.
-using FF_Memory       = FastFHIR::Memory;        // shared_ptr<Memory_t>, the arena handle
-using FF_Builder      = FastFHIR::Builder;       // shared_ptr<Builder_t>
-using FF_Ingestor     = FastFHIR::Ingestor;      // shared_ptr<Ingestor_t>
+// Unqualified spellings of the handles above, for code that would rather not
+// qualify with FastFHIR:: on every line. Each is the same type under another
+// name, so the two spellings are freely interchangeable.
+using FF_Memory       = FastFHIR::Memory;        // the arena handle
+using FF_Builder      = FastFHIR::Builder;       // the write handle
+using FF_Ingestor     = FastFHIR::Ingestor;      // the ingestion engine handle
 using FF_String       = FastFHIR::String;        // POCO string field
 using FF_DateTime     = FastFHIR::DateTime;      // POCO date/time field: components or text
 using FF_UcumUnit     = FastFHIR::UcumUnit;      // a UCUM unit constant (FF_CODE::UCUM::*)
 using FF_HashCallback = FastFHIR::HashCallback;  // checksum callback
 
-// The result types (FF_Result, FF_Result_Code, FF_Result_Severity) and their
-// enumerators alias in FF_Primitives.hpp, beside those definitions, because
-// FF_Builder.hpp returns FF_Result without seeing this header. One list, split
-// only where the include graph forces it.
+// FF_Result and its codes alias in FF_Primitives.hpp, beside their definitions.
 
 /// The POCO 0..1 child block. A template alias, so `FF_Optional<T>` is the
 /// consumer spelling of `FastFHIR::Optional<T>`.
@@ -260,12 +246,7 @@ FF_EXPORT FF_Result FF_CreateBuilder(const FF_BuilderCreateInfo& info, FF_Builde
 template <typename T_Data>
 inline Reflective::ObjectHandle FF_BuilderAppendObject(FF_Builder builder, const T_Data& data) noexcept
 {
-    if (!builder) return {};
-    try {
-        return builder->append_obj(data);
-    } catch (const std::exception&) {
-        return {};
-    }
+    return builder.append_object(data);
 }
 
 /** @brief Parameters for assigning the stream's root resource. */

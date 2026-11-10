@@ -1,19 +1,13 @@
 # ============================================================
 # FastFHIR Generator — typed layout model.
 #
-# A strongly-typed view over the per-field layout dict that ffc.py builds. The
-# generator Python's stated goal is "readable Python that mirrors C++ strong-
-# typing conventions" — bare stringly-typed dicts (`f['fhir_type']`) defeat that.
+# The shapes the model layer builds and every emitter reads, declared once.
+# Each is a TypedDict: a dict at runtime, so nothing about generation changes,
+# and a struct to the type checker, so a misspelled key or a wrong value type
+# fails `mypy --strict` instead of emitting wrong C++.
 #
-# S2 STRATEGY (non-breaking): these dataclasses are an ADAPTER, not a rewrite.
-# `Field.from_dict` / `Field.to_dict` round-trip the exact dict shape the
-# existing emitters consume, so we can introduce types and unit-test the layout
-# WITHOUT changing any wire output. Emitters keep taking dicts until a later
-# sprint migrates them one at a time, each guarded by the wire-format gate.
-#
-# The dict keys mirrored here (verified against ffc.py):
-#   fhir_type, name, orig_name, is_array, is_choice, cpp_type, data_type,
-#   resolved_path, code_enum
+# `JsonObject` is the one untyped shape, and it stops at the parsing boundary:
+# it is a StructureDefinition, ValueSet or CodeSystem as HL7 publishes it.
 #
 # Author: Ryan Landvater (ryanlandvater[at]gmail[dot]com)
 # Copyright (c) 2025 Ryan Landvater. All rights reserved.
@@ -22,121 +16,124 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dc_field
-from typing import Any
+from typing import Any, NotRequired, TypeAlias, TypedDict
+
+# A parsed HL7 JSON document or one element of it. Past the functions that read
+# HL7 packages, data travels in the typed shapes below.
+JsonObject: TypeAlias = dict[str, Any]
 
 
-@dataclass
-class Field:
+class TypeMapping(TypedDict):
+    """How one FHIR type is stored: a row of `type_map.TYPE_MAP`."""
+
+    cpp: str  # V-Table slot type, e.g. 'uint32_t', 'Offset'
+    data_type: str  # POCO member type, e.g. 'std::string_view'
+    null: str  # the absent-value sentinel constant
+    size: int  # slot width in bytes
+    size_const: str  # the C++ constant naming that width
+    macro: str  # the LOAD_* reader for the slot
+
+
+class CodeEnum(TypedDict):
+    """The generated C++ enum bound to one `code` field."""
+
+    enum: str  # enum type name
+    parse: str  # string -> enum function name
+    serialize: str  # enum -> string function name
+
+
+class ConstraintFact(TypedDict):
+    """One FHIRPath invariant of an element, as published."""
+
+    key: str
+    severity: str
+    human: str
+    expression: str
+
+
+class FixedValue(TypedDict):
+    """A `fixed[x]` or `pattern[x]` value; `key` carries the type suffix."""
+
+    key: str
+    value: Any  # whatever JSON value HL7 published for it
+
+
+class Conformance(TypedDict):
+    """What one FHIR revision requires of one element. Never affects layout."""
+
+    min: int
+    max: str | None
+    constraints: list[ConstraintFact]
+    binding_strength: str
+    binding_valueset: str
+    fixed: FixedValue | None
+    pattern: FixedValue | None
+
+
+class FieldOverride(TypedDict, total=False):
+    """A hand-written replacement for part of one field's storage."""
+
+    cpp_type: str
+    raw_scalar: bool
+    fhir_type: str
+    macro: str
+    size: int
+    size_const: str
+    data_type: str
+    url_idx: bool
+
+
+class FieldLayout(TypedDict):
     """One V-Table field of a generated block.
 
-    Mirrors the layout dict ffc.py builds. `offset` is intentionally absent:
-    in the emitted C++ the byte offset is a SYMBOLIC sum
-    (`RECOVERY = VALIDATION + VALIDATION_S`) the compiler resolves, so the
-    wire position is determined by field ORDER + each field's size constant,
-    not a literal stored here. See generator_refactor_plan.md (deleted; in git history) section 6.
+    Order within `BlockLayout.layout` is wire-significant: the emitted C++
+    offset is a symbolic sum over the preceding fields' size constants.
     """
 
     # --- identity ---
-    name: str  # sanitized field name used in C++ identifiers
-    orig_name: str  # original FHIR element name (for path joins)
+    name: str  # upper-case name used in C++ constants
+    cpp_name: str  # member name, C++ keywords suffixed with '_'
+    orig_name: str  # the FHIR element name
     fhir_type: str  # FHIR type token, e.g. 'string', 'code', 'Reference'
 
-    # --- emitted C++ typing ---
-    cpp_type: str  # view/struct type, e.g. 'Offset', 'uint32_t'
-    data_type: str  # eager-deserialize data type, e.g. 'std::string_view'
+    # --- shape ---
+    is_array: bool
+    is_choice: bool
+    choice_types: list[str]  # every type a choice field allows, over all revisions
 
-    # --- shape flags (drive field-kind / recovery / stride decisions) ---
-    is_array: bool = False
-    is_choice: bool = False
+    # --- storage ---
+    size: int
+    size_const: str
+    cpp_type: str
+    data_type: str
+    macro: str
+    offset: int
 
-    # --- optional resolution context ---
-    resolved_path: str | None = None  # dotted FHIR path for backbone elements
-    code_enum: dict[str, str] | None = None  # ValueSet enum binding, if any
+    # --- provenance ---
+    first_version_name: str
+    first_version_idx: int
+    conformance: dict[str, Conformance]  # FHIR revision -> its requirements
 
-    # Any layout keys we have not explicitly modelled are preserved verbatim so
-    # the adapter is loss-free even as ffc.py evolves. Never read these in new
-    # code — promote them to real fields instead.
-    extra: dict[str, Any] = dc_field(default_factory=dict)
-
-    # Keys this dataclass owns; everything else falls into `extra`.
-    _OWNED = frozenset(
-        {
-            "name",
-            "orig_name",
-            "fhir_type",
-            "cpp_type",
-            "data_type",
-            "is_array",
-            "is_choice",
-            "resolved_path",
-            "code_enum",
-        }
-    )
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> Field:
-        """Build a Field from an ffc.py layout dict, preserving unknown keys."""
-        return cls(
-            name=d["name"],
-            orig_name=d.get("orig_name", d["name"]),
-            fhir_type=d["fhir_type"],
-            cpp_type=d["cpp_type"],
-            data_type=d["data_type"],
-            is_array=bool(d.get("is_array", False)),
-            is_choice=bool(d.get("is_choice", False)),
-            resolved_path=d.get("resolved_path"),
-            code_enum=d.get("code_enum"),
-            extra={k: v for k, v in d.items() if k not in cls._OWNED},
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Reproduce the exact dict shape emitters consume.
-
-        Round-trips losslessly: `Field.from_dict(d).to_dict()` restores `d`
-        (modulo absent optional keys, which emitters access via `.get`).
-        """
-        out: dict[str, Any] = {
-            "name": self.name,
-            "orig_name": self.orig_name,
-            "fhir_type": self.fhir_type,
-            "cpp_type": self.cpp_type,
-            "data_type": self.data_type,
-            "is_array": self.is_array,
-            "is_choice": self.is_choice,
-        }
-        if self.resolved_path is not None:
-            out["resolved_path"] = self.resolved_path
-        if self.code_enum is not None:
-            out["code_enum"] = self.code_enum
-        out.update(self.extra)
-        return out
+    # --- set by later passes, absent until then ---
+    resolved_path: NotRequired[str]  # dotted path of a backbone element's block
+    code_enum: NotRequired[CodeEnum]
+    external_system: NotRequired[str]
+    raw_scalar: NotRequired[bool]
+    url_idx: NotRequired[bool]
 
 
-@dataclass
-class Block:
-    """A generated C++ block (resource, datatype, or backbone element).
+class BlockLayout(TypedDict):
+    """A generated C++ block: a resource, a datatype or a backbone element."""
 
-    `layout` is the ordered field list — order is wire-significant because it
-    determines V-Table offsets. Mirrors `master_blocks[path]` in ffc.py, whose
-    canonical key is `layout`.
-    """
+    layout: list[FieldLayout]
+    seen: set[str]  # field names already laid out
+    sizes: dict[str, int]  # FHIR revision -> block size in bytes
+    by_name: dict[str, FieldLayout]  # the same entries as `layout`, by FHIR name
+    conformance: NotRequired[dict[str, Conformance]]  # root blocks only
 
-    path: str  # dotted FHIR path, e.g. 'Patient.contact'
-    struct_name: str  # emitted C++ struct name, e.g. 'FF_PATIENT'
-    layout: list[Field] = dc_field(default_factory=list)
-    extra: dict[str, Any] = dc_field(default_factory=dict)
 
-    @classmethod
-    def from_dict(cls, path: str, struct_name: str, d: dict[str, Any]) -> Block:
-        return cls(
-            path=path,
-            struct_name=struct_name,
-            layout=[Field.from_dict(f) for f in d.get("layout", [])],
-            extra={k: v for k, v in d.items() if k != "layout"},
-        )
+# Dotted FHIR path -> its block, e.g. 'Patient.contact'.
+MasterBlocks: TypeAlias = dict[str, BlockLayout]
 
-    def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"layout": [f.to_dict() for f in self.layout]}
-        out.update(self.extra)
-        return out
+# One root type's snapshot elements per FHIR revision, oldest first.
+SchemasByVersion: TypeAlias = list[tuple[str, list[JsonObject]]]

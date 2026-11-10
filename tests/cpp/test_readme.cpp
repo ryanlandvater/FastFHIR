@@ -10,6 +10,8 @@
  */
 
 #include <FastFHIR.hpp>
+#include <FF_Builder.hpp>   // internal: drives Builder_t directly
+#include "FF_Parser.hpp"    // internal: Parser_t (url_directory is the deeper API)
 #include "FF_AllTypes.hpp" // PatientData, BundleData, ObservationData, …
 
 #include <openssl/evp.h>
@@ -1351,9 +1353,9 @@ static void test_11()
     REQUIRE(!view.empty(), "extension bundle finalize returned empty view");
 
     Parser parser(mem);
-    REQUIRE(parser.has_url_directory(), "expected URL directory for extension-containing bundle");
+    REQUIRE(parser->has_url_directory(), "expected URL directory for extension-containing bundle");
 
-    auto dir = parser.url_directory();
+    auto dir = parser->url_directory();
     const uint32_t n = dir.entry_count(parser.data());
     REQUIRE(n > 0, "URL directory is unexpectedly empty");
 

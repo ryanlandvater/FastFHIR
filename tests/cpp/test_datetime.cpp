@@ -48,6 +48,8 @@
 // needs the writer and the Parser. The rest of this suite deliberately works
 // against a raw arena, which is why these arrive late.
 #include <FastFHIR.hpp>
+// internal: drives Builder_t directly; a public consumer needs only <FastFHIR.hpp>
+#include <FF_Builder.hpp>
 #include <FF_FieldKeys.hpp>
 #include "FF_AllTypes.hpp"
 

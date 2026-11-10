@@ -14,9 +14,9 @@
  *     FF_Values.hpp      <- what a CONSUMER holds (Result, DateTime, FF_Id).
  *     FF_Primitives.hpp  <- the wire BLOCKS and the accessors that read them.
  *
- * Every value in this file is PERMANENT (CLAUDE.md invariant 1): a RECOVERY_TAG
- * or a dictionary ID that has been assigned is never renumbered and never
- * reordered, because those numbers decode archives that already exist.
+ * Every value in this file is PERMANENT: a RECOVERY_TAG or a dictionary ID that
+ * has been assigned is never renumbered and never reordered, because those
+ * numbers decode archives that already exist.
  *
  * WHAT IS HERE, in order:
  *   Offset / Size / BYTE ........ the three scalars everything is measured in
@@ -161,9 +161,8 @@ constexpr uint32_t FF_CODE_DICTIONARY_MAX   = 0x7FFFFFFF;
 //
 // AND IT IS AN EDGE, NOT INLINE DATA, WHENEVER THE FLAG IS SET. A packed value
 // is structurally inert and validate_FFHR_stream() may skip it; a flagged one
-// points somewhere and MUST be walked like any other offset (TASKS.md DT-1.5).
-// That is the rule the code slot already follows (src/FF_Parser.cpp:573-590),
-// not an exception to it.
+// points somewhere and MUST be walked like any other offset. The code slot
+// follows the same rule, one width down.
 constexpr uint64_t FF_DATETIME_FALLBACK_FLAG = 0x8000000000000000;  // Bit 63
 constexpr uint64_t FF_DATETIME_PAYLOAD_MASK  = 0x7FFFFFFFFFFFFFFF;  // Lower 63
 constexpr uint64_t FF_DATETIME_NULL          = FF_NULL_UINT64;
@@ -1037,25 +1036,21 @@ struct FF_FieldKey
         : name(key_name),
           name_len(key_name_len) {}
 
+    /// The key of one row of a block's reflected field table. Every walk over a
+    /// block's schema builds its keys here, so the mapping from a table row to a
+    /// slot lookup has one definition.
+    constexpr FF_FieldKey(RECOVERY_TAG owner, const FF_FieldInfo &field) noexcept
+        : owner_recovery(owner),
+          kind(field.kind),
+          field_offset(field.field_offset),
+          child_recovery(field.child_recovery),
+          array_entries_are_offsets(field.array_entries_are_offsets),
+          name(field.name),
+          name_len(field.name ? std::char_traits<char>::length(field.name) : 0) {}
+
     static FF_FieldKey from_cstr(const char *key_name) noexcept
     {
         return FF_FieldKey(key_name, key_name ? std::char_traits<char>::length(key_name) : 0);
-    }
-
-    static FF_FieldKey from_cstr(RECOVERY_TAG owner,
-                                 FF_FieldKind field_kind,
-                                 uint16_t offset,
-                                 RECOVERY_TAG child,
-                                 uint8_t array_offsets,
-                                 const char *field_name) noexcept
-    {
-        return FF_FieldKey(owner,
-                           field_kind,
-                           offset,
-                           child,
-                           array_offsets,
-                           field_name,
-                           field_name ? std::char_traits<char>::length(field_name) : 0);
     }
 
     constexpr std::string_view view() const noexcept

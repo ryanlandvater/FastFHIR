@@ -522,4 +522,45 @@ namespace FastFHIR
 #endif
     }
 
+// ============================================================================
+// Memory handle queries, and Memory::View
+// ============================================================================
+// Out of line because every one of these reads Memory_t, which the public
+// header that declares Memory and View does not define. The public query form
+// is `mem.size()`; the arena's own methods remain reachable as `mem->size()`
+// for a translation unit that includes this header's deep half (FF_Memory.hpp).
+
+const char *Memory::View::data() const noexcept
+{
+    return m_vma_ref ? reinterpret_cast<const char *>(m_vma_ref->m_base) : nullptr;
+}
+
+size_t Memory::View::size() const noexcept
+{
+    if (!m_vma_ref) return 0;
+    return std::atomic_ref<uint64_t>(*m_vma_ref->m_head_ptr).load(std::memory_order_acquire) & Memory_t::OFFSET_MASK;
+}
+
+Memory::View::operator std::string_view() const noexcept
+{
+    // data() and size() are both null-guarded; this conversion must be too, or
+    // the null state is only half-supported. An out-view cleared after an API
+    // failure is exactly the object a caller converts while checking whether
+    // anything came back -- and dereferencing here would crash, in a function
+    // marked noexcept.
+    return std::string_view(data(), size());
+}
+
+bool Memory::View::empty() const noexcept
+{
+    return size() == 0;
+}
+
+Size Memory::size() const { return get()->size(); }
+Size Memory::capacity() const { return get()->capacity(); }
+BYTE *Memory::base() const { return get()->base(); }
+Memory::View Memory::view() { return get()->view(); }
+void Memory::reset(Size committed_size) { get()->reset(committed_size); }
+
 } // namespace FastFHIR
+

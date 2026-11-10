@@ -9,7 +9,8 @@
  */
 #pragma once
 
-#include "FF_Parser.hpp"
+#include "FF_Access.hpp"
+#include "FF_Memory.hpp"   // deep: Memory_t members (claim_space, base, size)      // the public handle layer: Builder, ObjectHandle, MutableEntry
 #include "FF_Conformance.hpp"
 
 #include <filesystem>
@@ -95,6 +96,10 @@ class UrlDirectory;   // the URL intern table (FF_UrlDirectory.hpp); pimpl membe
     class Builder_t
     {
         friend class AdvancedBuilderAccess;
+        // The public handle (FF_Access.hpp). It carries the forwarders that
+        // reach the private sealed-stream lifecycle below, so a consumer routes
+        // through the handle and never needs this body.
+        friend class Builder;
         friend FF_Result FF_BuilderSetRoot(const FF_BuilderSetRootInfo&) noexcept;
         friend FF_Result FF_BuilderFinalize(const FF_BuilderFinalizeInfo&, Memory::View&) noexcept;
         friend FF_Result FF_BuilderQuery(const FF_BuilderQueryInfo&, Parser&) noexcept;
@@ -275,55 +280,32 @@ class UrlDirectory;   // the URL intern table (FF_UrlDirectory.hpp); pimpl membe
         // --- Lock-Free Concurrent Appending ---
 
         /**
-         * @brief The core concurrent ingestion method. Cleaned up to use TypeTraits.
+         * @brief Append a typed value and return the offset it was written at.
+         *
+         * A wrapper over append_erased(), which holds the actual SIZE/STORE
+         * pipeline. Keeping that body out of line means the pipeline exists
+         * ONCE: the erased entry point the public Builder handle calls runs the
+         * identical code, rather than a parallel copy that could drift from this
+         * one's validation.
          */
         template <typename T_Data>
         Offset append(const T_Data &data)
         {
-            if (!try_begin_mutation())
-            {
-                throw std::runtime_error("FastFHIR: Builder is finalizing; append is no longer allowed.");
-            }
-
-            struct MutationGuard
-            {
-                Builder_t *self;
-                ~MutationGuard() { self->end_mutation(); }
-            } guard{this};
-
-            // Conformance BEFORE claim_space. A rejected write must
-            // leave the arena exactly as it found it, which is what makes the
-            // layer's byte-identity guarantee hold even when it fires. Detached
-            // -- what a shipped build runs -- this is one predictable branch.
-            if (m_layer != nullptr)
-                _check_conformance(TypeTraits<T_Data>::recovery, &data);
-
-            // Automatically resolved via ffc.py generated traits
-            Size data_size = TypeTraits<T_Data>::size(data, m_fhir_rev);
-
-            // Thread-safe claim of space in the arena for the new data
-            Offset offset = m_memory->claim_space(data_size);
-
-            // Thread-safe write of the data into the claimed space. The generated
-            // STORE_* returns the absolute end offset; enforcing the SIZE/STORE
-            // contract here means a generator SIZE/STORE disagreement fails loudly
-            // instead of silently letting the next claim overlap this resource's
-            // tail (TASKS.md A23 / Bug B). This is what makes the arena layout
-            // strict rather than assumed.
-            const Offset end = TypeTraits<T_Data>::store(m_base, offset, data, m_fhir_rev);
-            if (end != offset + data_size) {
-                throw std::runtime_error(
-                    "FastFHIR: SIZE/STORE contract violated: claimed " +
-                    std::to_string(data_size) + " bytes but store consumed " +
-                    std::to_string(end - offset) + " (recovery tag " +
-                    std::to_string(static_cast<unsigned>(TypeTraits<T_Data>::recovery)) +
-                    "). This is a generator bug — the SIZE and STORE emitters "
-                    "disagree (TASKS.md A8.2/A23).");
-            }
-
-            // Return the offset where the data was written for potential pointer patching
-            return offset;
+            return append_erased(TypeTraits<T_Data>::descriptor(), &data);
         }
+
+        /**
+         * @brief The erased append core — one SIZE/STORE pipeline, no type parameter.
+         *
+         * Defined in FF_Builder.cpp. Public because the erased thunks the public
+         * handle layer routes through (Reflective::append_erased, assign_erased)
+         * call it; it is not a spelling an application is expected to use.
+         *
+         * @param desc The type's descriptor, from TypeTraits<T>::descriptor().
+         * @param data Pointer to the value; @p desc interprets it.
+         * @return The offset the block was written at.
+         */
+        Offset append_erased(const TypeDescriptor &desc, const void *data);
 
         /**
          * @brief Appends data to the stream and returns a thread-safe handle for [] assignments.
@@ -501,256 +483,6 @@ class UrlDirectory;   // the URL intern table (FF_UrlDirectory.hpp); pimpl membe
         }
     };
 
-    // =====================================================================
-    // PROXIES & HANDLES
-    // =====================================================================
-    namespace Reflective
-    {
-        /**
-         * @brief Ephemeral proxy object returned by ObjectHandle::operator[].
-         * Allows assigning either an existing Offset or dynamically appending new data.
-         * Thin coordinate handle: stores builder context + Entry coordinates without inheritance.
-         */
-        class MutableEntry
-        {
-            Builder_t *m_builder = nullptr;
-            const BYTE *m_base = nullptr;
-            Offset m_parent_offset = FF_NULL_OFFSET;
-            uint32_t m_vtable_offset = 0;
-            RECOVERY_TAG m_recovery = FF_RECOVER_UNDEFINED;
-            FF_FieldKind m_kind = FF_FIELD_UNKNOWN;
-
-        public:
-            MutableEntry() = default;
-            MutableEntry(Builder_t *b, Offset p, uint32_t v, RECOVERY_TAG r, FF_FieldKind k)
-                : m_builder(b), m_base(b ? b->memory()->base() : nullptr),
-                  m_parent_offset(p), m_vtable_offset(v), m_recovery(r), m_kind(k) {}
-
-            // Materialize Entry view from stored coordinates
-            Entry as_entry() const;
-
-            ObjectHandle as_handle() const;
-
-            MutableEntry &operator=(const ObjectHandle &child);
-
-            template <typename T_Data>
-                requires(!std::is_arithmetic_v<T_Data>)
-            Offset operator=(const T_Data &data);
-
-            template <typename T>
-                requires std::is_arithmetic_v<T>
-            MutableEntry &operator=(T val);
-
-            MutableEntry &operator=(const std::vector<Offset> &offsets);
-
-            // Direct access for Entry-like queries
-            explicit operator bool() const
-            {
-                return m_base != nullptr && m_parent_offset != FF_NULL_OFFSET;
-            }
-
-            // Builder_t and coordinate accessors
-            Builder_t *get_builder() const { return m_builder; }
-            Offset offset() const
-            {
-                return (m_parent_offset == FF_NULL_OFFSET) ? FF_NULL_OFFSET : (m_parent_offset + static_cast<Offset>(m_vtable_offset));
-            }
-
-            // Lazy materialization forwarding (delegates to as_handle() then as_node())
-            operator Reflective::Node() const;
-            operator ObjectHandle() const;
-            Node as_node() const;
-
-            // Query methods (implemented inline after ObjectHandle definition)
-            bool is_array() const;
-            bool is_object() const;
-            bool is_string() const;
-            bool is_scalar() const;
-            size_t size() const;
-            std::span<const FF_FieldInfo> fields() const;
-            std::vector<std::string_view> keys() const;
-
-            // Field/index access
-            MutableEntry operator[](FF_FieldKey key) const;
-            MutableEntry operator[](size_t index) const;
-
-        private:
-            friend struct ::PyMutableEntry;
-            void validate_assignment(RECOVERY_TAG child_tag) const;
-        };
-
-        // =====================================================================
-        // OBJECT HANDLE (Thread-Local Data Blocks Abstraction)
-        // =====================================================================
-        /**
-         * @brief Thread-local handle representing a specific parent object being built.
-         * Replaces the unsafe global operator[] on the Builder_t itself.
-         */
-
-        class ObjectHandle
-        {
-            Builder_t *m_builder = nullptr;
-            Offset m_offset = FF_NULL_OFFSET;
-            RECOVERY_TAG m_recovery = FF_RECOVER_UNDEFINED;
-
-        public:
-            ObjectHandle() = default; // Default-constructible to null handle
-
-            ObjectHandle(Builder_t *builder, Offset offset, RECOVERY_TAG recovery = FF_RECOVER_UNDEFINED)
-                : m_builder(builder), m_offset(offset), m_recovery(recovery)
-            {
-                if (offset != FF_NULL_OFFSET && recovery == FF_RECOVER_UNDEFINED)
-                    throw std::invalid_argument("FastFHIR: Cannot instantiate an ObjectHandle with valid offset but UNDEFINED recovery tag.");
-            }
-
-            Builder_t *get_builder() const { return m_builder; }
-            Offset offset() const { return m_offset; }
-            RECOVERY_TAG recovery() const { return m_recovery; }
-            explicit operator bool() const { return m_builder != nullptr && m_offset != FF_NULL_OFFSET; }
-
-            // Spawns a fresh, safely bounds-checked snapshot using the latest builder arena size
-            Node as_node() const
-            {
-                if (m_builder == nullptr || m_offset == FF_NULL_OFFSET)
-                    return {};
-                FF_FieldKind node_kind = IsArrayTag(m_recovery) ? FF_FIELD_ARRAY : Recovery_to_Kind(m_recovery);
-                return m_builder->view_node(m_offset, m_recovery, node_kind);
-            }
-
-            bool is_array() const { return as_node().is_array(); }
-            bool is_object() const { return as_node().is_object(); }
-            bool is_string() const { return as_node().is_string(); }
-            bool is_scalar() const { return as_node().is_scalar(); }
-            size_t size() const { return as_node().size(); }
-            std::span<const FF_FieldInfo> fields() const { return as_node().fields(); }
-            std::vector<std::string_view> keys() const { return as_node().keys(); }
-
-            MutableEntry operator[](FF_FieldKey key) const;
-            MutableEntry operator[](size_t index) const;
-
-            operator ResourceReference() const { return {m_offset, m_recovery}; }
-        };
-
-        // =====================================================================
-        // INLINE TEMPLATE IMPLEMENTATIONS
-        // =====================================================================
-        // 1. Implicit Conversion & Query Method Forwarding
-        inline MutableEntry::operator Reflective::Node() const { return as_node(); }
-        inline MutableEntry::operator ObjectHandle() const { return as_handle(); }
-        inline Node MutableEntry::as_node() const { return as_handle().as_node(); }
-
-        // 2. Query Methods (delegates to as_handle() for lazy materialization through Node)
-        inline bool MutableEntry::is_array() const { return as_handle().is_array(); }
-        inline bool MutableEntry::is_object() const { return as_handle().is_object(); }
-        inline bool MutableEntry::is_string() const { return as_handle().is_string(); }
-        inline bool MutableEntry::is_scalar() const { return as_handle().is_scalar(); }
-        inline size_t MutableEntry::size() const { return as_handle().size(); }
-        inline std::span<const FF_FieldInfo> MutableEntry::fields() const { return as_handle().fields(); }
-        inline std::vector<std::string_view> MutableEntry::keys() const { return as_handle().keys(); }
-
-        // 3. Field/Index Access
-        inline MutableEntry MutableEntry::operator[](FF_FieldKey key) const { return as_handle()[key]; }
-        inline MutableEntry MutableEntry::operator[](size_t index) const { return as_handle()[index]; }
-
-        template <typename T_Data>
-            requires(!std::is_arithmetic_v<T_Data>)
-        Offset MutableEntry::operator=(const T_Data &data)
-        {
-            // DT-2: a date/time slot is an inline 8-byte packed word (or a
-            // flagged relative offset to an FF_STRING fallback). String
-            // assignment must ENCODE into the slot — storing an FF_STRING child
-            // and patching a pointer would leave an offset word that the reader
-            // now unpacks as datetime bits (garbage dates).
-            if constexpr (std::is_same_v<T_Data, std::string_view>)
-            {
-                if (m_kind == FF_FIELD_DATETIME)
-                {
-                    m_builder->amend_datetime(AmendDatetimeInfo{
-                        .object_offset       = m_parent_offset,
-                        .field_vtable_offset = m_vtable_offset,
-                        .text                = data,
-                        .tag                 = m_recovery,
-                    });
-                    return offset();
-                }
-            }
-
-            // 1. Offload strict schema validation to the translation unit
-            validate_assignment(TypeTraits<T_Data>::recovery);
-
-            // 2. Thread-safe append of the child data
-            Offset child_offset = m_builder->append(data);
-
-            // 3. Thread-safe pointer patch on the parent V-Table using direct offsets
-            m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child_offset);
-
-            return child_offset;
-        }
-
-        template <typename T>
-            requires std::is_arithmetic_v<T>
-        MutableEntry &MutableEntry::operator=(T val)
-        {
-            if (m_kind == FF_FIELD_CHOICE)
-            {
-                // Choice types always use the 10-byte polymorphic routine
-                RECOVERY_TAG tag = FF_RECOVER_UNDEFINED;
-                if constexpr (std::is_same_v<T, bool>)
-                    tag = RECOVER_FF_BOOL;
-                else if constexpr (std::is_floating_point_v<T>)
-                    tag = RECOVER_FF_FLOAT64;
-                else if constexpr (sizeof(T) == 4)
-                    tag = std::is_signed_v<T> ? RECOVER_FF_INT32 : RECOVER_FF_UINT32;
-                else if constexpr (sizeof(T) == 8)
-                    tag = std::is_signed_v<T> ? RECOVER_FF_INT64 : RECOVER_FF_UINT64;
-
-                m_builder->amend_variant(AmendVariantInfo{
-                    .object_offset       = m_parent_offset,
-                    .field_vtable_offset = m_vtable_offset,
-                    .raw_bits            = static_cast<uint64_t>(val),
-                    .new_tag             = tag,
-                });
-            }
-            else
-            {
-                // Fixed types use the size-aware scalar routine
-                m_builder->amend_scalar(m_parent_offset, m_vtable_offset, val);
-            }
-            return *this;
-        }
-
-        inline MutableEntry &MutableEntry::operator=(const std::vector<Offset> &offsets)
-        {
-            if (m_parent_offset == FF_NULL_OFFSET)
-                throw std::runtime_error("FastFHIR: Cannot assign to a NULL entry.");
-
-            // 1. Thread-safe append of the array
-            Offset child_offset = m_builder->append(offsets, m_recovery);
-
-            // 2. Thread-safe pointer patch
-            m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child_offset);
-
-            return *this;
-        }
-
-        inline MutableEntry ObjectHandle::operator[](FF_FieldKey key) const
-        {
-            if (m_offset == FF_NULL_OFFSET)
-                throw std::runtime_error("FastFHIR: Invalid ObjectHandle...");
-
-            // Entry::kind already encodes whether this is an array; target_recovery holds the
-            // clean element type directly — no ToArrayTag encoding needed or wanted here.
-            RECOVERY_TAG target_tag = key.child_recovery;
-
-            if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN)
-            {
-                target_tag = Kind_to_Recovery(key.kind);
-            }
-
-            return MutableEntry(m_builder, m_offset, key.field_offset, target_tag, key.kind);
-        }
-
-    } // namespace Reflective
 
     template <typename T_Data>
     Reflective::ObjectHandle Builder_t::append_obj(const T_Data &data)

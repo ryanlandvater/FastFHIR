@@ -19,6 +19,9 @@
 // cycles via amend_pointer -- the same shape a crafted file would carry.
 
 #include <FastFHIR.hpp>
+// internal: drives Builder_t directly; a public consumer needs only <FastFHIR.hpp>
+#include <FF_Builder.hpp>
+#include "FF_Parser.hpp"   // internal: Parser_t (validate_FFHR_stream_deep is the deeper API)
 #include "FF_AllTypes.hpp"
 #include "FF_Ops.hpp"
 #include "FF_Reflection.hpp"   // reflected_fields_view, for the DT-1.5 tripwire
@@ -330,7 +333,7 @@ int main() {
         FastFHIR::Parser p2(bytes.data(), bytes.size());
         CHECK(static_cast<bool>(p2.validate_FFHR_stream()),
               "structural pass ignores a nonsense scalar");
-        auto d = p2.validate_FFHR_stream_deep();
+        auto d = p2->validate_FFHR_stream_deep();
         CHECK(!d, "deep pass rejects a nonsense scalar");
         CHECK(d.message.find("bool") != std::string::npos,
               "deep message names the offending slot kind");

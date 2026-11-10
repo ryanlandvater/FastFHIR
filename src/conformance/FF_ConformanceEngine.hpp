@@ -32,7 +32,7 @@
 // here. Included by name rather than relied upon transitively: the generated
 // layer includes this engine BEFORE any resource header, so an implicit
 // dependency would break on include order alone.
-#include "FF_Parser.hpp"
+#include "FF_Access.hpp"
 #include "FF_Primitives.hpp"
 
 #include <bit>

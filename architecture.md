@@ -286,9 +286,11 @@ double-word atomic to require special platform support.
 
 ### 2.3 Lifetime Safety — `Memory::View`
 
-`Memory::View` is a non-owning lens over the *committed* portion of the
-arena, exposed as `data()`, `size()`, and an implicit conversion to
-`std::string_view`. Its critical property: it holds a *copy* of the
+`Memory::View` **owns**: it holds the arena alive and exposes the *committed*
+portion of it through `data()`, `size()`, and an implicit conversion to
+`std::string_view`. Those exposures are the non-owning part — the `string_view`
+it hands out does not keep anything alive, the `View` does. Its critical
+property: it holds a *copy* of the
 `std::shared_ptr<FF_Memory_t>` (`FF_Memory.hpp:170`).
 
 ```
@@ -464,13 +466,117 @@ a developer who has read one has read them all.
    buffers. All three constructors converge on one private `Parser::_bind()`, so
    there is a single validation path rather than one per entry point.
 
+#### View lifetime — the debug-only liveness witness
+
+The shells are owners; the accessors are **non-owning viewers** (think
+`std::string_view`). `Node`, `Entry`,
+`ObjectHandle` and `MutableEntry` each hold a raw coordinate into an arena —
+48 bytes, no `shared_ptr`, no reference count — which is precisely why a field
+read is a slot lookup and not an atomic increment.
+
+That choice has one consequence to design around: a viewer is valid only while
+the **arena** is alive. Making viewers own their arena is not the fix — a
+reference count on every field access measured **~10x** single-threaded and
+**~218x** under 8-way contention (the control block becomes a ping-ponged cache
+line), which would delete the parallel read path outright.
+
+So the guarantee is a check rather than a permanent reference count:
+
+```mermaid
+flowchart LR
+    A["Memory::create()"] --> B["Memory_t<br/>owns LivenessToken"]
+    B --> C["Parser_t::root()<br/>attaches token"]
+    C --> D["Node<br/>weak_ptr to token"]
+    D --> E["operator[] / entries()<br/>children inherit it"]
+    E --> F["read → require_alive()"]
+    B -.->|"arena released<br/>= last Memory ref"| G["token expires"]
+    G --> F
+```
+
+**The token belongs to the arena, not to a parser or builder.** That distinction
+is the whole correctness of the design and was found the hard way: with the token
+on `Parser_t`, `Builder_t::view_node`'s re-open path (`FF_Builder.cpp`) — a
+*temporary* `Parser` over an arena the Builder still holds — expired the token
+while the bytes were perfectly alive, and five test suites failed on a false
+positive. Staleness means "the bytes are gone", and only the arena knows that.
+
+| | |
+|---|---|
+| token owner | `Memory_t` (one per arena) |
+| carriers | `Node`, `Entry` — a `weak_ptr` to the arena's token |
+| inheritance | `Entry::as_node()`, `Node::operator[]`, `Node::entries()` copy the parent's token, so a walked tree stays checked at any depth |
+| no-owner case | a viewer built from raw bytes carries a never-dying sentinel, so it is never falsely reported stale |
+| cost | **`NDEBUG`: none.** No member, no branch, no allocation — `sizeof(Node)` is 48 in release, identical to before. Debug: +16 bytes per viewer and one weak-ref per read. |
+
+The check is compiled out under `NDEBUG`, and that is a deliberate trade rather
+than an oversight: a release build reads released memory exactly as it did before
+the check existed. The corresponding constraint — a debug library and a release
+consumer disagree on the layout of `Node`/`Entry`/`Memory_t` — is documented in
+the README alongside the usage rule (keep an owning handle in scope; pass the
+`Parser` around, not the `Node`).
+
 #### Status
 
-`Parser(const Memory::View&)`, the `Memory` handle forwarders and the shared
-`Parser::_bind()` are landed. Moving the `Reflective` family into a single public
-header, the `TypeDescriptor` erasure, and making `Builder_t` opaque are the
-remaining work; until they land, `Builder_t` is still reachable from the public
-header and `FF_DataTypes.hpp` still pulls `FF_Builder.hpp` in.
+**Landed.** Every public type is now a shell over a heap-owned body, and the
+boundary is **enforced by the compiler, not by convention**: a shell only names
+its `*_t` by forward declaration, so `->` resolves to nothing until the
+translation unit includes the deep header that completes it.
+
+| Shell (public) | Body (deep) | Deep header |
+|---|---|---|
+| `Memory` | `Memory_t` | `FF_Memory.hpp` |
+| `Parser` | `Parser_t` | `FF_Parser.hpp` |
+| `Builder` | `Builder_t` | `FF_Builder.hpp` |
+
+Each shell derives from `std::shared_ptr<Body>` and carries only the everyday
+surface; each body keeps the rich one. The three are shaped identically, so
+learning one teaches the others — which is the point of the mirrored design
+above rather than a coincidence.
+
+A TU that wants the richer surface includes `<FastFHIR.hpp>` **and** the deep
+header for the body it needs, then uses `->`:
+
+```cpp
+#include <FastFHIR.hpp>
+#include <FF_Memory.hpp>   // for mem->claim_space() / try_acquire_stream()
+#include <FF_Parser.hpp>   // for parser->url_directory() / checksum()
+```
+
+Verified by compiling each case against the public include path:
+
+| Case | Includes | Result |
+|---|---|---|
+| `pub` | `<FastFHIR.hpp>`, `<FF_Patient.hpp>` | compiles; `m.size()`, `p.root()`, `b.append_object(d)` all work |
+| `mem_no` | public only | `m->claim_space(8)` → *member access into incomplete type 'Memory_t'* |
+| `mem_yes` | + `FF_Memory.hpp` | compiles |
+| `par_no` | public only | `p->checksum()` → incomplete type |
+| `par_yes` | + `FF_Parser.hpp` | compiles |
+| `bld_no` | public only | `b->claim_child_space(8)` → incomplete type |
+| `bld_yes` | + `FF_Builder.hpp` | compiles |
+
+`FF_Access.hpp` holds the three shells plus the `Reflective` family
+(`Node`/`Entry`/`ObjectHandle`/`MutableEntry`) and the `TypeDescriptor` erasure.
+It includes **no** deep header, so a public TU never sees a `*_t` body.
+`FF_DataTypes.hpp` — and therefore every generated POCO header — includes
+`FF_Access.hpp`, not `FF_Builder.hpp`.
+
+> **Dependency direction.** The public chain is `FastFHIR.hpp` → `FF_Access.hpp`
+> → `FF_Primitives.hpp`. A deep header includes `FF_Access.hpp` (the reverse is
+> never true): `FF_Memory.hpp` completes `Memory_t`, `FF_Parser.hpp` completes
+> `Parser_t`, `FF_Builder.hpp` completes `Builder_t`. Headers that merely *name*
+> a handle in a signature need only the public header — `FF_Recovery.hpp` takes
+> `const Memory&` and so includes `FF_Access.hpp`, while `FF_Recovery.cpp`, which
+> dereferences the arena, includes `FF_Memory.hpp`. Keeping that split at the
+> `.hpp`/`.cpp` seam is what keeps `Memory_t` out of the public surface.
+
+
+> **Generator note.** Regenerating requires the production profile, or the
+> code-system set comes out short and the generator aborts with a spurious
+> "declares 72 enums, but the emitted sources reference 8 it does not have"
+> (TASKS.md GEN-1). Read the stamp and pass it through:
+> `FASTFHIR_PRODUCTION_PROFILE="$(cat generated_src/.profile)" python -m generator`.
+> CMake already does this; a bare `python -m generator` does not.
+
 
 ---
 

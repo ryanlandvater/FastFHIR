@@ -16,6 +16,7 @@
 
 // Exercises the three properties the amend_* refactor must preserve.
 #include <FastFHIR.hpp>
+#include <FF_Builder.hpp>
 #include "FF_AllTypes.hpp"
 #include <cstdio>
 #include <string>

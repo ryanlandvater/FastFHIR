@@ -81,4 +81,100 @@ Offset TypeTraits<std::vector<double>>::store(BYTE *const base, Offset off,
     return off;
 }
 
+// =====================================================================
+// Descriptors for the hand-written traits
+// =====================================================================
+// The generated types get their descriptor() from the generator, beside their
+// SIZE_/STORE_. These six are hand-written, so their descriptors are too. Each
+// thunk casts the erased pointer back to ITS OWN type before calling through —
+// that is the whole contract of TypeDescriptor::size/store, and getting the
+// cast type wrong here would read the wrong bytes rather than fail to compile.
+
+const TypeDescriptor& TypeTraits<std::string_view>::descriptor()
+{
+    static const TypeDescriptor d{
+        TypeTraits<std::string_view>::recovery,
+        [](const void *__data, uint32_t __v) -> Size {
+            return TypeTraits<std::string_view>::size(*static_cast<const std::string_view *>(__data), __v);
+        },
+        [](BYTE *__base, Offset __off, const void *__data, uint32_t __v) -> Offset {
+            return TypeTraits<std::string_view>::store(__base, __off, *static_cast<const std::string_view *>(__data), __v);
+        },
+    };
+    return d;
+}
+
+// String is a distinct wire-caller type from string_view even though it FORWARDS
+// to it, so it needs its own descriptor: the thunks must cast the erased pointer
+// back to String, not to string_view.
+const TypeDescriptor& TypeTraits<String>::descriptor()
+{
+    static const TypeDescriptor d{
+        TypeTraits<String>::recovery,
+        [](const void *__data, uint32_t __v) -> Size {
+            return TypeTraits<String>::size(*static_cast<const String *>(__data), __v);
+        },
+        [](BYTE *__base, Offset __off, const void *__data, uint32_t __v) -> Offset {
+            return TypeTraits<String>::store(__base, __off, *static_cast<const String *>(__data), __v);
+        },
+    };
+    return d;
+}
+
+const TypeDescriptor& TypeTraits<std::vector<ResourceReference>>::descriptor()
+{
+    static const TypeDescriptor d{
+        TypeTraits<std::vector<ResourceReference>>::recovery,
+        [](const void *__data, uint32_t __v) -> Size {
+            return TypeTraits<std::vector<ResourceReference>>::size(*static_cast<const std::vector<ResourceReference> *>(__data), __v);
+        },
+        [](BYTE *__base, Offset __off, const void *__data, uint32_t __v) -> Offset {
+            return TypeTraits<std::vector<ResourceReference>>::store(__base, __off, *static_cast<const std::vector<ResourceReference> *>(__data), __v);
+        },
+    };
+    return d;
+}
+
+const TypeDescriptor& TypeTraits<std::vector<uint8_t>>::descriptor()
+{
+    static const TypeDescriptor d{
+        TypeTraits<std::vector<uint8_t>>::recovery,
+        [](const void *__data, uint32_t __v) -> Size {
+            return TypeTraits<std::vector<uint8_t>>::size(*static_cast<const std::vector<uint8_t> *>(__data), __v);
+        },
+        [](BYTE *__base, Offset __off, const void *__data, uint32_t __v) -> Offset {
+            return TypeTraits<std::vector<uint8_t>>::store(__base, __off, *static_cast<const std::vector<uint8_t> *>(__data), __v);
+        },
+    };
+    return d;
+}
+
+const TypeDescriptor& TypeTraits<std::vector<uint32_t>>::descriptor()
+{
+    static const TypeDescriptor d{
+        TypeTraits<std::vector<uint32_t>>::recovery,
+        [](const void *__data, uint32_t __v) -> Size {
+            return TypeTraits<std::vector<uint32_t>>::size(*static_cast<const std::vector<uint32_t> *>(__data), __v);
+        },
+        [](BYTE *__base, Offset __off, const void *__data, uint32_t __v) -> Offset {
+            return TypeTraits<std::vector<uint32_t>>::store(__base, __off, *static_cast<const std::vector<uint32_t> *>(__data), __v);
+        },
+    };
+    return d;
+}
+
+const TypeDescriptor& TypeTraits<std::vector<double>>::descriptor()
+{
+    static const TypeDescriptor d{
+        TypeTraits<std::vector<double>>::recovery,
+        [](const void *__data, uint32_t __v) -> Size {
+            return TypeTraits<std::vector<double>>::size(*static_cast<const std::vector<double> *>(__data), __v);
+        },
+        [](BYTE *__base, Offset __off, const void *__data, uint32_t __v) -> Offset {
+            return TypeTraits<std::vector<double>>::store(__base, __off, *static_cast<const std::vector<double> *>(__data), __v);
+        },
+    };
+    return d;
+}
+
 } // namespace FastFHIR

@@ -175,24 +175,17 @@ private:
 /**
  * @brief A present-or-absent child block in a generated POCO: FHIR's `0..1`.
  *
- * What it replaces: the member used to be a bare `std::unique_ptr<T>`, so every
- * caller wrote `std::make_unique<CodeableConceptData>()` before it could say
- * anything about a field. That is an implementation detail of PRESENCE --
- * FHIR's optionality became C++ ownership -- and it showed up in every line of
- * consumer code. It is here so the natural form works:
+ * Assign a whole value to set the field:
  *
  *     observation.code = CodeableConceptData{ .coding = { ... } };
  *
- * Why the heap indirection stays: generated types refer to themselves
- * (Extension.extension), so an inline optional cannot be sized. This is
- * std::optional's shape with std::unique_ptr's storage.
+ * Test it with `if (field)`; a default-constructed Optional is absent.
  *
- * Value semantics, including COPY: a POCO is a value, and a brace list can only
- * copy its elements, so `.coding = { CodingData{...} }` needs copyable parts. A
- * copy costs what it copies; moves stay free.
+ * The indirection is why this is not `std::optional<T>`: generated types refer
+ * to themselves (Extension.extension), so an inline member cannot be sized.
+ * This is std::optional's shape with std::unique_ptr's storage.
  *
- * Not a wire type. This is the build-and-materialize side; no byte of any
- * stream changes because of it.
+ * A copy copies what it holds; moves stay free.
  */
 
 template <typename T>
@@ -257,7 +250,7 @@ private:
 
 // The result types' global C-style aliases. Declared HERE rather than in
 // FastFHIR.hpp's one alias block because this header is the lowest one every
-// TU sees (the generated code, FF_Builder.hpp, FF_Parser.hpp all include it),
+// TU sees (the generated code, FF_Builder.hpp, FF_Access.hpp all include it),
 // and FF_Builder.hpp returns FF_Result without ever seeing FastFHIR.hpp.
 using FF_Result          = FastFHIR::Result;
 using FF_Result_Code     = FastFHIR::Result_Code;
@@ -626,10 +619,9 @@ public:
     /// real arena offset, so a caller who forgets to test degrades to a falsy
     /// node rather than chasing a wrong address.
     ///
-    /// RAW_STRING is the row that makes this explicit rather than a bare
-    /// reinterpretation: its payload IS an offset -- of the FF_STRING holding
-    /// the text, not of the resource -- so returning it would be a plausible,
-    /// in-bounds, self-validating WRONG answer (CLAUDE.md, wrong-answer class).
+    /// RAW_STRING's payload is an offset too -- of the FF_STRING holding the
+    /// text, not of the resource -- so returning it would be a plausible,
+    /// in-bounds, self-validating WRONG answer.
     [[nodiscard]] explicit operator Offset() const noexcept {
         return m_form == Form::GENERATED ? m_offset : FF_NULL_OFFSET;
     }

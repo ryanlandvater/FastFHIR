@@ -10,6 +10,7 @@
 
 #include "FF_Utilities.hpp"
 #include "FF_Builder.hpp"
+#include "FF_Parser.hpp"   // deep: Parser_t members when re-opening an arena
 #include "FF_Ops.hpp"
 #include "FF_Logger.hpp"
 #include "FF_UrlDirectory.hpp"
@@ -139,14 +140,14 @@ m_active_mutators(0)
     // The URL directory and module registry were once left behind here, so a
     // re-opened stream sealed with both nulled and every Extension.url
     // exported as null.
-    if (p.m_root_offset   != FF_NULL_OFFSET &&
-        p.m_root_recovery != FF_RECOVER_UNDEFINED) {
-        m_root_offset   = p.m_root_offset;
-        m_root_recovery = p.m_root_recovery;
-        m_fhir_rev      = static_cast<FHIR_VERSION>(p.m_version);
+    if (p->m_root_offset   != FF_NULL_OFFSET &&
+        p->m_root_recovery != FF_RECOVER_UNDEFINED) {
+        m_root_offset   = p->m_root_offset;
+        m_root_recovery = p->m_root_recovery;
+        m_fhir_rev      = static_cast<FHIR_VERSION>(p->m_version);
     }
-    m_url_dir_offset    = p.m_url_dir_offset;
-    m_module_reg_offset = p.m_module_reg_offset;
+    m_url_dir_offset    = p->m_url_dir_offset;
+    m_module_reg_offset = p->m_module_reg_offset;
 
     // Load the existing URL directory into the intern table so this session
     // keeps the stream's URLs AND can add more. The block is re-written from
@@ -154,8 +155,8 @@ m_active_mutators(0)
     // block is left orphaned in the arena — append-only, exactly like the
     // checksum footer. Without this a re-opened Builder could not register a
     // new URL, which is what made Extension.url unusable on this path.
-    if (p.m_url_dir_offset != FF_NULL_OFFSET)
-        m_url_directory->load(FF_URL_DIRECTORY(p.m_url_dir_offset, p.size_bytes(),
+    if (p->m_url_dir_offset != FF_NULL_OFFSET)
+        m_url_directory->load(FF_URL_DIRECTORY(p->m_url_dir_offset, p.size_bytes(),
                                                static_cast<uint32_t>(p.version())),
                               m_base);
     m_url_dir_offset = FF_NULL_OFFSET;
@@ -317,7 +318,13 @@ Reflective::Node Builder_t::view_node(Offset offset, RECOVERY_TAG recovery, FF_F
         return Reflective::Node();
 
     // 2. Use the exact same boundary for the Reflective::Node's validation
-    return Reflective::Node(m_base, size, m_fhir_rev, offset, recovery, kind);
+    Reflective::Node out(m_base, size, m_fhir_rev, offset, recovery, kind);
+#ifndef NDEBUG
+    // Token from the ARENA, not from this builder: a view is stale when the
+    // bytes are gone, not when the writer that produced it is.
+    if (m_memory) out._attach(m_memory->liveness());
+#endif
+    return out;
 }
 
 Builder_t::AmendScope Builder_t::_amend_prepare(Offset object_offset, size_t field_vtable_offset,
@@ -729,5 +736,198 @@ MutableEntry ObjectHandle::operator[](size_t index) const
         Recovery_to_Kind(m_recovery)
     );
 }
+// =====================================================================
+// Erased mutation cores — private static members of MutableEntry
+// =====================================================================
+// The bodies FF_Access.hpp needs but cannot define there, because Builder_t is
+// incomplete in that header. Each is the straight-line copy of what the
+// corresponding inline template used to do -- the ONE pipeline, not a second one
+// that could drift from it. Private, so they never appear in a consumer's
+// autocomplete beside the real API.
+
+// Only the constructor and the erased cores are out of line; the coordinate
+// accessors and the pure forwards stay inline in the header.
+MutableEntry::MutableEntry(Builder_t *b, Offset p, uint32_t v, RECOVERY_TAG r, FF_FieldKind k)
+    : m_builder(b), m_base(b ? b->memory()->base() : nullptr),
+      m_parent_offset(p), m_vtable_offset(v), m_recovery(r), m_kind(k) {}
+
+Offset MutableEntry::assign_erased(MutableEntry &entry, const TypeDescriptor &desc, const void *data)
+{
+    entry.validate_assignment(desc.recovery);
+    const Offset child_offset = entry.m_builder->append_erased(desc, data);
+    entry.m_builder->amend_pointer(entry.m_parent_offset, entry.m_vtable_offset, child_offset);
+    return child_offset;
+}
+
+void MutableEntry::assign_datetime_erased(MutableEntry &entry, std::string_view text)
+{
+    entry.m_builder->amend_datetime(AmendDatetimeInfo{
+        .object_offset       = entry.m_parent_offset,
+        .field_vtable_offset = entry.m_vtable_offset,
+        .text                = text,
+        .tag                 = entry.m_recovery,
+    });
+}
+
+void MutableEntry::amend_variant_erased(MutableEntry &entry, uint64_t raw_bits, RECOVERY_TAG tag)
+{
+    entry.m_builder->amend_variant(AmendVariantInfo{
+        .object_offset       = entry.m_parent_offset,
+        .field_vtable_offset = entry.m_vtable_offset,
+        .raw_bits            = raw_bits,
+        .new_tag             = tag,
+    });
+}
+
+// One overload per member of the FHIR scalar wire set -- exactly the set
+// Builder_t::amend_scalar is instantiated for. Overload resolution picks by the
+// caller's own type, so no value passes through a widening cast (a double would
+// not survive one intact).
+void MutableEntry::amend_scalar_erased(MutableEntry &entry, bool val)
+{ entry.m_builder->amend_scalar(entry.m_parent_offset, entry.m_vtable_offset, val); }
+void MutableEntry::amend_scalar_erased(MutableEntry &entry, uint8_t val)
+{ entry.m_builder->amend_scalar(entry.m_parent_offset, entry.m_vtable_offset, val); }
+void MutableEntry::amend_scalar_erased(MutableEntry &entry, int32_t val)
+{ entry.m_builder->amend_scalar(entry.m_parent_offset, entry.m_vtable_offset, val); }
+void MutableEntry::amend_scalar_erased(MutableEntry &entry, uint32_t val)
+{ entry.m_builder->amend_scalar(entry.m_parent_offset, entry.m_vtable_offset, val); }
+void MutableEntry::amend_scalar_erased(MutableEntry &entry, int64_t val)
+{ entry.m_builder->amend_scalar(entry.m_parent_offset, entry.m_vtable_offset, val); }
+void MutableEntry::amend_scalar_erased(MutableEntry &entry, uint64_t val)
+{ entry.m_builder->amend_scalar(entry.m_parent_offset, entry.m_vtable_offset, val); }
+void MutableEntry::amend_scalar_erased(MutableEntry &entry, double val)
+{ entry.m_builder->amend_scalar(entry.m_parent_offset, entry.m_vtable_offset, val); }
+
+MutableEntry& MutableEntry::operator=(const std::vector<Offset> &offsets)
+{
+    if (m_parent_offset == FF_NULL_OFFSET)
+        throw std::runtime_error("FastFHIR: Cannot assign to a NULL entry.");
+
+    const Offset child_offset = m_builder->append(offsets, m_recovery);
+    m_builder->amend_pointer(m_parent_offset, m_vtable_offset, child_offset);
+    return *this;
+}
+
+Node ObjectHandle::as_node() const
+{
+    if (m_builder == nullptr || m_offset == FF_NULL_OFFSET)
+        return {};
+    FF_FieldKind node_kind = IsArrayTag(m_recovery) ? FF_FIELD_ARRAY : Recovery_to_Kind(m_recovery);
+    return m_builder->view_node(m_offset, m_recovery, node_kind);
+}
+
+MutableEntry ObjectHandle::operator[](FF_FieldKey key) const
+{
+    if (m_offset == FF_NULL_OFFSET)
+        throw std::runtime_error("FastFHIR: Invalid ObjectHandle...");
+
+    // Entry::kind already encodes whether this is an array; target_recovery holds the
+    // clean element type directly — no ToArrayTag encoding needed or wanted here.
+    RECOVERY_TAG target_tag = key.child_recovery;
+
+    if (target_tag == FF_RECOVER_UNDEFINED && key.kind != FF_FIELD_UNKNOWN)
+    {
+        target_tag = Kind_to_Recovery(key.kind);
+    }
+
+    return MutableEntry(m_builder, m_offset, key.field_offset, target_tag, key.kind);
+}
+
+ObjectHandle append_erased(const std::shared_ptr<Builder_t> &builder,
+                           const TypeDescriptor &desc, const void *data)
+{
+    if (!builder) return {};
+    try {
+        return ObjectHandle(builder.get(), builder->append_erased(desc, data), desc.recovery);
+    } catch (const std::exception &) {
+        // The public write path does not throw across its boundary: a failed
+        // append yields a null handle, exactly as FF_BuilderAppendObject did.
+        return {};
+    }
+}
+
 } // namespace Reflective
+
+// =====================================================================
+// Builder -- the public write handle
+// =====================================================================
+// The erased append core. Public in Builder_t (the internal tier routes through
+// it) but PRIVATE here: `append_object` is the spelling a consumer uses.
+Reflective::ObjectHandle Builder::append_erased(const Builder &builder,
+                                                const TypeDescriptor &desc,
+                                                const void *data)
+{
+    if (!builder) return {};
+    try {
+        return Reflective::ObjectHandle(builder.get(),
+                                        builder->append_erased(desc, data),
+                                        desc.recovery);
+    } catch (const std::exception &) {
+        // The public write path does not throw across its boundary: a failed
+        // append yields a null handle, exactly as FF_BuilderAppendObject did.
+        return {};
+    }
+}
+Offset Builder_t::append_erased(const TypeDescriptor &desc, const void *data)
+{
+    if (!try_begin_mutation())
+    {
+        throw std::runtime_error("FastFHIR: Builder is finalizing; append is no longer allowed.");
+    }
+
+    struct MutationGuard
+    {
+        Builder_t *self;
+        ~MutationGuard() { self->end_mutation(); }
+    } guard{this};
+
+    // Conformance BEFORE claim_space: a rejected write must leave the arena
+    // exactly as it found it, which is what makes the layer's byte-identity
+    // guarantee hold even when it fires. Detached (a shipped build), this is one
+    // predictable branch.
+    if (m_layer != nullptr)
+        _check_conformance(desc.recovery, data);
+
+    const Size data_size = desc.size(data, m_fhir_rev);
+
+    const Offset offset = m_memory->claim_space(data_size);
+
+    // The generated STORE_* returns the absolute end offset; enforcing the
+    // SIZE/STORE contract here means a generator SIZE/STORE disagreement fails
+    // loudly instead of silently letting the next claim overlap this resource's
+    // tail (TASKS.md A23 / Bug B). This is what makes the arena layout strict
+    // rather than assumed.
+    const Offset end = desc.store(m_base, offset, data, m_fhir_rev);
+    if (end != offset + data_size) {
+        throw std::runtime_error(
+            "FastFHIR: SIZE/STORE contract violated: claimed " +
+            std::to_string(data_size) + " bytes but store consumed " +
+            std::to_string(end - offset) + " (recovery tag " +
+            std::to_string(static_cast<unsigned>(desc.recovery)) +
+            "). This is a generator bug — the SIZE and STORE emitters "
+            "disagree (TASKS.md A8.2/A23).");
+    }
+
+    // Return the offset where the data was written for pointer patching.
+    return offset;
+}
+
+// =====================================================================
+// Builder -- the public write handle
+// =====================================================================
+Memory Builder::memory() const
+{
+    return get() ? get()->memory() : Memory{};
+}
+
+Reflective::ObjectHandle Builder::root() const
+{
+    return get() ? get()->root_handle() : Reflective::ObjectHandle{};
+}
+
+FHIR_VERSION Builder::fhir_version() const
+{
+    return get() ? get()->FhirVersion() : FHIR_VERSION_R5;
+}
+
 } // namespace FastFHIR

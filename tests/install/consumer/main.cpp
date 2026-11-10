@@ -53,8 +53,11 @@ int main()
     observation.value.block        = FF_MakeChoiceBlock(RECOVER_FF_QUANTITY);
     observation.value.block->value = std::move(quantity);
 
-    const Reflective::ObjectHandle root = builder->append_obj(observation);
-    check(static_cast<bool>(root), "append_obj(ObservationData)");
+    // The public write surface: `append_object` on the handle. No `->`, and no
+    // FF_Builder.hpp -- a consumer sees exactly the API in the headers this test
+    // includes, which is the whole point of the handle layer.
+    const Reflective::ObjectHandle root = builder.append_object(observation);
+    check(static_cast<bool>(root), "append_object(ObservationData)");
     check(FF_BuilderSetRoot(FF_BuilderSetRootInfo{.builder = builder, .root = root}).succeeded(),
           "FF_BuilderSetRoot");
 
@@ -64,7 +67,9 @@ int main()
 
     bool parser_ok = true;
     Parser parser;
-    try { parser = Parser(sealed.data(), sealed.size()); }
+    // Construct from the VIEW, not from data()/size(): the view holds the arena
+    // alive, so the parser owns the bytes it reads.
+    try { parser = Parser(sealed); }
     catch (const std::exception &) { parser_ok = false; }
     check(parser_ok, "Parser over the sealed view");
 

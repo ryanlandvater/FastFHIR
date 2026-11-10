@@ -16,6 +16,8 @@
 // an otherwise-identical document that duplicates the subtree.
 
 #include <FastFHIR.hpp>
+// internal: drives Builder_t directly; a public consumer needs only <FastFHIR.hpp>
+#include <FF_Builder.hpp>
 #include <FF_Ops.hpp>  // LOAD_U64 for the raw slot reads
 #include "FF_AllTypes.hpp"
 #include <cstdio>

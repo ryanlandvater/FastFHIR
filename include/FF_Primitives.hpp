@@ -71,8 +71,8 @@
 // ##
 // ## Everything from here to the value types near the end describes BYTES:
 // ## the slot contract, the block layouts, and the named accessors that are
-// ## the only sanctioned way to read them (CLAUDE.md invariant 9). Values in
-// ## this region are PERMANENT -- never renumbered, never reordered.
+// ## the only sanctioned way to read them. Values in this region are
+// ## PERMANENT -- never renumbered, never reordered.
 // #####################################################################
 
 // =====================================================================
@@ -123,20 +123,10 @@ struct FF_EXPORT DATA_BLOCK
 
     /// A block is truthy only if its HEADER IS ACTUALLY THERE.
     ///
-    /// This used to be `__offset != FF_NULL_OFFSET` -- present-vs-absent, and
-    /// nothing about whether the bytes exist. Iris carries the same comparison
-    /// and describes that exact form as the one it retired: "checked only that
-    /// the offset is in range: requiring the whole header to fit makes a
-    /// truncated file fail at construction rather than mid-read."
-    ///
-    /// It matters because `if (block)` is the guard every caller already
-    /// writes. Making it mean what it looks like it means turns thousands of
-    /// existing call sites into bounds checks for free, instead of asking each
-    /// one to remember a separate test it will eventually forget.
-    ///
-    /// A block whose `__size` is 0 is now falsy, which is the intended
-    /// consequence: it says "no extent was supplied", and a reader that cannot
-    /// say how big the buffer is has no business dereferencing into it.
+    /// `if (block)` therefore checks that the bytes exist, not merely that an
+    /// offset was set. A truncated file fails here rather than mid-read, and a
+    /// block whose `__size` is 0 is falsy: "no extent was supplied" is not
+    /// something a reader may dereference into.
     operator bool() const { return fits(); }
 
     FF_Result validate_offset(const BYTE *const __base, const char *type_name, RECOVERY_TAG recovery_tag) const noexcept;
@@ -849,15 +839,10 @@ struct ChoiceEntry
 
     /// The DECODED value when `tag` names a block type.
     ///
-    /// This used to be a raw arena OFFSET in the `uint64_t` arm above -- a
-    /// structural address handed out through the value API. Nothing in the
-    /// library ever read it back, so inside one arena it was invisible; but
-    /// STORE wrote it out verbatim, so a POCO re-serialized into a DIFFERENT
-    /// arena produced a slot naming an address that meant nothing there. The
-    /// offset chain broke at write time, silently, and surfaced only in
-    /// whatever later walked the whole graph.
-    ///
-    /// Offsets are structure. A caller gets values, by every access path.
+    /// A value, never an arena offset. An offset is meaningful only inside the
+    /// arena it was read from, so re-serializing a POCO into a different arena
+    /// would produce a slot naming an address that means nothing there.
+    /// Offsets are structure; a caller gets values, by every access path.
     ///
     /// unique_ptr rather than an inline variant: std::variant is sized by its
     /// largest alternative, so inlining would take ChoiceEntry from 32 bytes to
@@ -865,14 +850,9 @@ struct ChoiceEntry
     /// and they nest, and live in vectors.
     std::unique_ptr<ChoiceBlock> block;
 
-    /// A VALUE, copy included. It was move-only while the nested blocks were
-    /// held by std::unique_ptr, which had no copy to give; with Optional they
-    /// are values too, so a ChoiceEntry deep-copies its block like any other
-    /// member. That is what lets a POCO be brace-initialized, since an
-    /// initializer_list can only copy its elements.
-    ///
-    /// Out of line because the header only forward-declares ChoiceBlock; the
-    /// generated TU defines these where it is complete.
+    /// A VALUE, copy included — assigning a ChoiceEntry deep-copies its block
+    /// like any other member. That is what lets a POCO be brace-initialized,
+    /// since an initializer_list can only copy its elements.
     ChoiceEntry();
     ~ChoiceEntry();
     ChoiceEntry(const ChoiceEntry &);

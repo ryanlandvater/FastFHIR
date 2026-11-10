@@ -11,7 +11,8 @@
 #include "FF_Primitives.hpp"
 #include "FF_Memory.hpp"
 #include "FF_Builder.hpp"
-#include "FF_Parser.hpp"
+#include "FF_Access.hpp"
+#include "FF_Parser.hpp"   // internal: Parser_t (checksum, url_directory, module registry)
 #include "FF_Ops.hpp"
 #include "FF_Compactor.hpp"
 #include "FF_Ingestor.hpp"
@@ -340,9 +341,7 @@ static py::object materialize_handle_value(const std::shared_ptr<Builder_t>& bui
     }
 
     for (const FF_FieldInfo& field : FastFHIR::reflected_fields_view(handle.recovery())) {
-        FF_FieldKey key(handle.recovery(), field.kind, field.field_offset, field.child_recovery,
-                        field.array_entries_are_offsets, field.name,
-                        field.name ? std::char_traits<char>::length(field.name) : 0);
+        const FF_FieldKey key(handle.recovery(), field);
         Reflective::Entry parsed_entry = node[key];
         if (parsed_entry) {
             values[py::str(field.name ? field.name : "")] =
@@ -467,9 +466,7 @@ static py::list collect_filled_object_values(const std::shared_ptr<Builder_t>& b
     }
 
     for (const FF_FieldInfo& field : FastFHIR::reflected_fields_view(handle.recovery())) {
-        FF_FieldKey key(handle.recovery(), field.kind, field.field_offset, field.child_recovery,
-                        field.array_entries_are_offsets, field.name,
-                        field.name ? std::char_traits<char>::length(field.name) : 0);
+        const FF_FieldKey key(handle.recovery(), field);
         Reflective::Entry parsed_entry = node[key];
         if (parsed_entry) {
             filled_fields.append(PyMutableEntry(builder, handle[key]));
@@ -492,9 +489,7 @@ static py::list collect_filled_object_items(const std::shared_ptr<Builder_t>& bu
     }
 
     for (const FF_FieldInfo& field : FastFHIR::reflected_fields_view(handle.recovery())) {
-        FF_FieldKey key(handle.recovery(), field.kind, field.field_offset, field.child_recovery,
-                        field.array_entries_are_offsets, field.name,
-                        field.name ? std::char_traits<char>::length(field.name) : 0);
+        const FF_FieldKey key(handle.recovery(), field);
         Reflective::Entry parsed_entry = node[key];
         if (parsed_entry) {
             items.append(py::make_tuple(py::str(field.name ? field.name : ""),
@@ -896,7 +891,7 @@ PYBIND11_MODULE(_core, m) {
         .def("query", [](const PyBuilder& self) { return builder_query(self); })
         .def_property_readonly("version", [](const PyBuilder& self) { return builder_query(self).version(); })
         .def_property_readonly("root_type", [](const PyBuilder& self) { return builder_query(self).root_type(); })
-        .def_property_readonly("checksum", [](const PyBuilder& self) { return builder_query(self).checksum(); })
+        .def_property_readonly("checksum", [](const PyBuilder& self) { return builder_query(self)->checksum(); })
         .def("to_json", [](const PyBuilder& self) { return render_parser_json(builder_query(self)); })
         .def("__str__", [](const PyBuilder& self) { return render_parser_json(builder_query(self)); })
         .def("__repr__", [](const PyBuilder& self) { return render_parser_json(builder_query(self)); })
@@ -937,13 +932,13 @@ PYBIND11_MODULE(_core, m) {
             return out;
         }, py::arg("algo") = FF_CHECKSUM_NONE, py::arg("hasher") = py::none())
         .def_property_readonly("has_url_directory", [](const PyBuilder& self) {
-            return builder_query(self).has_url_directory();
+            return builder_query(self)->has_url_directory();
         })
         .def_property_readonly("url_directory", [](const PyBuilder& self) -> py::object {
             Parser q = builder_query(self);
-            if (!q.has_url_directory()) return py::none();
+            if (!q->has_url_directory()) return py::none();
             const BYTE* base = q.data();
-            FF_URL_DIRECTORY dir = q.url_directory();
+            FF_URL_DIRECTORY dir = q->url_directory();
             uint32_t n = dir.entry_count(base);
             py::dict d;
             d["entry_count"] = n;
@@ -960,13 +955,13 @@ PYBIND11_MODULE(_core, m) {
             return d;
         })
         .def_property_readonly("has_module_registry", [](const PyBuilder& self) {
-            return builder_query(self).has_module_registry();
+            return builder_query(self)->has_module_registry();
         })
         .def_property_readonly("module_registry", [](const PyBuilder& self) -> py::object {
             Parser q = builder_query(self);
-            if (!q.has_module_registry()) return py::none();
+            if (!q->has_module_registry()) return py::none();
             const BYTE* base = q.data();
-            FF_MODULE_REGISTRY reg(q.module_registry_offset(), q.size_bytes(), q.version());
+            FF_MODULE_REGISTRY reg(q->module_registry_offset(), q.size_bytes(), q.version());
             uint32_t n = reg.entry_count(base);
             py::dict d;
             d["entry_count"] = n;
